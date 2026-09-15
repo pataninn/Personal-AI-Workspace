@@ -1,0 +1,13 @@
+# Reviewed policy input placeholder for the operator-selected OpenShell image.
+# The gateway must reject startup until this file is replaced with a compatible,
+# pinned policy that grants only the per-run staging area, bounded processes, and
+# the approved NVIDIA inference route. It must never grant /workspace.
+revision: foundation-placeholder
+filesystem:
+  authoritative_workspace: deny
+process:
+  default: deny
+network:
+  default: deny
+credentials:
+  nvidia_api_key: gateway-only

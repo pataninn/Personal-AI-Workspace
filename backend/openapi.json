@@ -1,0 +1,255 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Personal AI Workspace API",
+    "version": "0.1.0",
+    "description": "Authenticated REST endpoints for project-scoped conversations and persisted messages."
+  },
+  "servers": [{ "url": "/" }],
+  "tags": [{ "name": "Conversations" }, { "name": "Workspace files" }],
+  "paths": {
+    "/api/v1/projects/{projectId}/conversations": {
+      "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
+      "get": {
+        "tags": ["Conversations"],
+        "summary": "List project conversations",
+        "operationId": "listProjectConversations",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/ConversationListLimit" },
+          { "$ref": "#/components/parameters/ConversationCursor" }
+        ],
+        "responses": {
+          "200": { "description": "Conversation summaries in stable activity order.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ConversationListEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/ProjectNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/WorkspaceUnavailable" }
+        }
+      },
+      "post": {
+        "tags": ["Conversations"],
+        "summary": "Create a project conversation",
+        "operationId": "createProjectConversation",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/IdempotencyHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateConversationRequest" } } } },
+        "responses": {
+          "201": { "description": "Conversation created.", "headers": { "Location": { "$ref": "#/components/headers/Location" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ConversationEnvelope" } } } },
+          "200": { "description": "Identical idempotent request replayed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ConversationEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectNotFound" },
+          "409": { "$ref": "#/components/responses/MutationConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/WorkspaceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/conversations/{conversationId}": {
+      "parameters": [{ "$ref": "#/components/parameters/ConversationIdPath" }],
+      "get": {
+        "tags": ["Conversations"],
+        "summary": "Read a conversation history page",
+        "operationId": "getConversationHistory",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/ProjectIdQuery" },
+          { "$ref": "#/components/parameters/HistoryLimit" },
+          { "$ref": "#/components/parameters/BeforeSequence" }
+        ],
+        "responses": {
+          "200": { "description": "Conversation and messages in ascending sequence order.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ConversationHistoryEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/ConversationNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/WorkspaceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/conversations/{conversationId}/messages": {
+      "parameters": [{ "$ref": "#/components/parameters/ConversationIdPath" }],
+      "post": {
+        "tags": ["Conversations"],
+        "summary": "Persist one user message",
+        "operationId": "createConversationMessage",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/ProjectIdQuery" },
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/IdempotencyHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateMessageRequest" } } } },
+        "responses": {
+          "201": { "description": "Message created.", "headers": { "Location": { "$ref": "#/components/headers/Location" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MessageEnvelope" } } } },
+          "200": { "description": "Identical idempotent request replayed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MessageEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ConversationNotFound" },
+          "409": { "$ref": "#/components/responses/MutationConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/WorkspaceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/files": {
+      "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
+      "get": {
+        "tags": ["Workspace files"],
+        "summary": "List approved workspace entries",
+        "operationId": "listWorkspaceFiles",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/WorkspaceDirectory" }],
+        "responses": {
+          "200": { "description": "Bounded project-relative file and directory entries.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceListEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/WorkspaceForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectNotFound" },
+          "413": { "$ref": "#/components/responses/WorkspaceLimit" },
+          "503": { "$ref": "#/components/responses/WorkspaceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/files/tree": {
+      "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
+      "get": {
+        "tags": ["Workspace files"],
+        "summary": "Read a bounded workspace tree",
+        "operationId": "treeWorkspaceFiles",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/WorkspaceDirectory" },
+          { "$ref": "#/components/parameters/WorkspaceDepth" }
+        ],
+        "responses": {
+          "200": { "description": "Bounded nested project-relative entries.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceTreeEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/WorkspaceForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectNotFound" },
+          "413": { "$ref": "#/components/responses/WorkspaceLimit" },
+          "503": { "$ref": "#/components/responses/WorkspaceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/files/content": {
+      "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
+      "get": {
+        "tags": ["Workspace files"],
+        "summary": "Read one approved UTF-8 text file",
+        "operationId": "readWorkspaceText",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/WorkspacePath" }],
+        "responses": {
+          "200": { "description": "Bounded, redacted UTF-8 text content.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceReadEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/WorkspaceForbidden" },
+          "404": { "$ref": "#/components/responses/WorkspaceNotFound" },
+          "413": { "$ref": "#/components/responses/WorkspaceLimit" },
+          "415": { "$ref": "#/components/responses/WorkspaceUnsupported" },
+          "503": { "$ref": "#/components/responses/WorkspaceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/files/search": {
+      "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
+      "get": {
+        "tags": ["Workspace files"],
+        "summary": "Search approved UTF-8 text files",
+        "operationId": "searchWorkspaceText",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/WorkspaceDirectory" },
+          { "$ref": "#/components/parameters/WorkspaceQuery" },
+          { "$ref": "#/components/parameters/WorkspaceMaxResults" }
+        ],
+        "responses": {
+          "200": { "description": "Bounded project-relative text matches.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceSearchEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/WorkspaceForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectNotFound" },
+          "413": { "$ref": "#/components/responses/WorkspaceLimit" },
+          "503": { "$ref": "#/components/responses/WorkspaceUnavailable" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "sessionCookie": { "type": "apiKey", "in": "cookie", "name": "__Host-pa_session", "description": "Opaque authenticated local session cookie." }
+    },
+    "headers": {
+      "Location": { "description": "Canonical URL of the created or replayed resource.", "schema": { "type": "string" } }
+    },
+    "parameters": {
+      "ProjectIdPath": { "name": "projectId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
+      "ConversationIdPath": { "name": "conversationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
+      "ProjectIdQuery": { "name": "projectId", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
+      "ConversationListLimit": { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 } },
+      "HistoryLimit": { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 200 } },
+      "BeforeSequence": { "name": "beforeSequence", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1 } },
+      "ConversationCursor": { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" } },
+      "WorkspaceDirectory": { "name": "directory", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 2048 }, "description": "Normalized project-relative directory. Absolute and host paths are rejected." },
+      "WorkspaceDepth": { "name": "depth", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 0, "maximum": 6, "default": 2 } },
+      "WorkspacePath": { "name": "path", "in": "query", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 2048 }, "description": "Normalized project-relative text file path." },
+      "WorkspaceQuery": { "name": "query", "in": "query", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 256 } },
+      "WorkspaceMaxResults": { "name": "maxResults", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 200 } },
+      "OriginHeader": { "name": "Origin", "in": "header", "required": true, "schema": { "type": "string", "format": "uri" } },
+      "CsrfHeader": { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } },
+      "IdempotencyHeader": { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 8, "maxLength": 200, "pattern": "^[\\x21-\\x7e]+$" } }
+    },
+    "responses": {
+      "ValidationError": { "description": "Request validation failed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "VALIDATION_ERROR", "message": "The conversation request is invalid.", "details": [{ "field": "title", "message": "Enter a conversation name." }] } } } } },
+      "Unauthenticated": { "description": "No valid local session was supplied.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "SESSION_UNAUTHENTICATED", "message": "A valid local session is required." } } } } },
+      "MutationForbidden": { "description": "Origin or CSRF verification failed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "examples": { "origin": { "value": { "data": null, "error": { "code": "ORIGIN_FORBIDDEN", "message": "The request origin is not allowed." } } }, "csrf": { "value": { "data": null, "error": { "code": "CSRF_INVALID", "message": "The request could not be verified." } } } } } } },
+      "ProjectNotFound": { "description": "The project is not available to this owner.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "PROJECT_NOT_FOUND", "message": "Project not found." } } } } },
+      "ConversationNotFound": { "description": "The conversation is not available in the supplied project scope.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "CONVERSATION_NOT_FOUND", "message": "Conversation not found." } } } } },
+      "MutationConflict": { "description": "The project is archived or the idempotency key was reused with different content.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "examples": { "archived": { "value": { "data": null, "error": { "code": "PROJECT_ARCHIVED", "message": "This project is archived and read-only." } } }, "reused": { "value": { "data": null, "error": { "code": "IDEMPOTENCY_KEY_REUSED", "message": "This retry key was already used for different content." } } } } } } },
+      "WorkspaceUnavailable": { "description": "The authoritative workspace boundary could not be verified safely.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "WorkspaceForbidden": { "description": "The project-relative path is protected, outside scope, or a reparse point.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "WorkspaceNotFound": { "description": "The project-relative entry was not found.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "WorkspaceUnsupported": { "description": "The entry is not an approved UTF-8 text file or is binary.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "WorkspaceLimit": { "description": "A bounded workspace inspection limit was exceeded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "InternalError": { "description": "Unexpected server failure.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "INTERNAL_ERROR", "message": "Internal server error." } } } } }
+    },
+    "schemas": {
+      "Uuid": { "type": "string", "format": "uuid" },
+      "ErrorDetail": { "type": "object", "required": ["field", "message"], "properties": { "field": { "type": "string" }, "message": { "type": "string" } }, "additionalProperties": false },
+      "ApiError": { "type": "object", "required": ["code", "message"], "properties": { "code": { "type": "string" }, "message": { "type": "string" }, "details": { "type": "array", "items": { "$ref": "#/components/schemas/ErrorDetail" } } }, "additionalProperties": false },
+      "ErrorEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "type": "null" }, "error": { "$ref": "#/components/schemas/ApiError" } }, "additionalProperties": false },
+      "Conversation": { "type": "object", "required": ["id", "projectId", "title", "status", "lastActivityAt", "createdAt", "updatedAt"], "properties": { "id": { "$ref": "#/components/schemas/Uuid" }, "projectId": { "$ref": "#/components/schemas/Uuid" }, "title": { "type": "string", "maxLength": 160 }, "status": { "type": "string", "enum": ["active", "archived"] }, "lastActivityAt": { "type": "string", "format": "date-time" }, "createdAt": { "type": "string", "format": "date-time" }, "updatedAt": { "type": "string", "format": "date-time" } }, "additionalProperties": false },
+      "Message": { "type": "object", "required": ["id", "conversationId", "role", "sequence", "content", "createdAt"], "properties": { "id": { "$ref": "#/components/schemas/Uuid" }, "conversationId": { "$ref": "#/components/schemas/Uuid" }, "role": { "type": "string", "enum": ["user", "assistant", "system", "tool"] }, "sequence": { "type": "integer", "minimum": 1 }, "content": { "type": "string", "maxLength": 20000 }, "createdAt": { "type": "string", "format": "date-time" } }, "additionalProperties": false },
+      "CreateConversationRequest": { "type": "object", "required": ["title"], "properties": { "title": { "type": "string", "minLength": 1, "maxLength": 160, "description": "Trimmed non-whitespace title without control characters." } }, "additionalProperties": false },
+      "CreateMessageRequest": { "type": "object", "required": ["content"], "properties": { "content": { "type": "string", "minLength": 1, "maxLength": 20000, "description": "Non-whitespace plain text; line breaks are preserved." } }, "additionalProperties": false },
+      "ConversationList": { "type": "object", "required": ["conversations", "nextCursor"], "properties": { "conversations": { "type": "array", "items": { "$ref": "#/components/schemas/Conversation" } }, "nextCursor": { "type": "string", "nullable": true } }, "additionalProperties": false },
+      "ConversationHistory": { "type": "object", "required": ["conversation", "messages", "nextBeforeSequence"], "properties": { "conversation": { "$ref": "#/components/schemas/Conversation" }, "messages": { "type": "array", "items": { "$ref": "#/components/schemas/Message" } }, "nextBeforeSequence": { "type": "integer", "minimum": 1, "nullable": true } }, "additionalProperties": false },
+      "ConversationEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/Conversation" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "MessageEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/Message" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "ConversationListEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/ConversationList" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "ConversationHistoryEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/ConversationHistory" }, "error": { "type": "null" } }, "additionalProperties": false }
+      ,"WorkspaceEntry": { "type": "object", "required": ["path", "name", "type"], "properties": { "path": { "type": "string" }, "name": { "type": "string" }, "type": { "type": "string", "enum": ["file", "directory"] }, "sizeBytes": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
+      "WorkspaceList": { "type": "object", "required": ["directory", "entries", "truncated"], "properties": { "directory": { "type": "string" }, "entries": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceEntry" } }, "truncated": { "type": "boolean" } }, "additionalProperties": false },
+      "WorkspaceTreeNode": { "allOf": [{ "$ref": "#/components/schemas/WorkspaceEntry" }, { "type": "object", "properties": { "children": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceTreeNode" } } }, "additionalProperties": false }] },
+      "WorkspaceTree": { "type": "object", "required": ["directory", "depth", "entries", "truncated"], "properties": { "directory": { "type": "string" }, "depth": { "type": "integer", "minimum": 0 }, "entries": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceTreeNode" } }, "truncated": { "type": "boolean" } }, "additionalProperties": false },
+      "WorkspaceRead": { "type": "object", "required": ["path", "content", "encoding", "sizeBytes", "lineCount", "truncated"], "properties": { "path": { "type": "string" }, "content": { "type": "string" }, "encoding": { "type": "string", "enum": ["utf-8"] }, "sizeBytes": { "type": "integer", "minimum": 0 }, "lineCount": { "type": "integer", "minimum": 0 }, "truncated": { "type": "boolean" } }, "additionalProperties": false },
+      "WorkspaceSearchMatch": { "type": "object", "required": ["path", "line", "column", "text"], "properties": { "path": { "type": "string" }, "line": { "type": "integer", "minimum": 1 }, "column": { "type": "integer", "minimum": 1 }, "text": { "type": "string" } }, "additionalProperties": false },
+      "WorkspaceSearch": { "type": "object", "required": ["directory", "query", "matches", "filesScanned", "truncated"], "properties": { "directory": { "type": "string" }, "query": { "type": "string" }, "matches": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceSearchMatch" } }, "filesScanned": { "type": "integer", "minimum": 0 }, "truncated": { "type": "boolean" } }, "additionalProperties": false },
+      "WorkspaceListEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/WorkspaceList" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "WorkspaceTreeEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/WorkspaceTree" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "WorkspaceReadEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/WorkspaceRead" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "WorkspaceSearchEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/WorkspaceSearch" }, "error": { "type": "null" } }, "additionalProperties": false }
+    }
+  }
+}

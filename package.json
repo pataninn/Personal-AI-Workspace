@@ -1,0 +1,17 @@
+{
+  "name": "personal-ai-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.8.0",
+  "engines": {
+    "node": ">=22.20.0 <23"
+  },
+  "scripts": {
+    "build": "pnpm --recursive --if-present build",
+    "test": "pnpm --recursive --if-present test",
+    "typecheck": "pnpm --recursive --if-present typecheck",
+    "test:integration": "pnpm --filter personal-ai-workspace-backend test:integration",
+    "test:boundaries": "node --test scripts/compose-boundary-check.test.mjs",
+    "compose:config": "docker compose config"
+  }
+}

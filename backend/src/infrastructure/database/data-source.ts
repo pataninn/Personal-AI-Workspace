@@ -1,0 +1,21 @@
+import 'reflect-metadata';
+
+import { DataSource } from 'typeorm';
+
+import type { DatabaseConfig } from '@/infrastructure/config/database-config';
+import { CreateApplicationMetadata1710000000000 } from '@/infrastructure/database/migrations/1710000000000-create-application-metadata';
+import { CreateUsersAndSessions1710000001000 } from '@/infrastructure/database/migrations/1710000001000-create-users-and-sessions';
+import { CreateProjects1710000002000 } from '@/infrastructure/database/migrations/1710000002000-create-projects';
+import { CreateConversationsAndMessages1710000003000 } from '@/infrastructure/database/migrations/1710000003000-create-conversations-and-messages';
+
+export function createDataSource(config: DatabaseConfig): DataSource {
+  return new DataSource({
+    type: 'postgres',
+    url: config.url,
+    synchronize: false,
+    migrationsRun: false,
+    migrations: [CreateApplicationMetadata1710000000000, CreateUsersAndSessions1710000001000, CreateProjects1710000002000, CreateConversationsAndMessages1710000003000],
+    entities: [],
+    logging: false
+  });
+}
