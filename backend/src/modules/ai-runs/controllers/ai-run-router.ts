@@ -166,6 +166,13 @@ function serializeSnapshot(run: AiRun): Record<string, unknown> {
     cleanup: run.cleanup,
     providerTransmission: run.providerTransmission,
     stagingItemCount: run.stagingItemCount,
+    ...(run.assistantComplete !== undefined || run.assistantContentLength !== undefined ? {
+      assistant: {
+        ...(run.assistantMessageId ? { messageId: run.assistantMessageId } : {}),
+        complete: run.assistantComplete ?? false,
+        contentLength: run.assistantContentLength ?? 0
+      }
+    } : {}),
     ...(run.runtimeKind && run.sandboxReady ? { runtime: { kind: run.runtimeKind, sandboxReady: true } } : {})
   };
 }

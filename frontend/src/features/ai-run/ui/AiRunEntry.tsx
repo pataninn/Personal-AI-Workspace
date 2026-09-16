@@ -9,12 +9,14 @@ import {
   type AiRunSnapshot,
   type EgressManifest
 } from '@/entities/ai-run';
+import type { ConversationHistoryResponse } from '@/entities/conversation';
 import { selectCsrfToken } from '@/entities/user-session';
 import { ApiClientError } from '@/shared/api';
 import { Alert, Button } from '@/shared/ui';
 import { createIdempotencyKey } from '@/shared/lib/idempotency-key';
 
 import { ProviderConsentDialog } from '@/features/ai-run/ui/ProviderConsentDialog';
+import { AiRunTimeline } from '@/features/ai-run/ui/AiRunTimeline';
 import { CommandExecutionSurface } from '@/features/ai-run/ui/CommandExecutionSurface';
 import { RunStatusCard, type RunStatusState } from '@/features/ai-run/ui/RunStatusCard';
 
@@ -24,13 +26,14 @@ interface AiRunEntryProps {
   readonly request: string;
   readonly disabled: boolean;
   readonly archivedDescriptionId?: string;
+  readonly onConversationReconciled?: (history: ConversationHistoryResponse) => void;
 }
 
 const GENERIC_DISCLOSURE_ERROR = 'We could not prepare the provider disclosure. Keep your request and try again.';
 const AMBIGUOUS_DECISION_ERROR = 'The decision outcome could not be confirmed. Refresh the run status before deciding again.';
 const STALE_DISCLOSURE_ERROR = 'This disclosure is no longer current. Review the updated scope before approving.';
 
-export function AiRunEntry({ projectId, conversationId, request, disabled, archivedDescriptionId }: AiRunEntryProps): React.JSX.Element {
+export function AiRunEntry({ projectId, conversationId, request, disabled, archivedDescriptionId, onConversationReconciled }: AiRunEntryProps): React.JSX.Element {
   const csrfToken = useAppSelector(selectCsrfToken);
   const [intentLoading, setIntentLoading] = useState(false);
   const [intentError, setIntentError] = useState<string | null>(null);
@@ -245,7 +248,8 @@ export function AiRunEntry({ projectId, conversationId, request, disabled, archi
           {formError}
         </form>
         {runState ? <RunStatusCard state={runState} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} onRetry={retryRun} onRefresh={refreshStatus} /> : null}
-        {runState?.snapshot.status === 'ready' && runState.snapshot.runtime?.sandboxReady ? <CommandExecutionSurface run={runState.snapshot} readOnly={disabled} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} /> : null}
+        {runState && shouldRenderTimeline(runState.snapshot) ? <AiRunTimeline snapshot={runState.snapshot} projectId={projectId} conversationId={conversationId} csrfToken={csrfToken} disabled={disabled} onSnapshotChange={(snapshot) => { setRunState((current) => current ? { ...current, snapshot } : current); }} onConversationReconciled={onConversationReconciled} /> : null}
+        {runState && shouldRenderCommandSurface(runState.snapshot) && runState.snapshot.runtime?.sandboxReady ? <CommandExecutionSurface run={runState.snapshot} readOnly={disabled} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} /> : null}
       </section>
       <ProviderConsentDialog
         manifest={runState?.manifest ?? null}
@@ -263,6 +267,14 @@ export function AiRunEntry({ projectId, conversationId, request, disabled, archi
       />
     </>
   );
+}
+
+function shouldRenderTimeline(snapshot: AiRunSnapshot): boolean {
+  return snapshot.phase !== 'staging' && snapshot.decision === 'approved' && ['ready', 'queued', 'running', 'waiting_approval', 'cancel_requested', 'succeeded', 'failed', 'blocked', 'cancelled', 'review_required'].includes(snapshot.status);
+}
+
+function shouldRenderCommandSurface(snapshot: AiRunSnapshot): boolean {
+  return ['ready', 'queued', 'running', 'waiting_approval'].includes(snapshot.status);
 }
 
 function mapIntentError(error: unknown): string {

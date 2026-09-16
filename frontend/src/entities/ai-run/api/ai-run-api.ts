@@ -51,6 +51,34 @@ export function getAiRun(runId: string): Promise<AiRunSnapshot> {
   return getJson<unknown>(`${RUNS_PATH}/${encodeURIComponent(runId)}`).then((value) => normalizeAiRunSnapshot(value));
 }
 
+export function startAiRun(
+  runId: string,
+  csrfToken: string,
+  idempotencyKey: string = createIdempotencyKey()
+): Promise<AiRunSnapshot> {
+  return postJson<unknown>(
+    `${RUNS_PATH}/${encodeURIComponent(runId)}/start`,
+    {},
+    { 'X-CSRF-Token': csrfToken, 'Idempotency-Key': idempotencyKey }
+  ).then((value) => normalizeAiRunSnapshot(value));
+}
+
+export function cancelAiRun(
+  runId: string,
+  csrfToken: string,
+  idempotencyKey: string = createIdempotencyKey()
+): Promise<AiRunSnapshot> {
+  return postJson<unknown>(
+    `${RUNS_PATH}/${encodeURIComponent(runId)}/cancel`,
+    {},
+    { 'X-CSRF-Token': csrfToken, 'Idempotency-Key': idempotencyKey }
+  ).then((value) => normalizeAiRunSnapshot(value));
+}
+
+export function aiRunEventsUrl(runId: string): string {
+  return `${RUNS_PATH}/${encodeURIComponent(runId)}/events`;
+}
+
 export function getEgressManifest(runId: string): Promise<EgressManifest> {
   return getJson<unknown>(`${RUNS_PATH}/${encodeURIComponent(runId)}/egress-manifest`).then((value) => normalizeEgressManifest(value, runId));
 }
@@ -94,6 +122,7 @@ export function normalizeAiRunSnapshot(value: unknown): AiRunSnapshot {
     throw invalidResponse();
   }
   const runtime = normalizeRuntime(record.runtime, record.runtimeKind, record.sandboxReady);
+  const assistant = normalizeAssistant(record.assistant);
   return {
     runId,
     projectId,
@@ -106,7 +135,8 @@ export function normalizeAiRunSnapshot(value: unknown): AiRunSnapshot {
     cleanup: readCleanup(record.cleanup),
     providerTransmission: readProviderTransmission(record.providerTransmission),
     stagingItemCount: readNonNegativeNumber(record.stagingItemCount),
-    ...(runtime ? { runtime } : {})
+    ...(runtime ? { runtime } : {}),
+    ...(assistant ? { assistant } : {})
   };
 }
 
@@ -249,11 +279,11 @@ function normalizeCategories(value: unknown, hasFiles: boolean): readonly string
 }
 
 function readStatus(value: unknown): AiRunStatus | undefined {
-  return value === 'pending_approval' || value === 'rejected' || value === 'staging' || value === 'ready' || value === 'failed' || value === 'review_required' ? value : undefined;
+  return value === 'pending_approval' || value === 'rejected' || value === 'staging' || value === 'ready' || value === 'queued' || value === 'running' || value === 'waiting_approval' || value === 'succeeded' || value === 'failed' || value === 'cancel_requested' || value === 'cancelled' || value === 'blocked' || value === 'review_required' ? value : undefined;
 }
 
 function readPhase(value: unknown): AiRunPhase | undefined {
-  return value === 'manifest' || value === 'decision' || value === 'staging' || value === 'runtime' || value === 'review' ? value : undefined;
+  return value === 'manifest' || value === 'decision' || value === 'staging' || value === 'runtime' || value === 'inference' || value === 'terminal' || value === 'review' ? value : undefined;
 }
 
 function readDecision(value: unknown): EgressDecision | undefined {
@@ -273,6 +303,17 @@ function normalizeRuntime(value: unknown, runtimeKind: unknown, sandboxReady: un
   const kind = record?.kind ?? runtimeKind;
   const ready = record?.sandboxReady ?? sandboxReady;
   return kind === 'fake' && ready === true ? { kind: 'fake', sandboxReady: true } : undefined;
+}
+
+function normalizeAssistant(value: unknown): AiRunSnapshot['assistant'] | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const contentLength = readNonNegativeNumber(record.contentLength);
+  const complete = record.complete === true;
+  const messageId = readString(record.messageId);
+  return { ...(messageId ? { messageId } : {}), complete, contentLength };
 }
 
 function invalidResponse(): ApiClientError {

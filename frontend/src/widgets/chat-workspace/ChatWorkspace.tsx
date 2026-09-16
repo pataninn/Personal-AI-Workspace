@@ -158,6 +158,14 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
     setConversations((current) => current.map((candidate) => candidate.id === conversationId ? { ...candidate, lastActivityAt: message.createdAt, updatedAt: message.createdAt } : candidate));
   }
 
+  function handleRunConversationReconciled(result: ConversationHistoryResponse): void {
+    setHistory((current) => current ? mergeReconciledHistory(current, result) : result);
+    const lastMessage = result.messages.at(-1);
+    if (lastMessage) {
+      setConversations((current) => current.map((candidate) => candidate.id === conversationId ? { ...candidate, lastActivityAt: lastMessage.createdAt, updatedAt: lastMessage.createdAt } : candidate));
+    }
+  }
+
   return (
     <section className="conversation-workspace" data-testid="conversation-workspace">
       <div className="conversation-project-context" data-testid="conversation-project-context">
@@ -192,6 +200,7 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
           onRetry={retryHistory}
           onLoadOlder={loadOlderHistory}
           onSaved={handleSaved}
+          onRunConversationReconciled={handleRunConversationReconciled}
         />
       </div>
     </section>
@@ -243,6 +252,7 @@ interface ConversationPaneProps {
   readonly onRetry: () => void;
   readonly onLoadOlder: () => void;
   readonly onSaved: (message: MessageSnapshot) => void;
+  readonly onRunConversationReconciled: (history: ConversationHistoryResponse) => void;
 }
 
 function ConversationPane(props: ConversationPaneProps): React.JSX.Element {
@@ -293,6 +303,7 @@ function ConversationPane(props: ConversationPaneProps): React.JSX.Element {
             request={request}
             disabled={props.disabled}
             archivedDescriptionId={props.archivedDescriptionId}
+            onConversationReconciled={props.onRunConversationReconciled}
           />
         )}
         onSaved={props.onSaved}
@@ -320,6 +331,14 @@ function historyErrorDetails(error: unknown): HistoryError {
 
 function mergeHistoryPages(current: ConversationHistoryResponse, older: ConversationHistoryResponse): ConversationHistoryResponse {
   return { ...current, messages: mergeMessages(current.messages, older.messages), nextBeforeSequence: older.nextBeforeSequence };
+}
+
+function mergeReconciledHistory(current: ConversationHistoryResponse, authoritative: ConversationHistoryResponse): ConversationHistoryResponse {
+  return {
+    ...authoritative,
+    messages: mergeMessages(current.messages, authoritative.messages),
+    nextBeforeSequence: authoritative.nextBeforeSequence ?? current.nextBeforeSequence
+  };
 }
 
 function mergeMessages(current: readonly MessageSnapshot[], incoming: readonly MessageSnapshot[]): readonly MessageSnapshot[] {

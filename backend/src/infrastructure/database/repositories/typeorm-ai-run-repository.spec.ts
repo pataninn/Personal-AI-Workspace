@@ -104,4 +104,27 @@ describe('TypeOrmAiRunRepository', () => {
     expect(queryRunner.rollbackTransaction).not.toHaveBeenCalled();
     expect(queryRunner.release).toHaveBeenCalledTimes(1);
   });
+
+  it('transitions waiting approval back to running', async () => {
+    const waiting = row({ status: 'waiting_approval', phase: 'inference' });
+    const running = row({ status: 'running', phase: 'inference', safe_message: 'Assistant is working.' });
+    const query = jest.fn()
+      .mockResolvedValueOnce([waiting])
+      .mockResolvedValueOnce([running]);
+    const queryRunner = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      startTransaction: jest.fn().mockResolvedValue(undefined),
+      query,
+      commitTransaction: jest.fn().mockResolvedValue(undefined),
+      rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue(undefined)
+    } as unknown as QueryRunner;
+    const dataSource = { createQueryRunner: jest.fn().mockReturnValue(queryRunner) } as unknown as DataSource;
+    const repository = new TypeOrmAiRunRepository(dataSource);
+
+    const result = await repository.markRunning(OWNER_ID, RUN_ID);
+
+    expect(result?.status).toBe('running');
+    expect(query.mock.calls[1]?.[0]).toContain("'queued', 'waiting_approval'");
+  });
 });

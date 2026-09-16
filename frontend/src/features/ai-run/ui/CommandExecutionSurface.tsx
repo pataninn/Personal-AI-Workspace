@@ -21,7 +21,7 @@ interface CommandExecutionSurfaceProps {
 export function CommandExecutionSurface({ run, conversationHref, readOnly = false }: CommandExecutionSurfaceProps): React.JSX.Element {
   const csrfToken = useAppSelector(selectCsrfToken);
   const runtimeKind = run.runtime?.kind;
-  const commands = useSandboxCommands({ enabled: run.status === 'ready' && Boolean(run.runtime?.sandboxReady), runId: run.runId, csrfToken });
+  const commands = useSandboxCommands({ enabled: ['ready', 'queued', 'running', 'waiting_approval'].includes(run.status) && Boolean(run.runtime?.sandboxReady), runId: run.runId, csrfToken });
   const canMutate = Boolean(csrfToken) && !readOnly;
   return (
     <section className="command-execution-surface" data-testid="command-execution-surface" aria-labelledby="command-surface-heading">

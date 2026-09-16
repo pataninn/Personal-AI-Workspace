@@ -22,6 +22,7 @@ import { sendError } from '@/shared/http/response';
 import { AiRunDomainError } from '@/modules/ai-runs/domain/ai-run-errors';
 import { createAiRunRouter, type AiRunRouterDependencies } from '@/modules/ai-runs';
 import { createSandboxCommandRouter, type SandboxCommandRouterDependencies } from '@/modules/ai-runs/controllers/sandbox-command-router';
+import { createAiRunChatRouter, type AiRunChatRouterDependencies } from '@/modules/ai-runs/controllers/ai-run-chat-router';
 import { SandboxCommandDomainError } from '@/modules/ai-runs/domain/command-errors';
 
 export interface CreateAppOptions {
@@ -35,6 +36,7 @@ export interface CreateAppOptions {
   readonly workspace?: WorkspaceRouterDependencies;
   readonly aiRuns?: AiRunRouterDependencies;
   readonly sandboxCommands?: SandboxCommandRouterDependencies;
+  readonly aiRunChat?: AiRunChatRouterDependencies;
 }
 
 const requestIdMiddleware: RequestHandler = (request, response, next) => {
@@ -164,6 +166,9 @@ export function createApp(options: CreateAppOptions): Express {
   }
   if (options.sandboxCommands) {
     app.use('/api/v1', createSandboxCommandRouter(options.sandboxCommands));
+  }
+  if (options.aiRunChat) {
+    app.use('/api/v1', createAiRunChatRouter(options.aiRunChat));
   }
 
   if (options.staticDirectory && existsSync(options.staticDirectory)) {

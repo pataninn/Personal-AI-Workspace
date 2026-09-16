@@ -74,4 +74,22 @@ describe('TypeOrmConversationRepository sequencing locks', () => {
     expect(query.mock.calls[4]?.[0]).toContain('COALESCE(MAX');
     expect(query.mock.calls[4]?.[0]).not.toContain('FOR UPDATE');
   });
+
+  it('uses the run-scoped idempotency key even when the request text repeats', async () => {
+    const { dataSource, queryRunner, query } = queryRunnerFixture();
+    const repository = new TypeOrmConversationRepository(dataSource);
+
+    const result = await repository.addRunUserMessage({
+      ownerId: OWNER_ID,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      content: 'second message',
+      idempotencyKey: 'run-user-run-2',
+      requestFingerprint: JSON.stringify({ runId: 'run-2', content: 'second message' })
+    });
+
+    expect(result.resource.id).toBe(messageRow.id);
+    expect(query.mock.calls.some(([sql, params]) => String(sql).includes('run-user-run-2') || (Array.isArray(params) && params.includes('run-user-run-2')))).toBe(true);
+    expect(queryRunner.startTransaction).toHaveBeenCalledTimes(1);
+  });
 });

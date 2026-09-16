@@ -1,6 +1,6 @@
-export type AiRunStatus = 'pending_approval' | 'rejected' | 'staging' | 'ready' | 'failed' | 'review_required';
+export type AiRunStatus = 'pending_approval' | 'rejected' | 'staging' | 'ready' | 'queued' | 'running' | 'waiting_approval' | 'succeeded' | 'failed' | 'cancel_requested' | 'cancelled' | 'blocked' | 'review_required';
 
-export type AiRunPhase = 'manifest' | 'decision' | 'staging' | 'runtime' | 'review';
+export type AiRunPhase = 'manifest' | 'decision' | 'staging' | 'runtime' | 'inference' | 'terminal' | 'review';
 
 export type EgressDecision = 'pending' | 'approved' | 'rejected';
 
@@ -40,6 +40,11 @@ export interface AiRunSnapshot {
   readonly providerTransmission: ProviderTransmissionStatus;
   readonly stagingItemCount: number;
   readonly runtime?: { readonly kind: 'fake'; readonly sandboxReady: true };
+  readonly assistant?: {
+    readonly messageId?: string;
+    readonly complete: boolean;
+    readonly contentLength: number;
+  };
 }
 
 export interface AiRunIntent extends AiRunSnapshot {

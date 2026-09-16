@@ -7,6 +7,10 @@ import type {
   RuntimeCommandInput,
   RuntimeCommandProposalInput,
   RuntimeCreateInput,
+  RuntimeInferenceEvent,
+  RuntimeRunCancellationInput,
+  RuntimeRunCancellationResult,
+  RuntimeRunInput,
   RuntimeReadyResult
 } from '@/modules/ai-runs/repositories/agent-runtime';
 
@@ -15,15 +19,27 @@ export interface FakeRuntimeCommandOptions {
   readonly nextResult?: CommandResult;
 }
 
+export interface FakeRuntimeRunOptions {
+  readonly response?: string;
+  readonly deltaSize?: number;
+  readonly delayMs?: number;
+  readonly events?: readonly RuntimeInferenceEvent[];
+  readonly cancelOutcome?: RuntimeRunCancellationResult['outcome'];
+}
+
 export class FakeAgentRuntime implements IAgentRuntime {
   public readonly availabilityChecks: string[] = [];
   public readonly createdRuns: RuntimeCreateInput[] = [];
   public readonly proposedCommands: RuntimeCommandProposalInput[] = [];
   public readonly executedCommands: RuntimeCommandInput[] = [];
   public readonly cancelledCommands: RuntimeCommandCancellationInput[] = [];
+  public readonly startedRuns: RuntimeRunInput[] = [];
+  public readonly cancelledRuns: RuntimeRunCancellationInput[] = [];
   public readonly destroyedRuns: string[] = [];
   public commandOptions: FakeRuntimeCommandOptions = {};
+  public runOptions: FakeRuntimeRunOptions = {};
   private readonly cancelled = new Set<string>();
+  private readonly cancelledRunsSet = new Set<string>();
 
   public async checkAvailability(): Promise<void> {
     this.availabilityChecks.push('checked');
@@ -32,6 +48,45 @@ export class FakeAgentRuntime implements IAgentRuntime {
   public async create(input: RuntimeCreateInput): Promise<RuntimeReadyResult> {
     this.createdRuns.push(input);
     return { kind: 'fake', sandboxReady: true };
+  }
+
+  public async *startRun(input: RuntimeRunInput): AsyncIterable<RuntimeInferenceEvent> {
+    this.startedRuns.push(input);
+    const configured = this.runOptions.events;
+    if (configured) {
+      for (const event of configured) {
+        if (this.cancelledRunsSet.has(input.runId)) {
+          yield { type: 'cancelled' };
+          return;
+        }
+        await wait(this.runOptions.delayMs ?? 0);
+        yield event;
+      }
+      return;
+    }
+    yield { type: 'started' };
+    const response = this.runOptions.response ?? `Fake response for: ${input.request}`;
+    const deltaSize = Math.max(1, this.runOptions.deltaSize ?? 32);
+    for (let offset = 0; offset < response.length; offset += deltaSize) {
+      if (this.cancelledRunsSet.has(input.runId)) {
+        yield { type: 'cancelled' };
+        return;
+      }
+      await wait(this.runOptions.delayMs ?? 0);
+      yield { type: 'assistant.delta', text: response.slice(offset, offset + deltaSize) };
+    }
+    if (this.cancelledRunsSet.has(input.runId)) {
+      yield { type: 'cancelled' };
+      return;
+    }
+    yield { type: 'assistant.message.completed', text: response };
+    yield { type: 'completed', text: response };
+  }
+
+  public async cancelRun(input: RuntimeRunCancellationInput): Promise<RuntimeRunCancellationResult> {
+    this.cancelledRunsSet.add(input.runId);
+    this.cancelledRuns.push(input);
+    return { outcome: this.runOptions.cancelOutcome ?? 'confirmed' };
   }
 
   public async proposeCommand(input: RuntimeCommandProposalInput): Promise<void> {

@@ -75,7 +75,7 @@ export class CreateAiRunUseCase {
       model: this.model
     });
     const requestFingerprint = hashText(JSON.stringify({ conversationId: input.conversationId, request, relativePaths, includeRecentMessages: input.includeRecentMessages }));
-    return this.aiRunRepository.create({
+    const created = await this.aiRunRepository.create({
       ownerId: input.ownerId,
       projectId: input.projectId,
       conversationId: input.conversationId,
@@ -86,6 +86,20 @@ export class CreateAiRunUseCase {
       idempotencyKey,
       requestFingerprint
     });
+    if (this.conversationRepository.addRunUserMessage && !created.resource.requestMessageId) {
+      const message = await this.conversationRepository.addRunUserMessage({
+        ownerId: input.ownerId,
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        content: request,
+        idempotencyKey: `run-user-${created.resource.id}`,
+        requestFingerprint: hashText(JSON.stringify({ runId: created.resource.id, request }))
+      });
+      const withMessage: AiRun = { ...created.resource, requestMessageId: message.resource.id, updatedAt: new Date() };
+      await this.aiRunRepository.save(withMessage);
+      return { resource: withMessage, replayed: false };
+    }
+    return created;
   }
 }
 
@@ -194,6 +208,7 @@ export class DecideEgressUseCase {
         status: 'ready',
         phase: 'runtime',
         stagingItemCount: staged.itemCount,
+        runtimeReference: staged.stagingReference,
         runtimeKind: runtime.kind,
         sandboxReady: runtime.sandboxReady,
         safeMessage: 'Private run environment ready. Your approved context is isolated for this run. The assistant can now begin working.',
@@ -285,6 +300,13 @@ export function toSnapshot(run: AiRun): AiRunSnapshot {
     cleanup: run.cleanup,
     providerTransmission: run.providerTransmission,
     stagingItemCount: run.stagingItemCount,
+    ...(run.assistantComplete !== undefined || run.assistantContentLength !== undefined ? {
+      assistant: {
+        ...(run.assistantMessageId ? { messageId: run.assistantMessageId } : {}),
+        complete: run.assistantComplete ?? false,
+        contentLength: run.assistantContentLength ?? 0
+      }
+    } : {}),
     ...(run.runtimeKind && run.sandboxReady ? { runtime: { kind: run.runtimeKind, sandboxReady: true } } : {})
   };
 }

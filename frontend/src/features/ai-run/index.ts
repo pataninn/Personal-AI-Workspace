@@ -1,4 +1,5 @@
 export { AiRunEntry } from '@/features/ai-run/ui/AiRunEntry';
+export { AiRunTimeline } from '@/features/ai-run/ui/AiRunTimeline';
 export { CommandExecutionSurface } from '@/features/ai-run/ui/CommandExecutionSurface';
 export { CommandOutputPanel } from '@/features/ai-run/ui/CommandOutputPanel';
 export { CommandProposalCard } from '@/features/ai-run/ui/CommandProposalCard';

@@ -12,6 +12,36 @@ export interface RuntimeReadyResult {
   readonly sandboxReady: true;
 }
 
+export interface RuntimeRunInput {
+  readonly runId: string;
+  readonly request: string;
+  readonly manifest: EgressManifest;
+  readonly stagedReference?: string;
+}
+
+export type RuntimeInferenceEvent =
+  | { readonly type: 'started' }
+  | { readonly type: 'assistant.delta'; readonly text: string }
+  | { readonly type: 'assistant.message.completed'; readonly text: string }
+  | { readonly type: 'tool.proposed'; readonly proposal: RuntimeCommandProposalInput }
+  | { readonly type: 'approval.required'; readonly commandId: string }
+  | { readonly type: 'tool.started'; readonly commandId: string }
+  | { readonly type: 'tool.completed'; readonly commandId: string; readonly status: string }
+  | { readonly type: 'tool.failed'; readonly commandId: string; readonly status: string }
+  | { readonly type: 'completed'; readonly text: string }
+  | { readonly type: 'failed'; readonly message: string }
+  | { readonly type: 'blocked'; readonly message: string }
+  | { readonly type: 'cancelled' }
+  | { readonly type: 'needs_manual_review'; readonly message: string };
+
+export interface RuntimeRunCancellationInput {
+  readonly runId: string;
+}
+
+export interface RuntimeRunCancellationResult {
+  readonly outcome: 'confirmed' | 'unknown';
+}
+
 export interface RuntimeCommandProposalInput {
   readonly runId: string;
   readonly commandId: string;
@@ -35,5 +65,7 @@ export interface IAgentRuntime {
   readonly proposeCommand?: (input: RuntimeCommandProposalInput) => Promise<void>;
   readonly executeCommand?: (input: RuntimeCommandInput) => Promise<CommandResult>;
   readonly cancelCommand?: (input: RuntimeCommandCancellationInput) => Promise<void>;
+  readonly startRun?: (input: RuntimeRunInput) => AsyncIterable<RuntimeInferenceEvent>;
+  readonly cancelRun?: (input: RuntimeRunCancellationInput) => Promise<RuntimeRunCancellationResult>;
   destroy(runId: string): Promise<void>;
 }

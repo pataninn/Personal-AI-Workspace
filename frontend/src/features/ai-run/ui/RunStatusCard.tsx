@@ -30,6 +30,10 @@ export function RunStatusCard({ state, conversationHref, onRetry, onRefresh }: R
     return null;
   }
 
+  if (snapshot.status === 'queued' || snapshot.status === 'running' || snapshot.status === 'waiting_approval' || snapshot.status === 'cancel_requested' || snapshot.status === 'succeeded' || ((snapshot.status === 'failed' || snapshot.status === 'blocked' || snapshot.status === 'cancelled' || snapshot.status === 'review_required') && snapshot.phase !== 'staging')) {
+    return null;
+  }
+
   if (snapshot.status === 'staging') {
     return (
       <div data-testid="ai-run-status-card">

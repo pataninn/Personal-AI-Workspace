@@ -43,4 +43,6 @@ export interface IConversationRepository {
   findWithMessagesForOwner(input: FindConversationInput): Promise<MessagePage | null>;
   create(input: CreateConversationRecord): Promise<PersistedResource<Conversation>>;
   addUserMessage(input: AddMessageRecord): Promise<PersistedResource<Message>>;
+  readonly addAssistantMessage?: (input: AddMessageRecord) => Promise<PersistedResource<Message>>;
+  readonly addRunUserMessage?: (input: AddMessageRecord) => Promise<PersistedResource<Message>>;
 }

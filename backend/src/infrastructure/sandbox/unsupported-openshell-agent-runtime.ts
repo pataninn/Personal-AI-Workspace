@@ -5,6 +5,10 @@ import type {
   RuntimeCommandInput,
   RuntimeCommandProposalInput,
   RuntimeCreateInput,
+  RuntimeRunCancellationInput,
+  RuntimeRunCancellationResult,
+  RuntimeRunInput,
+  RuntimeInferenceEvent,
   RuntimeReadyResult
 } from '@/modules/ai-runs/repositories/agent-runtime';
 import type { CommandResult } from '@/modules/ai-runs/domain/command-types';
@@ -33,7 +37,19 @@ export class UnsupportedOpenShellAgentRuntime implements IAgentRuntime {
     throw new AiRunRuntimeUnavailableError();
   }
 
+  public startRun(_input: RuntimeRunInput): AsyncIterable<RuntimeInferenceEvent> {
+    return this.unavailableEvents();
+  }
+
+  public async cancelRun(_input: RuntimeRunCancellationInput): Promise<RuntimeRunCancellationResult> {
+    throw new AiRunRuntimeUnavailableError();
+  }
+
   public async destroy(_runId: string): Promise<void> {
+    throw new AiRunRuntimeUnavailableError();
+  }
+
+  private async *unavailableEvents(): AsyncIterable<RuntimeInferenceEvent> {
     throw new AiRunRuntimeUnavailableError();
   }
 }

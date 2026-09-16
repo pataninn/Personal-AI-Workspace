@@ -4,7 +4,8 @@ import {
   AiRunAlreadyDecidedError,
   AiRunIdempotencyReusedError,
   AiRunManifestConflictError,
-  AiRunNotFoundError
+  AiRunNotFoundError,
+  AiRunStateConflictError
 } from '@/modules/ai-runs/domain/ai-run-errors';
 import type {
   AiRun,
@@ -12,6 +13,7 @@ import type {
   DecisionResult,
   DecisionUpdate
 } from '@/modules/ai-runs/domain/ai-run-types';
+import type { CancelRunUpdate, CompleteRunUpdate, RunMutationResult, StartRunUpdate } from '@/modules/ai-runs/repositories/ai-run-repository';
 import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-repository';
 
 interface IdempotentRunRecord {
@@ -124,6 +126,173 @@ export class InMemoryAiRunRepository implements IAiRunRepository {
     this.runs.set(run.id, run);
   }
 
+  public async beginStart(input: StartRunUpdate): Promise<RunMutationResult> {
+    return this.withLock(`start:${input.runId}`, async () => {
+      const run = this.requireOwner(input.ownerId, input.runId);
+      if (run.startIdempotencyKey) {
+        if (run.startIdempotencyKey !== input.idempotencyKey || run.startFingerprint !== input.requestFingerprint) {
+          throw new AiRunStateConflictError();
+        }
+        return { resource: run, replayed: true };
+      }
+      if (run.status !== 'ready') {
+        throw new AiRunStateConflictError();
+      }
+      const updated: AiRun = {
+        ...run,
+        status: 'queued',
+        phase: 'inference',
+        startIdempotencyKey: input.idempotencyKey,
+        startFingerprint: input.requestFingerprint,
+        safeMessage: 'Starting assistant run.',
+        updatedAt: new Date()
+      };
+      this.runs.set(updated.id, updated);
+      return { resource: updated, replayed: false };
+    });
+  }
+
+  public async markRunning(ownerId: string, runId: string): Promise<AiRun | null> {
+    return this.withLock(`start:${runId}`, async () => {
+      const run = this.runs.get(runId);
+      if (!run || run.ownerId !== ownerId) {
+        return null;
+      }
+      if (run.status !== 'queued' && run.status !== 'waiting_approval') {
+        return run;
+      }
+      const updated: AiRun = { ...run, status: 'running', phase: 'inference', safeMessage: 'Assistant is working.', updatedAt: new Date() };
+      this.runs.set(runId, updated);
+      return updated;
+    });
+  }
+
+  public async markWaitingApproval(ownerId: string, runId: string, safeMessage: string): Promise<AiRun | null> {
+    return this.withLock(`start:${runId}`, async () => {
+      const run = this.runs.get(runId);
+      if (!run || run.ownerId !== ownerId) {
+        return null;
+      }
+      if (run.status !== 'running' && run.status !== 'queued') {
+        return run;
+      }
+      const updated: AiRun = { ...run, status: 'waiting_approval', phase: 'inference', safeMessage, updatedAt: new Date() };
+      this.runs.set(runId, updated);
+      return updated;
+    });
+  }
+
+  public async requestCancellation(input: CancelRunUpdate): Promise<RunMutationResult> {
+    return this.withLock(`start:${input.runId}`, async () => {
+      const run = this.requireOwner(input.ownerId, input.runId);
+      if (run.cancelIdempotencyKey) {
+        if (run.cancelIdempotencyKey !== input.idempotencyKey || run.cancelFingerprint !== input.requestFingerprint) {
+          throw new AiRunStateConflictError();
+        }
+        return { resource: run, replayed: true };
+      }
+      if (isTerminal(run.status)) {
+        return { resource: run, replayed: true };
+      }
+      if (!['ready', 'queued', 'running', 'waiting_approval'].includes(run.status)) {
+        throw new AiRunStateConflictError();
+      }
+      const immediate = run.status === 'ready' || run.status === 'queued';
+      const updated: AiRun = {
+        ...run,
+        status: immediate ? 'cancelled' : 'cancel_requested',
+        phase: 'terminal',
+        cancelIdempotencyKey: input.idempotencyKey,
+        cancelFingerprint: input.requestFingerprint,
+        cleanup: immediate ? 'complete' : run.cleanup,
+        safeMessage: immediate ? 'Run cancelled. No further assistant work will be applied.' : 'Stopping assistant run.',
+        updatedAt: new Date()
+      };
+      this.runs.set(updated.id, updated);
+      return { resource: updated, replayed: false };
+    });
+  }
+
+  public async completeRun(input: CompleteRunUpdate): Promise<AiRun | null> {
+    return this.withLock(`start:${input.runId}`, async () => {
+      const run = this.runs.get(input.runId);
+      if (!run || run.ownerId !== input.ownerId) {
+        return null;
+      }
+      if (isTerminal(run.status) || run.status === 'cancel_requested') {
+        return run;
+      }
+      if (!['queued', 'running', 'waiting_approval'].includes(run.status)) {
+        return run;
+      }
+      const text = input.assistantText ?? '';
+      const assistantFields = input.assistantText === undefined
+        ? {}
+        : { assistantComplete: input.assistantComplete ?? (input.status === 'succeeded'), assistantContentLength: text.length };
+      const updated: AiRun = {
+        ...run,
+        status: input.status,
+        phase: input.status === 'review_required' ? 'review' : 'terminal',
+        cleanup: input.cleanup ?? (input.status === 'succeeded' ? 'complete' : run.cleanup),
+        providerTransmission: input.providerTransmission ?? run.providerTransmission,
+        ...assistantFields,
+        safeMessage: input.safeMessage,
+        updatedAt: new Date()
+      };
+      this.runs.set(updated.id, updated);
+      return updated;
+    });
+  }
+
+  public async markCancelled(ownerId: string, runId: string): Promise<AiRun | null> {
+    return this.withLock(`start:${runId}`, async () => {
+      const run = this.runs.get(runId);
+      if (!run || run.ownerId !== ownerId) {
+        return null;
+      }
+      if (run.status !== 'cancel_requested') {
+        return run;
+      }
+      const updated: AiRun = { ...run, status: 'cancelled', phase: 'terminal', cleanup: 'complete', safeMessage: 'Run cancelled. No further assistant work will be applied.', updatedAt: new Date() };
+      this.runs.set(runId, updated);
+      return updated;
+    });
+  }
+
+  public async markReviewRequired(ownerId: string, runId: string, safeMessage: string): Promise<AiRun | null> {
+    return this.withLock(`start:${runId}`, async () => {
+      const run = this.runs.get(runId);
+      if (!run || run.ownerId !== ownerId) {
+        return null;
+      }
+      if (!['queued', 'running', 'waiting_approval', 'cancel_requested'].includes(run.status)) {
+        return run;
+      }
+      const updated: AiRun = { ...run, status: 'review_required', phase: 'review', cleanup: 'unknown', providerTransmission: 'unknown', safeMessage, updatedAt: new Date() };
+      this.runs.set(runId, updated);
+      return updated;
+    });
+  }
+
+  public async withRunProjection(ownerId: string, runId: string, projection: (run: AiRun) => void): Promise<boolean> {
+    return this.withLock(`start:${runId}`, async () => {
+      const run = this.runs.get(runId);
+      if (!run || run.ownerId !== ownerId || isProjectionBlocked(run.status)) {
+        return false;
+      }
+      projection(run);
+      return true;
+    });
+  }
+
+  private requireOwner(ownerId: string, runId: string): AiRun {
+    const run = this.runs.get(runId);
+    if (!run || run.ownerId !== ownerId) {
+      throw new AiRunNotFoundError();
+    }
+    return run;
+  }
+
   private async withLock<T>(key: string, action: () => Promise<T>): Promise<T> {
     const previous = this.locks.get(key) ?? Promise.resolve();
     let release: () => void = () => undefined;
@@ -147,4 +316,12 @@ export class InMemoryAiRunRepository implements IAiRunRepository {
   private createLockKey(ownerId: string, projectId: string, key: string): string {
     return `create:${this.idempotencyKey(ownerId, projectId, key)}`;
   }
+}
+
+function isTerminal(status: AiRun['status']): boolean {
+  return status === 'succeeded' || status === 'failed' || status === 'blocked' || status === 'cancelled' || status === 'review_required' || status === 'rejected';
+}
+
+function isProjectionBlocked(status: AiRun['status']): boolean {
+  return status === 'cancel_requested' || isTerminal(status);
 }

@@ -1,6 +1,19 @@
-export type AiRunStatus = 'pending_approval' | 'rejected' | 'staging' | 'ready' | 'failed' | 'review_required';
+export type AiRunStatus =
+  | 'pending_approval'
+  | 'rejected'
+  | 'staging'
+  | 'ready'
+  | 'queued'
+  | 'running'
+  | 'waiting_approval'
+  | 'succeeded'
+  | 'failed'
+  | 'cancel_requested'
+  | 'cancelled'
+  | 'blocked'
+  | 'review_required';
 
-export type AiRunPhase = 'manifest' | 'decision' | 'staging' | 'runtime' | 'review';
+export type AiRunPhase = 'manifest' | 'decision' | 'staging' | 'runtime' | 'inference' | 'terminal' | 'review';
 
 export type EgressDecision = 'pending' | 'approved' | 'rejected';
 
@@ -56,6 +69,15 @@ export interface AiRun {
   readonly stagingItemCount: number;
   readonly runtimeKind?: 'fake';
   readonly sandboxReady: boolean;
+  readonly runtimeReference?: string;
+  readonly requestMessageId?: string;
+  readonly assistantMessageId?: string;
+  readonly assistantComplete?: boolean;
+  readonly assistantContentLength?: number;
+  readonly startIdempotencyKey?: string;
+  readonly startFingerprint?: string;
+  readonly cancelIdempotencyKey?: string;
+  readonly cancelFingerprint?: string;
   readonly decisionIdempotencyKey?: string;
   readonly decisionFingerprint?: string;
   readonly safeMessage: string;
@@ -107,4 +129,9 @@ export interface AiRunSnapshot {
   readonly providerTransmission: ProviderTransmissionStatus;
   readonly stagingItemCount: number;
   readonly runtime?: { readonly kind: 'fake'; readonly sandboxReady: true };
+  readonly assistant?: {
+    readonly messageId?: string;
+    readonly complete: boolean;
+    readonly contentLength: number;
+  };
 }

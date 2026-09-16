@@ -334,7 +334,7 @@ export function toCommandSnapshot(command: SandboxCommand): CommandSnapshot {
 }
 
 function assertReadyRun(run: { readonly status: string; readonly decision: string; readonly sandboxReady: boolean }): void {
-  if (run.status !== 'ready' || run.decision !== 'approved' || !run.sandboxReady) {
+  if (!['ready', 'queued', 'running', 'waiting_approval'].includes(run.status) || run.decision !== 'approved' || !run.sandboxReady) {
     throw new SandboxCommandRunNotReadyError();
   }
 }

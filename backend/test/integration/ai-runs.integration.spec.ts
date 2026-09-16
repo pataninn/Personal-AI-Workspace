@@ -9,12 +9,13 @@ import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state
 import type { WorkspaceReadResult } from '@/modules/files/domain/workspace-types';
 import type { IWorkspaceGateway } from '@/modules/files/repositories/workspace-gateway';
 import type { Conversation, Message, MessagePage } from '@/modules/conversations/domain/conversation-types';
-import type { FindConversationInput, IConversationRepository } from '@/modules/conversations/repositories/conversation-repository';
+import type { AddMessageRecord, FindConversationInput, IConversationRepository } from '@/modules/conversations/repositories/conversation-repository';
 import type { Project } from '@/modules/projects/domain/project-types';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
 import { GetReadinessUseCase } from '@/modules/health';
-import { CreateAiRunUseCase, DecideEgressUseCase, GetAiRunUseCase } from '@/modules/ai-runs';
+import { CancelAiRunUseCase, CreateAiRunUseCase, DecideEgressUseCase, GetAiRunUseCase, StartAiRunUseCase } from '@/modules/ai-runs';
+import { InMemoryRunEventPublisher } from '@/infrastructure/ai-runs/in-memory-run-event-publisher';
 import { createLogger } from '@/shared/logging/logger';
 
 const APP_ORIGIN = 'https://127.0.0.1:8443';
@@ -23,6 +24,7 @@ const PROJECT_ID = '22222222-2222-4222-8222-222222222222';
 const CONVERSATION_ID = '33333333-3333-4333-8333-333333333333';
 
 class ProjectFixture implements IProjectRepository {
+  public status: Project['status'] = 'active';
   private readonly project: Project = {
     id: PROJECT_ID,
     ownerId: OWNER_ID,
@@ -35,13 +37,14 @@ class ProjectFixture implements IProjectRepository {
     updatedAt: new Date()
   };
   public async listByOwner(): Promise<readonly Project[]> { return [this.project]; }
-  public async findByIdForOwner(): Promise<Project | null> { return this.project; }
+  public async findByIdForOwner(): Promise<Project | null> { return { ...this.project, status: this.status }; }
   public async listActiveRoots(): Promise<readonly string[]> { return ['']; }
   public async create(): Promise<Project> { return this.project; }
   public async updateStatus(): Promise<Project | null> { return this.project; }
 }
 
 class ConversationFixture implements IConversationRepository {
+  public readonly assistantMessages: Message[] = [];
   public async listByProjectForOwner(): Promise<never> { throw new Error('Not used'); }
   public async findWithMessagesForOwner(_input: FindConversationInput): Promise<MessagePage> {
     const now = new Date();
@@ -51,6 +54,11 @@ class ConversationFixture implements IConversationRepository {
   }
   public async create(): Promise<never> { throw new Error('Not used'); }
   public async addUserMessage(): Promise<never> { throw new Error('Not used'); }
+  public async addAssistantMessage(input: AddMessageRecord): Promise<{ readonly resource: Message; readonly replayed: boolean }> {
+    const message: Message = { id: `55555555-5555-4555-8555-${String(this.assistantMessages.length + 1).padStart(12, '0')}`, conversationId: input.conversationId, role: 'assistant', sequence: this.assistantMessages.length + 2, content: input.content, createdAt: new Date() };
+    this.assistantMessages.push(message);
+    return { resource: message, replayed: false };
+  }
 }
 
 class WorkspaceFixture implements IWorkspaceGateway {
@@ -65,13 +73,14 @@ class WorkspaceFixture implements IWorkspaceGateway {
   }
 }
 
-function buildApp(): { readonly app: express.Express; readonly staging: FakeStagingGateway; readonly runtime: FakeAgentRuntime; readonly workspace: WorkspaceFixture } {
+function buildApp(): { readonly app: express.Express; readonly staging: FakeStagingGateway; readonly runtime: FakeAgentRuntime; readonly workspace: WorkspaceFixture; readonly repository: InMemoryAiRunRepository; readonly conversations: ConversationFixture; readonly projects: ProjectFixture } {
   const projects = new ProjectFixture();
   const conversations = new ConversationFixture();
   const workspace = new WorkspaceFixture();
   const repository = new InMemoryAiRunRepository();
   const staging = new FakeStagingGateway();
   const runtime = new FakeAgentRuntime();
+  const runEvents = new InMemoryRunEventPublisher();
   const readiness = new InMemoryReadinessState();
   readiness.markReady();
   const getSession = { execute: jest.fn().mockResolvedValue({ sessionId: 'session', principal: { id: OWNER_ID, displayName: 'Local user' }, csrfToken: 'csrf-token', expiresAt: new Date(Date.now() + 60_000) }) } as unknown as GetSessionUseCase;
@@ -86,9 +95,18 @@ function buildApp(): { readonly app: express.Express; readonly staging: FakeStag
       decideEgress: new DecideEgressUseCase(repository, conversations, workspace, staging, runtime, '/workspace'),
       appOrigin: APP_ORIGIN,
       clearSessionCookie: () => undefined
+    },
+    aiRunChat: {
+      getSession,
+      getAiRun: new GetAiRunUseCase(repository),
+      startAiRun: new StartAiRunUseCase(repository, conversations, runtime, runEvents, undefined, projects),
+      cancelAiRun: new CancelAiRunUseCase(repository, runtime, runEvents, projects),
+      events: runEvents,
+      appOrigin: APP_ORIGIN,
+      clearSessionCookie: () => undefined
     }
   });
-  return { app, staging, runtime, workspace };
+  return { app, staging, runtime, workspace, repository, conversations, projects };
 }
 
 describe('AI runs API (integration)', () => {
@@ -209,5 +227,92 @@ describe('AI runs API (integration)', () => {
       .expect(({ body }) => expect(body.error.code).toBe('EGRESS_MANIFEST_CONFLICT'));
     expect(context.staging.staged).toHaveLength(0);
     expect(context.runtime.createdRuns).toHaveLength(0);
+  });
+
+  it('starts an approved fake run idempotently and returns a best-effort terminal SSE stream', async () => {
+    const context = buildApp();
+    const headers = { Origin: APP_ORIGIN, Cookie: '__Host-pa_session=test', 'X-CSRF-Token': 'csrf-token' };
+    const created = await request(context.app)
+      .post(`/api/v1/projects/${PROJECT_ID}/ai-runs`)
+      .set(headers)
+      .set('Idempotency-Key', 'run-intent-chat')
+      .send({ conversationId: CONVERSATION_ID, request: 'Answer from the private run', context: { relativePaths: [] } })
+      .expect(202);
+    const runId = created.body.data.run.runId as string;
+    await request(context.app)
+      .post(`/api/v1/ai-runs/${runId}/egress-decision`)
+      .set(headers)
+      .set('Idempotency-Key', 'run-decision-chat')
+      .send({ manifestHash: created.body.data.manifest.manifestHash, decision: 'approve' })
+      .expect(200);
+
+    await request(context.app)
+      .post(`/api/v1/ai-runs/${runId}/start`)
+      .set(headers)
+      .set('Idempotency-Key', 'run-start-chat')
+      .send({})
+      .expect(202)
+      .expect(({ body }) => expect(['queued', 'running', 'succeeded']).toContain(body.data.run.status));
+    await request(context.app)
+      .post(`/api/v1/ai-runs/${runId}/start`)
+      .set(headers)
+      .set('Idempotency-Key', 'run-start-chat')
+      .send({})
+      .expect((response) => expect([200, 202]).toContain(response.status));
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const run = await context.repository.findByIdForOwner(OWNER_ID, runId);
+      if (run?.status === 'succeeded') {
+        break;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    }
+    expect((await context.repository.findByIdForOwner(OWNER_ID, runId))?.status).toBe('succeeded');
+    expect(context.conversations.assistantMessages).toHaveLength(1);
+
+    const stream = await request(context.app)
+      .get(`/api/v1/ai-runs/${runId}/events`)
+      .set({ Cookie: '__Host-pa_session=test' })
+      .expect(200);
+    expect(stream.headers['content-type']).toContain('text/event-stream');
+    expect(stream.text).toContain('event: run.snapshot');
+  });
+
+  it('rejects archived-project start and cancel before mutating the run or calling the runtime', async () => {
+    const context = buildApp();
+    const headers = { Origin: APP_ORIGIN, Cookie: '__Host-pa_session=test', 'X-CSRF-Token': 'csrf-token' };
+    const created = await request(context.app)
+      .post(`/api/v1/projects/${PROJECT_ID}/ai-runs`)
+      .set(headers)
+      .set('Idempotency-Key', 'run-intent-archived')
+      .send({ conversationId: CONVERSATION_ID, request: 'Archived project request', context: { relativePaths: [] } })
+      .expect(202);
+    const runId = created.body.data.run.runId as string;
+    await request(context.app)
+      .post(`/api/v1/ai-runs/${runId}/egress-decision`)
+      .set(headers)
+      .set('Idempotency-Key', 'run-decision-archived')
+      .send({ manifestHash: created.body.data.manifest.manifestHash, decision: 'approve' })
+      .expect(200);
+
+    context.projects.status = 'archived';
+    await request(context.app)
+      .post(`/api/v1/ai-runs/${runId}/start`)
+      .set(headers)
+      .set('Idempotency-Key', 'run-start-archived')
+      .send({})
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('PROJECT_ARCHIVED'));
+    await request(context.app)
+      .post(`/api/v1/ai-runs/${runId}/cancel`)
+      .set(headers)
+      .set('Idempotency-Key', 'run-cancel-archived')
+      .send({})
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('PROJECT_ARCHIVED'));
+
+    expect((await context.repository.findByIdForOwner(OWNER_ID, runId))?.status).toBe('ready');
+    expect(context.runtime.startedRuns).toHaveLength(0);
+    expect(context.runtime.cancelledRuns).toHaveLength(0);
   });
 });

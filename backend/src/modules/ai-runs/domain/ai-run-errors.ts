@@ -76,3 +76,15 @@ export class AiRunReviewRequiredError extends AiRunDomainError {
     super('RUN_REVIEW_REQUIRED', 503, 'The run stopped, but the app could not confirm whether cleanup or provider transmission finished. Do not retry automatically; refresh the run status before trying again.');
   }
 }
+
+export class AiRunStateConflictError extends AiRunDomainError {
+  public constructor() {
+    super('AI_RUN_STATE_CONFLICT', 409, 'The AI run is not available for that operation. Refresh the run status before trying again.');
+  }
+}
+
+export class AiRunCancellationReviewRequiredError extends AiRunDomainError {
+  public constructor() {
+    super('RUN_REVIEW_REQUIRED', 503, 'The app could not confirm whether the assistant run stopped. Refresh the run status before retrying.');
+  }
+}

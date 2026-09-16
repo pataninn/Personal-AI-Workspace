@@ -25,7 +25,8 @@ import { GetReadinessUseCase } from '@/modules/health';
 import { BootstrapLocalUserUseCase, clearSessionCookie, GetSessionUseCase, LoginUseCase, LogoutUseCase } from '@/modules/auth';
 import { CreateProjectUseCase, GetProjectUseCase, ListProjectsUseCase, UpdateProjectStatusUseCase } from '@/modules/projects';
 import { AddUserMessageUseCase, CreateConversationUseCase, GetConversationUseCase, ListConversationsUseCase } from '@/modules/conversations';
-import { CancelSandboxCommandUseCase, CreateAiRunUseCase, DecideEgressUseCase, DecideSandboxCommandUseCase, GetAiRunUseCase, GetSandboxCommandUseCase, ListSandboxCommandsUseCase } from '@/modules/ai-runs';
+import { CancelAiRunUseCase, CancelSandboxCommandUseCase, CreateAiRunUseCase, DecideEgressUseCase, DecideSandboxCommandUseCase, GetAiRunUseCase, GetSandboxCommandUseCase, ListSandboxCommandsUseCase, ProposeSandboxCommandUseCase, StartAiRunUseCase } from '@/modules/ai-runs';
+import { InMemoryRunEventPublisher } from '@/infrastructure/ai-runs/in-memory-run-event-publisher';
 import { ListWorkspaceFilesUseCase, ReadWorkspaceTextUseCase, SearchWorkspaceTextUseCase, TreeWorkspaceFilesUseCase } from '@/modules/files';
 import { StartupChecksError } from '@/shared/errors/app-error';
 import { createLogger, type AppLogger } from '@/shared/logging/logger';
@@ -84,7 +85,11 @@ export async function createApplication(
     });
     const agentRuntime = config.agentRuntimeMode === 'fake' ? new FakeAgentRuntime() : new UnsupportedOpenShellAgentRuntime();
     const stagingGateway = new LocalStagingGateway({ stagingRoot: config.stagingRoot });
+    const runEvents = new InMemoryRunEventPublisher();
     const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel);
+    const proposeSandboxCommand = new ProposeSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger);
+    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, proposeSandboxCommand, projectRepository);
+    const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository);
     const passwordHasher = new BcryptPasswordHasher();
     const tokenProvider = new OpaqueTokenProvider(config.sessionSecret);
     const clock = new SystemClock();
@@ -158,6 +163,15 @@ export async function createApplication(
            getCommand: new GetSandboxCommandUseCase(aiRunRepository, commandRepository),
            decideCommand: new DecideSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger),
            cancelCommand: new CancelSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger),
+          appOrigin: config.appOrigin,
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
+        aiRunChat: {
+          getSession,
+          getAiRun: new GetAiRunUseCase(aiRunRepository),
+          startAiRun,
+          cancelAiRun,
+          events: runEvents,
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         }

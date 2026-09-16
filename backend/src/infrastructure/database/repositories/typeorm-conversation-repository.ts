@@ -206,6 +206,21 @@ export class TypeOrmConversationRepository implements IConversationRepository {
   }
 
   public async addUserMessage(input: AddMessageRecord): Promise<PersistedResource<Message>> {
+    return this.addMessage(input, 'user');
+  }
+
+  public async addAssistantMessage(input: AddMessageRecord): Promise<PersistedResource<Message>> {
+    return this.addMessage(input, 'assistant');
+  }
+
+  public async addRunUserMessage(input: AddMessageRecord): Promise<PersistedResource<Message>> {
+    // The run-scoped idempotency key is the only replay identity. Two separate
+    // runs may intentionally submit identical text and must receive distinct
+    // persisted user messages.
+    return this.addMessage(input, 'user');
+  }
+
+  private async addMessage(input: AddMessageRecord, role: 'user' | 'assistant'): Promise<PersistedResource<Message>> {
     const queryRunner = await this.startTransaction();
     try {
       await assertProjectWritable(queryRunner, input.ownerId, input.projectId);
@@ -230,9 +245,9 @@ export class TypeOrmConversationRepository implements IConversationRepository {
       const sequence = Number(sequenceRows[0]?.sequence ?? 1);
       const rows: readonly MessageRow[] = await queryRunner.query(
         `INSERT INTO "messages" ("conversation_id", "role", "sequence", "content", "content_hash", "content_length")
-         VALUES ($1, 'user', $2, $3, $4, $5)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING "id", "conversation_id", "role", "sequence", "content", "created_at"`,
-        [input.conversationId, sequence, input.content, hashContent(input.content), input.content.length]
+        [input.conversationId, role, sequence, input.content, hashContent(input.content), input.content.length]
       );
       const row = rows[0];
       if (!row) {
