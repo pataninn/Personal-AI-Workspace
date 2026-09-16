@@ -169,6 +169,31 @@ test('records rejection without staging or fake runtime readiness', async () => 
   assert.equal(body.data.manifest.preConsentNotice, 'Nothing was copied to the run staging area or sent to NVIDIA.');
 });
 
+test('reviews and applies a bounded fake proposed change set only after exact approval', async () => {
+  const { origin } = await startPreview();
+  const cookie = await signIn(origin);
+  const created = await createAiRun(origin, cookie, 'change-review-run', 'Review a proposed file change.');
+  const runId = created.body.data.run.runId;
+  const listed = await fetch(`${origin}/api/v1/ai-runs/${runId}/proposed-change-set`, { headers: { Cookie: cookie } });
+  const proposal = (await listed.json()).data;
+  assert.equal(listed.status, 200);
+  assert.equal(proposal.status, 'awaiting_approval');
+  assert.equal(proposal.fakeRuntime, true);
+  assert.equal(proposal.operations.length, 1);
+  assert.doesNotMatch(JSON.stringify(proposal), /\/workspace|NVIDIA_API_KEY|secret-value/iu);
+
+  const decision = await fetch(`${origin}/api/v1/ai-runs/${runId}/proposed-change-set/decision`, {
+    method: 'POST',
+    headers: headers(cookie, { 'Idempotency-Key': 'change-review-approve' }),
+    body: JSON.stringify({ proposalHash: proposal.proposalHash, decision: 'approve' })
+  });
+  const result = (await decision.json()).data;
+  assert.equal(decision.status, 200);
+  assert.equal(result.status, 'applied');
+  assert.equal(result.result.persisted, true);
+  assert.equal(result.result.appliedCount, 1);
+});
+
 test('exposes a fake sandbox proposal and accepts only its persisted hash decision', async () => {
   const { origin } = await startPreview();
   const cookie = await signIn(origin);

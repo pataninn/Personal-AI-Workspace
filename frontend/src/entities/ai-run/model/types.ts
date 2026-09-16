@@ -109,3 +109,79 @@ export interface SandboxCommandSnapshot {
   readonly createdAt: string;
   readonly updatedAt: string;
 }
+
+export type ProposedChangeSetStatus = 'awaiting_approval' | 'applying' | 'applied' | 'rejected' | 'stale' | 'blocked' | 'failed' | 'needs_manual_review';
+export type ProposedChangeDecision = 'pending' | 'approved' | 'rejected';
+export type ProposedChangeOperationKind = 'create' | 'edit' | 'overwrite' | 'rename' | 'delete';
+export type ProposedChangeOperationStatus = 'applied' | 'skipped' | 'failed' | 'needs_manual_review';
+export type ProposedChangeBackupStatus = 'not_required' | 'created' | 'failed' | 'unknown';
+
+export interface ProposedChangePreview {
+  readonly text: string;
+  readonly limited: boolean;
+  readonly kind: 'before' | 'after' | 'diff';
+}
+
+export interface ProposedChangeOperation {
+  readonly operationId: string;
+  readonly operation: ProposedChangeOperationKind;
+  readonly path: string;
+  readonly destinationPath?: string;
+  readonly summary: string;
+  readonly expectedSourceHash?: string;
+  readonly expectedDestinationHash?: string;
+  readonly sourcePresent: boolean;
+  readonly destinationPresent: boolean;
+  readonly backupRequired: boolean;
+  readonly sizeBytes: number;
+  readonly lineCount: number;
+  readonly reviewable: boolean;
+  readonly preview?: ProposedChangePreview;
+}
+
+export interface ProposedChangeOperationResult {
+  readonly operationId: string;
+  readonly operation: ProposedChangeOperationKind;
+  readonly path: string;
+  readonly destinationPath?: string;
+  readonly status: ProposedChangeOperationStatus;
+  readonly backup: ProposedChangeBackupStatus;
+  readonly safeMessage: string;
+}
+
+export interface ProposedChangeSetResult {
+  readonly persisted: true;
+  readonly appliedCount: number;
+  readonly skippedCount: number;
+  readonly failedCount: number;
+  readonly backupCount: number;
+  readonly operations: readonly ProposedChangeOperationResult[];
+}
+
+export interface ProposedChangeSetSnapshot {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly status: ProposedChangeSetStatus;
+  readonly decision: ProposedChangeDecision;
+  readonly proposalHash: string;
+  readonly fakeRuntime: boolean;
+  readonly runtimeProvenance: 'fake_runtime_development_preview' | 'unverified_runtime';
+  readonly counts: {
+    readonly total: number;
+    readonly creates: number;
+    readonly edits: number;
+    readonly overwrites: number;
+    readonly renames: number;
+    readonly deletes: number;
+    readonly destructive: number;
+  };
+  readonly totalSizeBytes: number;
+  readonly totalLineCount: number;
+  readonly previewLimitBytes: number;
+  readonly previewLimitLines: number;
+  readonly safeMessage: string;
+  readonly operations: readonly ProposedChangeOperation[];
+  readonly result?: ProposedChangeSetResult;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}

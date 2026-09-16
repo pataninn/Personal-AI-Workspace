@@ -7,6 +7,8 @@ import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
 import { AiRunManifestConflictError, AiRunNotFoundError } from '@/modules/ai-runs/domain/ai-run-errors';
 import type { AiRun, EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
 import { CreateAiRunUseCase, DecideEgressUseCase, GetAiRunUseCase } from '@/modules/ai-runs/use-cases/ai-run-use-cases';
+import { DecideProposedChangeSetUseCase, GetProposedChangeSetUseCase } from '@/modules/ai-runs/use-cases/change-set-use-cases';
+import type { ProposedChangeSet } from '@/modules/ai-runs/domain/change-types';
 import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
 
@@ -24,6 +26,11 @@ const decisionSchema = z.object({
   decision: z.enum(['approve', 'reject'])
 }).strict();
 
+const changeSetDecisionSchema = z.object({
+  proposalHash: z.string().min(1),
+  decision: z.enum(['approve', 'reject'])
+}).strict();
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 export interface AiRunRouterDependencies {
@@ -31,6 +38,8 @@ export interface AiRunRouterDependencies {
   readonly createAiRun: CreateAiRunUseCase;
   readonly getAiRun: GetAiRunUseCase;
   readonly decideEgress: DecideEgressUseCase;
+  readonly getProposedChangeSet?: GetProposedChangeSetUseCase;
+  readonly decideProposedChangeSet?: DecideProposedChangeSetUseCase;
   readonly appOrigin: string;
   readonly clearSessionCookie: (response: Response) => void;
 }
@@ -153,6 +162,55 @@ function decisionHandler(dependencies: AiRunRouterDependencies): RequestHandler 
   };
 }
 
+function proposedChangeSetHandler(dependencies: AiRunRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      if (!dependencies.getProposedChangeSet) {
+        next(new AppError('NOT_FOUND', 404, 'The proposed change set is not available.'));
+        return;
+      }
+      const ownerId = request.auth?.principal.id;
+      if (!ownerId) {
+        next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
+        return;
+      }
+      const runId = parseUuid(routeParam(request.params.runId), new AiRunNotFoundError());
+      const changeSet = await dependencies.getProposedChangeSet.execute({ ownerId, runId });
+      sendData(response, serializeProposedChangeSet(changeSet));
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
+function proposedChangeDecisionHandler(dependencies: AiRunRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      if (!dependencies.decideProposedChangeSet) {
+        next(new AppError('NOT_FOUND', 404, 'The proposed change set is not available.'));
+        return;
+      }
+      const ownerId = request.auth?.principal.id;
+      if (!ownerId) {
+        next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
+        return;
+      }
+      const runId = parseUuid(routeParam(request.params.runId), new AiRunNotFoundError());
+      const body = parseBody(changeSetDecisionSchema, request.body);
+      const changeSet = await dependencies.decideProposedChangeSet.execute({
+        ownerId,
+        runId,
+        proposalHash: body.proposalHash,
+        decision: body.decision,
+        idempotencyKey: requiredIdempotencyKey(request)
+      });
+      sendData(response, serializeProposedChangeSet(changeSet));
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
 function serializeSnapshot(run: AiRun): Record<string, unknown> {
   return {
     runId: run.id,
@@ -218,6 +276,60 @@ function consentNotice(run: AiRun): string {
   return 'This disclosure was approved for this run.';
 }
 
+function serializeProposedChangeSet(changeSet: ProposedChangeSet): Record<string, unknown> {
+  return {
+    runId: changeSet.runId,
+    projectId: changeSet.projectId,
+    status: changeSet.status,
+    decision: changeSet.decision,
+    proposalHash: changeSet.proposalHash,
+    fakeRuntime: changeSet.fakeRuntime,
+    runtimeProvenance: changeSet.fakeRuntime ? 'fake_runtime_development_preview' : 'unverified_runtime',
+    counts: changeSet.counts,
+    totalSizeBytes: changeSet.totalSizeBytes,
+    totalLineCount: changeSet.totalLineCount,
+    previewLimitBytes: changeSet.previewLimitBytes,
+    previewLimitLines: changeSet.previewLimitLines,
+    safeMessage: changeSet.safeMessage,
+    operations: changeSet.operations.map((operation) => ({
+      operationId: operation.operationId,
+      operation: operation.operation,
+      path: operation.path,
+      ...(operation.destinationPath ? { destinationPath: operation.destinationPath } : {}),
+      summary: operation.summary,
+      ...(operation.expectedSourceHash ? { expectedSourceHash: operation.expectedSourceHash } : {}),
+      ...(operation.expectedDestinationHash ? { expectedDestinationHash: operation.expectedDestinationHash } : {}),
+      sourcePresent: operation.sourcePresent,
+      destinationPresent: operation.destinationPresent,
+      backupRequired: operation.backupRequired,
+      sizeBytes: operation.sizeBytes,
+      lineCount: operation.lineCount,
+      reviewable: operation.reviewable,
+      ...(operation.preview ? { preview: operation.preview } : {})
+    })),
+    ...(changeSet.result ? {
+      result: {
+        persisted: true,
+        appliedCount: changeSet.result.appliedCount,
+        skippedCount: changeSet.result.skippedCount,
+        failedCount: changeSet.result.failedCount,
+        backupCount: changeSet.result.backupCount,
+        operations: changeSet.result.operations.map((operation) => ({
+          operationId: operation.operationId,
+          operation: operation.operation,
+          path: operation.path,
+          ...(operation.destinationPath ? { destinationPath: operation.destinationPath } : {}),
+          status: operation.status,
+          backup: operation.backup,
+          safeMessage: operation.safeMessage
+        }))
+      }
+    } : {}),
+    createdAt: changeSet.createdAt.toISOString(),
+    updatedAt: changeSet.updatedAt.toISOString()
+  };
+}
+
 export function createAiRunRouter(dependencies: AiRunRouterDependencies): Router {
   const router = Router();
   const authenticate = authenticateRequest(dependencies.getSession, dependencies.clearSessionCookie);
@@ -225,5 +337,9 @@ export function createAiRunRouter(dependencies: AiRunRouterDependencies): Router
   router.get('/ai-runs/:runId', authenticate, getHandler(dependencies));
   router.get('/ai-runs/:runId/egress-manifest', authenticate, manifestHandler(dependencies));
   router.post('/ai-runs/:runId/egress-decision', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, decisionHandler(dependencies));
+  if (dependencies.getProposedChangeSet && dependencies.decideProposedChangeSet) {
+    router.get('/ai-runs/:runId/proposed-change-set', authenticate, proposedChangeSetHandler(dependencies));
+    router.post('/ai-runs/:runId/proposed-change-set/decision', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, proposedChangeDecisionHandler(dependencies));
+  }
   return router;
 }

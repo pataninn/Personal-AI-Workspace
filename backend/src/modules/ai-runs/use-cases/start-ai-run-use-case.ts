@@ -9,6 +9,7 @@ import { validateIdempotencyKey } from '@/modules/ai-runs/domain/ai-run-validati
 import { hashText } from '@/modules/ai-runs/use-cases/manifest-builder';
 import { assertActiveAiRunProject } from '@/modules/ai-runs/use-cases/assert-ai-run-project';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
+import type { RuntimeChangeProposal } from '@/modules/ai-runs/domain/change-types';
 
 export interface RuntimeCommandProposalPort {
   execute(input: {
@@ -20,6 +21,15 @@ export interface RuntimeCommandProposalPort {
     readonly summary?: unknown;
     readonly idempotencyKey: string;
   }): Promise<{ readonly resource: { readonly id: string; readonly status: string; readonly safeMessage: string }; readonly replayed: boolean }>;
+}
+
+export interface RuntimeChangeSetProposalPort {
+  execute(input: {
+    readonly ownerId: string;
+    readonly runId: string;
+    readonly changes: readonly RuntimeChangeProposal[];
+    readonly fakeRuntime: boolean;
+  }): Promise<unknown>;
 }
 
 export interface StartAiRunInput {
@@ -35,7 +45,8 @@ export class StartAiRunUseCase {
     private readonly agentRuntime: IAgentRuntime,
     private readonly events: IRunEventPublisher,
     private readonly commandProposals?: RuntimeCommandProposalPort,
-    private readonly projectRepository?: IProjectRepository
+    private readonly projectRepository?: IProjectRepository,
+    private readonly changeSetProposals?: RuntimeChangeSetProposalPort
   ) {}
 
   public async execute(input: StartAiRunInput): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> {
@@ -164,6 +175,13 @@ export class StartAiRunUseCase {
         return { assistantText, terminal: false, suppressed: true };
       }
       return { assistantText: text, terminal: false };
+    }
+    if (event.type === 'changes.proposed') {
+      if (!this.changeSetProposals) {
+        return { assistantText, terminal: false };
+      }
+      await this.changeSetProposals.execute({ ownerId: run.ownerId, runId: run.id, changes: event.changes, fakeRuntime: run.runtimeKind === 'fake' });
+      return { assistantText, terminal: false };
     }
     if (event.type === 'tool.proposed') {
       const projected = await this.projectCommand(run, event);

@@ -1,5 +1,6 @@
 import type { EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
 import type { CommandLimits, CommandResult } from '@/modules/ai-runs/domain/command-types';
+import type { RuntimeChangeProposal } from '@/modules/ai-runs/domain/change-types';
 
 export interface RuntimeCreateInput {
   readonly runId: string;
@@ -28,6 +29,7 @@ export type RuntimeInferenceEvent =
   | { readonly type: 'tool.started'; readonly commandId: string }
   | { readonly type: 'tool.completed'; readonly commandId: string; readonly status: string }
   | { readonly type: 'tool.failed'; readonly commandId: string; readonly status: string }
+  | { readonly type: 'changes.proposed'; readonly changes: readonly RuntimeChangeProposal[] }
   | { readonly type: 'completed'; readonly text: string }
   | { readonly type: 'failed'; readonly message: string }
   | { readonly type: 'blocked'; readonly message: string }

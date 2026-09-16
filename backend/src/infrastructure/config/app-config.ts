@@ -58,6 +58,7 @@ const appEnvironmentSchema = z.object({
   NIM_MODEL: z.string().default(EXPECTED_NIM_MODEL),
   AGENT_RUNTIME_MODE: z.enum(['fake', 'openshell']).default('openshell'),
   STAGING_ROOT: z.string().min(1).default('/var/lib/personal-ai/staging'),
+  RECOVERY_ROOT: z.string().min(1).default('/var/lib/personal-ai/recovery'),
   STARTUP_CHECK_TIMEOUT_MS: z
     .string()
     .default('3000')
@@ -96,6 +97,7 @@ export interface AppConfig {
   readonly nimModel: string;
   readonly agentRuntimeMode: 'fake' | 'openshell';
   readonly stagingRoot: string;
+  readonly recoveryRoot: string;
   readonly startupCheckTimeoutMs: number;
   readonly database: DatabaseConfig;
 }
@@ -119,8 +121,11 @@ function validateCrossFieldConfiguration(value: z.infer<typeof appEnvironmentSch
   if (isSameOrNestedPath(value.STAGING_ROOT, value.WORKSPACE_ROOT)) {
     details.push({ field: 'STAGING_ROOT', message: 'STAGING_ROOT must not overlap the authoritative workspace.' });
   }
-  if (isSameOrNestedPath(value.STAGING_ROOT, '/var/lib/personal-ai/recovery') || isSameOrNestedPath(value.STAGING_ROOT, '/var/log/personal-ai')) {
+  if (isSameOrNestedPath(value.STAGING_ROOT, value.RECOVERY_ROOT) || isSameOrNestedPath(value.RECOVERY_ROOT, value.STAGING_ROOT) || isSameOrNestedPath(value.STAGING_ROOT, '/var/log/personal-ai')) {
     details.push({ field: 'STAGING_ROOT', message: 'STAGING_ROOT must remain separate from recovery and log areas.' });
+  }
+  if (isSameOrNestedPath(value.RECOVERY_ROOT, value.WORKSPACE_ROOT) || isSameOrNestedPath(value.RECOVERY_ROOT, '/var/log/personal-ai')) {
+    details.push({ field: 'RECOVERY_ROOT', message: 'RECOVERY_ROOT must remain separate from the authoritative workspace and log area.' });
   }
   if (value.APP_PROTOCOL === 'https' && (!value.TLS_CERT_FILE || !value.TLS_KEY_FILE)) {
     details.push({ field: 'TLS_CERT_FILE', message: 'HTTPS requires TLS_CERT_FILE and TLS_KEY_FILE' });
@@ -195,6 +200,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     nimModel: parsed.data.NIM_MODEL,
     agentRuntimeMode: parsed.data.AGENT_RUNTIME_MODE,
     stagingRoot: parsed.data.STAGING_ROOT,
+    recoveryRoot: parsed.data.RECOVERY_ROOT,
     startupCheckTimeoutMs: parsed.data.STARTUP_CHECK_TIMEOUT_MS,
     database
   };

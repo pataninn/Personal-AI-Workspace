@@ -19,13 +19,15 @@ import { UnsupportedOpenShellAgentRuntime } from '@/infrastructure/sandbox/unsup
 import { LocalStagingGateway } from '@/infrastructure/staging/local-staging-gateway';
 import { TypeOrmAiRunRepository } from '@/infrastructure/database/repositories/typeorm-ai-run-repository';
 import { TypeOrmSandboxCommandRepository } from '@/infrastructure/database/repositories/typeorm-sandbox-command-repository';
+import { TypeOrmProposedChangeSetRepository } from '@/infrastructure/database/repositories/typeorm-change-set-repository';
+import { WorkspaceMutationGatewayAdapter } from '@/infrastructure/workspace/workspace-mutation-gateway';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { runStartupChecks } from '@/infrastructure/startup/startup-checks';
 import { GetReadinessUseCase } from '@/modules/health';
 import { BootstrapLocalUserUseCase, clearSessionCookie, GetSessionUseCase, LoginUseCase, LogoutUseCase } from '@/modules/auth';
 import { CreateProjectUseCase, GetProjectUseCase, ListProjectsUseCase, UpdateProjectStatusUseCase } from '@/modules/projects';
 import { AddUserMessageUseCase, CreateConversationUseCase, GetConversationUseCase, ListConversationsUseCase } from '@/modules/conversations';
-import { CancelAiRunUseCase, CancelSandboxCommandUseCase, CreateAiRunUseCase, DecideEgressUseCase, DecideSandboxCommandUseCase, GetAiRunUseCase, GetSandboxCommandUseCase, ListSandboxCommandsUseCase, ProposeSandboxCommandUseCase, StartAiRunUseCase } from '@/modules/ai-runs';
+import { CancelAiRunUseCase, CancelSandboxCommandUseCase, CollectProposedChangeSetUseCase, CreateAiRunUseCase, DecideEgressUseCase, DecideProposedChangeSetUseCase, DecideSandboxCommandUseCase, GetAiRunUseCase, GetProposedChangeSetUseCase, GetSandboxCommandUseCase, ListSandboxCommandsUseCase, ProposeSandboxCommandUseCase, StartAiRunUseCase } from '@/modules/ai-runs';
 import { InMemoryRunEventPublisher } from '@/infrastructure/ai-runs/in-memory-run-event-publisher';
 import { ListWorkspaceFilesUseCase, ReadWorkspaceTextUseCase, SearchWorkspaceTextUseCase, TreeWorkspaceFilesUseCase } from '@/modules/files';
 import { StartupChecksError } from '@/shared/errors/app-error';
@@ -74,6 +76,7 @@ export async function createApplication(
     const conversationRepository = new TypeOrmConversationRepository(dataSource);
     const aiRunRepository = new TypeOrmAiRunRepository(dataSource);
     const commandRepository = new TypeOrmSandboxCommandRepository(dataSource);
+    const changeSetRepository = new TypeOrmProposedChangeSetRepository(dataSource);
     const workspaceBoundary = new WorkspaceBoundaryAdapter({
       containerRoot: config.workspaceRoot,
       identityFile: config.workspaceIdentityFile,
@@ -83,12 +86,18 @@ export async function createApplication(
       containerRoot: config.workspaceRoot,
       workspaceBoundary
     });
+    const workspaceMutationGateway = new WorkspaceMutationGatewayAdapter({
+      containerRoot: config.workspaceRoot,
+      workspaceBoundary,
+      recoveryRoot: config.recoveryRoot
+    });
     const agentRuntime = config.agentRuntimeMode === 'fake' ? new FakeAgentRuntime() : new UnsupportedOpenShellAgentRuntime();
     const stagingGateway = new LocalStagingGateway({ stagingRoot: config.stagingRoot });
     const runEvents = new InMemoryRunEventPublisher();
     const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel);
     const proposeSandboxCommand = new ProposeSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger);
-    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, proposeSandboxCommand, projectRepository);
+    const collectProposedChangeSet = new CollectProposedChangeSetUseCase(aiRunRepository, projectRepository, workspaceMutationGateway, changeSetRepository);
+    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, proposeSandboxCommand, projectRepository, collectProposedChangeSet);
     const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository);
     const passwordHasher = new BcryptPasswordHasher();
     const tokenProvider = new OpaqueTokenProvider(config.sessionSecret);
@@ -154,6 +163,8 @@ export async function createApplication(
           createAiRun,
           getAiRun: new GetAiRunUseCase(aiRunRepository),
           decideEgress: new DecideEgressUseCase(aiRunRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot),
+          getProposedChangeSet: new GetProposedChangeSetUseCase(changeSetRepository),
+          decideProposedChangeSet: new DecideProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository, workspaceMutationGateway),
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },

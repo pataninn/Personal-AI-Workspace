@@ -183,6 +183,45 @@
         }
       }
     },
+    "/api/v1/ai-runs/{runId}/proposed-change-set": {
+      "parameters": [{ "$ref": "#/components/parameters/AiRunIdPath" }],
+      "get": {
+        "tags": ["AI runs"],
+        "summary": "Read the bounded proposed workspace change set",
+        "operationId": "getAiRunProposedChangeSet",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Safe change operations and bounded previews without raw credentials or host paths.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProposedChangeSetEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/ChangeSetNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/ai-runs/{runId}/proposed-change-set/decision": {
+      "parameters": [{ "$ref": "#/components/parameters/AiRunIdPath" }],
+      "post": {
+        "tags": ["AI runs"],
+        "summary": "Approve or reject the exact proposed workspace change set",
+        "operationId": "decideAiRunProposedChangeSet",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/IdempotencyHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProposedChangeSetDecisionRequest" } } } },
+        "responses": {
+          "200": { "description": "Decision and the persisted apply result.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProposedChangeSetEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ChangeSetNotFound" },
+          "409": { "$ref": "#/components/responses/ChangeSetConflict" },
+          "503": { "$ref": "#/components/responses/ChangeSetReviewRequired" }
+        }
+      }
+    },
     "/api/v1/ai-runs/{runId}/commands": {
       "parameters": [{ "$ref": "#/components/parameters/AiRunIdPath" }],
       "get": {
@@ -468,6 +507,9 @@
       "CommandNotFound": { "description": "The command is not available to this owner and run.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "CommandConflict": { "description": "The command proposal or decision is stale, blocked, or not executable in the current run state.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "CommandReviewRequired": { "description": "The command cancellation or cleanup outcome is unknown; no automatic retry is started.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "ChangeSetNotFound": { "description": "No proposed change set is available for this owner and run.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "ChangeSetConflict": { "description": "The proposed change set is stale, already decided, blocked, or has an idempotency conflict.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "ChangeSetReviewRequired": { "description": "The apply outcome could not be confirmed and requires manual review.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "InternalError": { "description": "Unexpected server failure.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "INTERNAL_ERROR", "message": "Internal server error." } } } } }
     },
     "schemas": {
@@ -494,6 +536,13 @@
       "AiRunIntentEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunIntent" }, "error": { "type": "null" } }, "additionalProperties": false },
       "EgressManifestEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/EgressManifest" }, "error": { "type": "null" } }, "additionalProperties": false },
       "EgressDecisionEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunIntent" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "ProposedChangeSetDecisionRequest": { "type": "object", "required": ["proposalHash", "decision"], "properties": { "proposalHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "decision": { "type": "string", "enum": ["approve", "reject"] } }, "additionalProperties": false },
+      "ProposedChangePreview": { "type": "object", "required": ["text", "limited", "kind"], "properties": { "text": { "type": "string", "maxLength": 8192 }, "limited": { "type": "boolean" }, "kind": { "type": "string", "enum": ["before", "after", "diff"] } }, "additionalProperties": false },
+      "ProposedChangeOperation": { "type": "object", "required": ["operationId", "operation", "path", "summary", "sourcePresent", "destinationPresent", "backupRequired", "sizeBytes", "lineCount", "reviewable"], "properties": { "operationId": { "type": "string", "format": "uuid" }, "operation": { "type": "string", "enum": ["create", "edit", "overwrite", "rename", "delete"] }, "path": { "type": "string", "maxLength": 2048 }, "destinationPath": { "type": "string", "maxLength": 2048 }, "summary": { "type": "string", "maxLength": 240 }, "expectedSourceHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "expectedDestinationHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "sourcePresent": { "type": "boolean" }, "destinationPresent": { "type": "boolean" }, "backupRequired": { "type": "boolean" }, "sizeBytes": { "type": "integer", "minimum": 0, "maximum": 262144 }, "lineCount": { "type": "integer", "minimum": 0 }, "reviewable": { "type": "boolean" }, "preview": { "$ref": "#/components/schemas/ProposedChangePreview" } }, "additionalProperties": false },
+      "ProposedChangeOperationResult": { "type": "object", "required": ["operationId", "operation", "path", "status", "backup", "safeMessage"], "properties": { "operationId": { "type": "string", "format": "uuid" }, "operation": { "type": "string", "enum": ["create", "edit", "overwrite", "rename", "delete"] }, "path": { "type": "string", "maxLength": 2048 }, "destinationPath": { "type": "string", "maxLength": 2048 }, "status": { "type": "string", "enum": ["applied", "skipped", "failed", "needs_manual_review"] }, "backup": { "type": "string", "enum": ["not_required", "created", "failed", "unknown"] }, "safeMessage": { "type": "string", "maxLength": 500 } }, "additionalProperties": false },
+      "ProposedChangeSetResult": { "type": "object", "required": ["persisted", "operations", "appliedCount", "skippedCount", "failedCount", "backupCount"], "properties": { "persisted": { "type": "boolean", "enum": [true] }, "operations": { "type": "array", "maxItems": 100, "items": { "$ref": "#/components/schemas/ProposedChangeOperationResult" } }, "appliedCount": { "type": "integer", "minimum": 0 }, "skippedCount": { "type": "integer", "minimum": 0 }, "failedCount": { "type": "integer", "minimum": 0 }, "backupCount": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
+      "ProposedChangeSet": { "type": "object", "required": ["runId", "projectId", "status", "decision", "proposalHash", "fakeRuntime", "runtimeProvenance", "counts", "totalSizeBytes", "totalLineCount", "previewLimitBytes", "previewLimitLines", "safeMessage", "operations", "createdAt", "updatedAt"], "properties": { "runId": { "$ref": "#/components/schemas/Uuid" }, "projectId": { "$ref": "#/components/schemas/Uuid" }, "status": { "type": "string", "enum": ["awaiting_approval", "applying", "applied", "rejected", "stale", "blocked", "failed", "needs_manual_review"] }, "decision": { "type": "string", "enum": ["pending", "approved", "rejected"] }, "proposalHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "fakeRuntime": { "type": "boolean" }, "runtimeProvenance": { "type": "string", "enum": ["fake_runtime_development_preview", "unverified_runtime"] }, "counts": { "type": "object", "required": ["total", "creates", "edits", "overwrites", "renames", "deletes", "destructive"], "properties": { "total": { "type": "integer", "minimum": 0 }, "creates": { "type": "integer", "minimum": 0 }, "edits": { "type": "integer", "minimum": 0 }, "overwrites": { "type": "integer", "minimum": 0 }, "renames": { "type": "integer", "minimum": 0 }, "deletes": { "type": "integer", "minimum": 0 }, "destructive": { "type": "integer", "minimum": 0 } }, "additionalProperties": false }, "totalSizeBytes": { "type": "integer", "minimum": 0, "maximum": 2097152 }, "totalLineCount": { "type": "integer", "minimum": 0 }, "previewLimitBytes": { "type": "integer", "minimum": 1, "maximum": 8192 }, "previewLimitLines": { "type": "integer", "minimum": 1, "maximum": 200 }, "safeMessage": { "type": "string", "maxLength": 500 }, "operations": { "type": "array", "maxItems": 100, "items": { "$ref": "#/components/schemas/ProposedChangeOperation" } }, "result": { "$ref": "#/components/schemas/ProposedChangeSetResult" }, "createdAt": { "type": "string", "format": "date-time" }, "updatedAt": { "type": "string", "format": "date-time" } }, "additionalProperties": false },
+      "ProposedChangeSetEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/ProposedChangeSet" }, "error": { "type": "null" } }, "additionalProperties": false },
       "EmptyObject": { "type": "object", "additionalProperties": false },
       "SandboxCommandDecisionRequest": { "type": "object", "required": ["proposalHash", "decision"], "properties": { "proposalHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "decision": { "type": "string", "enum": ["approve", "reject"] } }, "additionalProperties": false },
       "SandboxCommandLimits": { "type": "object", "required": ["wallTimeMs", "idleTimeMs", "maxOutputBytes", "maxProcesses", "memoryBytes", "cpuTimeMs", "network"], "properties": { "wallTimeMs": { "type": "integer", "minimum": 1, "maximum": 30000 }, "idleTimeMs": { "type": "integer", "minimum": 1, "maximum": 10000 }, "maxOutputBytes": { "type": "integer", "minimum": 1, "maximum": 65536 }, "maxProcesses": { "type": "integer", "minimum": 1, "maximum": 8 }, "memoryBytes": { "type": "integer", "minimum": 1, "maximum": 268435456 }, "cpuTimeMs": { "type": "integer", "minimum": 1, "maximum": 10000 }, "network": { "type": "string", "enum": ["denied"] } }, "additionalProperties": false },

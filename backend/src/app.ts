@@ -24,6 +24,7 @@ import { createAiRunRouter, type AiRunRouterDependencies } from '@/modules/ai-ru
 import { createSandboxCommandRouter, type SandboxCommandRouterDependencies } from '@/modules/ai-runs/controllers/sandbox-command-router';
 import { createAiRunChatRouter, type AiRunChatRouterDependencies } from '@/modules/ai-runs/controllers/ai-run-chat-router';
 import { SandboxCommandDomainError } from '@/modules/ai-runs/domain/command-errors';
+import { ChangeSetDomainError } from '@/modules/ai-runs/domain/change-errors';
 
 export interface CreateAppOptions {
   readonly logger: AppLogger;
@@ -101,6 +102,9 @@ function toAppError(error: unknown): AppError | null {
     return new AppError(error.code, error.statusCode, error.message, error.details);
   }
   if (error instanceof SandboxCommandDomainError) {
+    return new AppError(error.code, error.statusCode, error.message, error.details);
+  }
+  if (error instanceof ChangeSetDomainError) {
     return new AppError(error.code, error.statusCode, error.message, error.details);
   }
   if (isMalformedJsonError(error)) {

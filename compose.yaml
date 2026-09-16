@@ -108,6 +108,7 @@ services:
       NIM_MODEL: ${NIM_MODEL:?NIM_MODEL must be set in .env}
       AGENT_RUNTIME_MODE: ${AGENT_RUNTIME_MODE:-openshell}
       STAGING_ROOT: /var/lib/personal-ai/staging
+      RECOVERY_ROOT: /var/lib/personal-ai/recovery
       LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
       postgres:

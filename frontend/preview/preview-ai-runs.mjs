@@ -56,6 +56,14 @@ export function createPreviewAiRuns() {
       sendData(response, serializeManifest(run));
       return true;
     }
+    if (method === 'GET' && parts[4] === 'proposed-change-set') {
+      sendData(response, serializeChangeSet(run.proposedChangeSet));
+      return true;
+    }
+    if (method === 'POST' && parts[4] === 'proposed-change-set' && parts[5] === 'decision') {
+      await decideChangeSet(request, response, run);
+      return true;
+    }
     if (parts[4] === 'commands') {
       await handleCommands(request, response, run, parts, method);
       return true;
@@ -116,6 +124,7 @@ export function createPreviewAiRuns() {
       providerTransmission: 'not_started_confirmed',
       stagingItemCount: 0
     };
+    run.proposedChangeSet = createFakeChangeSet(id, projectId);
     runs.set(id, run);
     idempotency.set(replayKey, { fingerprint, runId: id });
     sendData(response, { run: serializeSnapshot(run), manifest: serializeManifest(run) }, 202, { Location: `/api/v1/ai-runs/${id}` });
@@ -159,6 +168,74 @@ export function createPreviewAiRuns() {
   }
 
   return { handle, reset };
+}
+
+function createFakeChangeSet(runId, projectId) {
+  const operationId = randomUUID();
+  const preview = '+++ src/preview-note.md\n+Preview-only change awaiting your decision.\n';
+  const proposalHash = hashValue({ runId, operationId, path: 'src/preview-note.md', content: preview });
+  return {
+    runId,
+    projectId,
+    status: 'awaiting_approval',
+    decision: 'pending',
+    proposalHash,
+    fakeRuntime: true,
+    totalSizeBytes: Buffer.byteLength(preview, 'utf8'),
+    totalLineCount: 2,
+    previewLimitBytes: 8192,
+    previewLimitLines: 200,
+    safeMessage: 'Review the proposed changes before applying them.',
+    operations: [{ operationId, operation: 'create', path: 'src/preview-note.md', summary: 'Create a preview note', sourcePresent: false, destinationPresent: false, backupRequired: false, sizeBytes: Buffer.byteLength(preview, 'utf8'), lineCount: 2, reviewable: true, preview: { text: preview, limited: false, kind: 'after' } }],
+    createdAt: '2026-09-16T00:00:00.000Z',
+    updatedAt: '2026-09-16T00:00:00.000Z'
+  };
+}
+
+async function decideChangeSet(request, response, run) {
+  const key = validIdempotencyKey(request);
+  if (!key) {
+    sendError(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'The mock preview requires an idempotency key.');
+    return;
+  }
+  const body = await readBody(request);
+  if (!isValidManifestHash(body?.proposalHash) || !['approve', 'reject'].includes(body?.decision)) {
+    sendError(response, 400, 'VALIDATION_ERROR', 'The proposed change decision is invalid.');
+    return;
+  }
+  const fingerprint = hashValue({ proposalHash: body.proposalHash, decision: body.decision });
+  const replayKey = `change-set:${run.id}:${key}`;
+  const previous = run.proposedChangeSet.decisionKeys?.get(replayKey);
+  if (previous) {
+    if (previous !== fingerprint) {
+      sendError(response, 409, 'CHANGE_SET_IDEMPOTENCY_REUSED', 'This preview decision key was already used.');
+      return;
+    }
+    sendData(response, serializeChangeSet(run.proposedChangeSet));
+    return;
+  }
+  if (body.proposalHash !== run.proposedChangeSet.proposalHash || run.proposedChangeSet.decision !== 'pending') {
+    sendError(response, 409, 'CHANGE_SET_CONFLICT', 'This proposed change set is stale or already decided.');
+    return;
+  }
+  run.proposedChangeSet.decisionKeys ??= new Map();
+  run.proposedChangeSet.decisionKeys.set(replayKey, fingerprint);
+  if (body.decision === 'reject') {
+    run.proposedChangeSet.status = 'rejected';
+    run.proposedChangeSet.decision = 'rejected';
+    run.proposedChangeSet.safeMessage = 'Change set rejected. No project files were changed.';
+  } else {
+    run.proposedChangeSet.status = 'applied';
+    run.proposedChangeSet.decision = 'approved';
+    run.proposedChangeSet.safeMessage = 'The preview change set was applied in the fake runtime.';
+    run.proposedChangeSet.result = { persisted: true, appliedCount: 1, skippedCount: 0, failedCount: 0, backupCount: 0, operations: run.proposedChangeSet.operations.map((operation) => ({ operationId: operation.operationId, operation: operation.operation, path: operation.path, status: 'applied', backup: 'not_required', safeMessage: 'Preview change applied.' })) };
+  }
+  sendData(response, serializeChangeSet(run.proposedChangeSet));
+}
+
+function serializeChangeSet(changeSet) {
+  const { decisionKeys, ...safe } = changeSet;
+  return safe;
 }
 
   function applyDecision(run, decision) {

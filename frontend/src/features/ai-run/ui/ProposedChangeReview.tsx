@@ -1,0 +1,163 @@
+import { useEffect, useState } from 'react';
+
+import {
+  decideProposedChangeSet,
+  getProposedChangeSet,
+  type ProposedChangeOperation,
+  type ProposedChangeSetSnapshot
+} from '@/entities/ai-run';
+import { useAppSelector } from '@/app/store/hooks';
+import { selectCsrfToken } from '@/entities/user-session';
+import { ApiClientError } from '@/shared/api';
+import { createIdempotencyKey } from '@/shared/lib/idempotency-key';
+import { Alert, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogRoot, AlertDialogTitle, Button, Card, EmptyState, ErrorState, Skeleton } from '@/shared/ui';
+
+interface ProposedChangeReviewProps {
+  readonly runId: string;
+  readonly readOnly?: boolean;
+  readonly conversationHref?: string;
+}
+
+type LoadState =
+  | { readonly status: 'loading' }
+  | { readonly status: 'empty' }
+  | { readonly status: 'error'; readonly message: string }
+  | { readonly status: 'success'; readonly changeSet: ProposedChangeSetSnapshot; readonly refreshing: boolean; readonly refreshError?: string };
+
+export function ProposedChangeReview({ runId, readOnly = false, conversationHref }: ProposedChangeReviewProps): React.JSX.Element {
+  const csrfToken = useAppSelector(selectCsrfToken);
+  const [state, setState] = useState<LoadState>({ status: 'loading' });
+  const [selectedOperationId, setSelectedOperationId] = useState<string | null>(null);
+  const [showDiff, setShowDiff] = useState(true);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [decisionLoading, setDecisionLoading] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+
+  async function refresh(): Promise<void> {
+    setState((current) => current.status === 'success'
+      ? { ...current, refreshing: true, refreshError: undefined }
+      : { status: 'loading' });
+    setDecisionError(null);
+    try {
+      const changeSet = await getProposedChangeSet(runId);
+      setState({ status: 'success', changeSet, refreshing: false });
+      setSelectedOperationId((current) => current && changeSet.operations.some((operation) => operation.operationId === current) ? current : changeSet.operations[0]?.operationId ?? null);
+    } catch (error: unknown) {
+      setState((current) => current.status === 'success'
+        ? { ...current, refreshing: false, refreshError: 'We could not refresh the apply status. Try again when the local app is available.' }
+        : error instanceof ApiClientError && error.statusCode === 404
+          ? { status: 'empty' }
+          : { status: 'error', message: changeErrorMessage(error) });
+    }
+  }
+
+  useEffect(() => {
+    let active = true;
+    setState({ status: 'loading' });
+    void getProposedChangeSet(runId).then((changeSet) => {
+      if (!active) return;
+      setState({ status: 'success', changeSet, refreshing: false });
+      setSelectedOperationId(changeSet.operations[0]?.operationId ?? null);
+    }).catch((error: unknown) => {
+      if (!active) return;
+      if (error instanceof ApiClientError && error.statusCode === 404) {
+        setState({ status: 'empty' });
+      } else {
+        setState({ status: 'error', message: changeErrorMessage(error) });
+      }
+    });
+    return () => { active = false; };
+  }, [runId]);
+
+  async function submitDecision(decision: 'approve' | 'reject'): Promise<void> {
+    if (state.status !== 'success' || !csrfToken || decisionLoading || readOnly) return;
+    setDecisionLoading(true);
+    setDecisionError(null);
+    try {
+      const changeSet = await decideProposedChangeSet(runId, state.changeSet.proposalHash, decision, csrfToken, createIdempotencyKey());
+      setState({ status: 'success', changeSet, refreshing: false });
+      setDialogOpen(false);
+    } catch (error: unknown) {
+      setDecisionError(changeErrorMessage(error));
+      if (error instanceof ApiClientError && ['CHANGE_SET_CONFLICT', 'CHANGE_SET_REVIEW_REQUIRED', 'CHANGE_SET_ALREADY_DECIDED'].includes(error.code)) await refresh();
+    } finally {
+      setDecisionLoading(false);
+    }
+  }
+
+  if (state.status === 'loading') return <section className="change-review-surface" data-testid="change-review-surface" aria-labelledby="change-review-heading" aria-busy="true"><h2 id="change-review-heading" tabIndex={-1}>Proposed changes</h2><p data-testid="change-review-loading-status" role="status" aria-live="polite">Loading proposed changes...</p><Card className="change-review-loading" data-testid="change-review-loading"><Skeleton /><Skeleton /></Card></section>;
+  if (state.status === 'empty') return <section className="change-review-surface" data-testid="change-review-surface" aria-labelledby="change-review-heading"><h2 id="change-review-heading" tabIndex={-1}>Proposed changes</h2><div data-testid="change-review-empty"><EmptyState title="No project changes were proposed." detail="The assistant did not produce a file mutation for this run." /></div></section>;
+  if (state.status === 'error') return <section className="change-review-surface" data-testid="change-review-surface" aria-labelledby="change-review-heading"><h2 id="change-review-heading" tabIndex={-1}>Proposed changes</h2><div data-testid="change-review-error"><ErrorState title="Proposed changes unavailable" detail={state.message} action={<Button type="button" variant="secondary" data-testid="change-review-retry" disabled={readOnly} onClick={() => { void refresh(); }} aria-describedby={readOnly ? 'change-review-read-only' : undefined}>Refresh proposed changes</Button>} /></div></section>;
+
+  const changeSet = state.changeSet;
+  const selected = changeSet.operations.find((operation) => operation.operationId === selectedOperationId) ?? changeSet.operations[0];
+  const canDecide = !readOnly && Boolean(csrfToken) && changeSet.status === 'awaiting_approval' && changeSet.decision === 'pending' && changeSet.operations.every((operation) => operation.reviewable);
+  const requiresConfirmation = changeSet.operations.some((operation) => operation.backupRequired);
+  const readOnlyDescription = readOnly ? 'change-review-read-only' : undefined;
+  const refreshActionLabel = changeSet.status === 'needs_manual_review' ? 'Refresh apply status' : 'Refresh proposed changes';
+  return (
+    <section className="change-review-surface" data-testid="change-review-surface" aria-labelledby="change-review-heading" aria-busy={decisionLoading || state.refreshing ? 'true' : 'false'}>
+      <div className="change-review-heading-row"><div><h2 id="change-review-heading" tabIndex={-1}>Proposed changes</h2><p className="field-help">Review this server-validated change set before anything is written to the project workspace.</p></div><Button type="button" variant="secondary" data-testid="change-refresh-status" onClick={() => { void refresh(); }} disabled={decisionLoading || state.refreshing || readOnly} aria-describedby={readOnlyDescription}>{refreshActionLabel}</Button></div>
+      {changeSet.fakeRuntime ? <Alert tone="info" data-testid="change-review-fake-mode-notice">Development preview - fake runtime. These proposed changes are simulated; live OpenShell, Hermes, and NVIDIA NIM provenance is not verified.</Alert> : null}
+      {readOnly ? <Alert tone="warning" id="change-review-read-only" data-testid="change-review-read-only">This project is archived. Proposed changes are read-only and cannot be applied.</Alert> : null}
+      {state.refreshing ? <p data-testid="change-refreshing" role="status" aria-live="polite">Refreshing proposed changes...</p> : null}
+      {state.refreshError ? <Alert tone="error" data-testid="change-refresh-error">{state.refreshError}</Alert> : null}
+      {decisionError ? <Alert tone="error" data-testid="change-review-decision-error">{decisionError}</Alert> : null}
+      <Card className="change-review-summary" data-testid="change-set-summary"><dl><div><dt>Status</dt><dd data-testid="change-decision-status">{statusLabel(changeSet)}</dd></div><div><dt>Operations</dt><dd>{changeSet.counts.total}</dd></div><div><dt>Creates</dt><dd>{changeSet.counts.creates}</dd></div><div><dt>Edits</dt><dd>{changeSet.counts.edits}</dd></div><div><dt>Overwrites</dt><dd>{changeSet.counts.overwrites}</dd></div><div><dt>Renames</dt><dd>{changeSet.counts.renames}</dd></div><div><dt>Deletes</dt><dd>{changeSet.counts.deletes}</dd></div><div><dt>Recovery snapshots required</dt><dd>{changeSet.counts.destructive}</dd></div><div><dt>Review size</dt><dd>{formatBytes(changeSet.totalSizeBytes)} across {changeSet.totalLineCount} lines</dd></div><div><dt>Proposal freshness</dt><dd data-testid="change-proposal-freshness">Reviewed against the project version at proposal time.</dd></div><div><dt>Proposal version</dt><dd><code data-testid="change-proposal-version">{changeSet.proposalHash}</code></dd></div><div><dt>Last updated</dt><dd data-testid="change-proposal-updated-at">{changeSet.updatedAt}</dd></div></dl><p>{changeSet.safeMessage}</p></Card>
+      {changeSet.status === 'stale' ? <Alert tone="warning" data-testid="change-stale">These changes are stale because the project changed. Refresh to review the current run result.</Alert> : null}
+      {changeSet.status === 'needs_manual_review' ? <Alert tone="warning" data-testid="change-review-required">Apply status needs review. The app could not confirm whether every file operation and backup finished. Do not retry automatically. Refresh the apply status and inspect the project before trying again.</Alert> : null}
+      {changeSet.status === 'blocked' || changeSet.status === 'failed' || changeSet.operations.some((operation) => !operation.reviewable) ? <Alert tone="error" data-testid="change-failure">This proposed change cannot be applied because a safe bounded review is unavailable.</Alert> : null}
+      {decisionLoading ? <p data-testid="change-applying" role="status" aria-live="polite">{changeSet.decision === 'rejected' ? 'Rejecting change set...' : 'Applying approved changes...'}</p> : null}
+      {changeSet.status === 'applied' ? <Alert tone="success" data-testid="change-applied" role="status" live="polite"><strong>Changes applied</strong><br />The approved change set was applied and its result was saved.</Alert> : null}
+      {changeSet.status === 'rejected' ? <Alert tone="info" data-testid="change-rejected" role="status" live="polite">Change set rejected. No project files were changed.</Alert> : null}
+      {changeSet.operations.length > 0 ? <div className="change-review-content"><ol className="change-review-operation-list" aria-label="Proposed file operations">{changeSet.operations.map((operation) => <li key={operation.operationId} data-testid="change-operation"><button type="button" className={`change-review-operation ${selected?.operationId === operation.operationId ? 'is-selected' : ''}`} aria-pressed={selected?.operationId === operation.operationId} onClick={() => setSelectedOperationId(operation.operationId)}><span className="change-operation-kind" data-testid="change-operation-type">{operationLabel(operation.operation)}</span>{operation.operation === 'rename' && operation.destinationPath ? <><span><span>From</span> <code data-testid="change-operation-path">{operation.path}</code></span><span><span>To</span> <code>{operation.destinationPath}</code></span></> : <code data-testid="change-operation-path">{operation.path}</code>}<span data-testid="change-operation-size">{formatBytes(operation.sizeBytes)} · {operation.lineCount} lines</span></button></li>)}</ol>{selected ? <OperationDetail operation={selected} showDiff={showDiff} onToggleDiff={() => setShowDiff((current) => !current)} /> : null}</div> : null}
+      {changeSet.result ? <ResultSummary changeSet={changeSet} /> : null}
+      {changeSet.result ? <RecoverySnapshotSummary result={changeSet.result} /> : null}
+      <div className="change-review-actions"><Button type="button" variant="destructive" data-testid="change-reject" disabled={!canDecide || decisionLoading} aria-describedby={readOnlyDescription} onClick={() => { void submitDecision('reject'); }}>Reject change set</Button><Button type="button" data-testid="change-approve" disabled={!canDecide || decisionLoading} aria-describedby={readOnlyDescription} onClick={() => { if (requiresConfirmation) setDialogOpen(true); else void submitDecision('approve'); }}>{decisionLoading ? 'Applying approved changes...' : 'Approve and apply changes'}</Button>{conversationHref ? <a className="button button-secondary" data-testid="change-back-to-run" href={conversationHref}>Back to run</a> : null}</div>
+      <AlertDialogRoot open={dialogOpen} onOpenChange={(open) => { if (!decisionLoading) setDialogOpen(open); }}>
+        <AlertDialogContent data-testid="change-apply-dialog"><AlertDialogTitle>Apply changes that replace or remove files?</AlertDialogTitle><AlertDialogDescription>The local application will recheck the file versions, create recovery snapshots for destructive operations, and then apply the approved set atomically per file.</AlertDialogDescription><p>Recovery snapshots required: {changeSet.counts.destructive}</p><div className="dialog-actions"><AlertDialogCancel asChild><Button type="button" variant="secondary" data-testid="change-apply-cancel" disabled={decisionLoading}>Cancel</Button></AlertDialogCancel><Button type="button" data-testid="change-apply-confirm" disabled={decisionLoading} onClick={() => { void submitDecision('approve'); }}>{decisionLoading ? 'Applying...' : 'Approve and apply'}</Button></div></AlertDialogContent>
+      </AlertDialogRoot>
+    </section>
+  );
+}
+
+function OperationDetail({ operation, showDiff, onToggleDiff }: { readonly operation: ProposedChangeOperation; readonly showDiff: boolean; readonly onToggleDiff: () => void }): React.JSX.Element {
+  return <Card className="change-review-operation-detail" data-testid="change-operation-detail"><h3>{operationLabel(operation.operation)}: <code>{operation.path}</code></h3>{operation.operation === 'rename' && operation.destinationPath ? <dl><div><dt>From</dt><dd><code>{operation.path}</code></dd></div><div><dt>To</dt><dd><code>{operation.destinationPath}</code></dd></div></dl> : null}<p>{operation.summary}</p><dl><div><dt>Expected source hash</dt><dd>{operation.expectedSourceHash ? <code>{operation.expectedSourceHash}</code> : 'No source hash'}</dd></div>{operation.expectedDestinationHash ? <div><dt>Expected destination hash</dt><dd><code>{operation.expectedDestinationHash}</code></dd></div> : null}<div><dt>Backup</dt><dd data-testid="change-operation-backup">{operation.backupRequired ? 'A recovery snapshot will be created before this operation.' : 'No backup required'}</dd></div><div><dt>Preview</dt><dd>{operation.preview?.limited ? <span data-testid="change-preview-limited">Preview limited by the server safety limit. The full file is not shown here.</span> : 'Bounded preview'}</dd></div></dl>{operation.preview ? <><Button type="button" variant="ghost" data-testid="change-diff-toggle" aria-expanded={showDiff} onClick={onToggleDiff}>{showDiff ? 'Hide bounded change preview' : 'View bounded change preview'}</Button>{showDiff ? <pre data-testid="change-diff"><code>{operation.preview.text}</code></pre> : null}</> : <p data-testid="change-no-preview">A safe diff is unavailable for this operation. Review is required before applying.</p>}</Card>;
+}
+
+function RecoverySnapshotSummary({ result }: { readonly result: NonNullable<ProposedChangeSetSnapshot['result']> }): React.JSX.Element | null {
+  const backedUp = result.operations.filter((operation) => operation.backup === 'created');
+  if (backedUp.length === 0) return null;
+  return <Card className="change-review-recovery-results" data-testid="change-recovery-snapshot-results"><h3>Recovery snapshots</h3><ul>{backedUp.map((operation) => <li key={operation.operationId} data-testid="change-recovery-snapshot-result">Recovery snapshot created for <code>{operation.path}</code>.</li>)}</ul></Card>;
+}
+
+function ResultSummary({ changeSet }: { readonly changeSet: ProposedChangeSetSnapshot }): React.JSX.Element {
+  const result = changeSet.result;
+  if (!result) return <></>;
+  return <Card className="change-review-result" data-testid="change-apply-result"><h3>Apply result</h3><p>{result.appliedCount} applied · {result.skippedCount} skipped · {result.failedCount} failed · {result.backupCount} backups</p><ol>{result.operations.map((operation) => <li key={operation.operationId}><code>{operation.path}</code>: {operation.status} ({operation.backup}) — {operation.safeMessage}</li>)}</ol></Card>;
+}
+
+function operationLabel(operation: ProposedChangeOperation['operation']): string {
+  return { create: 'Create new file', edit: 'Edit existing file', overwrite: 'Replace existing file', rename: 'Rename file', delete: 'Delete file' }[operation];
+}
+
+function statusLabel(changeSet: ProposedChangeSetSnapshot): string {
+  if (changeSet.status === 'awaiting_approval') return 'Awaiting your decision';
+  if (changeSet.status === 'applying') return 'Applying approved changes';
+  if (changeSet.status === 'needs_manual_review') return 'Needs manual review';
+  return changeSet.status.charAt(0).toUpperCase() + changeSet.status.slice(1);
+}
+
+function formatBytes(value: number): string {
+  return value < 1024 ? `${value} B` : `${(value / 1024).toFixed(1)} KB`;
+}
+
+function changeErrorMessage(error: unknown): string {
+  if (error instanceof ApiClientError) {
+    if (error.code === 'CHANGE_SET_CONFLICT') return 'The project changed before the decision completed. Refresh to review the authoritative result.';
+    if (error.code === 'CHANGE_SET_REVIEW_REQUIRED') return 'The app could not confirm the apply outcome. Refresh the result and inspect the project before retrying.';
+    if (error.code === 'CHANGE_SET_BLOCKED') return 'These changes are blocked by the active project or workspace safety policy.';
+    if (error.code === 'CHANGE_SET_ALREADY_DECIDED') return 'This change set already has a decision. Refresh the authoritative result.';
+  }
+  return 'The proposed changes could not be loaded. Refresh and try again.';
+}

@@ -13,6 +13,7 @@ import type {
   RuntimeRunInput,
   RuntimeReadyResult
 } from '@/modules/ai-runs/repositories/agent-runtime';
+import type { RuntimeChangeProposal } from '@/modules/ai-runs/domain/change-types';
 
 export interface FakeRuntimeCommandOptions {
   readonly delayMs?: number;
@@ -25,6 +26,7 @@ export interface FakeRuntimeRunOptions {
   readonly delayMs?: number;
   readonly events?: readonly RuntimeInferenceEvent[];
   readonly cancelOutcome?: RuntimeRunCancellationResult['outcome'];
+  readonly proposedChanges?: readonly RuntimeChangeProposal[];
 }
 
 export class FakeAgentRuntime implements IAgentRuntime {
@@ -65,6 +67,9 @@ export class FakeAgentRuntime implements IAgentRuntime {
       return;
     }
     yield { type: 'started' };
+    if (this.runOptions.proposedChanges && this.runOptions.proposedChanges.length > 0) {
+      yield { type: 'changes.proposed', changes: this.runOptions.proposedChanges };
+    }
     const response = this.runOptions.response ?? `Fake response for: ${input.request}`;
     const deltaSize = Math.max(1, this.runOptions.deltaSize ?? 32);
     for (let offset = 0; offset < response.length; offset += deltaSize) {

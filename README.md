@@ -1,9 +1,9 @@
 # Personal AI Workspace
 
-This repository contains the MVP1 local foundation for the Personal AI Workspace.
-Task 1.1 provides strict TypeScript packages, a production-style Compose topology,
-startup checks, and health/readiness endpoints. Product features are intentionally
-added in later tasks.
+This repository contains the MVP1 local Personal AI Workspace through the Task 4.1
+fake/code gate. Projects, conversations, per-run consent, fake sandbox commands,
+live SSE from the fake runtime, and reviewed change application are implemented.
+Real OpenShell/Hermes/NIM integration and the live MVP1 acceptance gate remain open.
 
 ## Local prerequisites
 
@@ -21,6 +21,11 @@ The Compose file deliberately requires the TLS certificate directory, workspace
 root, gateway image, and provider secret path. Missing values fail before services
 are created. Only `personal-ai-app` publishes a loopback port; PostgreSQL and the
 gateway are private services.
+
+The app keeps disposable staging at `STAGING_ROOT` and private file recovery
+snapshots at `RECOVERY_ROOT` (Compose defaults to
+`/var/lib/personal-ai/recovery`). Keep both outside the authoritative workspace
+and retain the recovery volume when inspecting an ambiguous apply result.
 
 ## Checks
 
@@ -42,6 +47,8 @@ For deterministic local/CI consent and staging tests without a credential, set
 `NODE_ENV=development` or `test` and `AGENT_RUNTIME_MODE=fake`. Production rejects
 fake mode. The fake adapter never calls OpenShell or NVIDIA and still requires the
 durable PostgreSQL consent checkpoint before staging.
+Fake runs and proposed changes are development/test evidence, not proof of a
+live sandbox or provider.
 
 ## Frontend-only review preview
 

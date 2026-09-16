@@ -18,6 +18,8 @@ describe('AI run OpenAPI document', () => {
       '/api/v1/ai-runs/{runId}': { get: ['200', '401', '404', '500'] },
       '/api/v1/ai-runs/{runId}/egress-manifest': { get: ['200', '401', '404', '409', '500'] },
       '/api/v1/ai-runs/{runId}/egress-decision': { post: ['200', '400', '401', '403', '404', '409', '500', '503'] },
+      '/api/v1/ai-runs/{runId}/proposed-change-set': { get: ['200', '401', '404', '500'] },
+      '/api/v1/ai-runs/{runId}/proposed-change-set/decision': { post: ['200', '400', '401', '403', '404', '409', '503'] },
       '/api/v1/ai-runs/{runId}/start': { post: ['200', '202', '400', '401', '403', '404', '409', '500'] },
       '/api/v1/ai-runs/{runId}/cancel': { post: ['200', '202', '400', '401', '403', '404', '409', '500', '503'] },
       '/api/v1/ai-runs/{runId}/events': { get: ['200', '401', '404', '500'] }
@@ -35,7 +37,7 @@ describe('AI run OpenAPI document', () => {
       }
     }
     const schemas = asRecord(asRecord(document.components).schemas);
-    ['CreateAiRunRequest', 'EgressDecisionRequest', 'AiRunSnapshot', 'EgressManifest', 'AiRunIntentEnvelope', 'EgressDecisionEnvelope', 'SandboxCommandDecisionRequest', 'SandboxCommand', 'SandboxCommandListEnvelope', 'SandboxCommandEnvelope', 'EmptyObject'].forEach((schema) => {
+    ['CreateAiRunRequest', 'EgressDecisionRequest', 'AiRunSnapshot', 'EgressManifest', 'AiRunIntentEnvelope', 'EgressDecisionEnvelope', 'ProposedChangeSetDecisionRequest', 'ProposedChangeSet', 'ProposedChangeOperation', 'ProposedChangeSetResult', 'ProposedChangeSetEnvelope', 'SandboxCommandDecisionRequest', 'SandboxCommand', 'SandboxCommandListEnvelope', 'SandboxCommandEnvelope', 'EmptyObject'].forEach((schema) => {
       expect(schemas[schema]).toBeDefined();
     });
     const runSnapshot = asRecord(schemas.AiRunSnapshot);

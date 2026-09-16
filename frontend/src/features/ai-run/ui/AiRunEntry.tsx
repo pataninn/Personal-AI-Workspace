@@ -18,6 +18,7 @@ import { createIdempotencyKey } from '@/shared/lib/idempotency-key';
 import { ProviderConsentDialog } from '@/features/ai-run/ui/ProviderConsentDialog';
 import { AiRunTimeline } from '@/features/ai-run/ui/AiRunTimeline';
 import { CommandExecutionSurface } from '@/features/ai-run/ui/CommandExecutionSurface';
+import { ProposedChangeReview } from '@/features/ai-run/ui/ProposedChangeReview';
 import { RunStatusCard, type RunStatusState } from '@/features/ai-run/ui/RunStatusCard';
 
 interface AiRunEntryProps {
@@ -250,6 +251,7 @@ export function AiRunEntry({ projectId, conversationId, request, disabled, archi
         {runState ? <RunStatusCard state={runState} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} onRetry={retryRun} onRefresh={refreshStatus} /> : null}
         {runState && shouldRenderTimeline(runState.snapshot) ? <AiRunTimeline snapshot={runState.snapshot} projectId={projectId} conversationId={conversationId} csrfToken={csrfToken} disabled={disabled} onSnapshotChange={(snapshot) => { setRunState((current) => current ? { ...current, snapshot } : current); }} onConversationReconciled={onConversationReconciled} /> : null}
         {runState && shouldRenderCommandSurface(runState.snapshot) && runState.snapshot.runtime?.sandboxReady ? <CommandExecutionSurface run={runState.snapshot} readOnly={disabled} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} /> : null}
+        {runState && shouldRenderChangeReview(runState.snapshot) ? <ProposedChangeReview runId={runState.snapshot.runId} readOnly={disabled} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} /> : null}
       </section>
       <ProviderConsentDialog
         manifest={runState?.manifest ?? null}
@@ -275,6 +277,10 @@ function shouldRenderTimeline(snapshot: AiRunSnapshot): boolean {
 
 function shouldRenderCommandSurface(snapshot: AiRunSnapshot): boolean {
   return ['ready', 'queued', 'running', 'waiting_approval'].includes(snapshot.status);
+}
+
+function shouldRenderChangeReview(snapshot: AiRunSnapshot): boolean {
+  return ['succeeded', 'failed', 'blocked', 'cancelled', 'review_required'].includes(snapshot.status);
 }
 
 function mapIntentError(error: unknown): string {
