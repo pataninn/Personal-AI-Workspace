@@ -18,6 +18,10 @@ describe('AI run OpenAPI document', () => {
       '/api/v1/ai-runs/{runId}': { get: ['200', '401', '404', '500'] },
       '/api/v1/ai-runs/{runId}/egress-manifest': { get: ['200', '401', '404', '409', '500'] },
       '/api/v1/ai-runs/{runId}/egress-decision': { post: ['200', '400', '401', '403', '404', '409', '500', '503'] }
+      ,'/api/v1/ai-runs/{runId}/commands': { get: ['200', '401', '404', '500'] }
+      ,'/api/v1/ai-runs/{runId}/commands/{commandId}': { get: ['200', '401', '404', '500'] }
+      ,'/api/v1/ai-runs/{runId}/commands/{commandId}/decision': { post: ['200', '400', '401', '403', '404', '409', '500', '503'] }
+      ,'/api/v1/ai-runs/{runId}/commands/{commandId}/cancel': { post: ['200', '202', '400', '401', '403', '404', '409', '500', '503'] }
     };
     for (const [path, methods] of Object.entries(expected)) {
       const pathItem = asRecord(paths[path]);
@@ -28,8 +32,11 @@ describe('AI run OpenAPI document', () => {
       }
     }
     const schemas = asRecord(asRecord(document.components).schemas);
-    ['CreateAiRunRequest', 'EgressDecisionRequest', 'AiRunSnapshot', 'EgressManifest', 'AiRunIntentEnvelope', 'EgressDecisionEnvelope'].forEach((schema) => {
+    ['CreateAiRunRequest', 'EgressDecisionRequest', 'AiRunSnapshot', 'EgressManifest', 'AiRunIntentEnvelope', 'EgressDecisionEnvelope', 'SandboxCommandDecisionRequest', 'SandboxCommand', 'SandboxCommandListEnvelope', 'SandboxCommandEnvelope'].forEach((schema) => {
       expect(schemas[schema]).toBeDefined();
     });
+    const listSchema = asRecord(schemas.SandboxCommandList);
+    const listProperties = asRecord(listSchema.properties);
+    expect(asRecord(listProperties.commands).maxItems).toBe(100);
   });
 });

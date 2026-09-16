@@ -15,6 +15,7 @@ import { Alert, Button } from '@/shared/ui';
 import { createIdempotencyKey } from '@/shared/lib/idempotency-key';
 
 import { ProviderConsentDialog } from '@/features/ai-run/ui/ProviderConsentDialog';
+import { CommandExecutionSurface } from '@/features/ai-run/ui/CommandExecutionSurface';
 import { RunStatusCard, type RunStatusState } from '@/features/ai-run/ui/RunStatusCard';
 
 interface AiRunEntryProps {
@@ -244,6 +245,7 @@ export function AiRunEntry({ projectId, conversationId, request, disabled, archi
           {formError}
         </form>
         {runState ? <RunStatusCard state={runState} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} onRetry={retryRun} onRefresh={refreshStatus} /> : null}
+        {runState?.snapshot.status === 'ready' && runState.snapshot.runtime?.sandboxReady ? <CommandExecutionSurface run={runState.snapshot} readOnly={disabled} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} /> : null}
       </section>
       <ProviderConsentDialog
         manifest={runState?.manifest ?? null}

@@ -21,6 +21,8 @@ import type { AppLogger } from '@/shared/logging/logger';
 import { sendError } from '@/shared/http/response';
 import { AiRunDomainError } from '@/modules/ai-runs/domain/ai-run-errors';
 import { createAiRunRouter, type AiRunRouterDependencies } from '@/modules/ai-runs';
+import { createSandboxCommandRouter, type SandboxCommandRouterDependencies } from '@/modules/ai-runs/controllers/sandbox-command-router';
+import { SandboxCommandDomainError } from '@/modules/ai-runs/domain/command-errors';
 
 export interface CreateAppOptions {
   readonly logger: AppLogger;
@@ -32,6 +34,7 @@ export interface CreateAppOptions {
   readonly conversations?: ConversationRouterDependencies;
   readonly workspace?: WorkspaceRouterDependencies;
   readonly aiRuns?: AiRunRouterDependencies;
+  readonly sandboxCommands?: SandboxCommandRouterDependencies;
 }
 
 const requestIdMiddleware: RequestHandler = (request, response, next) => {
@@ -95,6 +98,9 @@ function toAppError(error: unknown): AppError | null {
   if (error instanceof AiRunDomainError) {
     return new AppError(error.code, error.statusCode, error.message, error.details);
   }
+  if (error instanceof SandboxCommandDomainError) {
+    return new AppError(error.code, error.statusCode, error.message, error.details);
+  }
   if (isMalformedJsonError(error)) {
     return new AppError('VALIDATION_ERROR', 400, 'The request body is not valid JSON.');
   }
@@ -155,6 +161,9 @@ export function createApp(options: CreateAppOptions): Express {
   }
   if (options.aiRuns) {
     app.use('/api/v1', createAiRunRouter(options.aiRuns));
+  }
+  if (options.sandboxCommands) {
+    app.use('/api/v1', createSandboxCommandRouter(options.sandboxCommands));
   }
 
   if (options.staticDirectory && existsSync(options.staticDirectory)) {

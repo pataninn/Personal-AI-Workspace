@@ -45,3 +45,62 @@ export interface AiRunSnapshot {
 export interface AiRunIntent extends AiRunSnapshot {
   readonly manifest?: EgressManifest;
 }
+
+export type SandboxCommandClassification = 'safe' | 'sensitive' | 'blocked';
+
+export type SandboxCommandDecision = 'pending' | 'approved' | 'rejected' | 'not_applicable';
+
+export type SandboxCommandStatus =
+  | 'awaiting_approval'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'timed_out'
+  | 'output_truncated'
+  | 'rejected'
+  | 'blocked'
+  | 'cancel_requested'
+  | 'cancelled'
+  | 'review_required';
+
+export interface SandboxCommandLimits {
+  readonly wallTimeMs: number;
+  readonly idleTimeMs: number;
+  readonly maxOutputBytes: number;
+  readonly maxProcesses: number;
+  readonly memoryBytes: number;
+  readonly cpuTimeMs: number;
+  readonly network: 'denied';
+}
+
+export type SandboxCommandTermination = 'completed' | 'failed' | 'timed_out' | 'output_truncated' | 'cancelled';
+
+export interface SandboxCommandResult {
+  readonly exitCode: number | null;
+  readonly termination: SandboxCommandTermination;
+  readonly durationMs: number;
+  readonly outputBytes: number;
+  readonly outputLineCount: number;
+  readonly outputTruncated: boolean;
+  readonly outputSha256: string;
+  readonly outputPreview?: string;
+}
+
+export interface SandboxCommandSnapshot {
+  readonly commandId: string;
+  readonly runId: string;
+  readonly proposalHash: string;
+  readonly command: string;
+  readonly summary: string;
+  readonly argumentCount: number;
+  readonly argumentSummaries: readonly string[];
+  readonly cwd: string;
+  readonly classification: SandboxCommandClassification;
+  readonly decision: SandboxCommandDecision;
+  readonly status: SandboxCommandStatus;
+  readonly limits: SandboxCommandLimits;
+  readonly result?: SandboxCommandResult;
+  readonly safeMessage: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}

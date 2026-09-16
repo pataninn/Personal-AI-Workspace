@@ -18,13 +18,14 @@ import { FakeAgentRuntime } from '@/infrastructure/sandbox/fake-agent-runtime';
 import { UnsupportedOpenShellAgentRuntime } from '@/infrastructure/sandbox/unsupported-openshell-agent-runtime';
 import { LocalStagingGateway } from '@/infrastructure/staging/local-staging-gateway';
 import { TypeOrmAiRunRepository } from '@/infrastructure/database/repositories/typeorm-ai-run-repository';
+import { TypeOrmSandboxCommandRepository } from '@/infrastructure/database/repositories/typeorm-sandbox-command-repository';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { runStartupChecks } from '@/infrastructure/startup/startup-checks';
 import { GetReadinessUseCase } from '@/modules/health';
 import { BootstrapLocalUserUseCase, clearSessionCookie, GetSessionUseCase, LoginUseCase, LogoutUseCase } from '@/modules/auth';
 import { CreateProjectUseCase, GetProjectUseCase, ListProjectsUseCase, UpdateProjectStatusUseCase } from '@/modules/projects';
 import { AddUserMessageUseCase, CreateConversationUseCase, GetConversationUseCase, ListConversationsUseCase } from '@/modules/conversations';
-import { CreateAiRunUseCase, DecideEgressUseCase, GetAiRunUseCase } from '@/modules/ai-runs';
+import { CancelSandboxCommandUseCase, CreateAiRunUseCase, DecideEgressUseCase, DecideSandboxCommandUseCase, GetAiRunUseCase, GetSandboxCommandUseCase, ListSandboxCommandsUseCase } from '@/modules/ai-runs';
 import { ListWorkspaceFilesUseCase, ReadWorkspaceTextUseCase, SearchWorkspaceTextUseCase, TreeWorkspaceFilesUseCase } from '@/modules/files';
 import { StartupChecksError } from '@/shared/errors/app-error';
 import { createLogger, type AppLogger } from '@/shared/logging/logger';
@@ -71,6 +72,7 @@ export async function createApplication(
     const projectRepository = new TypeOrmProjectRepository(dataSource);
     const conversationRepository = new TypeOrmConversationRepository(dataSource);
     const aiRunRepository = new TypeOrmAiRunRepository(dataSource);
+    const commandRepository = new TypeOrmSandboxCommandRepository(dataSource);
     const workspaceBoundary = new WorkspaceBoundaryAdapter({
       containerRoot: config.workspaceRoot,
       identityFile: config.workspaceIdentityFile,
@@ -147,6 +149,15 @@ export async function createApplication(
           createAiRun,
           getAiRun: new GetAiRunUseCase(aiRunRepository),
           decideEgress: new DecideEgressUseCase(aiRunRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot),
+          appOrigin: config.appOrigin,
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
+        sandboxCommands: {
+          getSession,
+          listCommands: new ListSandboxCommandsUseCase(aiRunRepository, commandRepository),
+           getCommand: new GetSandboxCommandUseCase(aiRunRepository, commandRepository),
+           decideCommand: new DecideSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger),
+           cancelCommand: new CancelSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger),
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         }

@@ -183,6 +183,96 @@
         }
       }
     },
+    "/api/v1/ai-runs/{runId}/commands": {
+      "parameters": [{ "$ref": "#/components/parameters/AiRunIdPath" }],
+      "get": {
+        "tags": ["AI runs"],
+        "summary": "List bounded sandbox command proposals",
+        "operationId": "listSandboxCommands",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Safe command proposal and result metadata.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SandboxCommandListEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/AiRunNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/ai-runs/{runId}/commands/{commandId}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/AiRunIdPath" },
+        { "$ref": "#/components/parameters/CommandIdPath" }
+      ],
+      "get": {
+        "tags": ["AI runs"],
+        "summary": "Read one bounded sandbox command snapshot",
+        "operationId": "getSandboxCommand",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Safe command proposal and result metadata.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SandboxCommandEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/CommandNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/ai-runs/{runId}/commands/{commandId}/decision": {
+      "parameters": [
+        { "$ref": "#/components/parameters/AiRunIdPath" },
+        { "$ref": "#/components/parameters/CommandIdPath" }
+      ],
+      "post": {
+        "tags": ["AI runs"],
+        "summary": "Approve or reject an exact sandbox command proposal",
+        "operationId": "decideSandboxCommand",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/IdempotencyHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SandboxCommandDecisionRequest" } } } },
+        "responses": {
+          "200": { "description": "Decision persisted before any runtime execution.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SandboxCommandEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/CommandNotFound" },
+          "409": { "$ref": "#/components/responses/CommandConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/RuntimeUnavailable" }
+        }
+      }
+    },
+    "/api/v1/ai-runs/{runId}/commands/{commandId}/cancel": {
+      "parameters": [
+        { "$ref": "#/components/parameters/AiRunIdPath" },
+        { "$ref": "#/components/parameters/CommandIdPath" }
+      ],
+      "post": {
+        "tags": ["AI runs"],
+        "summary": "Request best-effort sandbox command cancellation",
+        "operationId": "cancelSandboxCommand",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/IdempotencyHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EmptyObject" } } } },
+        "responses": {
+          "200": { "description": "Cancellation already confirmed or command was not started.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SandboxCommandEnvelope" } } } },
+          "202": { "description": "Cancellation request accepted for a running command.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SandboxCommandEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/CommandNotFound" },
+          "409": { "$ref": "#/components/responses/CommandConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/CommandReviewRequired" }
+        }
+      }
+    },
     "/api/v1/projects/{projectId}/files": {
       "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
       "get": {
@@ -279,6 +369,7 @@
       "ProjectIdPath": { "name": "projectId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
       "ConversationIdPath": { "name": "conversationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
       "AiRunIdPath": { "name": "runId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
+      "CommandIdPath": { "name": "commandId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
       "ProjectIdQuery": { "name": "projectId", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
       "ConversationListLimit": { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 } },
       "HistoryLimit": { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 200 } },
@@ -308,6 +399,9 @@
       "AiRunNotFound": { "description": "The AI run is not available to this owner.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "AI_RUN_NOT_FOUND", "message": "The AI run was not found." } } } } },
       "EgressConflict": { "description": "The egress manifest is stale or the decision has already changed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "RuntimeUnavailable": { "description": "The verified sandbox runtime is unavailable; no provider call is started.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "RUNTIME_UNAVAILABLE", "message": "The local sandbox gateway is unavailable. Nothing was staged or sent to NVIDIA." } } } } },
+      "CommandNotFound": { "description": "The command is not available to this owner and run.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "CommandConflict": { "description": "The command proposal or decision is stale, blocked, or not executable in the current run state.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "CommandReviewRequired": { "description": "The command cancellation or cleanup outcome is unknown; no automatic retry is started.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "InternalError": { "description": "Unexpected server failure.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "INTERNAL_ERROR", "message": "Internal server error." } } } } }
     },
     "schemas": {
@@ -333,7 +427,15 @@
       "AiRunEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunSnapshot" }, "error": { "type": "null" } }, "additionalProperties": false },
       "AiRunIntentEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunIntent" }, "error": { "type": "null" } }, "additionalProperties": false },
       "EgressManifestEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/EgressManifest" }, "error": { "type": "null" } }, "additionalProperties": false },
-      "EgressDecisionEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunIntent" }, "error": { "type": "null" } }, "additionalProperties": false }
+      "EgressDecisionEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunIntent" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "EmptyObject": { "type": "object", "additionalProperties": false },
+      "SandboxCommandDecisionRequest": { "type": "object", "required": ["proposalHash", "decision"], "properties": { "proposalHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "decision": { "type": "string", "enum": ["approve", "reject"] } }, "additionalProperties": false },
+      "SandboxCommandLimits": { "type": "object", "required": ["wallTimeMs", "idleTimeMs", "maxOutputBytes", "maxProcesses", "memoryBytes", "cpuTimeMs", "network"], "properties": { "wallTimeMs": { "type": "integer", "minimum": 1, "maximum": 30000 }, "idleTimeMs": { "type": "integer", "minimum": 1, "maximum": 10000 }, "maxOutputBytes": { "type": "integer", "minimum": 1, "maximum": 65536 }, "maxProcesses": { "type": "integer", "minimum": 1, "maximum": 8 }, "memoryBytes": { "type": "integer", "minimum": 1, "maximum": 268435456 }, "cpuTimeMs": { "type": "integer", "minimum": 1, "maximum": 10000 }, "network": { "type": "string", "enum": ["denied"] } }, "additionalProperties": false },
+      "SandboxCommandResult": { "type": "object", "required": ["exitCode", "termination", "durationMs", "outputBytes", "outputLineCount", "outputTruncated", "outputSha256"], "properties": { "exitCode": { "type": "integer", "nullable": true }, "termination": { "type": "string", "enum": ["completed", "failed", "timed_out", "output_truncated", "cancelled"] }, "durationMs": { "type": "integer", "minimum": 0 }, "outputBytes": { "type": "integer", "minimum": 0 }, "outputLineCount": { "type": "integer", "minimum": 0 }, "outputTruncated": { "type": "boolean" }, "outputSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "outputPreview": { "type": "string", "maxLength": 4096, "description": "Optional server-redacted plain-text preview; never HTML or ANSI." } }, "additionalProperties": false },
+      "SandboxCommand": { "type": "object", "required": ["commandId", "runId", "proposalHash", "command", "summary", "argumentCount", "argumentSummaries", "cwd", "classification", "decision", "status", "runtimeKind", "limits", "safeMessage", "createdAt", "updatedAt"], "properties": { "commandId": { "$ref": "#/components/schemas/Uuid" }, "runId": { "$ref": "#/components/schemas/Uuid" }, "proposalHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "command": { "type": "string" }, "summary": { "type": "string", "maxLength": 160, "description": "Server-bounded plain-text command summary; it never contains raw paths or credentials." }, "argumentCount": { "type": "integer", "minimum": 0 }, "argumentSummaries": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 64 } }, "cwd": { "type": "string", "description": "Safe display-relative working-directory label." }, "classification": { "type": "string", "enum": ["safe", "sensitive", "blocked"] }, "decision": { "type": "string", "enum": ["pending", "approved", "rejected", "not_applicable"] }, "status": { "type": "string", "enum": ["awaiting_approval", "running", "completed", "failed", "timed_out", "output_truncated", "rejected", "blocked", "cancel_requested", "cancelled", "review_required"] }, "runtimeKind": { "type": "string", "enum": ["fake"] }, "limits": { "$ref": "#/components/schemas/SandboxCommandLimits" }, "result": { "$ref": "#/components/schemas/SandboxCommandResult" }, "safeMessage": { "type": "string" }, "createdAt": { "type": "string", "format": "date-time" }, "updatedAt": { "type": "string", "format": "date-time" } }, "additionalProperties": false },
+      "SandboxCommandList": { "type": "object", "required": ["commands"], "properties": { "commands": { "type": "array", "maxItems": 100, "items": { "$ref": "#/components/schemas/SandboxCommand" } } }, "additionalProperties": false },
+      "SandboxCommandEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "type": "object", "required": ["command"], "properties": { "command": { "$ref": "#/components/schemas/SandboxCommand" } }, "additionalProperties": false }, "error": { "type": "null" } }, "additionalProperties": false },
+      "SandboxCommandListEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/SandboxCommandList" }, "error": { "type": "null" } }, "additionalProperties": false }
       ,"WorkspaceEntry": { "type": "object", "required": ["path", "name", "type"], "properties": { "path": { "type": "string" }, "name": { "type": "string" }, "type": { "type": "string", "enum": ["file", "directory"] }, "sizeBytes": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
       "WorkspaceList": { "type": "object", "required": ["directory", "entries", "truncated"], "properties": { "directory": { "type": "string" }, "entries": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceEntry" } }, "truncated": { "type": "boolean" } }, "additionalProperties": false },
       "WorkspaceTreeNode": { "allOf": [{ "$ref": "#/components/schemas/WorkspaceEntry" }, { "type": "object", "properties": { "children": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceTreeNode" } } }, "additionalProperties": false }] },

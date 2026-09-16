@@ -169,6 +169,71 @@ test('records rejection without staging or fake runtime readiness', async () => 
   assert.equal(body.data.manifest.preConsentNotice, 'Nothing was copied to the run staging area or sent to NVIDIA.');
 });
 
+test('exposes a fake sandbox proposal and accepts only its persisted hash decision', async () => {
+  const { origin } = await startPreview();
+  const cookie = await signIn(origin);
+  const created = await createAiRun(origin, cookie, 'command-run', 'Inspect the seeded project.');
+  const runId = created.body.data.run.runId;
+  const approveRun = await fetch(`${origin}/api/v1/ai-runs/${runId}/egress-decision`, {
+    method: 'POST',
+    headers: headers(cookie, { 'Idempotency-Key': 'command-run-approval' }),
+    body: JSON.stringify({ manifestHash: created.body.data.manifest.manifestHash, decision: 'approve' })
+  });
+  assert.equal(approveRun.status, 200);
+
+  const listed = await fetch(`${origin}/api/v1/ai-runs/${runId}/commands`, { headers: { Cookie: cookie } });
+  const proposal = (await listed.json()).data.commands[0];
+  assert.equal(listed.status, 200);
+  assert.equal(proposal.status, 'awaiting_approval');
+  assert.equal(proposal.command, 'rg');
+  assert.equal(proposal.cwd, '.');
+  assert.equal('args' in proposal, false);
+  assert.doesNotMatch(JSON.stringify(proposal), /NVIDIA_API_KEY|\/workspace|personal-ai-app/iu);
+
+  const decision = await fetch(`${origin}/api/v1/ai-runs/${runId}/commands/${proposal.commandId}/decision`, {
+    method: 'POST',
+    headers: headers(cookie, { 'Idempotency-Key': 'command-approval' }),
+    body: JSON.stringify({ proposalHash: proposal.proposalHash, decision: 'approve' })
+  });
+  const decisionBody = await decision.json();
+  assert.equal(decision.status, 200);
+  assert.equal(decisionBody.data.command.status, 'completed');
+  assert.match(decisionBody.data.command.result.outputPreview, /simulated sandbox output/iu);
+  assert.doesNotMatch(decisionBody.data.command.result.outputPreview, /bar|mixed-value/iu);
+
+  const replay = await fetch(`${origin}/api/v1/ai-runs/${runId}/commands/${proposal.commandId}/decision`, {
+    method: 'POST',
+    headers: headers(cookie, { 'Idempotency-Key': 'command-approval' }),
+    body: JSON.stringify({ proposalHash: proposal.proposalHash, decision: 'approve' })
+  });
+  assert.equal(replay.status, 200);
+  assert.equal((await replay.json()).data.command.status, 'completed');
+});
+
+test('cancels a pending preview command without running it', async () => {
+  const { origin } = await startPreview();
+  const cookie = await signIn(origin);
+  const created = await createAiRun(origin, cookie, 'command-cancel', 'Keep the command pending.');
+  const runId = created.body.data.run.runId;
+  await fetch(`${origin}/api/v1/ai-runs/${runId}/egress-decision`, {
+    method: 'POST',
+    headers: headers(cookie, { 'Idempotency-Key': 'command-cancel-run-approval' }),
+    body: JSON.stringify({ manifestHash: created.body.data.manifest.manifestHash, decision: 'approve' })
+  });
+  const listing = await fetch(`${origin}/api/v1/ai-runs/${runId}/commands`, { headers: { Cookie: cookie } });
+  const proposal = (await listing.json()).data.commands[0];
+  const cancel = await fetch(`${origin}/api/v1/ai-runs/${runId}/commands/${proposal.commandId}/cancel`, {
+    method: 'POST',
+    headers: headers(cookie, { 'Idempotency-Key': 'command-cancel-intent' }),
+    body: JSON.stringify({})
+  });
+  const cancelBody = await cancel.json();
+  assert.equal(cancel.status, 202);
+  assert.equal(cancelBody.data.command.status, 'cancelled');
+  assert.equal(cancelBody.data.command.decision, 'rejected');
+  assert.equal('result' in cancelBody.data.command, false);
+});
+
 test('omits unsafe paths and never echoes request secrets in the preview response', async () => {
   const { origin } = await startPreview();
   const cookie = await signIn(origin);
