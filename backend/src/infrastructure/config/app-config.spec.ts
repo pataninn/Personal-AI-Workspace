@@ -73,6 +73,23 @@ describe('loadConfig', () => {
     })).toThrow(ConfigurationError);
   });
 
+  it('rejects the fake runtime in production', () => {
+    expect(() => loadConfig({
+      ...validEnvironment,
+      NODE_ENV: 'production',
+      APP_PROTOCOL: 'https',
+      APP_ORIGIN: 'https://127.0.0.1:8443',
+      TLS_CERT_FILE: '/tmp/tls.crt',
+      TLS_KEY_FILE: '/tmp/tls.key',
+      AGENT_RUNTIME_MODE: 'fake'
+    })).toThrow(ConfigurationError);
+  });
+
+  it('rejects staging roots that overlap authoritative or recovery areas', () => {
+    expect(() => loadConfig({ ...validEnvironment, STAGING_ROOT: '/workspace/runs' })).toThrow(ConfigurationError);
+    expect(() => loadConfig({ ...validEnvironment, STAGING_ROOT: '/var/lib/personal-ai/recovery' })).toThrow(ConfigurationError);
+  });
+
   it('never accepts an absent database URL', () => {
     const environment = { ...validEnvironment };
     delete environment.DATABASE_URL;

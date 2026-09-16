@@ -14,12 +14,17 @@ import { TypeOrmConversationRepository } from '@/infrastructure/database/reposit
 import { WorkspaceBoundaryAdapter } from '@/infrastructure/workspace/workspace-boundary';
 import { WorkspaceGatewayAdapter } from '@/infrastructure/workspace/workspace-gateway';
 import { OpenShellGatewayClient } from '@/infrastructure/sandbox/openshell-gateway-client';
+import { FakeAgentRuntime } from '@/infrastructure/sandbox/fake-agent-runtime';
+import { UnsupportedOpenShellAgentRuntime } from '@/infrastructure/sandbox/unsupported-openshell-agent-runtime';
+import { LocalStagingGateway } from '@/infrastructure/staging/local-staging-gateway';
+import { TypeOrmAiRunRepository } from '@/infrastructure/database/repositories/typeorm-ai-run-repository';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { runStartupChecks } from '@/infrastructure/startup/startup-checks';
 import { GetReadinessUseCase } from '@/modules/health';
 import { BootstrapLocalUserUseCase, clearSessionCookie, GetSessionUseCase, LoginUseCase, LogoutUseCase } from '@/modules/auth';
 import { CreateProjectUseCase, GetProjectUseCase, ListProjectsUseCase, UpdateProjectStatusUseCase } from '@/modules/projects';
 import { AddUserMessageUseCase, CreateConversationUseCase, GetConversationUseCase, ListConversationsUseCase } from '@/modules/conversations';
+import { CreateAiRunUseCase, DecideEgressUseCase, GetAiRunUseCase } from '@/modules/ai-runs';
 import { ListWorkspaceFilesUseCase, ReadWorkspaceTextUseCase, SearchWorkspaceTextUseCase, TreeWorkspaceFilesUseCase } from '@/modules/files';
 import { StartupChecksError } from '@/shared/errors/app-error';
 import { createLogger, type AppLogger } from '@/shared/logging/logger';
@@ -57,13 +62,15 @@ export async function createApplication(
       workspaceIdentity: config.workspaceIdentity,
       gatewayClient,
       nimProfile: config.nimProfile,
-      nimModel: config.nimModel
+      nimModel: config.nimModel,
+      agentRuntimeMode: config.agentRuntimeMode
     });
     readiness.markReady();
     const userRepository = new TypeOrmUserRepository(dataSource);
     const sessionRepository = new TypeOrmSessionRepository(dataSource);
     const projectRepository = new TypeOrmProjectRepository(dataSource);
     const conversationRepository = new TypeOrmConversationRepository(dataSource);
+    const aiRunRepository = new TypeOrmAiRunRepository(dataSource);
     const workspaceBoundary = new WorkspaceBoundaryAdapter({
       containerRoot: config.workspaceRoot,
       identityFile: config.workspaceIdentityFile,
@@ -73,6 +80,9 @@ export async function createApplication(
       containerRoot: config.workspaceRoot,
       workspaceBoundary
     });
+    const agentRuntime = config.agentRuntimeMode === 'fake' ? new FakeAgentRuntime() : new UnsupportedOpenShellAgentRuntime();
+    const stagingGateway = new LocalStagingGateway({ stagingRoot: config.stagingRoot });
+    const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel);
     const passwordHasher = new BcryptPasswordHasher();
     const tokenProvider = new OpaqueTokenProvider(config.sessionSecret);
     const clock = new SystemClock();
@@ -130,6 +140,14 @@ export async function createApplication(
           treeWorkspaceFiles: new TreeWorkspaceFilesUseCase(projectRepository, workspaceGateway),
           readWorkspaceText: new ReadWorkspaceTextUseCase(projectRepository, workspaceGateway),
           searchWorkspaceText: new SearchWorkspaceTextUseCase(projectRepository, workspaceGateway),
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
+        aiRuns: {
+          getSession,
+          createAiRun,
+          getAiRun: new GetAiRunUseCase(aiRunRepository),
+          decideEgress: new DecideEgressUseCase(aiRunRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot),
+          appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         }
       }),

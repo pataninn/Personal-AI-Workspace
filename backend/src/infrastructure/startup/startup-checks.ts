@@ -16,6 +16,7 @@ export interface StartupCheckOptions {
   readonly gatewayClient: OpenShellGatewayClient;
   readonly nimProfile: string;
   readonly nimModel: string;
+  readonly agentRuntimeMode?: 'fake' | 'openshell';
 }
 
 async function checkDatabase(dataSource: DataSource): Promise<StartupCheckFailure | null> {
@@ -128,11 +129,14 @@ async function checkNim(options: StartupCheckOptions): Promise<StartupCheckFailu
 }
 
 export async function runStartupChecks(options: StartupCheckOptions): Promise<void> {
+  const externalChecks = options.agentRuntimeMode === 'fake' ? [] : [
+    checkOpenShell(options.gatewayClient),
+    checkNim(options)
+  ];
   const failures = (await Promise.all([
     checkDatabase(options.dataSource),
     checkWorkspaceIdentity(options),
-    checkOpenShell(options.gatewayClient),
-    checkNim(options)
+    ...externalChecks
   ])).filter((failure): failure is StartupCheckFailure => failure !== null);
   if (failures.length > 0) {
     throw new StartupChecksError(failures);

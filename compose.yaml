@@ -47,6 +47,7 @@ services:
       OPENSHELL_NIM_ENDPOINT: https://integrate.api.nvidia.com/v1
       OPENSHELL_NIM_MODEL: ${NIM_MODEL:?NIM_MODEL must be set in .env}
       OPENSHELL_POLICY_FILE: /etc/openshell/policy.yaml
+      OPENSHELL_STAGING_ROOT: /var/lib/personal-ai/staging
       NVIDIA_API_KEY_FILE: /run/secrets/nvidia_api_key
     secrets:
       - nvidia_api_key
@@ -54,6 +55,11 @@ services:
       - type: volume
         source: pai_openshell_state
         target: /var/lib/openshell
+      # The selected release must restrict each sandbox to its unique run subdirectory.
+      # This volume is not an authoritative workspace mount and does not prove transfer support.
+      - type: volume
+        source: pai_staging
+        target: /var/lib/personal-ai/staging
       - type: bind
         source: ./docker/policies/openshell-policy.yaml
         target: /etc/openshell/policy.yaml
@@ -100,6 +106,8 @@ services:
       OPENSHELL_NETWORK: sandbox-control
       NIM_PROFILE: ${NIM_PROFILE:-nvidia-hosted-nim}
       NIM_MODEL: ${NIM_MODEL:?NIM_MODEL must be set in .env}
+      AGENT_RUNTIME_MODE: ${AGENT_RUNTIME_MODE:-openshell}
+      STAGING_ROOT: /var/lib/personal-ai/staging
       LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
       postgres:

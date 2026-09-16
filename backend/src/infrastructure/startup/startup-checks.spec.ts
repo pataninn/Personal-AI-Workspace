@@ -54,6 +54,12 @@ describe('runStartupChecks', () => {
     expect(gatewayClient.getNimReadiness).toHaveBeenCalledTimes(1);
   });
 
+  it('skips placeholder gateway and provider probes for explicit fake development mode', async () => {
+    await expect(runStartupChecks(options({ agentRuntimeMode: 'fake' }))).resolves.toBeUndefined();
+    expect(gatewayClient.checkHealth).not.toHaveBeenCalled();
+    expect(gatewayClient.getNimReadiness).not.toHaveBeenCalled();
+  });
+
   it('fails closed on a workspace identity mismatch', async () => {
     await expect(runStartupChecks(options({ workspaceIdentity: 'different' }))).rejects.toMatchObject({
       failures: expect.arrayContaining([

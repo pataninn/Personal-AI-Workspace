@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { afterEach, test } from 'node:test';
 
+import viteConfig from '../vite.config.mjs';
 import { createPreviewApi } from './preview-api.mjs';
 
 const servers = [];
@@ -17,7 +18,7 @@ async function startPreview() {
   });
   servers.push(server);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return `http://127.0.0.1:${server.address().port}`;
+  return { api, origin: `http://127.0.0.1:${server.address().port}` };
 }
 
 async function signIn(origin) {
@@ -34,8 +35,20 @@ function headers(cookie, extra = {}) {
   return { Cookie: cookie, 'Content-Type': 'application/json', 'X-CSRF-Token': 'preview-only-csrf-token', ...extra };
 }
 
+const PROJECT_ID = '873c096a-bc57-4a0c-85da-10d4febde96b';
+const CONVERSATION_ID = '489541da-57a5-416d-afb6-45b19ad7bc98';
+
+async function createAiRun(origin, cookie, key, request, context = {}) {
+  const response = await fetch(`${origin}/api/v1/projects/${PROJECT_ID}/ai-runs`, {
+    method: 'POST',
+    headers: headers(cookie, { 'Idempotency-Key': key }),
+    body: JSON.stringify({ conversationId: CONVERSATION_ID, request, context })
+  });
+  return { response, body: await response.json() };
+}
+
 test('requires a mock session and allows login with made-up input', async () => {
-  const origin = await startPreview();
+  const { origin } = await startPreview();
   const unauthenticated = await fetch(`${origin}/api/v1/auth/session`);
   assert.equal(unauthenticated.status, 401);
   const cookie = await signIn(origin);
@@ -47,7 +60,7 @@ test('requires a mock session and allows login with made-up input', async () => 
 });
 
 test('shows seeded projects and supports create, archive, and restore', async () => {
-  const origin = await startPreview();
+  const { origin } = await startPreview();
   const cookie = await signIn(origin);
   const list = await fetch(`${origin}/api/v1/projects`, { headers: { Cookie: cookie } });
   const projects = (await list.json()).data.projects;
@@ -68,7 +81,7 @@ test('shows seeded projects and supports create, archive, and restore', async ()
 });
 
 test('supports seeded history, new conversations, and idempotent message retries', async () => {
-  const origin = await startPreview();
+  const { origin } = await startPreview();
   const cookie = await signIn(origin);
   const projectId = '873c096a-bc57-4a0c-85da-10d4febde96b';
   const list = await fetch(`${origin}/api/v1/projects/${projectId}/conversations`, { headers: { Cookie: cookie } });
@@ -96,9 +109,94 @@ test('supports seeded history, new conversations, and idempotent message retries
 });
 
 test('does not expose the preview mock through unknown API routes', async () => {
-  const origin = await startPreview();
+  const { origin } = await startPreview();
   const cookie = await signIn(origin);
   const response = await fetch(`${origin}/api/v1/runs`, { headers: { Cookie: cookie } });
   assert.equal(response.status, 404);
   assert.equal((await response.json()).error.code, 'PREVIEW_NOT_FOUND');
+});
+
+test('creates a metadata-only run and reaches fake readiness after exact approval', async () => {
+  const { origin } = await startPreview();
+  const cookie = await signIn(origin);
+  const created = await createAiRun(origin, cookie, 'ai-run-approve', 'Inspect the seeded project.', { relativePaths: ['src/index.ts'], includeRecentMessages: true });
+  assert.equal(created.response.status, 202);
+  assert.equal(created.body.data.run.status, 'pending_approval');
+  assert.equal(created.body.data.run.decision, 'pending');
+  assert.deepEqual(created.body.data.manifest.content.categories, ['Request', 'Recent conversation', 'Project files']);
+  assert.deepEqual(created.body.data.manifest.content.relativePaths, ['src/index.ts']);
+  assert.equal(created.body.data.manifest.content.messageCount, 1);
+  assert.equal('request' in created.body.data.run, false);
+  assert.equal('request' in created.body.data.manifest, false);
+
+  const replay = await createAiRun(origin, cookie, 'ai-run-approve', 'Inspect the seeded project.', { relativePaths: ['src/index.ts'], includeRecentMessages: true });
+  assert.equal(replay.response.status, 200);
+  assert.equal(replay.body.data.run.runId, created.body.data.run.runId);
+
+  const manifestResponse = await fetch(`${origin}/api/v1/ai-runs/${created.body.data.run.runId}/egress-manifest`, { headers: { Cookie: cookie } });
+  const manifestBody = await manifestResponse.json();
+  assert.equal(manifestBody.data.manifestHash, created.body.data.manifest.manifestHash);
+
+  const decision = await fetch(`${origin}/api/v1/ai-runs/${created.body.data.run.runId}/egress-decision`, {
+    method: 'POST',
+    headers: headers(cookie, { 'Idempotency-Key': 'ai-decision-approve' }),
+    body: JSON.stringify({ manifestHash: created.body.data.manifest.manifestHash, decision: 'approve' })
+  });
+  const decisionBody = await decision.json();
+  assert.equal(decision.status, 200);
+  assert.equal(decisionBody.data.run.status, 'ready');
+  assert.equal(decisionBody.data.run.decision, 'approved');
+  assert.deepEqual(decisionBody.data.run.runtime, { kind: 'fake', sandboxReady: true });
+  assert.match(decisionBody.data.run.safeMessage, /private run environment ready/iu);
+  assert.doesNotMatch(JSON.stringify(decisionBody), /NVIDIA_API_KEY|preview-secret|\/workspace/iu);
+});
+
+test('records rejection without staging or fake runtime readiness', async () => {
+  const { origin } = await startPreview();
+  const cookie = await signIn(origin);
+  const created = await createAiRun(origin, cookie, 'ai-run-reject', 'Keep this request local.');
+  const decision = await fetch(`${origin}/api/v1/ai-runs/${created.body.data.run.runId}/egress-decision`, {
+    method: 'POST',
+    headers: headers(cookie, { 'Idempotency-Key': 'ai-decision-reject' }),
+    body: JSON.stringify({ manifestHash: created.body.data.manifest.manifestHash, decision: 'reject' })
+  });
+  const body = await decision.json();
+  assert.equal(decision.status, 200);
+  assert.equal(body.data.run.status, 'rejected');
+  assert.equal(body.data.run.decision, 'rejected');
+  assert.equal(body.data.run.providerTransmission, 'not_started_confirmed');
+  assert.equal('runtime' in body.data.run, false);
+  assert.equal(body.data.manifest.preConsentNotice, 'Nothing was copied to the run staging area or sent to NVIDIA.');
+});
+
+test('omits unsafe paths and never echoes request secrets in the preview response', async () => {
+  const { origin } = await startPreview();
+  const cookie = await signIn(origin);
+  const created = await createAiRun(origin, cookie, 'ai-run-safe-disclosure', 'NVIDIA_API_KEY=preview-secret', {
+    relativePaths: ['/workspace/private.env', '../outside.txt', 'secrets.txt', 'src/index.ts']
+  });
+  const serialized = JSON.stringify(created.body);
+  assert.equal(created.response.status, 202);
+  assert.deepEqual(created.body.data.manifest.content.relativePaths, ['src/index.ts']);
+  assert.equal(created.body.data.manifest.redaction.omittedItemCount, 3);
+  assert.doesNotMatch(serialized, /NVIDIA_API_KEY|preview-secret|\/workspace|outside\.txt|secrets\.txt/iu);
+});
+
+test('reset clears fake runs and idempotency while restoring the seeded state', async () => {
+  const { api, origin } = await startPreview();
+  const cookie = await signIn(origin);
+  const first = await createAiRun(origin, cookie, 'ai-run-reset', 'Before reset.');
+  api.reset();
+  const oldStatus = await fetch(`${origin}/api/v1/ai-runs/${first.body.data.run.runId}`, { headers: { Cookie: cookie } });
+  assert.equal(oldStatus.status, 404);
+  const second = await createAiRun(origin, cookie, 'ai-run-reset', 'After reset.');
+  assert.equal(second.response.status, 202);
+  assert.notEqual(second.body.data.run.runId, first.body.data.run.runId);
+});
+
+test('keeps the preview API out of normal production builds', () => {
+  const production = viteConfig({ mode: 'production', command: 'build' });
+  const preview = viteConfig({ mode: 'preview', command: 'serve' });
+  assert.deepEqual(production.plugins, []);
+  assert.equal(preview.plugins.some((plugin) => plugin.name === 'personal-ai-workspace-preview-api'), true);
 });

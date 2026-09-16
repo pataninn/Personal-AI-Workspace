@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { CreateConversationDialog } from '@/features/conversation-management';
+import { AiRunEntry } from '@/features/ai-run';
 import { MessageComposer } from '@/features/message-persistence';
 import { getConversation, listConversations } from '@/entities/conversation';
 import type { ConversationHistoryResponse, ConversationSnapshot } from '@/entities/conversation';
@@ -278,7 +279,24 @@ function ConversationPane(props: ConversationPaneProps): React.JSX.Element {
         {messages.length === 0 ? <div data-testid="conversation-history-empty"><EmptyState title="No messages yet" detail="Add a message below to start this conversation." /></div> : <ol className="message-history">{messages.map((message) => <li key={message.id} data-testid="message-item" className={`message-item message-${message.role}`}><span data-testid="message-role" className="message-role">{message.role === 'user' ? 'You' : 'Assistant'}</span><p data-testid="message-content" className="message-content">{message.content}</p><time data-testid="message-created-at" dateTime={message.createdAt}>{formatTimestamp(message.createdAt)}</time></li>)}</ol>}
         {props.history.nextBeforeSequence !== null ? <div className="history-pagination"><Button type="button" variant="secondary" data-testid="conversation-history-load-older" aria-busy={isOlderLoading} disabled={isOlderLoading} onClick={props.onLoadOlder}>Load older messages</Button>{isOlderLoading ? <p data-testid="conversation-history-load-older-status" role="status">Loading older messages...</p> : null}{props.olderError ? <div data-testid="conversation-history-load-older-error" role="alert"><p>{props.olderError.detail}</p><Button type="button" variant="secondary" data-testid="conversation-history-load-older-retry" onClick={props.onLoadOlder}>Try again</Button></div> : null}</div> : null}
       </div>
-      <MessageComposer projectId={props.projectId} conversationId={conversation.id} disabled={props.disabled} archivedDescriptionId={props.archivedDescriptionId} onSaved={props.onSaved} />
+      <MessageComposer
+        projectId={props.projectId}
+        conversationId={conversation.id}
+        disabled={props.disabled}
+        archivedDescriptionId={props.archivedDescriptionId}
+        inputLabel="Request for the assistant"
+        inputHelp="Ctrl+Enter or Cmd+Enter saves the message. Saving a message does not start an AI run."
+        renderAdditionalActions={(request) => (
+          <AiRunEntry
+            projectId={props.projectId}
+            conversationId={conversation.id}
+            request={request}
+            disabled={props.disabled}
+            archivedDescriptionId={props.archivedDescriptionId}
+          />
+        )}
+        onSaved={props.onSaved}
+      />
     </Card>
   );
 }

@@ -135,7 +135,8 @@ a {
 
 button:focus-visible,
 a:focus-visible,
-input:focus-visible {
+input:focus-visible,
+textarea:focus-visible {
   outline: 3px solid var(--color-ring);
   outline-offset: 2px;
 }
@@ -784,6 +785,127 @@ input:focus-visible {
   gap: var(--space-2);
 }
 
+.ai-run-entry {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-3);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+}
+
+.ai-run-entry form {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.ai-run-actions {
+  justify-content: flex-start;
+}
+
+.run-status-card {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  box-shadow: var(--shadow-sm);
+}
+
+.run-status-card h3 {
+  margin: 0;
+  line-height: var(--heading-line-height);
+}
+
+.run-status-card h3:focus {
+  outline: 3px solid var(--color-ring);
+  outline-offset: 3px;
+}
+
+.run-status-live,
+.run-status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.provider-consent-manifest {
+  display: grid;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.provider-consent-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.provider-consent-details > div {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  padding: var(--space-3);
+}
+
+.provider-consent-details dt {
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.provider-consent-details dd {
+  margin: var(--space-1) 0 0;
+  overflow-wrap: anywhere;
+}
+
+.provider-consent-context {
+  min-width: 0;
+}
+
+.provider-consent-context h3 {
+  margin: 0 0 var(--space-2);
+  font-size: 1rem;
+}
+
+.provider-consent-context ul {
+  display: grid;
+  max-height: 10rem;
+  gap: var(--space-1);
+  margin: 0;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-6);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+
+.provider-consent-context li,
+.provider-consent-context code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.provider-consent-context code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.provider-consent-redaction {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.provider-consent-actions {
+  flex-wrap: wrap;
+}
+
+.provider-consent-actions .button {
+  min-width: 11rem;
+}
+
 .project-boundary-card .project-relative-root {
   margin-top: var(--space-6);
   color: var(--color-text);
@@ -1177,6 +1299,19 @@ input:focus-visible {
 
   .dialog-actions .button {
     flex: 1 1 10rem;
+  }
+
+  .provider-consent-details {
+    grid-template-columns: 1fr;
+  }
+
+  .provider-consent-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .provider-consent-actions .button {
+    width: 100%;
   }
 
   .conversation-layout {

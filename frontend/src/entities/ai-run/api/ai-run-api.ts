@@ -1,0 +1,282 @@
+import { ApiClientError, getJson, postJson } from '@/shared/api';
+import { createIdempotencyKey } from '@/shared/lib/idempotency-key';
+import type {
+  AiRunIntent,
+  AiRunPhase,
+  AiRunSnapshot,
+  AiRunStatus,
+  CleanupStatus,
+  EgressDecision,
+  EgressManifest,
+  ProviderTransmissionStatus
+} from '@/entities/ai-run/model/types';
+
+const PROJECTS_PATH = '/api/v1/projects';
+const RUNS_PATH = '/api/v1/ai-runs';
+const DEFAULT_PROVIDER = 'NVIDIA hosted NIM';
+const DEFAULT_PROVIDER_PROFILE = 'nvidia-hosted-nim';
+const DEFAULT_MODEL = 'nvidia/nemotron-3-super-120b-a12b';
+const PRE_CONSENT_NOTICE = 'Nothing has been copied to the run staging area or sent to NVIDIA yet.';
+const REQUEST_ONLY_NOTICE = 'No project files or facts are selected. Only your request will be sent if you approve.';
+const SAFE_CATEGORIES = new Set(['Request', 'Recent conversation', 'Project files', 'Structured facts', 'Selected relative paths']);
+
+export interface CreateAiRunRequest {
+  readonly conversationId: string;
+  readonly request: string;
+  readonly context: {
+    readonly relativePaths: readonly string[];
+    readonly includeRecentMessages: boolean;
+  };
+}
+
+export interface EgressDecisionRequest {
+  readonly manifestHash: string;
+  readonly decision: 'approve' | 'reject';
+}
+
+export function createAiRun(
+  projectId: string,
+  request: CreateAiRunRequest,
+  csrfToken: string,
+  idempotencyKey: string = createIdempotencyKey()
+): Promise<AiRunIntent> {
+  return postJson<unknown>(
+    `${PROJECTS_PATH}/${encodeURIComponent(projectId)}/ai-runs`,
+    request,
+    { 'X-CSRF-Token': csrfToken, 'Idempotency-Key': idempotencyKey }
+  ).then((value) => normalizeAiRunIntent(value));
+}
+
+export function getAiRun(runId: string): Promise<AiRunSnapshot> {
+  return getJson<unknown>(`${RUNS_PATH}/${encodeURIComponent(runId)}`).then((value) => normalizeAiRunSnapshot(value));
+}
+
+export function getEgressManifest(runId: string): Promise<EgressManifest> {
+  return getJson<unknown>(`${RUNS_PATH}/${encodeURIComponent(runId)}/egress-manifest`).then((value) => normalizeEgressManifest(value, runId));
+}
+
+export function decideEgress(
+  runId: string,
+  request: EgressDecisionRequest,
+  csrfToken: string,
+  idempotencyKey: string = createIdempotencyKey()
+): Promise<AiRunSnapshot> {
+  return postJson<unknown>(
+    `${RUNS_PATH}/${encodeURIComponent(runId)}/egress-decision`,
+    request,
+    { 'X-CSRF-Token': csrfToken, 'Idempotency-Key': idempotencyKey }
+  ).then((value) => normalizeAiRunSnapshot(value));
+}
+
+export function normalizeAiRunIntent(value: unknown): AiRunIntent {
+  const record = asRecord(value) ?? {};
+  const resource = asRecord(record.run) ?? record;
+  const snapshot = normalizeAiRunSnapshot(resource);
+  const manifestSource = record.manifest ?? resource.manifest;
+  return {
+    ...snapshot,
+    ...(manifestSource !== undefined ? { manifest: normalizeEgressManifest(manifestSource, snapshot.runId, snapshot.manifestHash) } : {})
+  };
+}
+
+export function normalizeAiRunSnapshot(value: unknown): AiRunSnapshot {
+  const envelope = asRecord(value) ?? {};
+  const record = asRecord(envelope.run) ?? envelope;
+  const runId = readString(record, 'runId') ?? readString(record, 'id');
+  const projectId = readString(record, 'projectId');
+  const conversationId = readString(record, 'conversationId');
+  const status = readStatus(record.status);
+  const phase = readPhase(record.phase);
+  const manifest = asRecord(record.manifest);
+  const manifestHash = readHash(record.manifestHash) ?? (manifest ? readHash(manifest.manifestHash) : undefined);
+  const decision = readDecision(record.decision);
+  if (!runId || !projectId || !conversationId || !status || !phase || !manifestHash || !decision) {
+    throw invalidResponse();
+  }
+  const runtime = normalizeRuntime(record.runtime, record.runtimeKind, record.sandboxReady);
+  return {
+    runId,
+    projectId,
+    conversationId,
+    status,
+    phase,
+    manifestHash,
+    decision,
+    safeMessage: readString(record.safeMessage) ?? '',
+    cleanup: readCleanup(record.cleanup),
+    providerTransmission: readProviderTransmission(record.providerTransmission),
+    stagingItemCount: readNonNegativeNumber(record.stagingItemCount),
+    ...(runtime ? { runtime } : {})
+  };
+}
+
+export function normalizeEgressManifest(value: unknown, runId: string, fallbackManifestHash?: string): EgressManifest {
+  const record = asRecord(value) ?? {};
+  const source = asRecord(record.manifest) ?? record;
+  const content = asRecord(source.content);
+  const redaction = asRecord(source.redaction);
+  const manifestHash = readHash(source.manifestHash) ?? (fallbackManifestHash && readHash(fallbackManifestHash));
+  if (!manifestHash) {
+    throw invalidResponse();
+  }
+
+  const rawPaths = content?.relativePaths ?? source.relativePaths;
+  const filePaths = source.files;
+  const relativePaths = normalizeRelativePaths(rawPaths, filePaths);
+  const rawCategories = content?.categories ?? source.categories;
+  const categories = normalizeCategories(rawCategories, relativePaths.length > 0);
+  const excludedItemCount = readNonNegativeNumber(redaction?.excludedItemCount ?? source.excludedItemCount);
+  const omittedItemCount = readNonNegativeNumber(redaction?.omittedItemCount ?? source.omittedItemCount);
+  const itemCount = readNonNegativeNumber(content?.itemCount ?? source.itemCount, relativePaths.length);
+  const byteEstimate = readNonNegativeNumber(content?.byteEstimate ?? source.byteEstimate);
+  const tokenEstimate = readNonNegativeNumber(content?.tokenEstimate ?? source.tokenEstimate);
+  const provider = readSafeLabel(source.provider, DEFAULT_PROVIDER);
+  const providerProfile = readSafeLabel(source.providerProfile, DEFAULT_PROVIDER_PROFILE);
+  const model = readSafeModel(source.model);
+  const omissionSummary = readOmissionSummary(
+    redaction?.summary ?? source.omissionSummary,
+    excludedItemCount + omittedItemCount > 0
+  );
+
+  return {
+    runId,
+    manifestHash,
+    status: 'pending_approval',
+    provider,
+    providerProfile,
+    model,
+    categories,
+    relativePaths,
+    itemCount,
+    byteEstimate,
+    tokenEstimate,
+    excludedItemCount,
+    omittedItemCount,
+    omissionSummary,
+    bestEffortSecretDetection: readBoolean(source.bestEffortSecretDetection, true),
+    preConsentNotice: PRE_CONSENT_NOTICE
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function readString(value: unknown, key?: string): string | undefined {
+  const candidate = key === undefined ? value : asRecord(value)?.[key];
+  return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined;
+}
+
+function readSafeLabel(value: unknown, fallback: string): string {
+  const candidate = readString(value);
+  if (!candidate || candidate.length > 160 || /[\r\n]/u.test(candidate)) {
+    return fallback;
+  }
+  return candidate;
+}
+
+function readSafeModel(value: unknown): string {
+  const candidate = readSafeLabel(value, DEFAULT_MODEL);
+  return /^https?:\/\//iu.test(candidate) || candidate.includes('NVIDIA_API_KEY') ? DEFAULT_MODEL : candidate;
+}
+
+function readHash(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value) ? value : undefined;
+}
+
+function readNonNegativeNumber(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
+}
+
+function normalizeRelativePaths(rawPaths: unknown, rawFiles: unknown): readonly string[] {
+  const candidates: unknown[] = [];
+  if (Array.isArray(rawPaths)) {
+    candidates.push(...rawPaths);
+  }
+  if (Array.isArray(rawFiles)) {
+    candidates.push(...rawFiles.map((entry) => asRecord(entry)?.relativePath));
+  }
+  const paths: string[] = [];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') {
+      continue;
+    }
+    const path = safeRelativePath(candidate);
+    if (path && !paths.includes(path)) {
+      paths.push(path);
+    }
+  }
+  return paths;
+}
+
+function safeRelativePath(value: string): string | null {
+  const trimmed = value.trim().replaceAll('\\', '/').replace(/^\.\//u, '');
+  if (!trimmed || /[\u0000-\u001f\u007f]/u.test(trimmed) || trimmed.startsWith('/') || /^[a-z]:/iu.test(trimmed) || trimmed.split('/').some((part) => part === '..')) {
+    return null;
+  }
+  return trimmed;
+}
+
+function readOmissionSummary(value: unknown, hasOmissions: boolean): string {
+  const candidate = readString(value);
+  const safeSummaries = new Set([
+    'No selected items were excluded.',
+    'Some items were excluded by local safety policy.',
+    'Some selected items were excluded by local safety policy.'
+  ]);
+  if (candidate && safeSummaries.has(candidate)) {
+    return candidate;
+  }
+  return hasOmissions ? 'Some selected items were excluded by local safety policy.' : 'No selected items were excluded.';
+}
+
+function readBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function normalizeCategories(value: unknown, hasFiles: boolean): readonly string[] {
+  const categories = Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string' && SAFE_CATEGORIES.has(entry))
+    : [];
+  const result = categories.length > 0 ? [...new Set(categories)] : ['Request'];
+  if (hasFiles && !result.includes('Project files')) {
+    result.push('Project files');
+  }
+  if (!hasFiles && result.includes('Project files')) {
+    return result.filter((category) => category !== 'Project files');
+  }
+  return result;
+}
+
+function readStatus(value: unknown): AiRunStatus | undefined {
+  return value === 'pending_approval' || value === 'rejected' || value === 'staging' || value === 'ready' || value === 'failed' || value === 'review_required' ? value : undefined;
+}
+
+function readPhase(value: unknown): AiRunPhase | undefined {
+  return value === 'manifest' || value === 'decision' || value === 'staging' || value === 'runtime' || value === 'review' ? value : undefined;
+}
+
+function readDecision(value: unknown): EgressDecision | undefined {
+  return value === 'pending' || value === 'approved' || value === 'rejected' ? value : undefined;
+}
+
+function readCleanup(value: unknown): CleanupStatus {
+  return value === 'complete' || value === 'unknown' ? value : 'not_started';
+}
+
+function readProviderTransmission(value: unknown): ProviderTransmissionStatus {
+  return value === 'not_started_confirmed' || value === 'unknown' ? value : 'not_started';
+}
+
+function normalizeRuntime(value: unknown, runtimeKind: unknown, sandboxReady: unknown): AiRunSnapshot['runtime'] | undefined {
+  const record = asRecord(value);
+  const kind = record?.kind ?? runtimeKind;
+  const ready = record?.sandboxReady ?? sandboxReady;
+  return kind === 'fake' && ready === true ? { kind: 'fake', sandboxReady: true } : undefined;
+}
+
+function invalidResponse(): ApiClientError {
+  return new ApiClientError(200, 'INVALID_RESPONSE', 'The local app returned an invalid AI run response.');
+}
+
+export { DEFAULT_MODEL, DEFAULT_PROVIDER, PRE_CONSENT_NOTICE, REQUEST_ONLY_NOTICE };

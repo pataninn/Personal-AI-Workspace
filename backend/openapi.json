@@ -6,7 +6,7 @@
     "description": "Authenticated REST endpoints for project-scoped conversations and persisted messages."
   },
   "servers": [{ "url": "/" }],
-  "tags": [{ "name": "Conversations" }, { "name": "Workspace files" }],
+  "tags": [{ "name": "Conversations" }, { "name": "Workspace files" }, { "name": "AI runs" }],
   "paths": {
     "/api/v1/projects/{projectId}/conversations": {
       "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
@@ -98,6 +98,88 @@
           "409": { "$ref": "#/components/responses/MutationConflict" },
           "500": { "$ref": "#/components/responses/InternalError" },
           "503": { "$ref": "#/components/responses/WorkspaceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/ai-runs": {
+      "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
+      "post": {
+        "tags": ["AI runs"],
+        "summary": "Create an AI run intent and provider disclosure",
+        "operationId": "createAiRunIntent",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/IdempotencyHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateAiRunRequest" } } } },
+        "responses": {
+          "202": { "description": "Manifest created without staging or provider transmission.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AiRunIntentEnvelope" } } } },
+          "200": { "description": "Identical idempotent request replayed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AiRunIntentEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectNotFound" },
+          "409": { "$ref": "#/components/responses/MutationConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/WorkspaceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/ai-runs/{runId}": {
+      "parameters": [{ "$ref": "#/components/parameters/AiRunIdPath" }],
+      "get": {
+        "tags": ["AI runs"],
+        "summary": "Read an AI run status snapshot",
+        "operationId": "getAiRun",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Safe run lifecycle snapshot.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AiRunEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/AiRunNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/ai-runs/{runId}/egress-manifest": {
+      "parameters": [{ "$ref": "#/components/parameters/AiRunIdPath" }],
+      "get": {
+        "tags": ["AI runs"],
+        "summary": "Read the metadata-only provider disclosure",
+        "operationId": "getAiRunEgressManifest",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Immutable manifest without raw content or credentials.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EgressManifestEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/AiRunNotFound" },
+          "409": { "$ref": "#/components/responses/EgressConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/ai-runs/{runId}/egress-decision": {
+      "parameters": [{ "$ref": "#/components/parameters/AiRunIdPath" }],
+      "post": {
+        "tags": ["AI runs"],
+        "summary": "Approve or reject the exact provider disclosure",
+        "operationId": "decideAiRunEgress",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/IdempotencyHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EgressDecisionRequest" } } } },
+        "responses": {
+          "200": { "description": "Decision recorded; approval may return staging/runtime readiness.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EgressDecisionEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/AiRunNotFound" },
+          "409": { "$ref": "#/components/responses/EgressConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/RuntimeUnavailable" }
         }
       }
     },
@@ -196,6 +278,7 @@
     "parameters": {
       "ProjectIdPath": { "name": "projectId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
       "ConversationIdPath": { "name": "conversationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
+      "AiRunIdPath": { "name": "runId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
       "ProjectIdQuery": { "name": "projectId", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
       "ConversationListLimit": { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 } },
       "HistoryLimit": { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 200 } },
@@ -222,6 +305,9 @@
       "WorkspaceNotFound": { "description": "The project-relative entry was not found.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "WorkspaceUnsupported": { "description": "The entry is not an approved UTF-8 text file or is binary.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "WorkspaceLimit": { "description": "A bounded workspace inspection limit was exceeded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "AiRunNotFound": { "description": "The AI run is not available to this owner.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "AI_RUN_NOT_FOUND", "message": "The AI run was not found." } } } } },
+      "EgressConflict": { "description": "The egress manifest is stale or the decision has already changed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "RuntimeUnavailable": { "description": "The verified sandbox runtime is unavailable; no provider call is started.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "RUNTIME_UNAVAILABLE", "message": "The local sandbox gateway is unavailable. Nothing was staged or sent to NVIDIA." } } } } },
       "InternalError": { "description": "Unexpected server failure.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "INTERNAL_ERROR", "message": "Internal server error." } } } } }
     },
     "schemas": {
@@ -238,7 +324,16 @@
       "ConversationEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/Conversation" }, "error": { "type": "null" } }, "additionalProperties": false },
       "MessageEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/Message" }, "error": { "type": "null" } }, "additionalProperties": false },
       "ConversationListEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/ConversationList" }, "error": { "type": "null" } }, "additionalProperties": false },
-      "ConversationHistoryEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/ConversationHistory" }, "error": { "type": "null" } }, "additionalProperties": false }
+      "ConversationHistoryEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/ConversationHistory" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "CreateAiRunRequest": { "type": "object", "required": ["conversationId", "request"], "properties": { "conversationId": { "$ref": "#/components/schemas/Uuid" }, "request": { "type": "string", "minLength": 1, "maxLength": 8000, "description": "Trimmed request, capped at 8,000 UTF-8 bytes; credential-like assignments are rejected." }, "context": { "type": "object", "properties": { "relativePaths": { "type": "array", "maxItems": 100, "items": { "type": "string", "maxLength": 2048 } }, "includeRecentMessages": { "type": "boolean", "default": false, "description": "Selects at most 20 latest redacted messages within the aggregate byte/token ceiling." } }, "additionalProperties": false } }, "additionalProperties": false },
+      "EgressDecisionRequest": { "type": "object", "required": ["manifestHash", "decision"], "properties": { "manifestHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "decision": { "type": "string", "enum": ["approve", "reject"] } }, "additionalProperties": false },
+      "AiRunSnapshot": { "type": "object", "required": ["runId", "projectId", "conversationId", "status", "phase", "manifestHash", "decision", "safeMessage", "cleanup", "providerTransmission", "stagingItemCount"], "properties": { "runId": { "$ref": "#/components/schemas/Uuid" }, "projectId": { "$ref": "#/components/schemas/Uuid" }, "conversationId": { "$ref": "#/components/schemas/Uuid" }, "status": { "type": "string", "enum": ["pending_approval", "rejected", "staging", "ready", "failed", "review_required"] }, "phase": { "type": "string", "enum": ["manifest", "decision", "staging", "runtime", "review"] }, "manifestHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "decision": { "type": "string", "enum": ["pending", "approved", "rejected"] }, "safeMessage": { "type": "string" }, "cleanup": { "type": "string", "enum": ["not_started", "complete", "unknown"] }, "providerTransmission": { "type": "string", "enum": ["not_started", "not_started_confirmed", "unknown"] }, "stagingItemCount": { "type": "integer", "minimum": 0 }, "runtime": { "type": "object", "required": ["kind", "sandboxReady"], "properties": { "kind": { "type": "string", "enum": ["fake"] }, "sandboxReady": { "type": "boolean", "enum": [true] } }, "additionalProperties": false } }, "additionalProperties": false },
+      "EgressManifest": { "type": "object", "required": ["runId", "manifestHash", "status", "provider", "providerProfile", "model", "content", "redaction", "bestEffortSecretDetection", "preConsentNotice"], "properties": { "runId": { "$ref": "#/components/schemas/Uuid" }, "manifestHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "status": { "type": "string" }, "provider": { "type": "string", "example": "NVIDIA hosted NIM" }, "providerProfile": { "type": "string" }, "model": { "type": "string", "example": "nvidia/nemotron-3-super-120b-a12b" }, "content": { "type": "object", "required": ["categories", "relativePaths", "itemCount", "byteEstimate", "tokenEstimate", "messageCount"], "properties": { "categories": { "type": "array", "items": { "type": "string" } }, "relativePaths": { "type": "array", "items": { "type": "string" } }, "itemCount": { "type": "integer", "minimum": 0 }, "byteEstimate": { "type": "integer", "minimum": 0 }, "tokenEstimate": { "type": "integer", "minimum": 0 }, "messageCount": { "type": "integer", "minimum": 0 } }, "additionalProperties": false }, "redaction": { "type": "object", "required": ["excludedItemCount", "omittedItemCount", "summary"], "properties": { "excludedItemCount": { "type": "integer", "minimum": 0 }, "omittedItemCount": { "type": "integer", "minimum": 0 }, "summary": { "type": "string" } }, "additionalProperties": false }, "bestEffortSecretDetection": { "type": "boolean", "enum": [true] }, "preConsentNotice": { "type": "string" }, "emptyContextNotice": { "type": "string" } }, "additionalProperties": false },
+      "AiRunIntent": { "type": "object", "required": ["run", "manifest"], "properties": { "run": { "$ref": "#/components/schemas/AiRunSnapshot" }, "manifest": { "$ref": "#/components/schemas/EgressManifest" } }, "additionalProperties": false },
+      "AiRunEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunSnapshot" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "AiRunIntentEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunIntent" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "EgressManifestEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/EgressManifest" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "EgressDecisionEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunIntent" }, "error": { "type": "null" } }, "additionalProperties": false }
       ,"WorkspaceEntry": { "type": "object", "required": ["path", "name", "type"], "properties": { "path": { "type": "string" }, "name": { "type": "string" }, "type": { "type": "string", "enum": ["file", "directory"] }, "sizeBytes": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
       "WorkspaceList": { "type": "object", "required": ["directory", "entries", "truncated"], "properties": { "directory": { "type": "string" }, "entries": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceEntry" } }, "truncated": { "type": "boolean" } }, "additionalProperties": false },
       "WorkspaceTreeNode": { "allOf": [{ "$ref": "#/components/schemas/WorkspaceEntry" }, { "type": "object", "properties": { "children": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceTreeNode" } } }, "additionalProperties": false }] },

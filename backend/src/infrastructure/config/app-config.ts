@@ -56,6 +56,8 @@ const appEnvironmentSchema = z.object({
   NIM_PROFILE: z.string().min(1).default('nvidia-hosted-nim'),
   NIM_ENDPOINT: z.string().url().default('https://integrate.api.nvidia.com/v1'),
   NIM_MODEL: z.string().default(EXPECTED_NIM_MODEL),
+  AGENT_RUNTIME_MODE: z.enum(['fake', 'openshell']).default('openshell'),
+  STAGING_ROOT: z.string().min(1).default('/var/lib/personal-ai/staging'),
   STARTUP_CHECK_TIMEOUT_MS: z
     .string()
     .default('3000')
@@ -92,6 +94,8 @@ export interface AppConfig {
   readonly nimProfile: string;
   readonly nimEndpoint: string;
   readonly nimModel: string;
+  readonly agentRuntimeMode: 'fake' | 'openshell';
+  readonly stagingRoot: string;
   readonly startupCheckTimeoutMs: number;
   readonly database: DatabaseConfig;
 }
@@ -112,6 +116,12 @@ function validateCrossFieldConfiguration(value: z.infer<typeof appEnvironmentSch
   if (!value.WORKSPACE_IDENTITY_FILE.startsWith(`${value.WORKSPACE_ROOT}/`)) {
     details.push({ field: 'WORKSPACE_IDENTITY_FILE', message: 'Identity marker must be inside WORKSPACE_ROOT' });
   }
+  if (isSameOrNestedPath(value.STAGING_ROOT, value.WORKSPACE_ROOT)) {
+    details.push({ field: 'STAGING_ROOT', message: 'STAGING_ROOT must not overlap the authoritative workspace.' });
+  }
+  if (isSameOrNestedPath(value.STAGING_ROOT, '/var/lib/personal-ai/recovery') || isSameOrNestedPath(value.STAGING_ROOT, '/var/log/personal-ai')) {
+    details.push({ field: 'STAGING_ROOT', message: 'STAGING_ROOT must remain separate from recovery and log areas.' });
+  }
   if (value.APP_PROTOCOL === 'https' && (!value.TLS_CERT_FILE || !value.TLS_KEY_FILE)) {
     details.push({ field: 'TLS_CERT_FILE', message: 'HTTPS requires TLS_CERT_FILE and TLS_KEY_FILE' });
   }
@@ -130,7 +140,16 @@ function validateCrossFieldConfiguration(value: z.infer<typeof appEnvironmentSch
   if (value.NIM_MODEL !== EXPECTED_NIM_MODEL) {
     details.push({ field: 'NIM_MODEL', message: `NIM_MODEL must be ${EXPECTED_NIM_MODEL}` });
   }
+  if (value.NODE_ENV === 'production' && value.AGENT_RUNTIME_MODE === 'fake') {
+    details.push({ field: 'AGENT_RUNTIME_MODE', message: 'Production deployments must use the verified OpenShell adapter.' });
+  }
   return details;
+}
+
+function isSameOrNestedPath(candidate: string, parent: string): boolean {
+  const normalizedCandidate = candidate.replaceAll('\\', '/').replace(/\/+$/u, '') || '/';
+  const normalizedParent = parent.replaceAll('\\', '/').replace(/\/+$/u, '') || '/';
+  return normalizedCandidate === normalizedParent || normalizedCandidate.startsWith(`${normalizedParent}/`);
 }
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -174,6 +193,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     nimProfile: parsed.data.NIM_PROFILE,
     nimEndpoint: parsed.data.NIM_ENDPOINT,
     nimModel: parsed.data.NIM_MODEL,
+    agentRuntimeMode: parsed.data.AGENT_RUNTIME_MODE,
+    stagingRoot: parsed.data.STAGING_ROOT,
     startupCheckTimeoutMs: parsed.data.STARTUP_CHECK_TIMEOUT_MS,
     database
   };

@@ -38,6 +38,11 @@ The live Compose/OpenShell/NIM checks require the unavailable local OpenShell an
 NVIDIA credentials in this delivery environment. The application startup checks
 therefore fail closed until those values and services are configured.
 
+For deterministic local/CI consent and staging tests without a credential, set
+`NODE_ENV=development` or `test` and `AGENT_RUNTIME_MODE=fake`. Production rejects
+fake mode. The fake adapter never calls OpenShell or NVIDIA and still requires the
+durable PostgreSQL consent checkpoint before staging.
+
 ## Frontend-only review preview
 
 To click through the completed UI without Docker, PostgreSQL, OpenShell, or NIM:

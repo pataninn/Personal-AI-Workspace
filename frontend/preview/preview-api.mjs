@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { createPreviewAiRuns } from './preview-ai-runs.mjs';
 import { createPreviewSeed } from './preview-seed.mjs';
 
 const COOKIE_NAME = 'pai_preview_session';
@@ -73,8 +74,15 @@ function previewSession() {
 }
 
 export function createPreviewApi() {
-  const seed = createPreviewSeed();
-  const idempotency = new Map();
+  let seed = createPreviewSeed();
+  let idempotency = new Map();
+  const aiRuns = createPreviewAiRuns();
+
+  function reset() {
+    seed = createPreviewSeed();
+    idempotency = new Map();
+    aiRuns.reset();
+  }
 
   async function handle(request, response) {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
@@ -106,6 +114,9 @@ export function createPreviewApi() {
       sendError(response, 403, 'CSRF_INVALID', 'The mock preview request is missing its CSRF token.');
       return;
     }
+    if (await aiRuns.handle(request, response, seed, parts, method)) {
+      return;
+    }
     if (parts[2] === 'projects') {
       await handleProjects(request, response, seed, idempotency, parts, method);
       return;
@@ -117,7 +128,7 @@ export function createPreviewApi() {
     sendError(response, 404, 'PREVIEW_NOT_FOUND', 'This API route is not part of the mock preview.');
   }
 
-  return { handle };
+  return { handle, reset };
 }
 
 async function handleProjects(request, response, seed, idempotency, parts, method) {
