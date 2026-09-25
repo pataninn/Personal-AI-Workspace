@@ -25,6 +25,7 @@ import { LocalStagingGateway } from '@/infrastructure/staging/local-staging-gate
 import { TypeOrmAiRunRepository } from '@/infrastructure/database/repositories/typeorm-ai-run-repository';
 import { TypeOrmSandboxCommandRepository } from '@/infrastructure/database/repositories/typeorm-sandbox-command-repository';
 import { TypeOrmProposedChangeSetRepository } from '@/infrastructure/database/repositories/typeorm-change-set-repository';
+import { TypeOrmProjectFactRepository } from '@/infrastructure/database/repositories/typeorm-project-fact-repository';
 import { WorkspaceMutationGatewayAdapter } from '@/infrastructure/workspace/workspace-mutation-gateway';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { runStartupChecks } from '@/infrastructure/startup/startup-checks';
@@ -37,6 +38,7 @@ import { InMemoryRunEventPublisher } from '@/infrastructure/ai-runs/in-memory-ru
 import { ListWorkspaceFilesUseCase, ReadWorkspaceTextUseCase, SearchWorkspaceTextUseCase, TreeWorkspaceFilesUseCase } from '@/modules/files';
 import { StartupChecksError } from '@/shared/errors/app-error';
 import { createLogger, type AppLogger } from '@/shared/logging/logger';
+import { CreateProjectFactUseCase, DeleteProjectFactUseCase, ListProjectFactsUseCase, ReviewProjectFactUseCase, UpdateProjectFactUseCase } from '@/modules/memory';
 
 export interface Application {
   readonly app: Express;
@@ -77,6 +79,7 @@ export async function createApplication(
     const userRepository = new TypeOrmUserRepository(dataSource);
     const sessionRepository = new TypeOrmSessionRepository(dataSource);
     const projectRepository = new TypeOrmProjectRepository(dataSource);
+    const projectFactRepository = new TypeOrmProjectFactRepository(dataSource);
     const conversationRepository = new TypeOrmConversationRepository(dataSource);
     const aiRunRepository = new TypeOrmAiRunRepository(dataSource);
     const commandRepository = new TypeOrmSandboxCommandRepository(dataSource);
@@ -95,12 +98,12 @@ export async function createApplication(
       workspaceBoundary,
       recoveryRoot: config.recoveryRoot
     });
-    const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository);
+    const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository);
     const stagingGateway = config.agentRuntimeMode === 'openshell'
       ? new LocalStagingGateway({ stagingRoot: config.stagingRoot })
       : undefined;
     const runEvents = new InMemoryRunEventPublisher();
-    const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel);
+    const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel, projectFactRepository);
     const proposeSandboxCommand = new ProposeSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger);
     const collectProposedChangeSet = new CollectProposedChangeSetUseCase(aiRunRepository, projectRepository, workspaceMutationGateway, changeSetRepository);
     const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, proposeSandboxCommand, projectRepository, collectProposedChangeSet);
@@ -169,7 +172,7 @@ export async function createApplication(
           getSession,
           createAiRun,
           getAiRun: new GetAiRunUseCase(aiRunRepository),
-          decideEgress: new DecideEgressUseCase(aiRunRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot),
+          decideEgress: new DecideEgressUseCase(aiRunRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot, projectFactRepository),
           getProposedChangeSet: new GetProposedChangeSetUseCase(changeSetRepository),
           decideProposedChangeSet: new DecideProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository, workspaceMutationGateway),
           appOrigin: config.appOrigin,
@@ -190,6 +193,16 @@ export async function createApplication(
           startAiRun,
           cancelAiRun,
           events: runEvents,
+          appOrigin: config.appOrigin,
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
+        projectFacts: {
+          getSession,
+          listFacts: new ListProjectFactsUseCase(projectRepository, projectFactRepository),
+          createFact: new CreateProjectFactUseCase(projectRepository, projectFactRepository),
+          updateFact: new UpdateProjectFactUseCase(projectRepository, projectFactRepository),
+          reviewFact: new ReviewProjectFactUseCase(projectRepository, projectFactRepository),
+          deleteFact: new DeleteProjectFactUseCase(projectRepository, projectFactRepository),
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         }
@@ -243,7 +256,8 @@ function createAgentRuntime(
   config: AppConfig,
   modelProvider: IModelProvider | undefined,
   workspaceGateway: WorkspaceGatewayAdapter,
-  conversationRepository: TypeOrmConversationRepository
+  conversationRepository: TypeOrmConversationRepository,
+  projectFactRepository: TypeOrmProjectFactRepository
 ): IAgentRuntime {
   if (config.agentRuntimeMode === 'fake') {
     return new FakeAgentRuntime();
@@ -258,7 +272,7 @@ function createAgentRuntime(
       message: 'The configured NVIDIA hosted provider is unavailable.'
     }]);
   }
-  return new DirectProviderAgentRuntime({ provider: modelProvider, workspaceGateway, conversationRepository });
+  return new DirectProviderAgentRuntime({ provider: modelProvider, workspaceGateway, conversationRepository, projectFactRepository });
 }
 
 async function readProviderKey(environment: NodeJS.ProcessEnv): Promise<string> {

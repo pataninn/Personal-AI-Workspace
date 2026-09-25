@@ -32,6 +32,19 @@ export interface EgressMessage {
   readonly content: string;
 }
 
+export interface EgressProjectFact {
+  readonly id: string;
+  readonly title: string;
+  readonly content: string;
+  readonly source: { readonly kind: 'user'; readonly label: 'Added by you'; readonly reference: null };
+  readonly version: number;
+  readonly verifiedAt: string | null;
+  readonly verificationStatus: 'verified' | 'needs_review';
+  readonly updatedAt: string;
+  readonly sizeBytes: number;
+  readonly sourceHash: string;
+}
+
 export interface EgressManifest {
   readonly manifestHash: string;
   readonly provider: 'NVIDIA hosted NIM';
@@ -39,6 +52,7 @@ export interface EgressManifest {
   readonly model: string;
   readonly categories: readonly string[];
   readonly files: readonly EgressFileEntry[];
+  readonly facts?: readonly EgressProjectFact[];
   readonly requestBytes: number;
   readonly messageBytes: number;
   readonly messageCount: number;

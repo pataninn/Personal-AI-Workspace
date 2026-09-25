@@ -7,6 +7,7 @@ import type {
   AiRunStatus,
   CleanupStatus,
   EgressDecision,
+  EgressFactDisclosure,
   EgressManifest,
   ProviderTransmissionStatus
 } from '@/entities/ai-run/model/types';
@@ -18,7 +19,7 @@ const DEFAULT_PROVIDER_PROFILE = 'nvidia-hosted-nim';
 const DEFAULT_MODEL = 'nvidia/nemotron-3-super-120b-a12b';
 const PRE_CONSENT_NOTICE = 'Nothing has been sent to NVIDIA yet.';
 const REQUEST_ONLY_NOTICE = 'No project files or facts are selected. Only your request will be sent if you approve.';
-const SAFE_CATEGORIES = new Set(['Request', 'Recent conversation', 'Project files', 'Structured facts', 'Selected relative paths']);
+const SAFE_CATEGORIES = new Set(['Request', 'Recent conversation', 'Project files', 'Project facts', 'Selected relative paths']);
 
 export interface CreateAiRunRequest {
   readonly conversationId: string;
@@ -26,6 +27,7 @@ export interface CreateAiRunRequest {
   readonly context: {
     readonly relativePaths: readonly string[];
     readonly includeRecentMessages: boolean;
+    readonly factIds?: readonly string[];
   };
 }
 
@@ -155,7 +157,8 @@ export function normalizeEgressManifest(value: unknown, runId: string, fallbackM
   const relativePaths = normalizeRelativePaths(rawPaths, filePaths);
   const rawCategories = content?.categories ?? source.categories;
   const messageCount = readNonNegativeNumber(content?.messageCount ?? source.messageCount);
-  const categories = normalizeCategories(rawCategories, relativePaths.length > 0, messageCount > 0);
+  const facts = normalizeFactDisclosures(content?.facts);
+  const categories = normalizeCategories(rawCategories, relativePaths.length > 0, messageCount > 0, facts.length > 0);
   const excludedItemCount = readNonNegativeNumber(redaction?.excludedItemCount ?? source.excludedItemCount);
   const omittedItemCount = readNonNegativeNumber(redaction?.omittedItemCount ?? source.omittedItemCount);
   const itemCount = Math.max(readNonNegativeNumber(content?.itemCount ?? source.itemCount, relativePaths.length), relativePaths.length);
@@ -180,6 +183,7 @@ export function normalizeEgressManifest(value: unknown, runId: string, fallbackM
     relativePaths,
     itemCount,
     messageCount,
+    facts,
     byteEstimate,
     tokenEstimate,
     excludedItemCount,
@@ -188,6 +192,56 @@ export function normalizeEgressManifest(value: unknown, runId: string, fallbackM
     bestEffortSecretDetection: readBoolean(source.bestEffortSecretDetection, true),
     preConsentNotice: PRE_CONSENT_NOTICE
   };
+}
+
+function normalizeFactDisclosures(value: unknown): readonly EgressFactDisclosure[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw invalidResponse();
+  }
+  return value.map((entry) => normalizeFactDisclosure(entry));
+}
+
+function normalizeFactDisclosure(value: unknown): EgressFactDisclosure {
+  const record = asRecord(value);
+  const source = asRecord(record?.source);
+  const kind = source?.kind;
+  const reference = source?.reference;
+  const verificationStatus = record?.verificationStatus;
+  const verifiedAt = record?.verifiedAt;
+  const version = record?.version;
+  const sizeBytes = record?.sizeBytes;
+  const sourceHash = readHash(record?.sourceHash);
+  if (!record || !source || (kind !== 'user' && kind !== 'conversation' && kind !== 'project_file')
+    || typeof reference !== 'string' && reference !== null
+    || verificationStatus !== 'verified' && verificationStatus !== 'needs_review'
+    || verifiedAt !== null && typeof verifiedAt !== 'string'
+    || (verificationStatus === 'verified') !== (verifiedAt !== null)
+    || typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1
+    || typeof sizeBytes !== 'number' || !Number.isSafeInteger(sizeBytes) || sizeBytes < 0
+    || !sourceHash) {
+    throw invalidResponse();
+  }
+  return {
+    id: requireString(record.id),
+    title: requireString(record.title),
+    content: requireString(record.content),
+    source: { kind, label: requireString(source.label), reference },
+    version,
+    verifiedAt,
+    verificationStatus,
+    sizeBytes,
+    sourceHash
+  };
+}
+
+function requireString(value: unknown): string {
+  if (typeof value === 'string' && value.length > 0) {
+    return value;
+  }
+  throw invalidResponse();
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -276,7 +330,7 @@ function readBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
 }
 
-function normalizeCategories(value: unknown, hasFiles: boolean, hasMessages: boolean): readonly string[] {
+function normalizeCategories(value: unknown, hasFiles: boolean, hasMessages: boolean, hasFacts: boolean): readonly string[] {
   const categories = Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === 'string' && SAFE_CATEGORIES.has(entry))
     : [];
@@ -287,10 +341,19 @@ function normalizeCategories(value: unknown, hasFiles: boolean, hasMessages: boo
   if (hasMessages && !result.includes('Recent conversation')) {
     result.push('Recent conversation');
   }
-  if (!hasFiles && result.includes('Project files')) {
-    return result.filter((category) => category !== 'Project files');
+  if (hasFacts && !result.includes('Project facts')) {
+    result.push('Project facts');
   }
-  return hasMessages || !result.includes('Recent conversation') ? result : result.filter((category) => category !== 'Recent conversation');
+  if (!hasFiles && result.includes('Project files')) {
+    return removeUnavailableCategories(result, false, hasMessages, hasFacts);
+  }
+  return removeUnavailableCategories(result, hasFiles, hasMessages, hasFacts);
+}
+
+function removeUnavailableCategories(categories: readonly string[], hasFiles: boolean, hasMessages: boolean, hasFacts: boolean): readonly string[] {
+  return categories.filter((category) => category !== 'Project files' || hasFiles)
+    .filter((category) => category !== 'Recent conversation' || hasMessages)
+    .filter((category) => category !== 'Project facts' || hasFacts);
 }
 
 function readStatus(value: unknown): AiRunStatus | undefined {

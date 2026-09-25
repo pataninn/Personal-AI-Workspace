@@ -3,10 +3,10 @@
   "info": {
     "title": "Personal AI Workspace API",
     "version": "0.1.0",
-    "description": "Authenticated REST endpoints for project-scoped conversations and persisted messages."
+    "description": "Authenticated REST endpoints for project-scoped conversations, durable project facts, and AI runs."
   },
   "servers": [{ "url": "/" }],
-  "tags": [{ "name": "Conversations" }, { "name": "Workspace files" }, { "name": "AI runs" }],
+  "tags": [{ "name": "Conversations" }, { "name": "Project memory" }, { "name": "Workspace files" }, { "name": "AI runs" }],
   "paths": {
     "/api/v1/projects/{projectId}/conversations": {
       "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
@@ -146,11 +146,11 @@
       "parameters": [{ "$ref": "#/components/parameters/AiRunIdPath" }],
       "get": {
         "tags": ["AI runs"],
-        "summary": "Read the metadata-only provider disclosure",
+        "summary": "Read the provider disclosure, including selected redacted facts",
         "operationId": "getAiRunEgressManifest",
         "security": [{ "sessionCookie": [] }],
         "responses": {
-          "200": { "description": "Immutable manifest without raw content or credentials.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EgressManifestEnvelope" } } } },
+          "200": { "description": "Immutable disclosure with exact redacted selected-fact content and file metadata, without credentials.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EgressManifestEnvelope" } } } },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "404": { "$ref": "#/components/responses/AiRunNotFound" },
           "409": { "$ref": "#/components/responses/EgressConflict" },
@@ -378,6 +378,113 @@
         }
       }
     },
+    "/api/v1/projects/{projectId}/facts": {
+      "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
+      "get": {
+        "tags": ["Project memory"],
+        "summary": "List active project facts",
+        "operationId": "listProjectFacts",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Active facts for the authenticated owner and project.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectFactListEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/ProjectNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "post": {
+        "tags": ["Project memory"],
+        "summary": "Add a user-authored project fact",
+        "operationId": "createProjectFact",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateProjectFactRequest" } } } },
+        "responses": {
+          "201": { "description": "Fact created with server-recorded user source and needs-review status.", "headers": { "Location": { "$ref": "#/components/headers/Location" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectFactEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectNotFound" },
+          "409": { "$ref": "#/components/responses/ProjectFactConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/facts/{factId}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/ProjectIdPath" },
+        { "$ref": "#/components/parameters/FactIdPath" }
+      ],
+      "patch": {
+        "tags": ["Project memory"],
+        "summary": "Edit a project fact",
+        "operationId": "updateProjectFact",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpdateProjectFactRequest" } } } },
+        "responses": {
+          "200": { "description": "Updated fact with incremented version and reset review status.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectFactEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectFactNotFound" },
+          "409": { "$ref": "#/components/responses/ProjectFactConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "delete": {
+        "tags": ["Project memory"],
+        "summary": "Soft-delete a project fact",
+        "operationId": "deleteProjectFact",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/IfMatchVersionHeader" }
+        ],
+        "responses": {
+          "204": { "description": "Fact soft-deleted; previous run disclosure snapshots remain intact." },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectFactNotFound" },
+          "409": { "$ref": "#/components/responses/ProjectFactConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/facts/{factId}/verification": {
+      "parameters": [
+        { "$ref": "#/components/parameters/ProjectIdPath" },
+        { "$ref": "#/components/parameters/FactIdPath" }
+      ],
+      "post": {
+        "tags": ["Project memory"],
+        "summary": "Review and verify a project fact",
+        "operationId": "reviewProjectFact",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ReviewProjectFactRequest" } } } },
+        "responses": {
+          "200": { "description": "Reviewed fact with verification timestamp and incremented version.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectFactEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectFactNotFound" },
+          "409": { "$ref": "#/components/responses/ProjectFactConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
     "/api/v1/projects/{projectId}/files": {
       "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
       "get": {
@@ -472,6 +579,7 @@
     },
     "parameters": {
       "ProjectIdPath": { "name": "projectId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
+      "FactIdPath": { "name": "factId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
       "ConversationIdPath": { "name": "conversationId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
       "AiRunIdPath": { "name": "runId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
       "CommandIdPath": { "name": "commandId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
@@ -488,14 +596,17 @@
       "OriginHeader": { "name": "Origin", "in": "header", "required": true, "schema": { "type": "string", "format": "uri" } },
       "CsrfHeader": { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } },
       "IdempotencyHeader": { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 8, "maxLength": 200, "pattern": "^[\\x21-\\x7e]+$" } }
+      ,"IfMatchVersionHeader": { "name": "If-Match", "in": "header", "required": true, "description": "Current positive fact version as a quoted integer, for example \"3\".", "schema": { "type": "string", "pattern": "^\"[1-9][0-9]*\"$" } }
     },
     "responses": {
       "ValidationError": { "description": "Request validation failed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "VALIDATION_ERROR", "message": "The conversation request is invalid.", "details": [{ "field": "title", "message": "Enter a conversation name." }] } } } } },
       "Unauthenticated": { "description": "No valid local session was supplied.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "SESSION_UNAUTHENTICATED", "message": "A valid local session is required." } } } } },
       "MutationForbidden": { "description": "Origin or CSRF verification failed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "examples": { "origin": { "value": { "data": null, "error": { "code": "ORIGIN_FORBIDDEN", "message": "The request origin is not allowed." } } }, "csrf": { "value": { "data": null, "error": { "code": "CSRF_INVALID", "message": "The request could not be verified." } } } } } } },
       "ProjectNotFound": { "description": "The project is not available to this owner.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "PROJECT_NOT_FOUND", "message": "Project not found." } } } } },
+      "ProjectFactNotFound": { "description": "The fact is not available in the supplied owner and project scope, including facts that were deleted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "PROJECT_FACT_NOT_FOUND", "message": "Project fact not found." } } } } },
       "ConversationNotFound": { "description": "The conversation is not available in the supplied project scope.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "CONVERSATION_NOT_FOUND", "message": "Conversation not found." } } } } },
       "MutationConflict": { "description": "The project is archived or the idempotency key was reused with different content.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "examples": { "archived": { "value": { "data": null, "error": { "code": "PROJECT_ARCHIVED", "message": "This project is archived and read-only." } } }, "reused": { "value": { "data": null, "error": { "code": "IDEMPOTENCY_KEY_REUSED", "message": "This retry key was already used for different content." } } } } } } },
+      "ProjectFactConflict": { "description": "The fact label already exists, its current version changed, or the project is archived.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "examples": { "duplicate": { "value": { "data": null, "error": { "code": "PROJECT_FACT_ALREADY_EXISTS", "message": "A fact with this name already exists in this project." } } }, "stale": { "value": { "data": null, "error": { "code": "PROJECT_FACT_VERSION_CONFLICT", "message": "This fact changed before the request was applied. Reload the latest version and try again." } } }, "archived": { "value": { "data": null, "error": { "code": "PROJECT_ARCHIVED", "message": "This project is archived. Its facts are read-only." } } } } } } },
       "WorkspaceUnavailable": { "description": "The authoritative workspace boundary could not be verified safely.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "WorkspaceForbidden": { "description": "The project-relative path is protected, outside scope, or a reparse point.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "WorkspaceNotFound": { "description": "The project-relative entry was not found.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
@@ -521,16 +632,25 @@
       "Message": { "type": "object", "required": ["id", "conversationId", "role", "sequence", "content", "createdAt"], "properties": { "id": { "$ref": "#/components/schemas/Uuid" }, "conversationId": { "$ref": "#/components/schemas/Uuid" }, "role": { "type": "string", "enum": ["user", "assistant", "system", "tool"] }, "sequence": { "type": "integer", "minimum": 1 }, "content": { "type": "string", "maxLength": 20000 }, "createdAt": { "type": "string", "format": "date-time" } }, "additionalProperties": false },
       "CreateConversationRequest": { "type": "object", "required": ["title"], "properties": { "title": { "type": "string", "minLength": 1, "maxLength": 160, "description": "Trimmed non-whitespace title without control characters." } }, "additionalProperties": false },
       "CreateMessageRequest": { "type": "object", "required": ["content"], "properties": { "content": { "type": "string", "minLength": 1, "maxLength": 20000, "description": "Non-whitespace plain text; line breaks are preserved." } }, "additionalProperties": false },
+      "ProjectFactSource": { "type": "object", "required": ["kind", "label", "reference"], "properties": { "kind": { "type": "string", "enum": ["user"] }, "label": { "type": "string", "enum": ["Added by you"] }, "reference": { "type": "null" } }, "additionalProperties": false },
+      "ProjectFact": { "type": "object", "required": ["id", "projectId", "title", "content", "source", "version", "verifiedAt", "verificationStatus", "createdAt", "updatedAt"], "properties": { "id": { "$ref": "#/components/schemas/Uuid" }, "projectId": { "$ref": "#/components/schemas/Uuid" }, "title": { "type": "string", "maxLength": 120 }, "content": { "type": "string", "maxLength": 4096 }, "source": { "$ref": "#/components/schemas/ProjectFactSource" }, "version": { "type": "integer", "minimum": 1 }, "verifiedAt": { "type": "string", "format": "date-time", "nullable": true }, "verificationStatus": { "type": "string", "enum": ["verified", "needs_review"] }, "createdAt": { "type": "string", "format": "date-time" }, "updatedAt": { "type": "string", "format": "date-time" } }, "additionalProperties": false },
+      "EgressProjectFact": { "type": "object", "required": ["id", "title", "content", "source", "version", "verifiedAt", "verificationStatus", "updatedAt", "sizeBytes", "sourceHash"], "properties": { "id": { "$ref": "#/components/schemas/Uuid" }, "title": { "type": "string", "maxLength": 120 }, "content": { "type": "string", "maxLength": 4096, "description": "Exact redacted fact value shown for provider disclosure and transmitted only after approval." }, "source": { "$ref": "#/components/schemas/ProjectFactSource" }, "version": { "type": "integer", "minimum": 1 }, "verifiedAt": { "type": "string", "format": "date-time", "nullable": true }, "verificationStatus": { "type": "string", "enum": ["verified", "needs_review"] }, "updatedAt": { "type": "string", "format": "date-time" }, "sizeBytes": { "type": "integer", "minimum": 0 }, "sourceHash": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of canonical redacted title, content, and user source label passed to provider context." } }, "additionalProperties": false },
+      "CreateProjectFactRequest": { "type": "object", "required": ["title", "content"], "properties": { "title": { "type": "string", "minLength": 1, "maxLength": 120 }, "content": { "type": "string", "minLength": 1, "maxLength": 4096 } }, "additionalProperties": false },
+      "UpdateProjectFactRequest": { "type": "object", "required": ["title", "content", "expectedVersion"], "properties": { "title": { "type": "string", "minLength": 1, "maxLength": 120 }, "content": { "type": "string", "minLength": 1, "maxLength": 4096 }, "expectedVersion": { "type": "integer", "minimum": 1 } }, "additionalProperties": false },
+      "ReviewProjectFactRequest": { "type": "object", "required": ["expectedVersion"], "properties": { "expectedVersion": { "type": "integer", "minimum": 1 } }, "additionalProperties": false },
       "ConversationList": { "type": "object", "required": ["conversations", "nextCursor"], "properties": { "conversations": { "type": "array", "items": { "$ref": "#/components/schemas/Conversation" } }, "nextCursor": { "type": "string", "nullable": true } }, "additionalProperties": false },
       "ConversationHistory": { "type": "object", "required": ["conversation", "messages", "nextBeforeSequence"], "properties": { "conversation": { "$ref": "#/components/schemas/Conversation" }, "messages": { "type": "array", "items": { "$ref": "#/components/schemas/Message" } }, "nextBeforeSequence": { "type": "integer", "minimum": 1, "nullable": true } }, "additionalProperties": false },
       "ConversationEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/Conversation" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "ProjectFactEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "type": "object", "required": ["fact"], "properties": { "fact": { "$ref": "#/components/schemas/ProjectFact" } }, "additionalProperties": false }, "error": { "type": "null" } }, "additionalProperties": false },
+      "ProjectFactList": { "type": "object", "required": ["facts"], "properties": { "facts": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectFact" } } }, "additionalProperties": false },
+      "ProjectFactListEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/ProjectFactList" }, "error": { "type": "null" } }, "additionalProperties": false },
       "MessageEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/Message" }, "error": { "type": "null" } }, "additionalProperties": false },
       "ConversationListEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/ConversationList" }, "error": { "type": "null" } }, "additionalProperties": false },
       "ConversationHistoryEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/ConversationHistory" }, "error": { "type": "null" } }, "additionalProperties": false },
-      "CreateAiRunRequest": { "type": "object", "required": ["conversationId", "request"], "properties": { "conversationId": { "$ref": "#/components/schemas/Uuid" }, "request": { "type": "string", "minLength": 1, "maxLength": 8000, "description": "Trimmed request, capped at 8,000 UTF-8 bytes; credential-like assignments are rejected." }, "context": { "type": "object", "properties": { "relativePaths": { "type": "array", "maxItems": 100, "items": { "type": "string", "maxLength": 2048 } }, "includeRecentMessages": { "type": "boolean", "default": false, "description": "Selects at most 20 latest redacted messages within the aggregate byte/token ceiling." } }, "additionalProperties": false } }, "additionalProperties": false },
+      "CreateAiRunRequest": { "type": "object", "required": ["conversationId", "request"], "properties": { "conversationId": { "$ref": "#/components/schemas/Uuid" }, "request": { "type": "string", "minLength": 1, "maxLength": 8000, "description": "Trimmed request, capped at 8,000 UTF-8 bytes; credential-like assignments are rejected." }, "context": { "type": "object", "properties": { "factIds": { "type": "array", "items": { "$ref": "#/components/schemas/Uuid" }, "description": "Explicitly selected active project facts; defaults to none. At most 25 distinct IDs are accepted after repeated IDs are deduplicated. Selected facts are included in the exact disclosure snapshot." }, "relativePaths": { "type": "array", "maxItems": 100, "items": { "type": "string", "maxLength": 2048 } }, "includeRecentMessages": { "type": "boolean", "default": false, "description": "Selects at most 20 latest redacted messages within the aggregate byte/token ceiling." } }, "additionalProperties": false } }, "additionalProperties": false },
       "EgressDecisionRequest": { "type": "object", "required": ["manifestHash", "decision"], "properties": { "manifestHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "decision": { "type": "string", "enum": ["approve", "reject"] } }, "additionalProperties": false },
       "AiRunSnapshot": { "type": "object", "required": ["runId", "projectId", "conversationId", "status", "phase", "manifestHash", "decision", "safeMessage", "cleanup", "providerTransmission", "stagingItemCount"], "properties": { "runId": { "$ref": "#/components/schemas/Uuid" }, "projectId": { "$ref": "#/components/schemas/Uuid" }, "conversationId": { "$ref": "#/components/schemas/Uuid" }, "status": { "type": "string", "enum": ["pending_approval", "rejected", "staging", "ready", "queued", "running", "waiting_approval", "succeeded", "failed", "cancel_requested", "cancelled", "blocked", "review_required"] }, "phase": { "type": "string", "enum": ["manifest", "decision", "staging", "runtime", "inference", "terminal", "review"] }, "manifestHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "decision": { "type": "string", "enum": ["pending", "approved", "rejected"] }, "safeMessage": { "type": "string" }, "cleanup": { "type": "string", "enum": ["not_started", "complete", "unknown"] }, "providerTransmission": { "type": "string", "enum": ["not_started", "not_started_confirmed", "transmitted_confirmed", "unknown"] }, "stagingItemCount": { "type": "integer", "minimum": 0 }, "runtime": { "type": "object", "required": ["kind", "sandboxReady"], "properties": { "kind": { "type": "string", "enum": ["fake"] }, "sandboxReady": { "type": "boolean", "enum": [true] } }, "additionalProperties": false }, "assistant": { "type": "object", "required": ["complete", "contentLength"], "properties": { "messageId": { "$ref": "#/components/schemas/Uuid" }, "complete": { "type": "boolean" }, "contentLength": { "type": "integer", "minimum": 0, "maximum": 65536 } }, "additionalProperties": false } }, "additionalProperties": false },
-      "EgressManifest": { "type": "object", "required": ["runId", "manifestHash", "status", "provider", "providerProfile", "model", "content", "redaction", "bestEffortSecretDetection", "preConsentNotice"], "properties": { "runId": { "$ref": "#/components/schemas/Uuid" }, "manifestHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "status": { "type": "string" }, "provider": { "type": "string", "example": "NVIDIA hosted NIM" }, "providerProfile": { "type": "string" }, "model": { "type": "string", "example": "nvidia/nemotron-3-super-120b-a12b" }, "content": { "type": "object", "required": ["categories", "relativePaths", "itemCount", "byteEstimate", "tokenEstimate", "messageCount"], "properties": { "categories": { "type": "array", "items": { "type": "string" } }, "relativePaths": { "type": "array", "items": { "type": "string" } }, "itemCount": { "type": "integer", "minimum": 0 }, "byteEstimate": { "type": "integer", "minimum": 0 }, "tokenEstimate": { "type": "integer", "minimum": 0 }, "messageCount": { "type": "integer", "minimum": 0 } }, "additionalProperties": false }, "redaction": { "type": "object", "required": ["excludedItemCount", "omittedItemCount", "summary"], "properties": { "excludedItemCount": { "type": "integer", "minimum": 0 }, "omittedItemCount": { "type": "integer", "minimum": 0 }, "summary": { "type": "string" } }, "additionalProperties": false }, "bestEffortSecretDetection": { "type": "boolean", "enum": [true] }, "preConsentNotice": { "type": "string" }, "emptyContextNotice": { "type": "string" } }, "additionalProperties": false },
+      "EgressManifest": { "type": "object", "required": ["runId", "manifestHash", "status", "provider", "providerProfile", "model", "content", "redaction", "bestEffortSecretDetection", "preConsentNotice"], "properties": { "runId": { "$ref": "#/components/schemas/Uuid" }, "manifestHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "status": { "type": "string" }, "provider": { "type": "string", "example": "NVIDIA hosted NIM" }, "providerProfile": { "type": "string" }, "model": { "type": "string", "example": "nvidia/nemotron-3-super-120b-a12b" }, "content": { "type": "object", "required": ["categories", "relativePaths", "itemCount", "factCount", "facts", "byteEstimate", "tokenEstimate", "messageCount"], "properties": { "categories": { "type": "array", "items": { "type": "string" } }, "relativePaths": { "type": "array", "items": { "type": "string" } }, "itemCount": { "type": "integer", "minimum": 0 }, "factCount": { "type": "integer", "minimum": 0, "maximum": 25 }, "facts": { "type": "array", "maxItems": 25, "description": "Exact redacted project fact content that may be transmitted if the user approves; each item is tied to a version and source hash.", "items": { "$ref": "#/components/schemas/EgressProjectFact" } }, "byteEstimate": { "type": "integer", "minimum": 0 }, "tokenEstimate": { "type": "integer", "minimum": 0 }, "messageCount": { "type": "integer", "minimum": 0 } }, "additionalProperties": false }, "redaction": { "type": "object", "required": ["excludedItemCount", "omittedItemCount", "summary"], "properties": { "excludedItemCount": { "type": "integer", "minimum": 0 }, "omittedItemCount": { "type": "integer", "minimum": 0 }, "summary": { "type": "string" } }, "additionalProperties": false }, "bestEffortSecretDetection": { "type": "boolean", "enum": [true] }, "preConsentNotice": { "type": "string" }, "emptyContextNotice": { "type": "string" } }, "additionalProperties": false },
       "AiRunIntent": { "type": "object", "required": ["run", "manifest"], "properties": { "run": { "$ref": "#/components/schemas/AiRunSnapshot" }, "manifest": { "$ref": "#/components/schemas/EgressManifest" } }, "additionalProperties": false },
       "AiRunEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunSnapshot" }, "error": { "type": "null" } }, "additionalProperties": false },
       "AiRunIntentEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunIntent" }, "error": { "type": "null" } }, "additionalProperties": false },

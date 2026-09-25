@@ -1,4 +1,4 @@
-import type { EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
+import type { EgressManifest, EgressProjectFact } from '@/modules/ai-runs/domain/ai-run-types';
 import type { RuntimeChangeProposal } from '@/modules/ai-runs/domain/change-types';
 
 export interface ProviderContextFile {
@@ -16,6 +16,7 @@ export interface ModelProviderRequest {
   readonly request: string;
   readonly manifest: EgressManifest;
   readonly files: readonly ProviderContextFile[];
+  readonly facts: readonly EgressProjectFact[];
   readonly messages: readonly ProviderContextMessage[];
 }
 

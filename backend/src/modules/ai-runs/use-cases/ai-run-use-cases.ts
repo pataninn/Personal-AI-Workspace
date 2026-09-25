@@ -11,15 +11,18 @@ import {
   AiRunReviewRequiredError,
   AiRunRuntimeUnavailableError,
   AiRunSourceChangedError,
-  AiRunStagingFailedError
+  AiRunStagingFailedError,
+  AiRunValidationError
 } from '@/modules/ai-runs/domain/ai-run-errors';
-import { validateContextPaths, validateDecision, validateIdempotencyKey, validateManifestHash, validateRequest, AI_RUN_LIMITS } from '@/modules/ai-runs/domain/ai-run-validation';
+import { validateContextFactIds, validateContextPaths, validateDecision, validateIdempotencyKey, validateManifestHash, validateRequest, AI_RUN_LIMITS } from '@/modules/ai-runs/domain/ai-run-validation';
 import type { AiRun, AiRunSnapshot } from '@/modules/ai-runs/domain/ai-run-types';
 import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-repository';
 import type { IAgentRuntime } from '@/modules/ai-runs/repositories/agent-runtime';
 import type { IStagingGateway } from '@/modules/ai-runs/repositories/staging-gateway';
-import { buildManifest, hashText, type ManifestMessage } from '@/modules/ai-runs/use-cases/manifest-builder';
+import { buildManifest, hashText, toEgressProjectFact, type ManifestMessage } from '@/modules/ai-runs/use-cases/manifest-builder';
 import { redactEgressText } from '@/shared/egress/redaction';
+import type { IProjectFactRepository } from '@/modules/memory/repositories/project-fact-repository';
+import { ProjectFactNotFoundError } from '@/modules/memory/domain/project-fact-errors';
 
 export interface CreateAiRunInput {
   readonly ownerId: string;
@@ -27,6 +30,7 @@ export interface CreateAiRunInput {
   readonly conversationId: string;
   readonly request: unknown;
   readonly relativePaths: unknown;
+  readonly factIds?: unknown;
   readonly includeRecentMessages: boolean;
   readonly idempotencyKey: string;
 }
@@ -43,7 +47,8 @@ export class CreateAiRunUseCase {
     private readonly workspaceGateway: IWorkspaceGateway,
     private readonly aiRunRepository: IAiRunRepository,
     private readonly providerProfile: string,
-    private readonly model: string
+    private readonly model: string,
+    private readonly factRepository?: IProjectFactRepository
   ) {}
 
   public async execute(input: CreateAiRunInput): Promise<CreateAiRunOutput> {
@@ -63,6 +68,8 @@ export class CreateAiRunUseCase {
     }
     const request = validateRequest(input.request);
     const relativePaths = validateContextPaths(input.relativePaths);
+    const factIds = validateContextFactIds(input.factIds);
+    const facts = await this.selectFacts(input.ownerId, input.projectId, factIds);
     const messages = input.includeRecentMessages ? toManifestMessages(conversation.messages, Buffer.byteLength(request, 'utf8')) : [];
     const built = await buildManifest({
       workspaceGateway: this.workspaceGateway,
@@ -71,10 +78,11 @@ export class CreateAiRunUseCase {
       request,
       requestedPaths: relativePaths,
       messages,
+      facts: facts.map(toEgressProjectFact),
       providerProfile: this.providerProfile,
       model: this.model
     });
-    const requestFingerprint = hashText(JSON.stringify({ conversationId: input.conversationId, request, relativePaths, includeRecentMessages: input.includeRecentMessages }));
+    const requestFingerprint = hashText(JSON.stringify({ conversationId: input.conversationId, request, relativePaths, factIds, includeRecentMessages: input.includeRecentMessages }));
     const created = await this.aiRunRepository.create({
       ownerId: input.ownerId,
       projectId: input.projectId,
@@ -100,6 +108,21 @@ export class CreateAiRunUseCase {
       return { resource: withMessage, replayed: false };
     }
     return created;
+  }
+
+  private async selectFacts(ownerId: string, projectId: string, factIds: readonly string[]) {
+    if (factIds.length === 0) {
+      return [];
+    }
+    if (!this.factRepository) {
+      throw new AiRunValidationError([{ field: 'context.factIds', message: 'Project memory is not available for this run.' }]);
+    }
+    const facts = await this.factRepository.findActiveByIds(ownerId, projectId, factIds);
+    if (facts.length !== factIds.length) {
+      throw new ProjectFactNotFoundError();
+    }
+    const byId = new Map(facts.map((fact) => [fact.id, fact]));
+    return factIds.map((factId) => byId.get(factId)).filter((fact) => fact !== undefined);
   }
 }
 
@@ -135,7 +158,8 @@ export class DecideEgressUseCase {
     private readonly workspaceGateway: IWorkspaceGateway,
     private readonly stagingGateway: IStagingGateway | undefined,
     private readonly agentRuntime: IAgentRuntime,
-    private readonly workspaceRoot: string
+    private readonly workspaceRoot: string,
+    private readonly factRepository?: IProjectFactRepository
   ) {}
 
   public async execute(input: DecideEgressInput): Promise<AiRun> {
@@ -148,6 +172,19 @@ export class DecideEgressUseCase {
     }
     if (current.manifest.manifestHash !== manifestHash) {
       throw new AiRunManifestConflictError();
+    }
+    if (current.manifestInvalidated) {
+      throw new AiRunManifestConflictError();
+    }
+    if (decision === 'approve') {
+      try {
+        await this.assertFactsUnchanged(current);
+      } catch (error: unknown) {
+        if (error instanceof AiRunSourceChangedError) {
+          await this.saveFailure(current, 'failed', 'not_started_confirmed', 'not_started', true);
+        }
+        throw error;
+      }
     }
     const requestFingerprint = hashText(JSON.stringify({ manifestHash, decision }));
     const result = await this.aiRunRepository.recordDecision({
@@ -181,6 +218,7 @@ export class DecideEgressUseCase {
     }
     try {
       await this.assertFilesUnchanged(run);
+      await this.assertFactsUnchanged(run);
     } catch (error: unknown) {
       await this.handlePreparationFailure(run, error);
       throw error;
@@ -294,6 +332,37 @@ export class DecideEgressUseCase {
       if (read.truncated || read.sizeBytes !== file.sizeBytes || hashText(read.content) !== file.sourceHash) {
         throw new AiRunSourceChangedError();
       }
+    }
+  }
+
+  private async assertFactsUnchanged(run: AiRun): Promise<void> {
+    const expectedFacts = run.manifest.facts ?? [];
+    if (expectedFacts.length === 0) {
+      return;
+    }
+    if (!this.factRepository) {
+      throw new AiRunSourceChangedError();
+    }
+    const currentFacts = await this.factRepository.findActiveByIds(run.ownerId, run.projectId, expectedFacts.map((fact) => fact.id));
+    if (currentFacts.length !== expectedFacts.length) {
+      throw new AiRunSourceChangedError();
+    }
+    const currentById = new Map(currentFacts.map((fact) => [fact.id, fact]));
+    const matches = expectedFacts.every((snapshot) => {
+      const current = currentById.get(snapshot.id);
+      const currentSnapshot = current ? toEgressProjectFact(current) : undefined;
+      return current !== undefined
+        && currentSnapshot !== undefined
+        && currentSnapshot.title === snapshot.title
+        && currentSnapshot.content === snapshot.content
+        && currentSnapshot.version === snapshot.version
+        && currentSnapshot.verifiedAt === snapshot.verifiedAt
+        && currentSnapshot.updatedAt === snapshot.updatedAt
+        && currentSnapshot.sizeBytes === snapshot.sizeBytes
+        && currentSnapshot.sourceHash === snapshot.sourceHash;
+    });
+    if (!matches) {
+      throw new AiRunSourceChangedError();
     }
   }
 

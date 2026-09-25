@@ -3,6 +3,7 @@ import { containsPotentialSecret } from '@/shared/egress/redaction';
 
 const MAX_REQUEST_BYTES = 8_000;
 const MAX_PATHS = 100;
+const MAX_FACT_IDS = 25;
 const MAX_IDEMPOTENCY_LENGTH = 200;
 
 export function validateRequest(value: unknown): string {
@@ -37,6 +38,29 @@ export function validateContextPaths(value: unknown): readonly string[] {
     paths.push(entry);
   }
   return [...new Set(paths)];
+}
+
+export function validateContextFactIds(value: unknown): readonly string[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+    throw new AiRunValidationError([{ field: 'context.factIds', message: 'Select at most 25 project facts.' }]);
+  }
+  const facts: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(entry)) {
+      throw new AiRunValidationError([{ field: 'context.factIds', message: 'Select valid project fact IDs.' }]);
+    }
+    const factId = entry.toLowerCase();
+    if (!facts.includes(factId)) {
+      facts.push(factId);
+      if (facts.length > MAX_FACT_IDS) {
+        throw new AiRunValidationError([{ field: 'context.factIds', message: 'Select at most 25 project facts.' }]);
+      }
+    }
+  }
+  return facts;
 }
 
 export function validateIdempotencyKey(value: string): string {

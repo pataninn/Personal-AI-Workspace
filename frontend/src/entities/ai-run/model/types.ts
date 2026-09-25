@@ -19,6 +19,7 @@ export interface EgressManifest {
   readonly relativePaths: readonly string[];
   readonly itemCount: number;
   readonly messageCount: number;
+  readonly facts: readonly EgressFactDisclosure[];
   readonly byteEstimate: number;
   readonly tokenEstimate: number;
   readonly excludedItemCount: number;
@@ -26,6 +27,22 @@ export interface EgressManifest {
   readonly omissionSummary: string;
   readonly bestEffortSecretDetection: boolean;
   readonly preConsentNotice: string;
+}
+
+export interface EgressFactDisclosure {
+  readonly id: string;
+  readonly title: string;
+  readonly content: string;
+  readonly source: {
+    readonly kind: 'user' | 'conversation' | 'project_file';
+    readonly label: string;
+    readonly reference: string | null;
+  };
+  readonly version: number;
+  readonly verifiedAt: string | null;
+  readonly verificationStatus: 'verified' | 'needs_review';
+  readonly sizeBytes: number;
+  readonly sourceHash: string;
 }
 
 export interface AiRunSnapshot {

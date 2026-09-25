@@ -9,6 +9,7 @@
     "dev": "vite",
     "preview:dev": "vite build --mode preview --config vite.config.mjs --configLoader runner && vite preview --mode preview --config vite.config.mjs --configLoader runner",
     "test:preview": "node --test preview/preview-api.test.mjs",
+    "test:e2e": "playwright test --config playwright.config.ts",
     "test": "vitest run --config vitest.config.mjs --configLoader runner && node --test preview/preview-api.test.mjs"
   },
   "dependencies": {
@@ -23,6 +24,7 @@
     "react-router-dom": "6.28.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^14.6.1",

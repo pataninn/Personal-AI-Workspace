@@ -16,6 +16,7 @@ const createRunSchema = z.object({
   conversationId: z.string(),
   request: z.string(),
   context: z.object({
+    factIds: z.array(z.string()).optional(),
     relativePaths: z.array(z.string()).optional(),
     includeRecentMessages: z.boolean().optional()
   }).strict().optional()
@@ -85,6 +86,7 @@ function createHandler(dependencies: AiRunRouterDependencies): RequestHandler {
         projectId,
         conversationId: parseUuid(body.conversationId, new AiRunNotFoundError()),
         request: body.request,
+        factIds: body.context?.factIds,
         relativePaths: body.context?.relativePaths,
         includeRecentMessages: body.context?.includeRecentMessages ?? false,
         idempotencyKey: requiredIdempotencyKey(request)
@@ -237,6 +239,7 @@ function serializeSnapshot(run: AiRun): Record<string, unknown> {
 
 function serializeManifest(run: AiRun): Record<string, unknown> {
   const manifest: EgressManifest = run.manifest;
+  const facts = manifest.facts ?? [];
   return {
     runId: run.id,
     manifestHash: manifest.manifestHash,
@@ -248,6 +251,8 @@ function serializeManifest(run: AiRun): Record<string, unknown> {
       categories: manifest.categories,
       relativePaths: manifest.files.map((file) => file.relativePath),
       itemCount: manifest.files.length,
+      factCount: facts.length,
+      facts,
       byteEstimate: manifest.byteEstimate,
       tokenEstimate: manifest.tokenEstimate,
       messageCount: manifest.messageCount
@@ -259,7 +264,7 @@ function serializeManifest(run: AiRun): Record<string, unknown> {
     },
     bestEffortSecretDetection: manifest.bestEffortSecretDetection,
     preConsentNotice: consentNotice(run),
-    ...(manifest.files.length === 0 && manifest.messageCount === 0 ? { emptyContextNotice: 'No project files or facts are selected. Only your request will be sent if you approve.' } : {})
+    ...(manifest.files.length === 0 && manifest.messageCount === 0 && facts.length === 0 ? { emptyContextNotice: 'No project files or facts are selected. Only your request will be sent if you approve.' } : {})
   };
 }
 

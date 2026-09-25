@@ -11,6 +11,7 @@ import {
 } from '@/entities/ai-run';
 import type { ConversationHistoryResponse } from '@/entities/conversation';
 import { selectCsrfToken } from '@/entities/user-session';
+import { listProjectFacts } from '@/entities/project-fact';
 import { ApiClientError } from '@/shared/api';
 import { Alert, Button } from '@/shared/ui';
 import { createIdempotencyKey } from '@/shared/lib/idempotency-key';
@@ -18,6 +19,7 @@ import { createIdempotencyKey } from '@/shared/lib/idempotency-key';
 import { ProviderConsentDialog } from '@/features/ai-run/ui/ProviderConsentDialog';
 import { AiRunTimeline } from '@/features/ai-run/ui/AiRunTimeline';
 import { ContextScopePicker } from '@/features/ai-run/ui/ContextScopePicker';
+import { MemoryContextPicker } from '@/features/ai-run/ui/MemoryContextPicker';
 import { ProposedChangeReview } from '@/features/ai-run/ui/ProposedChangeReview';
 import { RunStatusCard, type RunStatusState } from '@/features/ai-run/ui/RunStatusCard';
 
@@ -52,13 +54,27 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
   const [refreshLoading, setRefreshLoading] = useState(false);
   const [selectedPaths, setSelectedPaths] = useState<readonly string[]>([]);
   const [includeRecentMessages, setIncludeRecentMessages] = useState(false);
+  const [selectedFactIds, setSelectedFactIds] = useState<readonly string[]>([]);
+  const [selectedFactVersions, setSelectedFactVersions] = useState<Readonly<Record<string, number>>>({});
+  const [memoryChoiceRequired, setMemoryChoiceRequired] = useState(false);
   const askAiButtonRef = useRef<HTMLButtonElement>(null);
 
   const trimmedRequest = request.trim();
   const blankRequest = trimmedRequest.length === 0;
-  const contextSelectionKey = contextKey(selectedPaths, includeRecentMessages);
+  const contextSelectionKey = contextKey(projectId, selectedPaths, includeRecentMessages, selectedFactIds, selectedFactVersions);
   const requestErrorId = 'ai-run-request-error';
   const archivedDescription = archivedDescriptionId ?? 'project-archived-message';
+
+  useEffect(() => {
+    setSelectedPaths([]);
+    setIncludeRecentMessages(false);
+    setSelectedFactIds([]);
+    setSelectedFactVersions({});
+    setMemoryChoiceRequired(false);
+    setIntentKey(null);
+    setIntentRequest(null);
+    setIntentContextKey(null);
+  }, [projectId]);
 
   useEffect(() => {
     if (intentRequest !== null && (intentRequest !== request || intentContextKey !== contextSelectionKey)) {
@@ -70,7 +86,7 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
 
   async function beginRun(forceFreshIntent = false): Promise<void> {
     setIntentError(null);
-    if (blankRequest || disabled || intentLoading || decisionLoading) {
+    if (blankRequest || disabled || intentLoading || decisionLoading || memoryChoiceRequired) {
       return;
     }
     if (!csrfToken) {
@@ -86,10 +102,25 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
     setDecisionError(null);
     setDecisionOutcomeUnknown(false);
     try {
+      if (selectedFactIds.length > 0) {
+        const currentFacts = await loadSelectedFactsForReview(projectId);
+        if (!currentFacts) {
+          setMemoryChoiceRequired(true);
+          setIntentError('Project memory could not be checked. Review the facts again or explicitly continue without project memory.');
+          return;
+        }
+        if (!selectedFactIds.every((factId) => currentFacts.get(factId) === selectedFactVersions[factId])) {
+          setSelectedFactIds([]);
+          setSelectedFactVersions({});
+          setMemoryChoiceRequired(true);
+          setIntentError('A selected fact changed or is no longer active. Review the current facts before starting this run.');
+          return;
+        }
+      }
       const intent = await createAiRun(projectId, {
         conversationId,
         request: trimmedRequest,
-        context: { relativePaths: selectedPaths, includeRecentMessages }
+        context: { relativePaths: selectedPaths, includeRecentMessages, factIds: selectedFactIds }
       }, csrfToken, key);
       let manifest = intent.manifest;
       if (!manifest) {
@@ -232,6 +263,16 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
     void beginRun(true);
   }
 
+  function continueWithoutMemory(): void {
+    setSelectedFactIds([]);
+    setSelectedFactVersions({});
+    setMemoryChoiceRequired(false);
+    setIntentError(null);
+    setIntentKey(null);
+    setIntentRequest(null);
+    setIntentContextKey(null);
+  }
+
   function handleDialogOpenChange(open: boolean): void {
     if (open) {
       setDialogOpen(true);
@@ -242,7 +283,7 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
     }
   }
 
-  const formError = intentError ? <Alert tone="error" data-testid="ai-run-error" role="alert"><p>{intentError}</p><Button type="button" variant="secondary" data-testid="ai-run-error-retry" disabled={disabled || intentLoading} onClick={() => { void beginRun(); }}>Try again</Button></Alert> : null;
+  const formError = intentError ? <Alert tone="error" data-testid="ai-run-error" role="alert"><p>{intentError}</p>{memoryChoiceRequired ? <Button type="button" variant="secondary" data-testid="memory-context-continue-without" onClick={continueWithoutMemory}>Continue without project memory</Button> : <Button type="button" variant="secondary" data-testid="ai-run-error-retry" disabled={disabled || intentLoading} onClick={() => { void beginRun(); }}>Try again</Button>}</Alert> : memoryChoiceRequired ? <Alert tone="warning" data-testid="memory-context-choice-required" role="alert"><p>Review project memory and confirm the facts for this run, or explicitly continue without project memory.</p><Button type="button" variant="secondary" data-testid="memory-context-continue-without" onClick={continueWithoutMemory}>Continue without project memory</Button></Alert> : null;
   const blankMessage = blankRequest ? 'Enter a request before asking the assistant.' : null;
 
   return (
@@ -261,6 +302,17 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
               setIncludeRecentMessages(nextIncludeRecentMessages);
             }}
           />
+          <MemoryContextPicker
+            projectId={projectId}
+            selectedFactIds={selectedFactIds}
+            selectedFactVersions={selectedFactVersions}
+            disabled={disabled || intentLoading || decisionLoading || dialogOpen}
+            onChange={(factIds, versions) => { setSelectedFactIds(factIds); setSelectedFactVersions(versions); }}
+            onReviewStarted={() => { setMemoryChoiceRequired(true); setIntentError('Review project memory selection before continuing this run.'); }}
+            onUnavailable={() => { setMemoryChoiceRequired(true); }}
+            onSelectionConfirmed={() => { setMemoryChoiceRequired(false); setIntentError(null); }}
+            onExplicitSkip={continueWithoutMemory}
+          />
           {blankMessage ? <p className="field-error" data-testid="ai-run-request-error" id={requestErrorId} role="alert">{blankMessage}</p> : null}
           <div className="composer-actions ai-run-actions">
             <Button
@@ -269,7 +321,7 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
               data-testid="ai-run-submit"
               aria-busy={intentLoading}
               aria-describedby={["ai-run-help", blankMessage ? requestErrorId : null, disabled ? archivedDescription : null].filter(Boolean).join(' ')}
-              disabled={disabled || intentLoading || decisionLoading || !csrfToken || blankRequest}
+              disabled={disabled || intentLoading || decisionLoading || memoryChoiceRequired || !csrfToken || blankRequest}
             >
               {intentLoading ? <><span data-testid="ai-run-manifest-loading">Preparing provider disclosure…</span></> : 'Ask AI'}
             </Button>
@@ -311,6 +363,15 @@ function shouldRenderTimeline(snapshot: AiRunSnapshot): boolean {
 
 function shouldRenderChangeReview(snapshot: AiRunSnapshot): boolean {
   return snapshot.status === 'succeeded';
+}
+
+async function loadSelectedFactsForReview(projectId: string): Promise<ReadonlyMap<string, number> | null> {
+  try {
+    const facts = await listProjectFacts(projectId);
+    return new Map(facts.map((fact) => [fact.id, fact.version]));
+  } catch {
+    return null;
+  }
 }
 
 function mapIntentError(error: unknown): string {
@@ -374,6 +435,7 @@ function safeFailureSnapshot(manifest: EgressManifest, error: unknown): AiRunSna
   };
 }
 
-function contextKey(paths: readonly string[], includeRecentMessages: boolean): string {
-  return `${includeRecentMessages ? 'messages' : 'request-only'}:${paths.join('\u001f')}`;
+function contextKey(projectId: string, paths: readonly string[], includeRecentMessages: boolean, factIds: readonly string[], versions: Readonly<Record<string, number>>): string {
+  const facts = [...factIds].sort().map((id) => `${id}@${versions[id] ?? 'unknown'}`).join('\u001f');
+  return `${projectId}:${includeRecentMessages ? 'messages' : 'request-only'}:${paths.join('\u001f')}:${facts}`;
 }

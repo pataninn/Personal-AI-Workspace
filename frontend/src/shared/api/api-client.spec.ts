@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { ApiClientError, getJson, postNoContent } from '@/shared/api/api-client';
+import { ApiClientError, deleteNoContent, getJson, postNoContent } from '@/shared/api/api-client';
 import { registerSessionExpiryHandler } from '@/shared/api/session-expiry';
 
 describe('getJson', () => {
@@ -43,6 +43,16 @@ describe('getJson', () => {
     expect(requestInit?.method).toBe('POST');
     expect(requestInit?.credentials).toBe('include');
     expect(new Headers(requestInit?.headers).get('X-CSRF-Token')).toBe('csrf-value');
+  });
+
+  it('accepts a successful empty delete response and preserves version headers', async () => {
+    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 204 }));
+
+    await expect(deleteNoContent('/api/v1/projects/one/facts/two', { 'If-Match': '3' }, fetchImplementation)).resolves.toBeUndefined();
+    const [, requestInit] = fetchImplementation.mock.calls[0] ?? [];
+    expect(requestInit?.method).toBe('DELETE');
+    expect(requestInit?.credentials).toBe('include');
+    expect(new Headers(requestInit?.headers).get('If-Match')).toBe('3');
   });
 
   it('notifies the shared session boundary for a project-style 401 response', async () => {

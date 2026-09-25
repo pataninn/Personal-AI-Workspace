@@ -38,7 +38,8 @@ export function ProviderConsentDialog({
   const hasContext = manifest.relativePaths.length > 0
     || manifest.categories.some((category) => category !== 'Request')
     || manifest.itemCount > manifest.relativePaths.length
-    || manifest.messageCount > 0;
+    || manifest.messageCount > 0
+    || manifest.facts.length > 0;
   const isStale = decisionError === 'This disclosure is no longer current. Review the updated scope before approving.';
   const actionsDisabled = decisionLoading || decisionOutcomeUnknown;
   const statusText = decisionLoading
@@ -89,11 +90,15 @@ export function ProviderConsentDialog({
             </div>
             <div>
               <dt>Selected files</dt>
-              <dd data-testid="provider-consent-file-count">{manifest.itemCount.toLocaleString()}</dd>
+              <dd data-testid="provider-consent-file-count">{manifest.relativePaths.length.toLocaleString()}</dd>
             </div>
             <div>
               <dt>Recent messages</dt>
               <dd data-testid="provider-consent-message-count">{manifest.messageCount.toLocaleString()}</dd>
+            </div>
+            <div>
+              <dt>Selected facts</dt>
+              <dd data-testid="provider-consent-fact-count">{manifest.facts.length.toLocaleString()}</dd>
             </div>
           </dl>
 
@@ -103,11 +108,24 @@ export function ProviderConsentDialog({
               <li>Request included</li>
               <li data-testid="provider-consent-categories">Content categories: {manifest.categories.join(', ')}</li>
               {manifest.messageCount > 0 ? <li>Recent conversation: {manifest.messageCount.toLocaleString()} {manifest.messageCount === 1 ? 'message' : 'messages'}</li> : null}
-              {manifest.relativePaths.length > 0 ? <li>Project files: {manifest.itemCount.toLocaleString()}</li> : null}
+              {manifest.facts.length > 0 ? <li>Project memory: {manifest.facts.length.toLocaleString()} {manifest.facts.length === 1 ? 'fact' : 'facts'}</li> : null}
+              {manifest.relativePaths.length > 0 ? <li>Project files: {manifest.relativePaths.length.toLocaleString()}</li> : null}
               {manifest.relativePaths.map((path) => <li key={path}><code>{path}</code></li>)}
               {!hasContext ? <li>{REQUEST_ONLY_NOTICE}</li> : null}
             </ul>
           </section>
+
+          {manifest.facts.length > 0 ? <section className="provider-consent-facts" aria-labelledby="provider-consent-facts-heading">
+            <h3 id="provider-consent-facts-heading">Selected project facts</h3>
+            <ol data-testid="provider-consent-facts">
+              {manifest.facts.map((fact) => <li key={fact.id}>
+                <h4>{fact.title}</h4>
+                <p><strong>Source:</strong> {fact.source.label}</p>
+                <p><strong>Review status:</strong> {fact.verificationStatus === 'verified' ? 'Verified by you' : 'Needs review'}</p>
+                <p className="memory-fact-value" data-testid="provider-consent-fact-content">{fact.content}</p>
+              </li>)}
+            </ol>
+          </section> : null}
 
           <p className="provider-consent-redaction" data-testid="provider-consent-redaction-summary">
             <strong>Excluded by local safety policy:</strong> {manifest.excludedItemCount + manifest.omittedItemCount} item{manifest.excludedItemCount + manifest.omittedItemCount === 1 ? '' : 's'}. {manifest.omissionSummary}

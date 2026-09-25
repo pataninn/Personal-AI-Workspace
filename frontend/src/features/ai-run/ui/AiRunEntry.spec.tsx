@@ -5,16 +5,18 @@ import { Provider } from 'react-redux';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { userSessionReducer } from '@/entities/user-session';
-import type { AiRunIntent, AiRunSnapshot, EgressManifest } from '@/entities/ai-run';
+import type { AiRunIntent, AiRunSnapshot, EgressFactDisclosure, EgressManifest } from '@/entities/ai-run';
+import type { ProjectFact } from '@/entities/project-fact';
 import { ApiClientError } from '@/shared/api';
 import { AiRunEntry } from '@/features/ai-run/ui/AiRunEntry';
 
-const { createAiRunMock, getAiRunMock, getEgressManifestMock, decideEgressMock, startAiRunMock } = vi.hoisted(() => ({
+const { createAiRunMock, getAiRunMock, getEgressManifestMock, decideEgressMock, startAiRunMock, listFactsMock } = vi.hoisted(() => ({
   createAiRunMock: vi.fn(),
   getAiRunMock: vi.fn(),
   getEgressManifestMock: vi.fn(),
   decideEgressMock: vi.fn(),
-  startAiRunMock: vi.fn()
+  startAiRunMock: vi.fn(),
+  listFactsMock: vi.fn()
 }));
 
 vi.mock('@/entities/ai-run/api/ai-run-api', () => ({
@@ -25,10 +27,32 @@ vi.mock('@/entities/ai-run/api/ai-run-api', () => ({
   startAiRun: startAiRunMock
 }));
 
+vi.mock('@/entities/project-fact/api/project-fact-api', () => ({ listProjectFacts: listFactsMock }));
+
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const CONVERSATION_ID = '44444444-4444-4444-8444-000000000001';
 const RUN_ID = '77777777-7777-4777-8777-000000000001';
 const HASH = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const FACT_ID = '55555555-5555-4555-8555-000000000001';
+
+const projectFact: ProjectFact = {
+  id: FACT_ID,
+  projectId: PROJECT_ID,
+  title: 'Preferred language',
+  content: 'This project uses TypeScript.',
+  source: { kind: 'user', label: 'Added by you', reference: null },
+  createdAt: '2026-09-26T00:00:00.000Z',
+  updatedAt: '2026-09-26T00:00:00.000Z',
+  version: 1,
+  verifiedAt: null,
+  verificationStatus: 'needs_review'
+};
+
+const disclosedFact: EgressFactDisclosure = {
+  ...projectFact,
+  sizeBytes: 83,
+  sourceHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+};
 
 const pending: AiRunSnapshot = {
   runId: RUN_ID,
@@ -55,6 +79,7 @@ const manifest: EgressManifest = {
   relativePaths: ['src/index.ts'],
   itemCount: 1,
   messageCount: 0,
+  facts: [],
   byteEstimate: 1200,
   tokenEstimate: 300,
   excludedItemCount: 0,
@@ -88,6 +113,7 @@ describe('AiRunEntry', () => {
     getEgressManifestMock.mockReset();
     decideEgressMock.mockReset();
     startAiRunMock.mockReset();
+    listFactsMock.mockReset().mockResolvedValue([projectFact]);
     createAiRunMock.mockResolvedValue({ ...pending, manifest } satisfies AiRunIntent);
     getEgressManifestMock.mockResolvedValue(manifest);
   });
@@ -115,6 +141,40 @@ describe('AiRunEntry', () => {
     expect(screen.getByTestId('provider-consent-no-staging-notice')).toHaveTextContent('Nothing has been sent to NVIDIA yet.');
     expect(screen.getByTestId('provider-consent-file-count')).toHaveTextContent('1');
     expect(screen.getByTestId('provider-consent-message-count')).toHaveTextContent('0');
+    expect(decideEgressMock).not.toHaveBeenCalled();
+  });
+
+  it('sends only explicitly selected project facts and shows their exact content before consent', async () => {
+    const factManifest: EgressManifest = {
+      ...manifest,
+      categories: ['Request', 'Project facts'],
+      facts: [disclosedFact]
+    };
+    createAiRunMock.mockResolvedValue({ ...pending, manifest: factManifest } satisfies AiRunIntent);
+    renderEntry();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByTestId('memory-context-open'));
+    const factCheckbox = await screen.findByTestId(`memory-context-fact-${FACT_ID}`);
+    expect(factCheckbox).not.toBeChecked();
+    await user.click(factCheckbox);
+    await user.click(screen.getByTestId('memory-context-apply'));
+    await user.click(screen.getByTestId('ai-run-submit'));
+
+    await waitFor(() => expect(createAiRunMock).toHaveBeenCalledWith(
+      PROJECT_ID,
+      {
+        conversationId: CONVERSATION_ID,
+        request: 'Inspect the project',
+        context: { relativePaths: [], includeRecentMessages: false, factIds: [FACT_ID] }
+      },
+      'csrf-token',
+      expect.any(String)
+    ));
+    expect(listFactsMock).toHaveBeenCalledTimes(2);
+    expect(await screen.findByTestId('provider-consent-fact-content')).toHaveTextContent('This project uses TypeScript.');
+    expect(screen.getByTestId('provider-consent-fact-count')).toHaveTextContent('1');
+    expect(screen.getByTestId('provider-consent-facts')).toHaveTextContent('Added by you');
     expect(decideEgressMock).not.toHaveBeenCalled();
   });
 

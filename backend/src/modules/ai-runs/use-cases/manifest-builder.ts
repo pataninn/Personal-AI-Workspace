@@ -6,6 +6,10 @@ import type { IWorkspaceGateway } from '@/modules/files/repositories/workspace-g
 import type { WorkspaceReadResult } from '@/modules/files/domain/workspace-types';
 import { AI_RUN_LIMITS } from '@/modules/ai-runs/domain/ai-run-validation';
 import type { EgressFileEntry, EgressManifest, EgressMessage } from '@/modules/ai-runs/domain/ai-run-types';
+import type { EgressProjectFact } from '@/modules/ai-runs/domain/ai-run-types';
+import type { ProjectFact } from '@/modules/memory/domain/project-fact';
+import { redactEgressText } from '@/shared/egress/redaction';
+import { AiRunValidationError } from '@/modules/ai-runs/domain/ai-run-errors';
 
 export type ManifestMessage = EgressMessage;
 
@@ -16,6 +20,7 @@ export interface ManifestBuildInput {
   readonly request: string;
   readonly requestedPaths: readonly string[];
   readonly messages: readonly ManifestMessage[];
+  readonly facts?: readonly EgressProjectFact[];
   readonly providerProfile: string;
   readonly model: string;
 }
@@ -31,9 +36,14 @@ export async function buildManifest(input: ManifestBuildInput): Promise<Manifest
   const omittedPaths: string[] = [];
   const requestBytes = Buffer.byteLength(input.request, 'utf8');
   const messageBytes = input.messages.reduce((total, message) => total + Buffer.byteLength(message.content, 'utf8'), 0);
+  const facts = input.facts ?? [];
+  const factBytes = facts.reduce((total, fact) => total + fact.sizeBytes, 0);
+  if (requestBytes + messageBytes + factBytes > AI_RUN_LIMITS.maxTotalBytes) {
+    throw new AiRunValidationError([{ field: 'context.factIds', message: 'The selected facts are too large to include with this request and conversation.' }]);
+  }
   const maxFileBytes = Math.max(0, Math.min(
     AI_RUN_LIMITS.maxContextBytes,
-    AI_RUN_LIMITS.maxTotalBytes - requestBytes - messageBytes
+    AI_RUN_LIMITS.maxTotalBytes - requestBytes - messageBytes - factBytes
   ));
   const seenPaths = new Set<string>();
   let includedBytes = 0;
@@ -77,18 +87,22 @@ export async function buildManifest(input: ManifestBuildInput): Promise<Manifest
   if (files.length > 0) {
     categories.push('Project files');
   }
+  if (facts.length > 0) {
+    categories.push('Project facts');
+  }
   const manifestWithoutHash = {
     provider: 'NVIDIA hosted NIM' as const,
     providerProfile: input.providerProfile,
     model: input.model,
     categories,
     files,
+    facts,
     requestBytes,
     messageBytes,
     messageCount: input.messages.length,
     messageHash,
-    byteEstimate: requestBytes + messageBytes + includedBytes,
-    tokenEstimate: Math.ceil((requestBytes + messageBytes + includedBytes) / 4),
+    byteEstimate: requestBytes + messageBytes + factBytes + includedBytes,
+    tokenEstimate: Math.ceil((requestBytes + messageBytes + factBytes + includedBytes) / 4),
     excludedItemCount: excludedPaths.length,
     omittedItemCount: omittedPaths.length,
     omissionSummary: omissionSummary(excludedPaths.length, omittedPaths.length)
@@ -101,6 +115,25 @@ export async function buildManifest(input: ManifestBuildInput): Promise<Manifest
       bestEffortSecretDetection: true
     },
     omittedPaths
+  };
+}
+
+export function toEgressProjectFact(fact: ProjectFact): EgressProjectFact {
+  const title = redactEgressText(fact.title);
+  const content = redactEgressText(fact.content);
+  const source = { kind: 'user' as const, label: 'Added by you' as const, reference: null };
+  const disclosedValue = JSON.stringify({ title, content, source: source.label });
+  return {
+    id: fact.id,
+    title,
+    content,
+    source,
+    version: fact.version,
+    verifiedAt: fact.verifiedAt?.toISOString() ?? null,
+    verificationStatus: fact.verificationStatus,
+    updatedAt: fact.updatedAt.toISOString(),
+    sizeBytes: Buffer.byteLength(disclosedValue, 'utf8'),
+    sourceHash: hashText(disclosedValue)
   };
 }
 

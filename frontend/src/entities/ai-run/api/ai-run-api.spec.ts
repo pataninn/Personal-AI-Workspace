@@ -7,6 +7,17 @@ const RUN_ID = '77777777-7777-4777-8777-000000000001';
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const CONVERSATION_ID = '44444444-4444-4444-8444-000000000001';
 const HASH = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const factDisclosure = {
+  id: '55555555-5555-4555-8555-000000000001',
+  title: 'Preferred test command',
+  content: 'Run pnpm test from the repository root.',
+  source: { kind: 'user', label: 'Added by you', reference: null },
+  version: 2,
+  verifiedAt: '2026-09-26T00:00:00.000Z',
+  verificationStatus: 'verified',
+  sizeBytes: 40,
+  sourceHash: HASH
+};
 
 describe('AI run API normalizers', () => {
   it('normalizes the disclosure envelope without rendering absolute or traversal paths', () => {
@@ -89,5 +100,30 @@ describe('AI run API normalizers', () => {
 
   it('rejects a non-SHA manifest hash instead of exposing an opaque identifier', () => {
     expect(() => normalizeEgressManifest({ manifestHash: 'run-secret-id' }, RUN_ID)).toThrow(ApiClientError);
+  });
+
+  it('preserves exact selected fact text and source metadata in the consent manifest', () => {
+    const manifest = normalizeEgressManifest({
+      runId: RUN_ID,
+      manifestHash: HASH,
+      content: { categories: ['Request', 'Project facts'], relativePaths: [], itemCount: 1, messageCount: 0, facts: [factDisclosure] },
+      redaction: { excludedItemCount: 0, omittedItemCount: 0 }
+    }, RUN_ID);
+
+    expect(manifest.facts).toEqual([factDisclosure]);
+    expect(manifest.categories).toContain('Project facts');
+  });
+
+  it('rejects a malformed selected fact instead of rendering an incomplete disclosure', () => {
+    expect(() => normalizeEgressManifest({
+      runId: RUN_ID,
+      manifestHash: HASH,
+      content: { facts: [{ ...factDisclosure, sourceHash: 'invalid' }] }
+    }, RUN_ID)).toThrow(ApiClientError);
+    expect(() => normalizeEgressManifest({
+      runId: RUN_ID,
+      manifestHash: HASH,
+      content: { facts: [{ ...factDisclosure, verificationStatus: 'needs_review' }] }
+    }, RUN_ID)).toThrow(ApiClientError);
   });
 });

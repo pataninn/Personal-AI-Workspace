@@ -102,8 +102,25 @@ export async function postNoContent(
   headers?: HeadersInit,
   fetchImplementation: typeof fetch = fetch
 ): Promise<void> {
+  return requestNoContent(url, 'POST', headers, fetchImplementation);
+}
+
+export async function deleteNoContent(
+  url: string,
+  headers?: HeadersInit,
+  fetchImplementation: typeof fetch = fetch
+): Promise<void> {
+  return requestNoContent(url, 'DELETE', headers, fetchImplementation);
+}
+
+async function requestNoContent(
+  url: string,
+  method: 'POST' | 'DELETE',
+  headers?: HeadersInit,
+  fetchImplementation: typeof fetch = fetch
+): Promise<void> {
   const response = await fetchImplementation(url, {
-    method: 'POST',
+    method,
     credentials: 'include',
     headers: new Headers(headers)
   });

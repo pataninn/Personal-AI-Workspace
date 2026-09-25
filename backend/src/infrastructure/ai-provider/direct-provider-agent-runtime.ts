@@ -3,6 +3,8 @@ import type { EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
 import type { CommandResult } from '@/modules/ai-runs/domain/command-types';
 import type { IConversationRepository } from '@/modules/conversations/repositories/conversation-repository';
 import type { IWorkspaceGateway } from '@/modules/files/repositories/workspace-gateway';
+import type { IProjectFactRepository } from '@/modules/memory/repositories/project-fact-repository';
+import type { EgressProjectFact } from '@/modules/ai-runs/domain/ai-run-types';
 import type {
   IAgentRuntime,
   RuntimeCommandCancellationInput,
@@ -16,7 +18,7 @@ import type {
   RuntimeReadyResult
 } from '@/modules/ai-runs/repositories/agent-runtime';
 import type { IModelProvider, ModelProviderEvent, ModelProviderRequest } from '@/modules/ai-runs/repositories/model-provider';
-import { hashText } from '@/modules/ai-runs/use-cases/manifest-builder';
+import { hashText, toEgressProjectFact } from '@/modules/ai-runs/use-cases/manifest-builder';
 import { redactEgressText } from '@/shared/egress/redaction';
 import { AI_RUN_LIMITS } from '@/modules/ai-runs/domain/ai-run-validation';
 
@@ -24,6 +26,7 @@ export interface DirectProviderAgentRuntimeOptions {
   readonly provider: IModelProvider;
   readonly workspaceGateway: IWorkspaceGateway;
   readonly conversationRepository: IConversationRepository;
+  readonly projectFactRepository?: IProjectFactRepository;
 }
 
 export class DirectProviderAgentRuntime implements IAgentRuntime {
@@ -31,11 +34,13 @@ export class DirectProviderAgentRuntime implements IAgentRuntime {
   private readonly provider: IModelProvider;
   private readonly workspaceGateway: IWorkspaceGateway;
   private readonly conversationRepository: IConversationRepository;
+  private readonly projectFactRepository: IProjectFactRepository | undefined;
 
   public constructor(options: DirectProviderAgentRuntimeOptions) {
     this.provider = options.provider;
     this.workspaceGateway = options.workspaceGateway;
     this.conversationRepository = options.conversationRepository;
+    this.projectFactRepository = options.projectFactRepository;
   }
 
   public async checkAvailability(): Promise<void> {
@@ -67,6 +72,7 @@ export class DirectProviderAgentRuntime implements IAgentRuntime {
         request: redactEgressText(input.request),
         manifest: input.manifest,
         files: context.files,
+        facts: context.facts,
         messages: context.messages
       };
       for await (const event of this.provider.stream(request)) {
@@ -105,7 +111,7 @@ export class DirectProviderAgentRuntime implements IAgentRuntime {
     return { kind: 'direct', sandboxReady: true };
   }
 
-  private async readApprovedContext(input: RuntimeRunInput): Promise<{ readonly files: readonly { readonly relativePath: string; readonly content: string }[]; readonly messages: readonly { readonly role: string; readonly content: string }[] }> {
+  private async readApprovedContext(input: RuntimeRunInput): Promise<{ readonly files: readonly { readonly relativePath: string; readonly content: string }[]; readonly facts: readonly EgressProjectFact[]; readonly messages: readonly { readonly role: string; readonly content: string }[] }> {
     const conversation = await this.conversationRepository.findWithMessagesForOwner({
       ownerId: input.ownerId ?? '',
       projectId: input.projectId ?? '',
@@ -118,6 +124,7 @@ export class DirectProviderAgentRuntime implements IAgentRuntime {
     if (!conversation || messages.length !== input.manifest.messageCount || hashText(JSON.stringify(messages)) !== input.manifest.messageHash) {
       throw new AiRunSourceChangedError();
     }
+    const facts = await this.readApprovedFacts(input);
     const files = [];
     for (const file of input.manifest.files) {
       const read = await this.workspaceGateway.readText({ projectId: input.projectId ?? '', relativeRoot: input.relativeRoot ?? '' }, { path: file.relativePath });
@@ -126,8 +133,46 @@ export class DirectProviderAgentRuntime implements IAgentRuntime {
       }
       files.push({ relativePath: file.relativePath, content: redactEgressText(read.content) });
     }
-    return { files, messages };
+    return { files, facts, messages };
   }
+
+  private async readApprovedFacts(input: RuntimeRunInput): Promise<readonly EgressProjectFact[]> {
+    const expectedFacts = input.manifest.facts ?? [];
+    if (expectedFacts.length === 0) {
+      return [];
+    }
+    if (!this.projectFactRepository || !input.ownerId || !input.projectId) {
+      throw new AiRunSourceChangedError();
+    }
+    const currentFacts = await this.projectFactRepository.findActiveByIds(input.ownerId, input.projectId, expectedFacts.map((fact) => fact.id));
+    if (currentFacts.length !== expectedFacts.length) {
+      throw new AiRunSourceChangedError();
+    }
+    const currentSnapshots = new Map(currentFacts.map((fact) => {
+      const snapshot = toEgressProjectFact(fact);
+      return [snapshot.id, snapshot] as const;
+    }));
+    if (expectedFacts.some((snapshot) => !areSameFactSnapshot(snapshot, currentSnapshots.get(snapshot.id)))) {
+      throw new AiRunSourceChangedError();
+    }
+    return expectedFacts;
+  }
+}
+
+function areSameFactSnapshot(expected: EgressProjectFact, current: EgressProjectFact | undefined): boolean {
+  return current !== undefined
+    && current.id === expected.id
+    && current.title === expected.title
+    && current.content === expected.content
+    && current.source.kind === expected.source.kind
+    && current.source.label === expected.source.label
+    && current.source.reference === expected.source.reference
+    && current.version === expected.version
+    && current.verifiedAt === expected.verifiedAt
+    && current.verificationStatus === expected.verificationStatus
+    && current.updatedAt === expected.updatedAt
+    && current.sizeBytes === expected.sizeBytes
+    && current.sourceHash === expected.sourceHash;
 }
 
 function toRuntimeEvent(event: ModelProviderEvent): RuntimeInferenceEvent {
