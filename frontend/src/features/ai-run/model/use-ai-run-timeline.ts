@@ -35,6 +35,7 @@ export interface UseAiRunTimelineResult {
   readonly events: readonly AiRunEvent[];
   readonly conversation: ConversationHistoryResponse | null;
   readonly error: string | null;
+  readonly cancelError: string | null;
   readonly cancelPending: boolean;
   readonly cancel: () => void;
   readonly refresh: () => void;
@@ -69,6 +70,7 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
   const [events, setEvents] = useState<readonly AiRunEvent[]>([]);
   const [conversation, setConversation] = useState<ConversationHistoryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const [cancelPending, setCancelPending] = useState(false);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const runIdRef = useRef(snapshot.runId);
@@ -92,7 +94,7 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
     });
   }, []);
 
-  const reconcile = useCallback(async (): Promise<void> => {
+  const reconcile = useCallback(async (fallbackError?: string): Promise<void> => {
     try {
       const [run, history] = await Promise.all([
         getAiRun(snapshot.runId),
@@ -112,12 +114,13 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
         // authoritative: clear provisional stream text, including empty success.
         setAssistantText('');
       }
-      setError(null);
+      const keepFallbackError = fallbackError !== undefined && (run.status === 'ready' || run.status === 'pending_approval');
+      setError(keepFallbackError ? fallbackError : null);
       if (TERMINAL_STATUSES.has(run.status)) {
         setConnection('complete');
       }
     } catch {
-      setError('Live updates stopped. Refresh the run and conversation to confirm the saved result.');
+      setError(fallbackError ?? 'Live updates stopped. Refresh the run and conversation to confirm the saved result.');
     }
   }, [conversationId, projectId, setSnapshot, snapshot.runId]);
 
@@ -136,6 +139,7 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
     setEvents([]);
     setConversation(null);
     setError(null);
+    setCancelError(null);
     setCancelPending(false);
     setConnection(initialConnection(snapshot.status));
   }, [snapshot]);
@@ -164,13 +168,16 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
           setSnapshot(next);
           if (TERMINAL_STATUSES.has(next.status)) {
             setConnection('complete');
+            void reconcile();
           }
         }
       })
       .catch(() => {
         if (!cancelled) {
+          const startError = 'The assistant run could not be started. Refresh run status before trying again.';
           setConnection('error');
-          setError('The assistant run could not be started. Refresh run status before trying again.');
+          setError(startError);
+          void reconcile(startError);
         }
       });
     return () => { cancelled = true; };
@@ -247,6 +254,7 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
       return;
     }
     setCancelPending(true);
+    setCancelError(null);
     const key = cancelKeys.current.get(localSnapshot.runId) ?? createIdempotencyKey();
     cancelKeys.current.set(localSnapshot.runId, key);
     if (typeof cancelAiRun !== 'function') {
@@ -272,17 +280,20 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
       })
       .catch(() => {
         setCancelPending(false);
+        setCancelError('Cancellation could not be confirmed. Refresh the run status before retrying.');
         setConnection('error');
         setError('Cancellation could not be confirmed. Refresh the run status before retrying.');
+        void reconcile();
       });
   }, [cancelPending, csrfToken, localSnapshot.runId, localSnapshot.status, reconcile, setSnapshot]);
 
   const refresh = useCallback((): void => {
     reconnectSuppressed.current = false;
+    setCancelError(null);
     setRefreshVersion((value) => value + 1);
   }, []);
 
-  return { snapshot: localSnapshot, connection, assistantText, events, conversation, error, cancelPending, cancel, refresh };
+  return { snapshot: localSnapshot, connection, assistantText, events, conversation, error, cancelError, cancelPending, cancel, refresh };
 }
 
 function applyEvent(

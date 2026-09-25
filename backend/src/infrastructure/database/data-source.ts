@@ -11,6 +11,7 @@ import { CreateAiRunsAndEgress1710000004000 } from '@/infrastructure/database/mi
 import { CreateSandboxCommands1710000005000 } from '@/infrastructure/database/migrations/1710000005000-create-sandbox-commands';
 import { CreateAiRunChat1710000006000 } from '@/infrastructure/database/migrations/1710000006000-create-ai-run-chat';
 import { CreateAiRunChangeSets1710000007000 } from '@/infrastructure/database/migrations/1710000007000-create-ai-run-change-sets';
+import { AddConfirmedProviderTransmission1710000008000 } from '@/infrastructure/database/migrations/1710000008000-add-confirmed-provider-transmission';
 
 export function createDataSource(config: DatabaseConfig): DataSource {
   return new DataSource({
@@ -18,7 +19,7 @@ export function createDataSource(config: DatabaseConfig): DataSource {
     url: config.url,
     synchronize: false,
     migrationsRun: false,
-    migrations: [CreateApplicationMetadata1710000000000, CreateUsersAndSessions1710000001000, CreateProjects1710000002000, CreateConversationsAndMessages1710000003000, CreateAiRunsAndEgress1710000004000, CreateSandboxCommands1710000005000, CreateAiRunChat1710000006000, CreateAiRunChangeSets1710000007000],
+    migrations: [CreateApplicationMetadata1710000000000, CreateUsersAndSessions1710000001000, CreateProjects1710000002000, CreateConversationsAndMessages1710000003000, CreateAiRunsAndEgress1710000004000, CreateSandboxCommands1710000005000, CreateAiRunChat1710000006000, CreateAiRunChangeSets1710000007000, AddConfirmedProviderTransmission1710000008000],
     entities: [],
     logging: false
   });

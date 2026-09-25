@@ -23,7 +23,7 @@ describe('proposed change-set use cases', () => {
     const workspace = new WorkspaceFixture();
     const repository = new InMemoryProposedChangeSetRepository();
     const useCase = new CollectProposedChangeSetUseCase(new RunRepository(), new ProjectRepository(), workspace, repository);
-    const changes: readonly RuntimeChangeProposal[] = [{ operation: 'edit', path: FILE_PATH, content: 'const token = "replacement";\n', summary: 'replace token' }];
+    const changes: readonly RuntimeChangeProposal[] = [{ operation: 'edit', path: FILE_PATH, content: 'const replacement = "updated";\n', summary: 'replace implementation' }];
 
     const result = await useCase.execute({ ownerId: OWNER_ID, runId: RUN_ID, changes, fakeRuntime: true });
 
@@ -104,14 +104,28 @@ describe('proposed change-set use cases', () => {
     const repository = new InMemoryProposedChangeSetRepository();
     const collect = new CollectProposedChangeSetUseCase(new RunRepository(), new ProjectRepository(), workspace, repository);
     const decision = new DecideProposedChangeSetUseCase(new RunRepository(), new ProjectRepository(), repository, workspace);
-    const changeSet = await collect.execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation: 'edit', path: FILE_PATH, content: 'token: terminal-secret', summary: 'replace secret' }], fakeRuntime: true });
-    expect(changeSet.operations[0]).toHaveProperty('content', 'token: terminal-secret');
+    const changeSet = await collect.execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation: 'edit', path: FILE_PATH, content: 'const value = "terminal-secret";', summary: 'replace value' }], fakeRuntime: true });
+    expect(changeSet.operations[0]).toHaveProperty('content', 'const value = "terminal-secret";');
 
     const rejected = await decision.execute({ ownerId: OWNER_ID, runId: RUN_ID, proposalHash: changeSet.proposalHash, decision: 'reject', idempotencyKey: 'decision-retention' });
 
     expect(rejected.status).toBe('rejected');
     expect(rejected.operations[0]).not.toHaveProperty('content');
     expect(JSON.stringify(rejected)).not.toContain('terminal-secret');
+  });
+
+  it('rejects secret-bearing model change content before proposal persistence', async () => {
+    const workspace = new WorkspaceFixture();
+    const repository = new InMemoryProposedChangeSetRepository();
+    const useCase = new CollectProposedChangeSetUseCase(new RunRepository(), new ProjectRepository(), workspace, repository);
+
+    await expect(useCase.execute({
+      ownerId: OWNER_ID,
+      runId: RUN_ID,
+      changes: [{ operation: 'edit', path: FILE_PATH, content: 'NVIDIA_API_KEY=secret-value' }],
+      fakeRuntime: false
+    })).rejects.toMatchObject({ code: 'CHANGE_SET_INVALID' });
+    await expect(repository.findByRunForOwner(OWNER_ID, RUN_ID)).resolves.toBeNull();
   });
 });
 

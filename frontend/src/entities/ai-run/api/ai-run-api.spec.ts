@@ -20,6 +20,7 @@ describe('AI run API normalizers', () => {
         categories: ['Request', 'Project files'],
         relativePaths: ['/workspace/private.env', '../outside.txt', 'src/index.ts'],
         itemCount: 3,
+        messageCount: 0,
         byteEstimate: 1234,
         tokenEstimate: 300
       },
@@ -27,7 +28,7 @@ describe('AI run API normalizers', () => {
     }, RUN_ID);
 
     expect(manifest.relativePaths).toEqual(['src/index.ts']);
-    expect(manifest.preConsentNotice).toBe('Nothing has been copied to the run staging area or sent to NVIDIA yet.');
+    expect(manifest.preConsentNotice).toBe('Nothing has been sent to NVIDIA yet.');
     expect(manifest.omissionSummary).toBe('Some selected items were excluded by local safety policy.');
     expect(manifest.model).toBe('nvidia/nemotron-3-super-120b-a12b');
   });
@@ -51,6 +52,12 @@ describe('AI run API normalizers', () => {
     expect(snapshot).toMatchObject({ runId: RUN_ID, status: 'ready', decision: 'approved', stagingItemCount: 2, runtime: { kind: 'fake', sandboxReady: true } });
     expect(snapshot).not.toHaveProperty('request');
     expect(snapshot).not.toHaveProperty('relativeRoot');
+    expect(normalizeAiRunSnapshot({
+      runId: RUN_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID,
+      status: 'succeeded', phase: 'terminal', decision: 'approved', manifestHash: HASH,
+      cleanup: 'complete', providerTransmission: 'transmitted_confirmed',
+      stagingItemCount: 0, safeMessage: 'Assistant response complete.'
+    }).providerTransmission).toBe('transmitted_confirmed');
   });
 
   it('unwraps run and manifest resources returned by create and decision endpoints', () => {
@@ -70,7 +77,7 @@ describe('AI run API normalizers', () => {
         manifestHash: HASH,
         provider: 'NVIDIA hosted NIM',
         model: 'nvidia/nemotron-3-super-120b-a12b',
-        content: { categories: ['Request'], relativePaths: [], itemCount: 0, byteEstimate: 12, tokenEstimate: 3 },
+        content: { categories: ['Request'], relativePaths: [], itemCount: 0, messageCount: 0, byteEstimate: 12, tokenEstimate: 3 },
         redaction: { excludedItemCount: 0, omittedItemCount: 0 }
       }
     });

@@ -16,7 +16,7 @@ const RUNS_PATH = '/api/v1/ai-runs';
 const DEFAULT_PROVIDER = 'NVIDIA hosted NIM';
 const DEFAULT_PROVIDER_PROFILE = 'nvidia-hosted-nim';
 const DEFAULT_MODEL = 'nvidia/nemotron-3-super-120b-a12b';
-const PRE_CONSENT_NOTICE = 'Nothing has been copied to the run staging area or sent to NVIDIA yet.';
+const PRE_CONSENT_NOTICE = 'Nothing has been sent to NVIDIA yet.';
 const REQUEST_ONLY_NOTICE = 'No project files or facts are selected. Only your request will be sent if you approve.';
 const SAFE_CATEGORIES = new Set(['Request', 'Recent conversation', 'Project files', 'Structured facts', 'Selected relative paths']);
 
@@ -131,7 +131,7 @@ export function normalizeAiRunSnapshot(value: unknown): AiRunSnapshot {
     phase,
     manifestHash,
     decision,
-    safeMessage: readString(record.safeMessage) ?? '',
+    safeMessage: readSafeMessage(readString(record.safeMessage)),
     cleanup: readCleanup(record.cleanup),
     providerTransmission: readProviderTransmission(record.providerTransmission),
     stagingItemCount: readNonNegativeNumber(record.stagingItemCount),
@@ -154,10 +154,11 @@ export function normalizeEgressManifest(value: unknown, runId: string, fallbackM
   const filePaths = source.files;
   const relativePaths = normalizeRelativePaths(rawPaths, filePaths);
   const rawCategories = content?.categories ?? source.categories;
-  const categories = normalizeCategories(rawCategories, relativePaths.length > 0);
+  const messageCount = readNonNegativeNumber(content?.messageCount ?? source.messageCount);
+  const categories = normalizeCategories(rawCategories, relativePaths.length > 0, messageCount > 0);
   const excludedItemCount = readNonNegativeNumber(redaction?.excludedItemCount ?? source.excludedItemCount);
   const omittedItemCount = readNonNegativeNumber(redaction?.omittedItemCount ?? source.omittedItemCount);
-  const itemCount = readNonNegativeNumber(content?.itemCount ?? source.itemCount, relativePaths.length);
+  const itemCount = Math.max(readNonNegativeNumber(content?.itemCount ?? source.itemCount, relativePaths.length), relativePaths.length);
   const byteEstimate = readNonNegativeNumber(content?.byteEstimate ?? source.byteEstimate);
   const tokenEstimate = readNonNegativeNumber(content?.tokenEstimate ?? source.tokenEstimate);
   const provider = readSafeLabel(source.provider, DEFAULT_PROVIDER);
@@ -178,6 +179,7 @@ export function normalizeEgressManifest(value: unknown, runId: string, fallbackM
     categories,
     relativePaths,
     itemCount,
+    messageCount,
     byteEstimate,
     tokenEstimate,
     excludedItemCount,
@@ -195,6 +197,13 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function readString(value: unknown, key?: string): string | undefined {
   const candidate = key === undefined ? value : asRecord(value)?.[key];
   return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined;
+}
+
+function readSafeMessage(value: string | undefined): string {
+  if (!value || value.length > 512 || /[\u0000-\u001f\u007f]/u.test(value)) {
+    return '';
+  }
+  return value;
 }
 
 function readSafeLabel(value: unknown, fallback: string): string {
@@ -251,8 +260,11 @@ function readOmissionSummary(value: unknown, hasOmissions: boolean): string {
   const candidate = readString(value);
   const safeSummaries = new Set([
     'No selected items were excluded.',
+    'No selected items were excluded or omitted.',
     'Some items were excluded by local safety policy.',
-    'Some selected items were excluded by local safety policy.'
+    'Some selected items were excluded by local safety policy.',
+    'Some selected items were omitted by bounded inspection or size policy.',
+    'Some selected items were excluded by local safety policy or omitted by bounded inspection.'
   ]);
   if (candidate && safeSummaries.has(candidate)) {
     return candidate;
@@ -264,7 +276,7 @@ function readBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
 }
 
-function normalizeCategories(value: unknown, hasFiles: boolean): readonly string[] {
+function normalizeCategories(value: unknown, hasFiles: boolean, hasMessages: boolean): readonly string[] {
   const categories = Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === 'string' && SAFE_CATEGORIES.has(entry))
     : [];
@@ -272,10 +284,13 @@ function normalizeCategories(value: unknown, hasFiles: boolean): readonly string
   if (hasFiles && !result.includes('Project files')) {
     result.push('Project files');
   }
+  if (hasMessages && !result.includes('Recent conversation')) {
+    result.push('Recent conversation');
+  }
   if (!hasFiles && result.includes('Project files')) {
     return result.filter((category) => category !== 'Project files');
   }
-  return result;
+  return hasMessages || !result.includes('Recent conversation') ? result : result.filter((category) => category !== 'Recent conversation');
 }
 
 function readStatus(value: unknown): AiRunStatus | undefined {
@@ -295,14 +310,14 @@ function readCleanup(value: unknown): CleanupStatus {
 }
 
 function readProviderTransmission(value: unknown): ProviderTransmissionStatus {
-  return value === 'not_started_confirmed' || value === 'unknown' ? value : 'not_started';
+  return value === 'not_started_confirmed' || value === 'transmitted_confirmed' || value === 'unknown' ? value : 'not_started';
 }
 
 function normalizeRuntime(value: unknown, runtimeKind: unknown, sandboxReady: unknown): AiRunSnapshot['runtime'] | undefined {
   const record = asRecord(value);
   const kind = record?.kind ?? runtimeKind;
   const ready = record?.sandboxReady ?? sandboxReady;
-  return kind === 'fake' && ready === true ? { kind: 'fake', sandboxReady: true } : undefined;
+  return (kind === 'fake' || kind === 'direct') && ready === true ? { kind, sandboxReady: true } : undefined;
 }
 
 function normalizeAssistant(value: unknown): AiRunSnapshot['assistant'] | undefined {

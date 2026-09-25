@@ -128,14 +128,16 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
          WHERE "id" = $7 RETURNING *`,
         [status, phase, decision, input.idempotencyKey, input.requestFingerprint, safeMessage, input.runId]
       );
-      const updated = updatedRows[0];
+      const updated = returningRow(updatedRows);
       if (!updated) {
         throw new AiRunNotFoundError();
       }
       await queryRunner.commitTransaction();
       return { resource: toAiRun(updated), replayed: false };
     } catch (error: unknown) {
-      await queryRunner.rollbackTransaction();
+      if (queryRunner.isTransactionActive) {
+        await queryRunner.rollbackTransaction();
+      }
       throw error;
     } finally {
       await queryRunner.release();
@@ -173,7 +175,7 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
          WHERE "owner_id" = $4 AND "id" = $5 RETURNING *`,
         [input.idempotencyKey, input.requestFingerprint, 'Starting assistant run.', input.ownerId, input.runId]
       );
-      const updated = rows[0];
+      const updated = returningRow(rows);
       if (!updated) {
         throw new AiRunNotFoundError();
       }
@@ -205,13 +207,26 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
         ['Assistant is working.', ownerId, runId]
       );
       await queryRunner.commitTransaction();
-      return rows[0] ? toAiRun(rows[0]) : toAiRun(row);
+      const updated = returningRow(rows);
+      return updated ? toAiRun(updated) : toAiRun(row);
     } catch (error: unknown) {
       await queryRunner.rollbackTransaction();
       throw error;
     } finally {
       await queryRunner.release();
     }
+  }
+
+  public async recordProviderTransmission(ownerId: string, runId: string, transmission: AiRun['providerTransmission']): Promise<AiRun | null> {
+    const rows: readonly AiRunRow[] = await this.dataSource.query(
+      `UPDATE "ai_runs" SET "provider_transmission" = $1::"ai_run_provider_transmission", "updated_at" = now()
+       WHERE "owner_id" = $2 AND "id" = $3 AND "status" IN ('queued', 'running', 'waiting_approval')
+         AND ("provider_transmission" <> 'transmitted_confirmed' OR $1 = 'transmitted_confirmed')
+       RETURNING *`,
+      [transmission, ownerId, runId]
+    );
+    const row = returningRow(rows);
+    return row ? toAiRun(row) : null;
   }
 
   public async requestCancellation(input: CancelRunUpdate): Promise<RunMutationResult> {
@@ -242,7 +257,7 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
          WHERE "owner_id" = $6 AND "id" = $7 RETURNING *`,
         [immediate ? 'cancelled' : 'cancel_requested', immediate ? 'complete' : row.cleanup, input.idempotencyKey, input.requestFingerprint, immediate ? 'Run cancelled. No further assistant work will be applied.' : 'Stopping assistant run.', input.ownerId, input.runId]
       );
-      const updated = rows[0];
+      const updated = returningRow(rows);
       if (!updated) {
         throw new AiRunNotFoundError();
       }
@@ -290,7 +305,8 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
         [input.status, input.status === 'review_required' ? 'review' : 'terminal', input.cleanup ?? (input.status === 'succeeded' ? 'complete' : row.cleanup), input.providerTransmission ?? row.provider_transmission, assistantId, input.assistantComplete ?? input.status === 'succeeded', input.assistantText === undefined ? row.assistant_content_length : assistantText.length, input.safeMessage, input.ownerId, input.runId]
       );
       await queryRunner.commitTransaction();
-      return rows[0] ? toAiRun(rows[0]) : toAiRun(row);
+      const updated = returningRow(rows);
+      return updated ? toAiRun(updated) : toAiRun(row);
     } catch (error: unknown) {
       await queryRunner.rollbackTransaction();
       throw error;
@@ -307,13 +323,14 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
          WHERE "owner_id" = $2 AND "id" = $3 AND "status" = 'cancel_requested' RETURNING *`,
         ['Run cancelled. No further assistant work will be applied.', ownerId, runId]
       );
-      if (!rows[0]) {
+      const updated = returningRow(rows);
+      if (!updated) {
         const current = await this.findForUpdate(queryRunner, ownerId, runId);
         await queryRunner.commitTransaction();
         return current ? toAiRun(current) : null;
       }
       await queryRunner.commitTransaction();
-      return toAiRun(rows[0]);
+      return toAiRun(updated);
     } catch (error: unknown) {
       await queryRunner.rollbackTransaction();
       throw error;
@@ -330,9 +347,10 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
          WHERE "owner_id" = $2 AND "id" = $3 AND "status" IN ('queued', 'running') RETURNING *`,
         [safeMessage, ownerId, runId]
       );
-      if (rows[0]) {
+      const updated = returningRow(rows);
+      if (updated) {
         await queryRunner.commitTransaction();
-        return toAiRun(rows[0]);
+        return toAiRun(updated);
       }
       const current = await this.findForUpdate(queryRunner, ownerId, runId);
       await queryRunner.commitTransaction();
@@ -353,13 +371,14 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
          WHERE "owner_id" = $2 AND "id" = $3 AND "status" IN ('queued', 'running', 'waiting_approval', 'cancel_requested') RETURNING *`,
         [safeMessage, ownerId, runId]
       );
-      if (!rows[0]) {
+      const updated = returningRow(rows);
+      if (!updated) {
         const current = await this.findForUpdate(queryRunner, ownerId, runId);
         await queryRunner.commitTransaction();
         return current ? toAiRun(current) : null;
       }
       await queryRunner.commitTransaction();
-      return toAiRun(rows[0]);
+      return toAiRun(updated);
     } catch (error: unknown) {
       await queryRunner.rollbackTransaction();
       throw error;
@@ -446,7 +465,7 @@ function toAiRun(row: AiRunRow): AiRun {
     cleanup: row.cleanup,
     providerTransmission: row.provider_transmission,
     stagingItemCount: row.staging_item_count,
-    ...(row.runtime_kind === 'fake' ? { runtimeKind: 'fake' } : {}),
+    ...(row.runtime_kind === 'fake' ? { runtimeKind: 'fake' as const } : row.runtime_kind === 'direct' ? { runtimeKind: 'direct' as const } : {}),
     sandboxReady: row.sandbox_ready,
     ...(row.runtime_reference ? { runtimeReference: row.runtime_reference } : {}),
     ...(row.request_message_id ? { requestMessageId: row.request_message_id } : {}),
@@ -466,6 +485,11 @@ function toAiRun(row: AiRunRow): AiRun {
 }
 
 const rowToAiRun = toAiRun;
+
+function returningRow(rows: readonly AiRunRow[]): AiRunRow | undefined {
+  const first: unknown = rows[0];
+  return Array.isArray(first) ? first[0] as AiRunRow | undefined : first as AiRunRow | undefined;
+}
 
 function parseManifest(value: unknown, manifestHash: string): EgressManifest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {

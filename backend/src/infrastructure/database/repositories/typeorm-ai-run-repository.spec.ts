@@ -61,6 +61,18 @@ function row(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 }
 
 describe('TypeOrmAiRunRepository', () => {
+  it('records confirmed provider transmission with an enum cast and a narrow update', async () => {
+    const updated = row({ status: 'running', provider_transmission: 'transmitted_confirmed' });
+    const query = jest.fn().mockResolvedValue([[updated], 1]);
+    const repository = new TypeOrmAiRunRepository({ query } as unknown as DataSource);
+
+    const result = await repository.recordProviderTransmission(OWNER_ID, RUN_ID, 'transmitted_confirmed');
+
+    expect(result?.providerTransmission).toBe('transmitted_confirmed');
+    expect(query.mock.calls[0]?.[0]).toContain('$1::"ai_run_provider_transmission"');
+    expect(query.mock.calls[0]?.[0]).toContain('"status" IN');
+  });
+
   it('commits approval checkpoint before returning control to staging', async () => {
     const pending = row();
     const approved = row({
@@ -74,7 +86,7 @@ describe('TypeOrmAiRunRepository', () => {
     const query = jest.fn()
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([pending])
-      .mockResolvedValueOnce([approved]);
+      .mockResolvedValueOnce([[approved], 1]);
     const queryRunner = {
       connect: jest.fn().mockResolvedValue(undefined),
       startTransaction: jest.fn().mockResolvedValue(undefined),

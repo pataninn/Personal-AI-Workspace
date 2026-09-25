@@ -19,9 +19,9 @@ const snapshot = {
 
 describe('parseAiRunEvent', () => {
   it('keeps only bounded safe event fields and accepts a complete snapshot', () => {
-    const event = parseAiRunEvent(JSON.stringify({ runId: snapshot.runId, type: 'run.snapshot', sequence: 1, payload: snapshot }));
+    const event = parseAiRunEvent(JSON.stringify({ runId: snapshot.runId, type: 'run.snapshot', sequence: 1, payload: { ...snapshot, providerTransmission: 'transmitted_confirmed' } }));
 
-    expect(event?.payload).toMatchObject({ runId: snapshot.runId, status: 'running', phase: 'inference', runtime: { kind: 'fake', sandboxReady: true } });
+    expect(event?.payload).toMatchObject({ runId: snapshot.runId, status: 'running', phase: 'inference', providerTransmission: 'transmitted_confirmed', runtime: { kind: 'fake', sandboxReady: true } });
   });
 
   it('truncates oversized deltas and rejects malformed or unknown events', () => {

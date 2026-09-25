@@ -99,7 +99,7 @@ async function buildContext(options: { readonly outcome?: WorkspaceApplyResult['
   const changeSets = new InMemoryProposedChangeSetRepository();
   const gateway = new MutationFixture(runs, changeSets, run.id, options.outcome ?? 'applied');
   const collector = new CollectProposedChangeSetUseCase(runs, projects, gateway, changeSets);
-    const collected = await collector.execute({ ownerId: OWNER_ID, runId: run.id, changes: [{ operation: 'edit', path: SOURCE, content: 'token: super-secret-proposed-content', summary: 'Replace the implementation' }], fakeRuntime: true });
+    const collected = await collector.execute({ ownerId: OWNER_ID, runId: run.id, changes: [{ operation: 'edit', path: SOURCE, content: 'const replacement = "bounded-proposed-content";', summary: 'Replace the implementation' }], fakeRuntime: true });
   const getChangeSet = new GetProposedChangeSetUseCase(changeSets);
   const decideChangeSet = new DecideProposedChangeSetUseCase(runs, projects, changeSets, gateway);
   const readiness = new InMemoryReadinessState();

@@ -20,7 +20,9 @@ interface CommandExecutionSurfaceProps {
 
 export function CommandExecutionSurface({ run, conversationHref, readOnly = false }: CommandExecutionSurfaceProps): React.JSX.Element {
   const csrfToken = useAppSelector(selectCsrfToken);
-  const runtimeKind = run.runtime?.kind;
+  // The command surface is retained as dormant compatibility code for the
+  // earlier sandbox runtime. Direct provider runs never render it.
+  const runtimeKind = run.runtime?.kind === 'fake' ? 'fake' : undefined;
   const commands = useSandboxCommands({ enabled: ['ready', 'queued', 'running', 'waiting_approval'].includes(run.status) && Boolean(run.runtime?.sandboxReady), runId: run.runId, csrfToken });
   const canMutate = Boolean(csrfToken) && !readOnly;
   return (

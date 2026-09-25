@@ -13,10 +13,11 @@ export interface StartupCheckOptions {
   readonly workspaceRoot: string;
   readonly workspaceIdentityFile: string;
   readonly workspaceIdentity: string;
-  readonly gatewayClient: OpenShellGatewayClient;
+  readonly gatewayClient?: OpenShellGatewayClient;
+  readonly providerCheck?: () => Promise<void>;
   readonly nimProfile: string;
   readonly nimModel: string;
-  readonly agentRuntimeMode?: 'fake' | 'openshell';
+  readonly agentRuntimeMode?: 'fake' | 'direct' | 'openshell';
 }
 
 async function checkDatabase(dataSource: DataSource): Promise<StartupCheckFailure | null> {
@@ -106,6 +107,13 @@ async function checkOpenShell(gatewayClient: OpenShellGatewayClient): Promise<St
 }
 
 async function checkNim(options: StartupCheckOptions): Promise<StartupCheckFailure | null> {
+  if (!options.gatewayClient) {
+    return {
+      check: 'nim',
+      code: 'NIM_PROVIDER_UNAVAILABLE',
+      message: 'The configured NVIDIA hosted provider is unavailable.'
+    };
+  }
   try {
     const readiness = await options.gatewayClient.getNimReadiness();
     if (!readiness.ready || readiness.provider !== options.nimProfile || readiness.model !== options.nimModel) {
@@ -128,11 +136,21 @@ async function checkNim(options: StartupCheckOptions): Promise<StartupCheckFailu
   }
 }
 
+async function checkDirectProvider(check: () => Promise<void>): Promise<StartupCheckFailure | null> {
+  try {
+    await check();
+    return null;
+  } catch {
+    return {
+      check: 'nim',
+      code: 'NIM_PROVIDER_UNAVAILABLE',
+      message: 'The configured NVIDIA hosted provider is unavailable.'
+    };
+  }
+}
+
 export async function runStartupChecks(options: StartupCheckOptions): Promise<void> {
-  const externalChecks = options.agentRuntimeMode === 'fake' ? [] : [
-    checkOpenShell(options.gatewayClient),
-    checkNim(options)
-  ];
+  const externalChecks = externalStartupChecks(options);
   const failures = (await Promise.all([
     checkDatabase(options.dataSource),
     checkWorkspaceIdentity(options),
@@ -141,4 +159,21 @@ export async function runStartupChecks(options: StartupCheckOptions): Promise<vo
   if (failures.length > 0) {
     throw new StartupChecksError(failures);
   }
+}
+
+function externalStartupChecks(options: StartupCheckOptions): readonly Promise<StartupCheckFailure | null>[] {
+  if (options.agentRuntimeMode === 'fake') {
+    return [];
+  }
+  if (options.agentRuntimeMode === 'direct') {
+    return [options.providerCheck ? checkDirectProvider(options.providerCheck) : Promise.resolve({ check: 'nim', code: 'NIM_PROVIDER_UNAVAILABLE', message: 'The configured NVIDIA hosted provider is unavailable.' })];
+  }
+  if (options.agentRuntimeMode === 'openshell') {
+    return options.gatewayClient
+      ? [checkOpenShell(options.gatewayClient), checkNim(options)]
+      : [Promise.resolve({ check: 'openshell', code: 'OPENSHELL_UNAVAILABLE', message: 'The authenticated OpenShell gateway is unavailable.' })];
+  }
+  return options.gatewayClient
+    ? [checkOpenShell(options.gatewayClient), checkNim(options)]
+    : [Promise.resolve({ check: 'nim', code: 'NIM_PROVIDER_UNAVAILABLE', message: 'The configured NVIDIA hosted provider is unavailable.' })];
 }

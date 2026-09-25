@@ -21,71 +21,14 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  migrate:
-    build:
-      context: .
-      dockerfile: docker/app.Dockerfile
-      target: runtime
-    command: ["node", "backend/dist/infrastructure/database/migrate.js"]
-    environment:
-      DATABASE_URL: postgresql://pai_app:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/personal_ai
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - app-data
-    restart: "no"
-
-  openshell-gateway:
-    image: ${OPENSHELL_IMAGE:?OPENSHELL_IMAGE must name a reviewed OpenShell gateway image}
-    environment:
-      OPENSHELL_LISTEN_ADDRESS: 0.0.0.0:8080
-      OPENSHELL_CLIENT_ID: ${OPENSHELL_CLIENT_ID:?OPENSHELL_CLIENT_ID must be set in .env}
-      OPENSHELL_CLIENT_TOKEN: ${OPENSHELL_CLIENT_TOKEN:?OPENSHELL_CLIENT_TOKEN must be set in .env}
-      OPENSHELL_PROVIDER_PROFILE: ${NIM_PROFILE:-nvidia-hosted-nim}
-      OPENSHELL_NIM_ENDPOINT: https://integrate.api.nvidia.com/v1
-      OPENSHELL_NIM_MODEL: ${NIM_MODEL:?NIM_MODEL must be set in .env}
-      OPENSHELL_POLICY_FILE: /etc/openshell/policy.yaml
-      OPENSHELL_STAGING_ROOT: /var/lib/personal-ai/staging
-      NVIDIA_API_KEY_FILE: /run/secrets/nvidia_api_key
-    secrets:
-      - nvidia_api_key
-    volumes:
-      - type: volume
-        source: pai_openshell_state
-        target: /var/lib/openshell
-      # The selected release must restrict each sandbox to its unique run subdirectory.
-      # This volume is not an authoritative workspace mount and does not prove transfer support.
-      - type: volume
-        source: pai_staging
-        target: /var/lib/personal-ai/staging
-      - type: bind
-        source: ./docker/policies/openshell-policy.yaml
-        target: /etc/openshell/policy.yaml
-        read_only: true
-    networks:
-      - sandbox-control
-      - gateway-egress
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    user: "10001:10001"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/health >/dev/null"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-      start_period: 10s
-    restart: unless-stopped
-
   personal-ai-app:
     build:
       context: .
       dockerfile: docker/app.Dockerfile
       target: runtime
-    command: ["node", "backend/dist/server.js"]
+    # Keep migration ordering in the two-service MVP1 graph. TypeORM's
+    # migration table makes this safe to repeat after an app restart.
+    command: ["sh", "-c", "node backend/dist/infrastructure/database/migrate.js && exec node backend/dist/server.js"]
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
@@ -100,45 +43,45 @@ services:
       WORKSPACE_IDENTITY_FILE: ${WORKSPACE_IDENTITY_FILE:-/workspace/.personal-ai-workspace-identity}
       WORKSPACE_IDENTITY: ${WORKSPACE_IDENTITY:?WORKSPACE_IDENTITY must match the preflight marker}
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be a long random value}
-      OPENSHELL_BASE_URL: http://openshell-gateway:8080
-      OPENSHELL_CLIENT_ID: ${OPENSHELL_CLIENT_ID:?OPENSHELL_CLIENT_ID must be set in .env}
-      OPENSHELL_CLIENT_TOKEN: ${OPENSHELL_CLIENT_TOKEN:?OPENSHELL_CLIENT_TOKEN must be set in .env}
-      OPENSHELL_NETWORK: sandbox-control
+      LOCAL_USER_PASSWORD_FILE: /run/secrets/local_user_password
+      NVIDIA_API_KEY_FILE: /run/secrets/nvidia_api_key
       NIM_PROFILE: ${NIM_PROFILE:-nvidia-hosted-nim}
+      NIM_ENDPOINT: ${NIM_ENDPOINT:-https://integrate.api.nvidia.com/v1}
       NIM_MODEL: ${NIM_MODEL:?NIM_MODEL must be set in .env}
-      AGENT_RUNTIME_MODE: ${AGENT_RUNTIME_MODE:-openshell}
-      STAGING_ROOT: /var/lib/personal-ai/staging
+      AGENT_RUNTIME_MODE: ${AGENT_RUNTIME_MODE:-direct}
       RECOVERY_ROOT: /var/lib/personal-ai/recovery
       LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-      openshell-gateway:
-        condition: service_healthy
     ports:
       - "127.0.0.1:${APP_PORT:-8443}:8443"
+    secrets:
+      - source: local_user_password
+        target: local_user_password
+        uid: "10001"
+        gid: "10001"
+        mode: 0440
+      - source: nvidia_api_key
+        target: nvidia_api_key
+        uid: "10001"
+        gid: "10001"
+        mode: 0440
     volumes:
+      # This is the sole authoritative workspace mount in the Compose graph.
       - type: bind
         source: ${WORKSPACE_HOST_ROOT:?WORKSPACE_HOST_ROOT must be a dedicated Windows path}
         target: /workspace
       - type: volume
-        source: pai_staging
-        target: /var/lib/personal-ai/staging
-      - type: volume
         source: pai_recovery
         target: /var/lib/personal-ai/recovery
-      - type: volume
-        source: pai_logs
-        target: /var/log/personal-ai
       - type: bind
         source: ${TLS_CERT_DIR:?TLS_CERT_DIR must contain operator-provisioned TLS files}
         target: /run/tls
         read_only: true
     networks:
       - app-data
-      - sandbox-control
+      - provider-egress
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid,nodev
@@ -158,23 +101,19 @@ services:
 networks:
   app-data:
     internal: true
-  sandbox-control:
-    internal: true
-  gateway-egress:
+  # Only the app joins this network. Provider routing remains an application
+  # policy decision; PostgreSQL has no path to the public network.
+  provider-egress:
     internal: false
 
 volumes:
   pai_pg_data:
     name: pai_pg_data
-  pai_staging:
-    name: pai_staging
   pai_recovery:
     name: pai_recovery
-  pai_openshell_state:
-    name: pai_openshell_state
-  pai_logs:
-    name: pai_logs
 
 secrets:
+  local_user_password:
+    file: ${LOCAL_USER_PASSWORD_FILE:-./secrets/local_user_password}
   nvidia_api_key:
     file: ${NVIDIA_API_KEY_FILE:?NVIDIA_API_KEY_FILE must point to a local secret file}

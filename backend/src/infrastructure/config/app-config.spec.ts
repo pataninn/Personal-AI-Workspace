@@ -23,7 +23,55 @@ describe('loadConfig', () => {
     expect(config.port).toBe(8443);
     expect(config.workspaceRoot).toBe('/workspace');
     expect(config.nimModel).toBe(EXPECTED_NIM_MODEL);
+    expect(config.agentRuntimeMode).toBe('direct');
     expect(config.sessionSecret).toBe('a'.repeat(32));
+  });
+
+  it('accepts direct mode without deferred OpenShell settings', () => {
+    const environment: NodeJS.ProcessEnv = { ...validEnvironment };
+    delete environment.OPENSHELL_BASE_URL;
+    delete environment.OPENSHELL_CLIENT_ID;
+    delete environment.OPENSHELL_CLIENT_TOKEN;
+    delete environment.OPENSHELL_NETWORK;
+    environment.AGENT_RUNTIME_MODE = 'direct';
+
+    const config = loadConfig(environment);
+
+    expect(config.agentRuntimeMode).toBe('direct');
+    expect(config.openshellBaseUrl).toBeUndefined();
+  });
+
+  it('maps the server-side local-user password file without reading its value into config', () => {
+    const config = loadConfig({ ...validEnvironment, LOCAL_USER_PASSWORD_FILE: '/run/secrets/local_user_password' });
+
+    expect(config.localUserPassword).toBeUndefined();
+    expect(config.localUserPasswordFile).toBe('/run/secrets/local_user_password');
+  });
+
+  it('requires deferred OpenShell settings only when that mode is selected', () => {
+    const environment: NodeJS.ProcessEnv = { ...validEnvironment, AGENT_RUNTIME_MODE: 'openshell' };
+    delete environment.OPENSHELL_BASE_URL;
+
+    expect(() => loadConfig(environment)).toThrow(ConfigurationError);
+  });
+
+  it('accepts a complete HTTPS bridge configuration without exposing its key value', () => {
+    const config = loadConfig({
+      ...validEnvironment,
+      OPEN_SHELL_BRIDGE_ENDPOINT: 'https://host.docker.internal:17871',
+      OPEN_SHELL_BRIDGE_CA_FILE: '/run/secrets/bridge-ca',
+      OPEN_SHELL_BRIDGE_CLIENT_CERT_FILE: '/run/secrets/bridge-client-cert',
+      OPEN_SHELL_BRIDGE_CLIENT_KEY_FILE: '/run/secrets/bridge-client-key',
+      OPEN_SHELL_BRIDGE_PROFILE_DIGEST: `sha256:${'b'.repeat(64)}`
+    });
+
+    expect(config.openshellBridgeEndpoint).toBe('https://host.docker.internal:17871');
+    expect(config.openshellBridgeClientKeyFile).toBe('/run/secrets/bridge-client-key');
+  });
+
+  it('rejects partial or plaintext bridge configuration', () => {
+    expect(() => loadConfig({ ...validEnvironment, OPEN_SHELL_BRIDGE_ENDPOINT: 'http://host.docker.internal:17871' })).toThrow(ConfigurationError);
+    expect(() => loadConfig({ ...validEnvironment, OPEN_SHELL_BRIDGE_ENDPOINT: 'https://host.docker.internal:17871', OPEN_SHELL_BRIDGE_PROFILE_DIGEST: `sha256:${'b'.repeat(64)}` })).toThrow(ConfigurationError);
   });
 
   it('rejects an authority mount identity outside /workspace', () => {

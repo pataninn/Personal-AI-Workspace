@@ -133,7 +133,7 @@ export class DecideEgressUseCase {
     private readonly aiRunRepository: IAiRunRepository,
     private readonly conversationRepository: IConversationRepository,
     private readonly workspaceGateway: IWorkspaceGateway,
-    private readonly stagingGateway: IStagingGateway,
+    private readonly stagingGateway: IStagingGateway | undefined,
     private readonly agentRuntime: IAgentRuntime,
     private readonly workspaceRoot: string
   ) {}
@@ -165,15 +165,6 @@ export class DecideEgressUseCase {
   }
 
   private async prepareApprovedRun(run: AiRun): Promise<AiRun> {
-    try {
-      await this.agentRuntime.checkAvailability();
-    } catch (error: unknown) {
-      await this.saveFailure(run, error instanceof AiRunRuntimeUnavailableError ? 'failed' : 'review_required', error instanceof AiRunRuntimeUnavailableError ? 'not_started_confirmed' : 'unknown', 'not_started');
-      if (error instanceof AiRunRuntimeUnavailableError) {
-        throw error;
-      }
-      throw new AiRunReviewRequiredError();
-    }
     const conversation = await this.conversationRepository.findWithMessagesForOwner({
       ownerId: run.ownerId,
       projectId: run.projectId,
@@ -188,11 +179,32 @@ export class DecideEgressUseCase {
       await this.saveFailure(run, 'failed', 'not_started_confirmed', 'not_started', true);
       throw new AiRunSourceChangedError();
     }
-    let stagingReference: string | undefined;
-    let runtimeCreated = false;
     try {
       await this.assertFilesUnchanged(run);
-      const staged = await this.stagingGateway.stage({
+    } catch (error: unknown) {
+      await this.handlePreparationFailure(run, error);
+      throw error;
+    }
+    try {
+      await this.agentRuntime.checkAvailability();
+    } catch (error: unknown) {
+      await this.saveFailure(run, error instanceof AiRunRuntimeUnavailableError ? 'failed' : 'review_required', error instanceof AiRunRuntimeUnavailableError ? 'not_started_confirmed' : 'unknown', 'not_started');
+      if (error instanceof AiRunRuntimeUnavailableError) {
+        throw error;
+      }
+      throw new AiRunReviewRequiredError();
+    }
+    if (this.agentRuntime.prepareDirectRun) {
+      return this.prepareDirectRun(run);
+    }
+    let stagingReference: string | undefined;
+    let runtimeCreated = false;
+    const stagingGateway = this.stagingGateway;
+    if (!stagingGateway) {
+      throw new AiRunRuntimeUnavailableError();
+    }
+    try {
+      const staged = await stagingGateway.stage({
         runId: run.id,
         workspaceRoot: this.workspaceRoot,
         relativeRoot: run.relativeRoot,
@@ -227,7 +239,7 @@ export class DecideEgressUseCase {
       }
       if (stagingReference) {
         try {
-          await this.stagingGateway.cleanup(stagingReference);
+          await stagingGateway.cleanup(stagingReference);
         } catch {
           cleanupUnknown = true;
         }
@@ -241,6 +253,33 @@ export class DecideEgressUseCase {
         throw error;
       }
       throw error instanceof AiRunStagingFailedError ? error : new AiRunReviewRequiredError();
+    }
+  }
+
+  private async prepareDirectRun(run: AiRun): Promise<AiRun> {
+    try {
+      const runtime = await this.agentRuntime.prepareDirectRun?.({ runId: run.id, manifest: run.manifest });
+      if (!runtime) {
+        throw new AiRunRuntimeUnavailableError();
+      }
+      const ready: AiRun = {
+        ...run,
+        status: 'ready',
+        phase: 'runtime',
+        stagingItemCount: 0,
+        runtimeKind: runtime.kind,
+        sandboxReady: runtime.sandboxReady,
+        safeMessage: 'Provider access approved. The assistant will receive only this run\'s bounded context.',
+        updatedAt: new Date()
+      };
+      await this.aiRunRepository.save(ready);
+      return ready;
+    } catch (error: unknown) {
+      await this.saveFailure(run, 'failed', 'not_started_confirmed', 'complete');
+      if (error instanceof AiRunRuntimeUnavailableError) {
+        throw error;
+      }
+      throw new AiRunRuntimeUnavailableError();
     }
   }
 

@@ -60,6 +60,25 @@ describe('runStartupChecks', () => {
     expect(gatewayClient.getNimReadiness).not.toHaveBeenCalled();
   });
 
+  it('uses the direct provider probe without requiring deferred OpenShell settings', async () => {
+    const providerCheck = jest.fn().mockResolvedValue(undefined);
+
+    await expect(runStartupChecks(options({ agentRuntimeMode: 'direct', providerCheck }))).resolves.toBeUndefined();
+
+    expect(providerCheck).toHaveBeenCalledTimes(1);
+    expect(gatewayClient.checkHealth).not.toHaveBeenCalled();
+  });
+
+  it('fails direct mode readiness when the provider probe is unavailable', async () => {
+    const providerCheck = jest.fn().mockRejectedValue(new Error('provider unavailable'));
+
+    await expect(runStartupChecks(options({ agentRuntimeMode: 'direct', providerCheck }))).rejects.toMatchObject({
+      failures: expect.arrayContaining([
+        expect.objectContaining({ check: 'nim', code: 'NIM_PROVIDER_UNAVAILABLE' })
+      ])
+    });
+  });
+
   it('fails closed on a workspace identity mismatch', async () => {
     await expect(runStartupChecks(options({ workspaceIdentity: 'different' }))).rejects.toMatchObject({
       failures: expect.arrayContaining([

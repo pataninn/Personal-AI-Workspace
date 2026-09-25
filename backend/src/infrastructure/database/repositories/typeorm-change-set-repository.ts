@@ -113,14 +113,16 @@ export class TypeOrmProposedChangeSetRepository implements IProposedChangeSetRep
          WHERE "owner_id" = $6 AND "run_id" = $7 RETURNING *`,
         [status, decision, input.idempotencyKey, input.requestFingerprint, safeMessage, input.ownerId, input.runId]
       );
-      const updated = rows[0];
+      const updated = returningRow(rows);
       if (!updated) {
         throw new ChangeSetNotFoundError();
       }
       await queryRunner.commitTransaction();
       return { resource: toChangeSet(updated), replayed: false };
     } catch (error: unknown) {
-      await queryRunner.rollbackTransaction();
+      if (queryRunner.isTransactionActive) {
+        await queryRunner.rollbackTransaction();
+      }
       throw error;
     } finally {
       await queryRunner.release();
@@ -154,6 +156,11 @@ export class TypeOrmProposedChangeSetRepository implements IProposedChangeSetRep
     const rows: readonly ChangeSetRow[] = await queryRunner.query('SELECT * FROM "ai_run_change_sets" WHERE "owner_id" = $1 AND "run_id" = $2 LIMIT 1 FOR UPDATE', [ownerId, runId]);
     return rows[0] ?? null;
   }
+}
+
+function returningRow(rows: readonly ChangeSetRow[]): ChangeSetRow | undefined {
+  const first: unknown = rows[0];
+  return Array.isArray(first) ? first[0] as ChangeSetRow | undefined : first as ChangeSetRow | undefined;
 }
 
 async function lockRun(queryRunner: QueryRunner, runId: string): Promise<void> {

@@ -14,6 +14,7 @@ interface ProviderConsentDialogProps {
   readonly onReject: () => void;
   readonly onRefreshDisclosure: () => void;
   readonly onRefreshStatus: () => void;
+  readonly onCloseAutoFocus: (event: Event) => void;
 }
 
 export function ProviderConsentDialog({
@@ -28,14 +29,16 @@ export function ProviderConsentDialog({
   onApprove,
   onReject,
   onRefreshDisclosure,
-  onRefreshStatus
+  onRefreshStatus,
+  onCloseAutoFocus
 }: ProviderConsentDialogProps): React.JSX.Element | null {
   if (!manifest) {
     return null;
   }
   const hasContext = manifest.relativePaths.length > 0
     || manifest.categories.some((category) => category !== 'Request')
-    || manifest.itemCount > manifest.relativePaths.length;
+    || manifest.itemCount > manifest.relativePaths.length
+    || manifest.messageCount > 0;
   const isStale = decisionError === 'This disclosure is no longer current. Review the updated scope before approving.';
   const actionsDisabled = decisionLoading || decisionOutcomeUnknown;
   const statusText = decisionLoading
@@ -55,10 +58,11 @@ export function ProviderConsentDialog({
           event.preventDefault();
           onReject();
         }}
+        onCloseAutoFocus={onCloseAutoFocus}
       >
-        <AlertDialogTitle data-testid="provider-consent-title">Send this run to NVIDIA NIM?</AlertDialogTitle>
+        <AlertDialogTitle data-testid="provider-consent-title">Send selected context to NVIDIA NIM?</AlertDialogTitle>
         <AlertDialogDescription data-testid="provider-consent-description">
-          To answer this request, the approved context below will be sent to NVIDIA&apos;s hosted NIM service through the local sandbox gateway. Review the scope before deciding.
+          To answer this request, the approved context below will be sent server-side to NVIDIA&apos;s hosted NIM service. Review the exact scope before deciding.
         </AlertDialogDescription>
 
         <Alert tone="warning" data-testid="provider-consent-no-staging-notice">
@@ -84,23 +88,31 @@ export function ProviderConsentDialog({
               <dd data-testid="provider-consent-token-estimate">{manifest.tokenEstimate.toLocaleString()}</dd>
             </div>
             <div>
-              <dt>Selected items</dt>
-              <dd>{manifest.itemCount.toLocaleString()}</dd>
+              <dt>Selected files</dt>
+              <dd data-testid="provider-consent-file-count">{manifest.itemCount.toLocaleString()}</dd>
+            </div>
+            <div>
+              <dt>Recent messages</dt>
+              <dd data-testid="provider-consent-message-count">{manifest.messageCount.toLocaleString()}</dd>
             </div>
           </dl>
 
           <section className="provider-consent-context" aria-labelledby="provider-consent-context-heading">
             <h3 id="provider-consent-context-heading">Approved context</h3>
             <ul data-testid="provider-consent-context" aria-label="Approved context categories and relative paths">
-              {manifest.categories.map((category) => <li key={category}>{category}</li>)}
-              {hasContext ? manifest.relativePaths.map((path) => <li key={path}><code>{path}</code></li>) : <li>{REQUEST_ONLY_NOTICE}</li>}
+              <li>Request included</li>
+              <li data-testid="provider-consent-categories">Content categories: {manifest.categories.join(', ')}</li>
+              {manifest.messageCount > 0 ? <li>Recent conversation: {manifest.messageCount.toLocaleString()} {manifest.messageCount === 1 ? 'message' : 'messages'}</li> : null}
+              {manifest.relativePaths.length > 0 ? <li>Project files: {manifest.itemCount.toLocaleString()}</li> : null}
+              {manifest.relativePaths.map((path) => <li key={path}><code>{path}</code></li>)}
+              {!hasContext ? <li>{REQUEST_ONLY_NOTICE}</li> : null}
             </ul>
           </section>
 
           <p className="provider-consent-redaction" data-testid="provider-consent-redaction-summary">
             <strong>Excluded by local safety policy:</strong> {manifest.excludedItemCount + manifest.omittedItemCount} item{manifest.excludedItemCount + manifest.omittedItemCount === 1 ? '' : 's'}. {manifest.omissionSummary}
           </p>
-          <p className="field-help">Automatic secret detection is best effort. Review the listed paths before approving.</p>
+          <p className="field-help">Automatic secret detection is best effort. Review the listed relative paths before approving.</p>
         </div>
 
         {decisionError ? <Alert tone={isStale ? 'warning' : 'error'} data-testid="provider-consent-error" role="alert">{decisionError}</Alert> : null}

@@ -13,6 +13,11 @@ import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories
 import { TypeOrmConversationRepository } from '@/infrastructure/database/repositories/typeorm-conversation-repository';
 import { WorkspaceBoundaryAdapter } from '@/infrastructure/workspace/workspace-boundary';
 import { WorkspaceGatewayAdapter } from '@/infrastructure/workspace/workspace-gateway';
+import { readSecretFile } from '@/infrastructure/auth/read-secret-file';
+import { NvidiaHostedNimProvider } from '@/infrastructure/ai-provider/nvidia-hosted-nim-provider';
+import { DirectProviderAgentRuntime } from '@/infrastructure/ai-provider/direct-provider-agent-runtime';
+import type { IModelProvider } from '@/modules/ai-runs/repositories/model-provider';
+import type { IAgentRuntime } from '@/modules/ai-runs/repositories/agent-runtime';
 import { OpenShellGatewayClient } from '@/infrastructure/sandbox/openshell-gateway-client';
 import { FakeAgentRuntime } from '@/infrastructure/sandbox/fake-agent-runtime';
 import { UnsupportedOpenShellAgentRuntime } from '@/infrastructure/sandbox/unsupported-openshell-agent-runtime';
@@ -48,14 +53,12 @@ export async function createApplication(
   const logger = createLogger(config.logLevel);
   const dataSource = createDataSource(config.database);
   const readiness = new InMemoryReadinessState();
-  const gatewayClient = new OpenShellGatewayClient({
-    baseUrl: config.openshellBaseUrl,
-    clientId: config.openshellClientId,
-    clientToken: config.openshellClientToken,
-    healthPath: config.openshellHealthPath,
-    nimReadinessPath: config.openshellNimReadinessPath,
-    timeoutMs: config.startupCheckTimeoutMs
-  });
+  const modelProvider = config.agentRuntimeMode === 'direct'
+    ? await createModelProvider(config, environment)
+    : undefined;
+  const gatewayClient = config.agentRuntimeMode === 'openshell'
+    ? createOpenShellGateway(config)
+    : undefined;
 
   try {
     await dataSource.initialize();
@@ -64,10 +67,11 @@ export async function createApplication(
       workspaceRoot: config.workspaceRoot,
       workspaceIdentityFile: config.workspaceIdentityFile,
       workspaceIdentity: config.workspaceIdentity,
-      gatewayClient,
+      ...(gatewayClient ? { gatewayClient } : {}),
       nimProfile: config.nimProfile,
       nimModel: config.nimModel,
-      agentRuntimeMode: config.agentRuntimeMode
+      agentRuntimeMode: config.agentRuntimeMode,
+      ...(modelProvider ? { providerCheck: () => modelProvider.checkAvailability() } : {})
     });
     readiness.markReady();
     const userRepository = new TypeOrmUserRepository(dataSource);
@@ -91,8 +95,10 @@ export async function createApplication(
       workspaceBoundary,
       recoveryRoot: config.recoveryRoot
     });
-    const agentRuntime = config.agentRuntimeMode === 'fake' ? new FakeAgentRuntime() : new UnsupportedOpenShellAgentRuntime();
-    const stagingGateway = new LocalStagingGateway({ stagingRoot: config.stagingRoot });
+    const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository);
+    const stagingGateway = config.agentRuntimeMode === 'openshell'
+      ? new LocalStagingGateway({ stagingRoot: config.stagingRoot })
+      : undefined;
     const runEvents = new InMemoryRunEventPublisher();
     const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel);
     const proposeSandboxCommand = new ProposeSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger);
@@ -102,9 +108,10 @@ export async function createApplication(
     const passwordHasher = new BcryptPasswordHasher();
     const tokenProvider = new OpaqueTokenProvider(config.sessionSecret);
     const clock = new SystemClock();
-    if (config.localUserPassword) {
+    const localUserPassword = config.localUserPassword ?? await readSecretFile(config.localUserPasswordFile);
+    if (localUserPassword) {
       await new BootstrapLocalUserUseCase(userRepository, passwordHasher).execute({
-        password: config.localUserPassword,
+        password: localUserPassword,
         displayName: config.localUserDisplayName
       });
     }
@@ -202,4 +209,58 @@ export async function createApplication(
     }
     throw error;
   }
+}
+
+async function createModelProvider(config: AppConfig, environment: NodeJS.ProcessEnv): Promise<IModelProvider> {
+  const apiKey = await readProviderKey(environment);
+  return new NvidiaHostedNimProvider({
+    endpoint: config.nimEndpoint,
+    model: config.nimModel,
+    apiKey,
+    timeoutMs: config.startupCheckTimeoutMs * 30
+  });
+}
+
+function createOpenShellGateway(config: AppConfig): OpenShellGatewayClient {
+  if (!config.openshellBaseUrl || !config.openshellClientId || !config.openshellClientToken || !config.openshellNetwork) {
+    throw new StartupChecksError([{
+      check: 'openshell',
+      code: 'OPENSHELL_CONFIGURATION_INVALID',
+      message: 'The deferred runtime configuration is incomplete.'
+    }]);
+  }
+  return new OpenShellGatewayClient({
+    baseUrl: config.openshellBaseUrl,
+    clientId: config.openshellClientId,
+    clientToken: config.openshellClientToken,
+    healthPath: config.openshellHealthPath,
+    nimReadinessPath: config.openshellNimReadinessPath,
+    timeoutMs: config.startupCheckTimeoutMs
+  });
+}
+
+function createAgentRuntime(
+  config: AppConfig,
+  modelProvider: IModelProvider | undefined,
+  workspaceGateway: WorkspaceGatewayAdapter,
+  conversationRepository: TypeOrmConversationRepository
+): IAgentRuntime {
+  if (config.agentRuntimeMode === 'fake') {
+    return new FakeAgentRuntime();
+  }
+  if (config.agentRuntimeMode === 'openshell') {
+    return new UnsupportedOpenShellAgentRuntime();
+  }
+  if (!modelProvider) {
+    throw new StartupChecksError([{
+      check: 'nim',
+      code: 'NIM_PROVIDER_UNAVAILABLE',
+      message: 'The configured NVIDIA hosted provider is unavailable.'
+    }]);
+  }
+  return new DirectProviderAgentRuntime({ provider: modelProvider, workspaceGateway, conversationRepository });
+}
+
+async function readProviderKey(environment: NodeJS.ProcessEnv): Promise<string> {
+  return readSecretFile(environment.NVIDIA_API_KEY_FILE);
 }

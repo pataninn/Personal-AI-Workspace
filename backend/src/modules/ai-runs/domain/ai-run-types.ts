@@ -19,7 +19,7 @@ export type EgressDecision = 'pending' | 'approved' | 'rejected';
 
 export type CleanupStatus = 'not_started' | 'complete' | 'unknown';
 
-export type ProviderTransmissionStatus = 'not_started' | 'not_started_confirmed' | 'unknown';
+export type ProviderTransmissionStatus = 'not_started' | 'not_started_confirmed' | 'transmitted_confirmed' | 'unknown';
 
 export interface EgressFileEntry {
   readonly relativePath: string;
@@ -67,7 +67,7 @@ export interface AiRun {
   readonly cleanup: CleanupStatus;
   readonly providerTransmission: ProviderTransmissionStatus;
   readonly stagingItemCount: number;
-  readonly runtimeKind?: 'fake';
+  readonly runtimeKind?: 'fake' | 'direct';
   readonly sandboxReady: boolean;
   readonly runtimeReference?: string;
   readonly requestMessageId?: string;
@@ -128,7 +128,7 @@ export interface AiRunSnapshot {
   readonly cleanup: CleanupStatus;
   readonly providerTransmission: ProviderTransmissionStatus;
   readonly stagingItemCount: number;
-  readonly runtime?: { readonly kind: 'fake'; readonly sandboxReady: true };
+  readonly runtime?: { readonly kind: 'fake' | 'direct'; readonly sandboxReady: true };
   readonly assistant?: {
     readonly messageId?: string;
     readonly complete: boolean;

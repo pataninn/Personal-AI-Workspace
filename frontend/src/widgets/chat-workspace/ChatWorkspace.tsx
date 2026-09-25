@@ -301,6 +301,7 @@ function ConversationPane(props: ConversationPaneProps): React.JSX.Element {
             projectId={props.projectId}
             conversationId={conversation.id}
             request={request}
+            recentMessageCount={messages.length}
             disabled={props.disabled}
             archivedDescriptionId={props.archivedDescriptionId}
             onConversationReconciled={props.onRunConversationReconciled}

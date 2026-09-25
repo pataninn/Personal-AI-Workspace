@@ -9,12 +9,21 @@ export interface RuntimeCreateInput {
 }
 
 export interface RuntimeReadyResult {
-  readonly kind: 'fake';
+  readonly kind: 'fake' | 'direct';
   readonly sandboxReady: true;
+}
+
+export interface DirectRunPreparationInput {
+  readonly runId: string;
+  readonly manifest: EgressManifest;
 }
 
 export interface RuntimeRunInput {
   readonly runId: string;
+  readonly ownerId?: string;
+  readonly projectId?: string;
+  readonly conversationId?: string;
+  readonly relativeRoot?: string;
   readonly request: string;
   readonly manifest: EgressManifest;
   readonly stagedReference?: string;
@@ -22,6 +31,8 @@ export interface RuntimeRunInput {
 
 export type RuntimeInferenceEvent =
   | { readonly type: 'started' }
+  | { readonly type: 'provider.request_started' }
+  | { readonly type: 'provider.response_received' }
   | { readonly type: 'assistant.delta'; readonly text: string }
   | { readonly type: 'assistant.message.completed'; readonly text: string }
   | { readonly type: 'tool.proposed'; readonly proposal: RuntimeCommandProposalInput }
@@ -62,8 +73,10 @@ export interface RuntimeCommandCancellationInput {
 }
 
 export interface IAgentRuntime {
+  readonly directProvider?: true;
   checkAvailability(): Promise<void>;
   create(input: RuntimeCreateInput): Promise<RuntimeReadyResult>;
+  readonly prepareDirectRun?: (input: DirectRunPreparationInput) => Promise<RuntimeReadyResult>;
   readonly proposeCommand?: (input: RuntimeCommandProposalInput) => Promise<void>;
   readonly executeCommand?: (input: RuntimeCommandInput) => Promise<CommandResult>;
   readonly cancelCommand?: (input: RuntimeCommandCancellationInput) => Promise<void>;

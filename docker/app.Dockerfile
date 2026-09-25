@@ -12,8 +12,8 @@ RUN pnpm install --frozen-lockfile
 
 COPY backend backend
 COPY frontend frontend
-RUN pnpm --filter backend build
-RUN pnpm --filter frontend build
+RUN pnpm --filter personal-ai-workspace-backend build
+RUN pnpm --filter personal-ai-workspace-frontend build
 
 FROM node:22.20.0-bookworm-slim AS runtime
 
@@ -24,6 +24,7 @@ RUN groupadd --gid 10001 pai && useradd --uid 10001 --gid 10001 --create-home --
 COPY --from=build --chown=10001:10001 /app/backend/dist backend/dist
 COPY --from=build --chown=10001:10001 /app/frontend/dist frontend/dist
 COPY --from=build --chown=10001:10001 /app/node_modules node_modules
+COPY --from=build --chown=10001:10001 /app/backend/node_modules backend/node_modules
 COPY --from=build --chown=10001:10001 /app/backend/package.json backend/package.json
 
 USER 10001:10001

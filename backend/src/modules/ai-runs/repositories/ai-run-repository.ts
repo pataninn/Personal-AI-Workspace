@@ -43,6 +43,7 @@ export interface IAiRunRepository {
   save(run: AiRun): Promise<void>;
   readonly beginStart?: (input: StartRunUpdate) => Promise<RunMutationResult>;
   readonly markRunning?: (ownerId: string, runId: string) => Promise<AiRun | null>;
+  readonly recordProviderTransmission?: (ownerId: string, runId: string, transmission: AiRun['providerTransmission']) => Promise<AiRun | null>;
   readonly markWaitingApproval?: (ownerId: string, runId: string, safeMessage: string) => Promise<AiRun | null>;
   readonly requestCancellation?: (input: CancelRunUpdate) => Promise<RunMutationResult>;
   readonly completeRun?: (input: CompleteRunUpdate) => Promise<AiRun | null>;

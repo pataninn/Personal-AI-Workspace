@@ -802,6 +802,111 @@ textarea:focus-visible {
   justify-content: flex-start;
 }
 
+.context-scope-picker {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  padding: var(--space-3);
+}
+
+.context-scope-heading-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.context-scope-heading-row h3,
+.context-scope-message-option legend {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.context-scope-dialog-body,
+.context-scope-file-section,
+.context-scope-message-option {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-3);
+}
+
+.context-scope-message-option {
+  margin: var(--space-4) 0 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+}
+
+.context-scope-file-section fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.context-scope-file-legend {
+  margin-bottom: var(--space-3);
+  font-weight: 700;
+}
+
+.context-scope-message-option legend {
+  padding-inline: var(--space-2);
+}
+
+.context-scope-checkbox {
+  display: flex;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  cursor: pointer;
+}
+
+.context-scope-checkbox input {
+  width: 1.2rem;
+  height: 1.2rem;
+  flex: 0 0 auto;
+  accent-color: var(--color-primary);
+}
+
+.context-scope-checkbox span {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.context-scope-checkbox code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.context-scope-checkbox small {
+  color: var(--color-text-subtle);
+}
+
+.context-file-list {
+  display: grid;
+  max-height: 15rem;
+  gap: var(--space-1);
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+}
+
+.context-scope-actions {
+  margin-top: var(--space-4);
+}
+
 .run-status-card {
   display: grid;
   min-width: 0;
@@ -818,6 +923,27 @@ textarea:focus-visible {
 .run-status-card h3:focus {
   outline: 3px solid var(--color-ring);
   outline-offset: 3px;
+}
+
+.ai-run-assistant-output {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  padding: var(--space-4);
+}
+
+.ai-run-assistant-output h4 {
+  margin: 0;
+  line-height: var(--heading-line-height);
+}
+
+.ai-run-assistant-output p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .run-status-live,

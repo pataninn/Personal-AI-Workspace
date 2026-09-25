@@ -6,7 +6,7 @@ export type EgressDecision = 'pending' | 'approved' | 'rejected';
 
 export type CleanupStatus = 'not_started' | 'complete' | 'unknown';
 
-export type ProviderTransmissionStatus = 'not_started' | 'not_started_confirmed' | 'unknown';
+export type ProviderTransmissionStatus = 'not_started' | 'not_started_confirmed' | 'transmitted_confirmed' | 'unknown';
 
 export interface EgressManifest {
   readonly runId: string;
@@ -18,6 +18,7 @@ export interface EgressManifest {
   readonly categories: readonly string[];
   readonly relativePaths: readonly string[];
   readonly itemCount: number;
+  readonly messageCount: number;
   readonly byteEstimate: number;
   readonly tokenEstimate: number;
   readonly excludedItemCount: number;
@@ -39,7 +40,7 @@ export interface AiRunSnapshot {
   readonly cleanup: CleanupStatus;
   readonly providerTransmission: ProviderTransmissionStatus;
   readonly stagingItemCount: number;
-  readonly runtime?: { readonly kind: 'fake'; readonly sandboxReady: true };
+  readonly runtime?: { readonly kind: 'fake' | 'direct'; readonly sandboxReady: true };
   readonly assistant?: {
     readonly messageId?: string;
     readonly complete: boolean;

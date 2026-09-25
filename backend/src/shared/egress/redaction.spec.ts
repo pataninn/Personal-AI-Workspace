@@ -1,4 +1,4 @@
-import { containsPotentialSecret, redactCommandOutputText, redactEgressText } from '@/shared/egress/redaction';
+import { containsCredentialLikeValue, containsPotentialSecret, redactCommandOutputText, redactEgressText } from '@/shared/egress/redaction';
 
 describe('egress redaction', () => {
   it('redacts generic assignments, service-account credentials, and embedded paths', () => {
@@ -26,5 +26,16 @@ describe('egress redaction', () => {
     expect(redacted).not.toContain('bar');
     expect(redacted).not.toContain('mixed-value');
     expect(redacted).not.toContain('third-value');
+  });
+
+  it('keeps project-relative paths in ordinary requests', () => {
+    expect(containsPotentialSecret('Please edit src/app.ts')).toBe(false);
+    expect(redactEgressText('Please edit src/app.ts')).toBe('Please edit src/app.ts');
+  });
+
+  it('detects credential-like model proposal values while allowing ordinary assignments', () => {
+    expect(containsCredentialLikeValue('NVIDIA_API_KEY=secret-value')).toBe(true);
+    expect(containsCredentialLikeValue('token: leaked-value')).toBe(true);
+    expect(containsCredentialLikeValue('const replacement = "updated";')).toBe(false);
   });
 });

@@ -184,6 +184,71 @@ describe('StartAiRunUseCase', () => {
     expect(JSON.stringify(published)).not.toContain('internal runtime detail');
   });
 
+  it('records confirmed provider transmission after the provider response is received', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const conversations = conversationRepository();
+    const runtime = new FakeAgentRuntime();
+    runtime.runOptions = {
+      events: [
+        { type: 'started' },
+        { type: 'provider.request_started' },
+        { type: 'provider.response_received' },
+        { type: 'completed', text: 'Provider response' }
+      ]
+    };
+    const events = new InMemoryRunEventPublisher();
+    const run = await readyRun(repository);
+    const start = new StartAiRunUseCase(repository, conversations, runtime, events);
+
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-transmission-confirmed-3-3' });
+    const completed = await waitForStatus(repository, run.id, 'succeeded');
+
+    expect(completed.providerTransmission).toBe('transmitted_confirmed');
+  });
+
+  it('requires review when provider transmission starts without a response confirmation', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const conversations = conversationRepository();
+    const runtime = new FakeAgentRuntime();
+    runtime.runOptions = {
+      events: [
+        { type: 'started' },
+        { type: 'provider.request_started' },
+        { type: 'failed', message: 'safe provider failure' }
+      ]
+    };
+    const events = new InMemoryRunEventPublisher();
+    const run = await readyRun(repository);
+    const start = new StartAiRunUseCase(repository, conversations, runtime, events);
+
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-transmission-unknown-3-3' });
+    const reviewed = await waitForStatus(repository, run.id, 'review_required');
+
+    expect(reviewed.providerTransmission).toBe('unknown');
+  });
+
+  it('keeps confirmed transmission when the provider reports an error after HTTP response', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const conversations = conversationRepository();
+    const runtime = new FakeAgentRuntime();
+    runtime.runOptions = {
+      events: [
+        { type: 'started' },
+        { type: 'provider.request_started' },
+        { type: 'provider.response_received' },
+        { type: 'failed', message: 'safe provider failure' }
+      ]
+    };
+    const events = new InMemoryRunEventPublisher();
+    const run = await readyRun(repository);
+    const start = new StartAiRunUseCase(repository, conversations, runtime, events);
+
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-transmission-error-3-3' });
+    const failed = await waitForStatus(repository, run.id, 'failed');
+
+    expect(failed.providerTransmission).toBe('transmitted_confirmed');
+  });
+
   it('turns an oversized assistant delta into an explicit review outcome', async () => {
     const repository = new InMemoryAiRunRepository();
     const conversations = conversationRepository();

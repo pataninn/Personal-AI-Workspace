@@ -59,12 +59,12 @@ function normalizePayload(type: AiRunEventType, payload: Record<string, unknown>
       decision,
       safeMessage: readSafeMessage(payload.safeMessage) ?? '',
       cleanup: payload.cleanup === 'complete' || payload.cleanup === 'unknown' ? payload.cleanup : 'not_started',
-      providerTransmission: payload.providerTransmission === 'not_started_confirmed' || payload.providerTransmission === 'unknown' ? payload.providerTransmission : 'not_started',
+      providerTransmission: payload.providerTransmission === 'not_started_confirmed' || payload.providerTransmission === 'transmitted_confirmed' || payload.providerTransmission === 'unknown' ? payload.providerTransmission : 'not_started',
       stagingItemCount: nonNegativeNumber(payload.stagingItemCount)
     };
     const runtime = asRecord(payload.runtime);
-    if (runtime?.kind === 'fake' && runtime.sandboxReady === true) {
-      result.runtime = { kind: 'fake', sandboxReady: true };
+    if ((runtime?.kind === 'fake' || runtime?.kind === 'direct') && runtime.sandboxReady === true) {
+      result.runtime = { kind: runtime.kind, sandboxReady: true };
     }
     const assistant = asRecord(payload.assistant);
     if (assistant) {

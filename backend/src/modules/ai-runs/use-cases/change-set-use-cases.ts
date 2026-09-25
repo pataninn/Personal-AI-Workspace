@@ -27,6 +27,7 @@ import { hashText } from '@/modules/ai-runs/use-cases/manifest-builder';
 import { redactSensitiveText, truncateUtf8 } from '@/infrastructure/workspace/workspace-text';
 import { WorkspaceRelativePath } from '@/modules/files/domain/workspace-path';
 import { isAllowedTextFile } from '@/modules/files/domain/workspace-policy';
+import { containsCredentialLikeValue } from '@/shared/egress/redaction';
 
 export interface CollectChangeSetInput {
   readonly ownerId: string;
@@ -95,6 +96,7 @@ export class CollectProposedChangeSetUseCase {
     const operations: ProposedChangeOperation[] = [];
     let previewBytes = 0;
     for (const [index, change] of changes.entries()) {
+      validateUntrustedText(change, index);
       const operation = await this.buildOperation(scope, manifestFiles, change, index, seen);
       if (!operation.reviewable) {
         throw new ChangeSetBlockedError('A safe bounded preview is unavailable for this proposed operation.');
@@ -155,6 +157,15 @@ export class CollectProposedChangeSetUseCase {
       lineCount: countLines(content ?? source.content ?? ''),
       reviewable: preview !== undefined
     };
+  }
+}
+
+function validateUntrustedText(change: RuntimeChangeProposal, index: number): void {
+  if (containsCredentialLikeValue(change.content ?? '')) {
+    throw new ChangeSetValidationError([{ field: `changes.${index}.content`, message: 'The proposed content contains a credential-like value.' }]);
+  }
+  if (containsCredentialLikeValue(change.summary ?? '')) {
+    throw new ChangeSetValidationError([{ field: `changes.${index}.summary`, message: 'The proposed summary contains a credential-like value.' }]);
   }
 }
 
@@ -401,10 +412,21 @@ function isTerminalChangeSetStatus(status: ProposedChangeSet['status']): boolean
 
 function withoutRawContent(changeSet: ProposedChangeSet): ProposedChangeSet {
   const operations = changeSet.operations.map((operation) => {
-    const { content: _content, ...safeOperation } = operation;
-    return safeOperation;
+    const { content: _content, preview, ...safeOperation } = operation;
+    return {
+      ...safeOperation,
+      ...(preview ? { preview: withoutProposedPreviewBytes(preview) } : {})
+    };
   });
   return { ...changeSet, operations };
+}
+
+function withoutProposedPreviewBytes(preview: NonNullable<ProposedChangeOperation['preview']>): NonNullable<ProposedChangeOperation['preview']> {
+  if (preview.kind !== 'diff') {
+    return { ...preview, text: 'Preview omitted after the change-set decision.', limited: true };
+  }
+  const beforeOnly = preview.text.split('\n').filter((line) => !line.startsWith('+ ')).join('\n');
+  return { ...preview, text: beforeOnly, limited: true };
 }
 
 function defaultChangePolicy() {

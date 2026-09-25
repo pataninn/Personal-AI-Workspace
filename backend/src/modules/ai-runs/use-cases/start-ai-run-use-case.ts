@@ -1,4 +1,5 @@
 import { AiRunStateConflictError } from '@/modules/ai-runs/domain/ai-run-errors';
+import { ChangeSetDomainError } from '@/modules/ai-runs/domain/change-errors';
 import { ASSISTANT_OUTPUT_LIMIT_MESSAGE, MAX_ASSISTANT_DELTA_BYTES, MAX_ASSISTANT_OUTPUT_BYTES, assistantTextExceedsLimit, sanitizeAssistantText, truncateAssistantDelta } from '@/modules/ai-runs/domain/assistant-output';
 import type { AiRun } from '@/modules/ai-runs/domain/ai-run-types';
 import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-repository';
@@ -109,7 +110,16 @@ export class StartAiRunUseCase {
     let assistantText = '';
     let terminal: RuntimeInferenceEvent | undefined;
     try {
-      for await (const event of this.agentRuntime.startRun({ runId: running.id, request: running.request, manifest: running.manifest, ...(running.runtimeReference ? { stagedReference: running.runtimeReference } : {}) })) {
+      for await (const event of this.agentRuntime.startRun({
+        runId: running.id,
+        ownerId: running.ownerId,
+        projectId: running.projectId,
+        conversationId: running.conversationId,
+        relativeRoot: running.relativeRoot,
+        request: running.request,
+        manifest: running.manifest,
+        ...(running.runtimeReference ? { stagedReference: running.runtimeReference } : {})
+      })) {
         const current = await this.aiRunRepository.findByIdForOwner(running.ownerId, running.id);
         if (!current || isStopState(current.status)) {
           if (current?.status === 'cancel_requested') {
@@ -132,12 +142,16 @@ export class StartAiRunUseCase {
         }
       }
       if (!terminal) {
-        await this.markReview(run.id, run.ownerId, 'The assistant stream ended before a terminal result was confirmed. Refresh run status before retrying.');
+        const current = await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
+        if (current) {
+          await this.finish(current, 'review_required', 'The assistant stream ended before a terminal result was confirmed. Refresh run status before retrying.');
+        }
         return;
       }
       await this.finishFromEvent(run.ownerId, run.id, terminal, assistantText);
     } catch {
-      await this.finish(run, 'review_required', 'The assistant run stopped, but the app could not confirm its final outcome. Refresh run status before retrying.');
+      const current = await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
+      await this.finish(current ?? run, 'review_required', 'The assistant run stopped, but the app could not confirm its final outcome. Refresh run status before retrying.');
     } finally {
       await this.destroySafely(run);
     }
@@ -148,7 +162,14 @@ export class StartAiRunUseCase {
       return { assistantText, terminal: false, suppressed: true };
     }
     if (event.type === 'started') {
-      if (!await this.publishProjected(run.ownerId, run.id, 'run.started', { status: 'running' })) {
+      if (!await this.publishStatus(run, 'run.started')) {
+        return { assistantText, terminal: false, suppressed: true };
+      }
+      return { assistantText, terminal: false };
+    }
+    if (event.type === 'provider.request_started' || event.type === 'provider.response_received') {
+      const transmission = event.type === 'provider.request_started' ? 'unknown' : 'transmitted_confirmed';
+      if (!await this.projectProviderTransmission(run, transmission)) {
         return { assistantText, terminal: false, suppressed: true };
       }
       return { assistantText, terminal: false };
@@ -180,7 +201,15 @@ export class StartAiRunUseCase {
       if (!this.changeSetProposals) {
         return { assistantText, terminal: false };
       }
-      await this.changeSetProposals.execute({ ownerId: run.ownerId, runId: run.id, changes: event.changes, fakeRuntime: run.runtimeKind === 'fake' });
+      try {
+        await this.changeSetProposals.execute({ ownerId: run.ownerId, runId: run.id, changes: event.changes, fakeRuntime: run.runtimeKind === 'fake' });
+      } catch (error: unknown) {
+        if (error instanceof ChangeSetDomainError) {
+          await this.finish(run, 'failed', 'The assistant returned an invalid proposed change set.', assistantText);
+          return { assistantText, terminal: false, suppressed: true };
+        }
+        throw error;
+      }
       return { assistantText, terminal: false };
     }
     if (event.type === 'tool.proposed') {
@@ -241,6 +270,23 @@ export class StartAiRunUseCase {
     }
   }
 
+  private async projectProviderTransmission(run: AiRun, providerTransmission: AiRun['providerTransmission']): Promise<boolean> {
+    if (this.aiRunRepository.recordProviderTransmission) {
+      const updated = await this.aiRunRepository.recordProviderTransmission(run.ownerId, run.id, providerTransmission);
+      return updated ? this.publishStatus(updated, 'run.status_changed') : false;
+    }
+    const current = await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
+    if (!current || isStopState(current.status)) {
+      return false;
+    }
+    if (current.providerTransmission === providerTransmission || (current.providerTransmission === 'transmitted_confirmed' && providerTransmission !== 'transmitted_confirmed')) {
+      return true;
+    }
+    const updated: AiRun = { ...current, providerTransmission, updatedAt: new Date() };
+    await this.aiRunRepository.save(updated);
+    return this.publishStatus(updated, 'run.status_changed');
+  }
+
   private async finishFromEvent(ownerId: string, runId: string, event: RuntimeInferenceEvent, assistantText: string): Promise<void> {
     if (event.type === 'cancelled') {
       const current = await this.aiRunRepository.findByIdForOwner(ownerId, runId);
@@ -249,13 +295,20 @@ export class StartAiRunUseCase {
       }
       return;
     }
-    const status = event.type === 'completed' ? 'succeeded' : event.type === 'blocked' ? 'blocked' : event.type === 'needs_manual_review' ? 'review_required' : 'failed';
-    const safeMessage = event.type === 'completed'
+    const current = await this.aiRunRepository.findByIdForOwner(ownerId, runId);
+    const status = event.type === 'completed'
+      ? 'succeeded'
+      : event.type === 'blocked'
+        ? 'blocked'
+        : event.type === 'needs_manual_review' || current?.providerTransmission === 'unknown'
+          ? 'review_required'
+          : 'failed';
+    const safeMessage = status === 'review_required'
+      ? 'Run needs review. Refresh run status before retrying.'
+      : event.type === 'completed'
       ? assistantText.length > 0 ? 'Assistant response complete.' : 'The assistant completed without a message.'
       : event.type === 'blocked' ? 'Run blocked by policy. This run was not completed.'
-        : event.type === 'needs_manual_review' ? 'Run needs review. Refresh run status before retrying.'
-          : 'The assistant could not complete this run.';
-    const current = await this.aiRunRepository.findByIdForOwner(ownerId, runId);
+        : 'The assistant could not complete this run.';
     if (current) {
       await this.finish(current, status, safeMessage, assistantText);
     }
@@ -263,8 +316,11 @@ export class StartAiRunUseCase {
 
   private async finish(run: AiRun, status: 'succeeded' | 'failed' | 'blocked' | 'review_required', safeMessage: string, assistantText = ''): Promise<void> {
     const bounded = sanitizeAssistantText(assistantText, MAX_ASSISTANT_OUTPUT_BYTES);
+    const providerTransmission = status === 'review_required' && run.providerTransmission !== 'transmitted_confirmed'
+      ? 'unknown'
+      : run.providerTransmission;
     let updated = this.aiRunRepository.completeRun
-      ? await this.aiRunRepository.completeRun({ ownerId: run.ownerId, runId: run.id, status, safeMessage, assistantText: bounded, assistantComplete: status === 'succeeded', cleanup: status === 'review_required' ? 'unknown' : 'complete', providerTransmission: status === 'review_required' ? 'unknown' : run.providerTransmission })
+      ? await this.aiRunRepository.completeRun({ ownerId: run.ownerId, runId: run.id, status, safeMessage, assistantText: bounded, assistantComplete: status === 'succeeded', cleanup: status === 'review_required' ? 'unknown' : 'complete', providerTransmission })
       : await this.completeLegacy(run, status, safeMessage, bounded);
     if (updated?.status === status && bounded && !updated.assistantMessageId && this.conversationRepository.addAssistantMessage) {
       const message = await this.conversationRepository.addAssistantMessage({ ownerId: run.ownerId, projectId: run.projectId, conversationId: run.conversationId, content: bounded, idempotencyKey: `run-assistant-${run.id}`, requestFingerprint: hashText(JSON.stringify({ runId: run.id, content: bounded })) });
@@ -279,7 +335,10 @@ export class StartAiRunUseCase {
   }
 
   private async completeLegacy(run: AiRun, status: 'succeeded' | 'failed' | 'blocked' | 'review_required', safeMessage: string, assistantText: string): Promise<AiRun> {
-    const updated: AiRun = { ...run, status, phase: status === 'review_required' ? 'review' : 'terminal', assistantComplete: status === 'succeeded', assistantContentLength: assistantText.length, safeMessage, updatedAt: new Date() };
+    const providerTransmission = status === 'review_required' && run.providerTransmission !== 'transmitted_confirmed'
+      ? 'unknown'
+      : run.providerTransmission;
+    const updated: AiRun = { ...run, status, phase: status === 'review_required' ? 'review' : 'terminal', providerTransmission, assistantComplete: status === 'succeeded', assistantContentLength: assistantText.length, safeMessage, updatedAt: new Date() };
     await this.aiRunRepository.save(updated);
     if (assistantText && this.conversationRepository.addAssistantMessage) {
       const message = await this.conversationRepository.addAssistantMessage({ ownerId: run.ownerId, projectId: run.projectId, conversationId: run.conversationId, content: assistantText, idempotencyKey: `run-assistant-${run.id}`, requestFingerprint: hashText(JSON.stringify({ runId: run.id, content: assistantText })) });
@@ -326,7 +385,7 @@ export class StartAiRunUseCase {
   }
 
   private async publishStatus(run: AiRun, type: 'run.started' | 'run.status_changed'): Promise<boolean> {
-    return this.publishProjected(run.ownerId, run.id, type, { status: run.status, phase: run.phase, safeMessage: run.safeMessage });
+    return this.publishProjected(run.ownerId, run.id, type, { status: run.status, phase: run.phase, safeMessage: run.safeMessage, providerTransmission: run.providerTransmission });
   }
 
   private async isRunProjectable(ownerId: string, runId: string): Promise<boolean> {
@@ -349,7 +408,7 @@ export class StartAiRunUseCase {
 
   private publishTerminal(run: AiRun): void {
     const type = run.status === 'succeeded' ? 'run.completed' : run.status === 'cancelled' ? 'run.cancelled' : run.status === 'blocked' ? 'run.blocked' : run.status === 'review_required' ? 'run.needs_manual_review' : 'run.failed';
-    this.publish(run.id, type, { status: run.status, phase: run.phase, safeMessage: run.safeMessage, ...(run.assistantMessageId ? { messageId: run.assistantMessageId } : {}), contentLength: run.assistantContentLength ?? 0 });
+    this.publish(run.id, type, { status: run.status, phase: run.phase, safeMessage: run.safeMessage, providerTransmission: run.providerTransmission, ...(run.assistantMessageId ? { messageId: run.assistantMessageId } : {}), contentLength: run.assistantContentLength ?? 0 });
   }
 
   private publish(runId: string, type: Parameters<IRunEventPublisher['publish']>[0]['type'], payload: Readonly<Record<string, unknown>>): void {

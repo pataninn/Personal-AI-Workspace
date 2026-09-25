@@ -1,0 +1,22 @@
+{
+  "lifecycleOwner": "raw-openshell",
+  "profileVersion": 1,
+  "profileDigest": "sha256:446eedd06ff7aacf401d71738771d8a4d4874a5b75c372a1e41b9331fc2f98c6",
+  "openshellBinaryPath": "/home/patan/.local/bin/openshell",
+  "openshellSha256": "24e85062073d512d1951c76cd3890b7bce1ab01cc36a08f88b3b43c067a402da",
+  "sshBinaryPath": "/usr/bin/ssh",
+  "sshSha256": "27a7f5e86ed31efa1e758c7f955bdc016adf58bb3266c68e217ab5bee311b46b",
+  "sshConfigRoot": "/run/personal-ai/openshell-bridge/ssh",
+  "gatewayName": "nemoclaw-18080",
+  "imageReference": "ghcr.io/nvidia/nemoclaw/hermes-sandbox@sha256:85b894ae84b7c13f9c5799394fb7ef8c753c883b23a380af47eac1e7a82f6dff",
+  "policyPath": "/etc/personal-ai/openshell-bridge/policy.json",
+  "policySha256": "1e9674c371a3e3074d1e72131054e5dda64314d4accfbb18da9feeba43082901",
+  "effectivePolicySha256": "9f7f16d4da2edb4d5d9de1f008ae96fbf62573cecc540caf23bd96189a2ad06b",
+  "providerName": "compatible-endpoint",
+  "model": "nvidia/nemotron-3-super-120b-a12b",
+  "remoteStagingRoot": "/sandbox/pai-runs",
+  "cpuLimit": 1,
+  "memoryMiB": 2048,
+  "sshConfigMode": 384,
+  "sshIdentityMode": 384
+}

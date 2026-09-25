@@ -9,18 +9,20 @@ import type { AiRunIntent, AiRunSnapshot, EgressManifest } from '@/entities/ai-r
 import { ApiClientError } from '@/shared/api';
 import { AiRunEntry } from '@/features/ai-run/ui/AiRunEntry';
 
-const { createAiRunMock, getAiRunMock, getEgressManifestMock, decideEgressMock } = vi.hoisted(() => ({
+const { createAiRunMock, getAiRunMock, getEgressManifestMock, decideEgressMock, startAiRunMock } = vi.hoisted(() => ({
   createAiRunMock: vi.fn(),
   getAiRunMock: vi.fn(),
   getEgressManifestMock: vi.fn(),
-  decideEgressMock: vi.fn()
+  decideEgressMock: vi.fn(),
+  startAiRunMock: vi.fn()
 }));
 
 vi.mock('@/entities/ai-run/api/ai-run-api', () => ({
   createAiRun: createAiRunMock,
   getAiRun: getAiRunMock,
   getEgressManifest: getEgressManifestMock,
-  decideEgress: decideEgressMock
+  decideEgress: decideEgressMock,
+  startAiRun: startAiRunMock
 }));
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
@@ -51,14 +53,15 @@ const manifest: EgressManifest = {
   model: 'nvidia/nemotron-3-super-120b-a12b',
   categories: ['Request', 'Project files'],
   relativePaths: ['src/index.ts'],
-  itemCount: 2,
+  itemCount: 1,
+  messageCount: 0,
   byteEstimate: 1200,
   tokenEstimate: 300,
   excludedItemCount: 0,
   omittedItemCount: 0,
   omissionSummary: 'No selected items were excluded.',
   bestEffortSecretDetection: true,
-  preConsentNotice: 'Nothing has been copied to the run staging area or sent to NVIDIA yet.'
+  preConsentNotice: 'Nothing has been sent to NVIDIA yet.'
 };
 
 const session = {
@@ -84,6 +87,7 @@ describe('AiRunEntry', () => {
     getAiRunMock.mockReset();
     getEgressManifestMock.mockReset();
     decideEgressMock.mockReset();
+    startAiRunMock.mockReset();
     createAiRunMock.mockResolvedValue({ ...pending, manifest } satisfies AiRunIntent);
     getEgressManifestMock.mockResolvedValue(manifest);
   });
@@ -104,11 +108,13 @@ describe('AiRunEntry', () => {
     await user.click(screen.getByTestId('ai-run-submit'));
 
     expect(await screen.findByTestId('provider-consent-alert-dialog')).toBeInTheDocument();
-    expect(screen.getByTestId('provider-consent-title')).toHaveTextContent('Send this run to NVIDIA NIM?');
+    expect(screen.getByTestId('provider-consent-title')).toHaveTextContent('Send selected context to NVIDIA NIM?');
     expect(screen.getByTestId('provider-consent-provider')).toHaveTextContent('NVIDIA hosted NIM');
     expect(screen.getByTestId('provider-consent-model')).toHaveTextContent('nvidia/nemotron-3-super-120b-a12b');
     expect(screen.getByTestId('provider-consent-context')).toHaveTextContent('src/index.ts');
-    expect(screen.getByTestId('provider-consent-no-staging-notice')).toHaveTextContent('Nothing has been copied');
+    expect(screen.getByTestId('provider-consent-no-staging-notice')).toHaveTextContent('Nothing has been sent to NVIDIA yet.');
+    expect(screen.getByTestId('provider-consent-file-count')).toHaveTextContent('1');
+    expect(screen.getByTestId('provider-consent-message-count')).toHaveTextContent('0');
     expect(decideEgressMock).not.toHaveBeenCalled();
   });
 
@@ -120,7 +126,7 @@ describe('AiRunEntry', () => {
     await user.click(await screen.findByTestId('provider-consent-reject'));
 
     await waitFor(() => expect(decideEgressMock).toHaveBeenCalledWith(RUN_ID, { manifestHash: HASH, decision: 'reject' }, 'csrf-token', expect.any(String)));
-    expect(await screen.findByTestId('run-rejected')).toHaveTextContent('No project content was staged or sent to NVIDIA.');
+    expect(await screen.findByTestId('run-rejected')).toHaveTextContent('No project content was sent to NVIDIA.');
   });
 
   it('treats Escape as the safe rejection path instead of approval', async () => {
@@ -137,14 +143,15 @@ describe('AiRunEntry', () => {
 
   it('approves only the displayed manifest and shows readiness without claiming an answer', async () => {
     decideEgressMock.mockResolvedValue({ ...pending, status: 'ready', phase: 'runtime', decision: 'approved', runtime: { kind: 'fake', sandboxReady: true } });
+    startAiRunMock.mockReturnValue(new Promise(() => undefined));
     renderEntry();
     const user = userEvent.setup();
     await user.click(screen.getByTestId('ai-run-submit'));
     await user.click(await screen.findByTestId('provider-consent-approve'));
 
     await waitFor(() => expect(decideEgressMock).toHaveBeenCalledWith(RUN_ID, { manifestHash: HASH, decision: 'approve' }, 'csrf-token', expect.any(String)));
-    expect(await screen.findByTestId('run-ready')).toHaveTextContent('Private run environment ready');
-    expect(screen.getByTestId('run-ready-status')).toHaveTextContent('The assistant can now begin working.');
+    expect(await screen.findByTestId('run-ready')).toHaveTextContent('Provider access approved');
+    expect(screen.getByTestId('run-ready-status')).toHaveTextContent('server-side NVIDIA NIM request');
     expect(screen.getByTestId('run-ready-status')).not.toHaveTextContent('Here is your answer');
   });
 
@@ -161,7 +168,7 @@ describe('AiRunEntry', () => {
     expect(screen.getByTestId('provider-consent-refresh')).toHaveTextContent('Refresh disclosure');
   });
 
-  it('fails closed when the gateway is unavailable after approval', async () => {
+  it('fails closed when NVIDIA NIM is unavailable after approval', async () => {
     decideEgressMock.mockRejectedValue(new ApiClientError(503, 'RUNTIME_UNAVAILABLE', 'internal detail'));
     getAiRunMock.mockRejectedValue(new Error('status unavailable'));
     renderEntry();
@@ -169,7 +176,7 @@ describe('AiRunEntry', () => {
     await user.click(screen.getByTestId('ai-run-submit'));
     await user.click(await screen.findByTestId('provider-consent-approve'));
 
-    expect(await screen.findByTestId('run-error')).toHaveTextContent('The local sandbox gateway is unavailable. Nothing was staged or sent to NVIDIA.');
+    expect(await screen.findByTestId('run-error')).toHaveTextContent('NVIDIA NIM is unavailable. No provider request was started.');
     expect(screen.getByTestId('run-error')).not.toHaveTextContent('internal detail');
   });
 });
