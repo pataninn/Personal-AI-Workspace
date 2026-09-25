@@ -78,6 +78,9 @@ export function normalizeProjectRoot(value: unknown): string {
   ) {
     throw new ProjectRootInvalidError('Use a relative folder such as apps/website. Do not use a drive letter or leading slash.');
   }
+  if (normalizedInput === '.') {
+    return '.';
+  }
   const segments = normalizedInput.split('/');
   if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) {
     throw new ProjectRootInvalidError('Use a relative folder such as apps/website. Do not use a leading slash or .. segment.');
@@ -111,8 +114,13 @@ export function normalizeProjectName(value: unknown): { name: string; slug: stri
 }
 
 export function projectRootsOverlap(left: string, right: string): boolean {
-  const leftSegments = projectRootOverlapKey(left).split('/');
-  const rightSegments = projectRootOverlapKey(right).split('/');
+  const leftKey = projectRootOverlapKey(left);
+  const rightKey = projectRootOverlapKey(right);
+  if (leftKey === '.' || rightKey === '.') {
+    return true;
+  }
+  const leftSegments = leftKey.split('/');
+  const rightSegments = rightKey.split('/');
   const shorter = leftSegments.length <= rightSegments.length ? leftSegments : rightSegments;
   const longer = shorter === leftSegments ? rightSegments : leftSegments;
   return shorter.every((segment, index) => segment === longer[index]);

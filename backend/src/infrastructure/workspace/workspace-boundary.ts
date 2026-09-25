@@ -74,6 +74,9 @@ export class WorkspaceBoundaryAdapter implements IWorkspaceBoundary {
   public async validateProjectRoot(relativeRoot: string): Promise<string> {
     const normalizedRoot = normalizeProjectRoot(relativeRoot);
     await this.assertReady();
+    if (normalizedRoot === '.') {
+      return normalizedRoot;
+    }
     const segments = normalizedRoot.split('/');
     let currentPath = this.options.containerRoot;
     for (const segment of segments) {

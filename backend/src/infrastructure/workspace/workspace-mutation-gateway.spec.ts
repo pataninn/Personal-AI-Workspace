@@ -64,6 +64,20 @@ describe('WorkspaceMutationGatewayAdapter', () => {
     await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, operations[4]!.operationId, 'delete.txt.bak'), 'utf8')).resolves.toBe('delete-before\n');
   });
 
+  it('allows reviewed root-project changes but still rejects protected root paths', async () => {
+    const rootScope = { projectId: 'project-1', relativeRoot: '.' } as const;
+    const adapter = makeAdapter(root, recoveryRoot);
+    await fs.writeFile(path.join(root, 'root-edit.txt'), 'root-before\n', 'utf8');
+    const rootEdit = operation('edit', 'root-edit.txt', { content: 'root-after\n', expectedSourceHash: hash('root-before\n') });
+
+    const result = await adapter.applyChangeSet(rootScope, [rootEdit], RUN_ID, PROPOSAL_HASH);
+
+    expect(result.outcome).toBe('applied');
+    await expect(fs.readFile(path.join(root, 'root-edit.txt'), 'utf8')).resolves.toBe('root-after\n');
+    await expect(adapter.inspect(rootScope, '.env')).rejects.toMatchObject({ code: 'WORKSPACE_PATH_FORBIDDEN' });
+    await expect(adapter.inspect(rootScope, '.git/config')).rejects.toMatchObject({ code: 'WORKSPACE_PATH_FORBIDDEN' });
+  });
+
   it('returns stale and performs no writes when a precondition hash is no longer current', async () => {
     const adapter = makeAdapter(root, recoveryRoot);
     const operationToApply = operation('edit', 'edit.txt', { content: 'unsafe\n', expectedSourceHash: hash('edit-before\n') });

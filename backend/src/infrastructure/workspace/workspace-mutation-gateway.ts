@@ -182,7 +182,11 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     const canonicalRoot = await this.fileSystem.realpath(this.options.containerRoot);
     const projectPath = path.resolve(this.options.containerRoot, ...relativeRoot.split('/'));
     const projectRoot = await this.fileSystem.realpath(projectPath);
-    if (!isContained(canonicalRoot, projectRoot) || canonicalRoot === projectRoot) {
+    const isWorkspaceRootProject = relativeRoot === '.';
+    const isValidProjectRoot = isWorkspaceRootProject
+      ? canonicalRoot === projectRoot
+      : isContained(canonicalRoot, projectRoot) && canonicalRoot !== projectRoot;
+    if (!isValidProjectRoot) {
       throw new ChangeSetValidationError([{ field: 'relativeRoot', message: 'The project root is outside the authoritative workspace.' }]);
     }
     return { projectRoot, canonicalRoot };

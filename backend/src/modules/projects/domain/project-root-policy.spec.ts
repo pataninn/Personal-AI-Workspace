@@ -9,6 +9,7 @@ import {
 describe('project root policy', () => {
   it('normalizes Windows separators without accepting absolute paths', () => {
     expect(normalizeProjectRoot('apps\\website')).toBe('apps/website');
+    expect(normalizeProjectRoot('.')).toBe('.');
     expect(() => normalizeProjectRoot('C:\\PersonalAIWorkspace\\apps')).toThrow('relative folder');
     expect(() => normalizeProjectRoot('\\\\server\\share')).toThrow('relative folder');
     expect(() => normalizeProjectRoot('/workspace/apps')).toThrow('relative folder');
@@ -52,6 +53,13 @@ describe('project root policy', () => {
     expect(projectRootsOverlap('apps/site/src', 'apps/site')).toBe(true);
     expect(projectRootsOverlap('apps/site', 'apps/sitemap')).toBe(false);
     expect(() => assertProjectRootDoesNotOverlap('apps/site/src', ['apps/site'])).toThrow('already used');
+  });
+
+  it('treats the validated workspace-root project as overlapping every child project', () => {
+    expect(projectRootsOverlap('.', 'apps/site')).toBe(true);
+    expect(projectRootsOverlap('apps/site', '.')).toBe(true);
+    expect(() => assertProjectRootDoesNotOverlap('.', ['apps/site'])).toThrow('already used');
+    expect(() => assertProjectRootDoesNotOverlap('apps/site', ['.'])).toThrow('already used');
   });
 
   it('uses a canonical host-semantic key for persisted overlap checks', () => {

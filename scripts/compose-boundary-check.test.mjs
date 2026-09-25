@@ -21,6 +21,8 @@ test('Compose contains only the MVP1 app and private PostgreSQL services', () =>
   assert.match(source, /provider-egress:\r?\n    internal: false/);
   assert.match(source, /pai_pg_data:/);
   assert.match(source, /pai_recovery:/);
+  assert.match(source, /name: \$\{POSTGRES_VOLUME_NAME:-pai_pg_data\}/);
+  assert.match(source, /name: \$\{RECOVERY_VOLUME_NAME:-pai_recovery\}/);
   assert.doesNotMatch(source, /openshell|staging/i);
 });
 

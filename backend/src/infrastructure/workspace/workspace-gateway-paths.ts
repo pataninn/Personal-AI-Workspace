@@ -33,10 +33,16 @@ export async function resolveWorkspaceScope(
   const canonicalRoot = await safeRealpath(fileSystem, containerRoot, context);
   const projectPath = path.posix.join(containerRoot, relativeRoot);
   const canonicalProjectRoot = await safeRealpath(fileSystem, projectPath, context);
-  if (!isContained(canonicalRoot, canonicalProjectRoot) || canonicalRoot === canonicalProjectRoot) {
+  const isWorkspaceRootProject = relativeRoot === '.';
+  const isValidScope = isWorkspaceRootProject
+    ? canonicalRoot === canonicalProjectRoot
+    : isContained(canonicalRoot, canonicalProjectRoot);
+  if (!isValidScope) {
     throw new WorkspacePathForbiddenError();
   }
-  WorkspaceRelativePath.parse(path.posix.relative(canonicalRoot, canonicalProjectRoot));
+  WorkspaceRelativePath.parse(path.posix.relative(canonicalRoot, canonicalProjectRoot), {
+    allowEmpty: isWorkspaceRootProject
+  });
   return { canonicalRoot, canonicalProjectRoot };
 }
 

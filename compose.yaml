@@ -38,7 +38,7 @@ services:
       TLS_KEY_FILE: /run/tls/tls.key
       APP_ORIGIN: https://127.0.0.1:${APP_PORT:-8443}
       DATABASE_URL: postgresql://pai_app:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/personal_ai
-      WORKSPACE_HOST_ROOT: ${WORKSPACE_HOST_ROOT:?WORKSPACE_HOST_ROOT must be a dedicated Windows path}
+      WORKSPACE_HOST_ROOT: ${WORKSPACE_HOST_ROOT:?WORKSPACE_HOST_ROOT must be the verified host workspace path}
       WORKSPACE_ROOT: /workspace
       WORKSPACE_IDENTITY_FILE: ${WORKSPACE_IDENTITY_FILE:-/workspace/.personal-ai-workspace-identity}
       WORKSPACE_IDENTITY: ${WORKSPACE_IDENTITY:?WORKSPACE_IDENTITY must match the preflight marker}
@@ -70,7 +70,7 @@ services:
     volumes:
       # This is the sole authoritative workspace mount in the Compose graph.
       - type: bind
-        source: ${WORKSPACE_HOST_ROOT:?WORKSPACE_HOST_ROOT must be a dedicated Windows path}
+        source: ${WORKSPACE_HOST_ROOT:?WORKSPACE_HOST_ROOT must be the verified host workspace path}
         target: /workspace
       - type: volume
         source: pai_recovery
@@ -108,12 +108,12 @@ networks:
 
 volumes:
   pai_pg_data:
-    name: pai_pg_data
+    name: ${POSTGRES_VOLUME_NAME:-pai_pg_data}
   pai_recovery:
-    name: pai_recovery
+    name: ${RECOVERY_VOLUME_NAME:-pai_recovery}
 
 secrets:
   local_user_password:
     file: ${LOCAL_USER_PASSWORD_FILE:-./secrets/local_user_password}
   nvidia_api_key:
-    file: ${NVIDIA_API_KEY_FILE:?NVIDIA_API_KEY_FILE must point to a local secret file}
+    file: ${NVIDIA_API_KEY_FILE:?NVIDIA_API_KEY_FILE must point to a private local secret file}

@@ -7,4 +7,5 @@ coverage/
 docker/certs/*
 !docker/certs/.gitkeep
 secrets/
+.personal-ai-workspace-identity
 *.log

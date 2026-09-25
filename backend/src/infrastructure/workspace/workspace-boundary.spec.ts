@@ -50,6 +50,20 @@ describe('WorkspaceBoundaryAdapter', () => {
     await expect(adapter.validateProjectRoot('apps\\website')).resolves.toBe('apps/website');
   });
 
+  it('accepts the workspace root as a project only after the root identity checks pass', async () => {
+    const adapter = new WorkspaceBoundaryAdapter({
+      containerRoot: '/workspace',
+      identityFile: '/workspace/.identity',
+      expectedIdentity: 'host-marker',
+      fileSystem: fakeFileSystem(new Map([
+        ['/workspace', stats({ directory: true })],
+        ['/workspace/.identity', stats({ file: true })]
+      ]))
+    });
+
+    await expect(adapter.validateProjectRoot('.')).resolves.toBe('.');
+  });
+
   it('fails closed for identity mismatch and reparse-point components', async () => {
     const identityMismatch = new WorkspaceBoundaryAdapter({
       containerRoot: '/workspace',
