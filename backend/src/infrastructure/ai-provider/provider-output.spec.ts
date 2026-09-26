@@ -39,7 +39,31 @@ describe('parseProviderOutput', () => {
   it('keeps plain text responses usable without treating braces as a contract', () => {
     expect(parseProviderOutput('Use the existing project conventions.')).toEqual({
       text: 'Use the existing project conventions.',
-      changes: []
+      changes: [],
+      taskSuggestions: []
     });
+  });
+
+  it('normalizes bounded task drafts without turning them into task mutations', () => {
+    const result = parseProviderOutput(JSON.stringify({
+      message: 'Here are two ideas.',
+      taskSuggestions: [
+        { title: '  Update setup notes  ', details: '  Document the startup steps.  ' },
+        { title: 'Check tests' }
+      ]
+    }));
+
+    expect(result.taskSuggestions).toEqual([
+      { title: 'Update setup notes', details: 'Document the startup steps.' },
+      { title: 'Check tests', details: null }
+    ]);
+    expect(result.changes).toEqual([]);
+  });
+
+  it('rejects oversized, secret-bearing, or malformed task drafts', () => {
+    expect(() => parseProviderOutput(JSON.stringify({ taskSuggestions: Array.from({ length: 6 }, (_, index) => ({ title: `Task ${index}` })) }))).toThrow(ModelProviderOutputError);
+    expect(() => parseProviderOutput(JSON.stringify({ taskSuggestions: [{ title: 'NVIDIA_API_KEY=secret-value' }] }))).toThrow(ModelProviderOutputError);
+    expect(() => parseProviderOutput(JSON.stringify({ taskSuggestions: [{ title: 'ok', details: 'x'.repeat(4097) }] }))).toThrow(ModelProviderOutputError);
+    expect(() => parseProviderOutput(JSON.stringify({ taskSuggestions: [{ title: 'ok', status: 'accepted' }] }))).toThrow(ModelProviderOutputError);
   });
 });

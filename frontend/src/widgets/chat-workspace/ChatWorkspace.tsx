@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { CreateConversationDialog } from '@/features/conversation-management';
 import { AiRunEntry } from '@/features/ai-run';
+import { RunTaskSuggestions } from '@/features/project-tasks';
 import { MessageComposer } from '@/features/message-persistence';
 import { getConversation, listConversations } from '@/entities/conversation';
 import type { ConversationHistoryResponse, ConversationSnapshot } from '@/entities/conversation';
@@ -309,6 +310,7 @@ function ConversationPane(props: ConversationPaneProps): React.JSX.Element {
         )}
         onSaved={props.onSaved}
       />
+      <RunTaskSuggestions projectId={props.projectId} conversationId={conversation.id} archivedProject={props.disabled} />
     </Card>
   );
 }

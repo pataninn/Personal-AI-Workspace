@@ -1,0 +1,64 @@
+export const PROJECT_TASK_STATUSES = ['todo', 'in_progress', 'blocked', 'done', 'archived'] as const;
+export type ProjectTaskStatus = typeof PROJECT_TASK_STATUSES[number];
+export type ProjectTaskFilter = 'all' | 'open' | 'completed' | 'archived';
+export type ProjectTaskSuggestionStatus = 'pending' | 'accepted' | 'dismissed';
+
+export interface ProjectTaskSource {
+  readonly kind: 'user' | 'assistant_suggestion';
+  readonly label: 'Added by you' | 'Added from an assistant suggestion · accepted by you';
+  readonly suggestionId: string | null;
+  readonly runId: string | null;
+  readonly conversationId: string | null;
+  readonly acceptedAt: Date | null;
+}
+
+export interface ProjectTask {
+  readonly id: string;
+  readonly projectId: string;
+  readonly title: string;
+  readonly details: string | null;
+  readonly status: ProjectTaskStatus;
+  readonly position: number;
+  readonly version: number;
+  readonly source: ProjectTaskSource;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+  readonly completedAt: Date | null;
+  readonly archivedAt: Date | null;
+}
+
+export interface ProjectTaskSuggestion {
+  readonly id: string;
+  readonly projectId: string;
+  readonly runId: string;
+  readonly conversationId: string;
+  readonly title: string;
+  readonly details: string | null;
+  readonly status: ProjectTaskSuggestionStatus;
+  readonly version: number;
+  readonly taskId: string | null;
+  readonly source: { readonly kind: 'assistant'; readonly label: 'Suggested by the assistant' };
+  readonly createdAt: Date;
+  readonly resolvedAt: Date | null;
+}
+
+export interface TaskSuggestionDraft {
+  readonly title: string;
+  readonly details?: string | null;
+}
+
+export interface ProjectTaskListSnapshot {
+  readonly tasks: readonly ProjectTask[];
+  readonly orderVersion: number;
+}
+
+export interface ProjectTaskCreateResult extends ProjectTaskListSnapshot {
+  readonly task: ProjectTask;
+  readonly replayed: boolean;
+}
+
+export interface ProjectTaskSuggestionAcceptResult {
+  readonly task: ProjectTask;
+  readonly taskSuggestion: ProjectTaskSuggestion;
+  readonly orderVersion: number;
+}

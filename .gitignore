@@ -9,3 +9,4 @@ docker/certs/*
 secrets/
 .personal-ai-workspace-identity
 *.log
+__pycache__/

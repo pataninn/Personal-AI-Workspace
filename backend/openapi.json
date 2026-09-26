@@ -3,10 +3,10 @@
   "info": {
     "title": "Personal AI Workspace API",
     "version": "0.1.0",
-    "description": "Authenticated REST endpoints for project-scoped conversations, durable project facts, and AI runs."
+    "description": "Authenticated REST endpoints for project-scoped conversations, project tasks, durable project facts, and AI runs."
   },
   "servers": [{ "url": "/" }],
-  "tags": [{ "name": "Conversations" }, { "name": "Project memory" }, { "name": "Workspace files" }, { "name": "AI runs" }],
+  "tags": [{ "name": "Conversations" }, { "name": "Project memory" }, { "name": "Workspace files" }, { "name": "AI runs" }, { "name": "Project tasks" }],
   "paths": {
     "/api/v1/projects/{projectId}/conversations": {
       "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
@@ -135,7 +135,7 @@
         "operationId": "getAiRun",
         "security": [{ "sessionCookie": [] }],
         "responses": {
-          "200": { "description": "Safe run lifecycle snapshot.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AiRunEnvelope" } } } },
+          "200": { "description": "Safe run lifecycle snapshot with persisted task suggestions for this run.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AiRunWithTaskSuggestionsEnvelope" } } } },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "404": { "$ref": "#/components/responses/AiRunNotFound" },
           "500": { "$ref": "#/components/responses/InternalError" }
@@ -568,6 +568,447 @@
           "503": { "$ref": "#/components/responses/WorkspaceUnavailable" }
         }
       }
+    },
+    "/api/v1/projects/{projectId}/tasks": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectIdPath"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Project tasks"
+        ],
+        "summary": "List project tasks",
+        "description": "Returns tasks in persisted project order. The all filter is the default and excludes archived tasks; open includes todo, in_progress, and blocked; completed includes done; archived includes only archived tasks.",
+        "operationId": "listProjectTasks",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectTaskFilter"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tasks in the selected filter and the current project order version.",
+            "headers": {
+              "ETag": {
+                "description": "Current project order version as a quoted integer.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[1-9][0-9]*\"$"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTaskListEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ProjectTaskBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/ProjectTaskNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Project tasks"
+        ],
+        "summary": "Create a project task",
+        "description": "Creates a user-authored todo task and appends it to the project order. Idempotency-Key is required.",
+        "operationId": "createProjectTask",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/OriginHeader"
+          },
+          {
+            "$ref": "#/components/parameters/CsrfHeader"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectTaskIdempotencyHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectTaskRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Task created and appended to the project order.",
+            "headers": {
+              "Location": {
+                "$ref": "#/components/headers/Location"
+              },
+              "ETag": {
+                "description": "New project order version as a quoted integer.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[1-9][0-9]*\"$"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTaskMutationEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ProjectTaskBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/MutationForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ProjectTaskNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/ProjectTaskCreateConflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/tasks/{taskId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectIdPath"
+        },
+        {
+          "$ref": "#/components/parameters/ProjectTaskIdPath"
+        }
+      ],
+      "patch": {
+        "tags": [
+          "Project tasks"
+        ],
+        "summary": "Update a project task",
+        "description": "Updates title/details or applies one allowed status transition. Requires the current task version in If-Match. Archived tasks cannot be changed.",
+        "operationId": "updateProjectTask",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/OriginHeader"
+          },
+          {
+            "$ref": "#/components/parameters/CsrfHeader"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchProjectTaskVersionHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProjectTaskRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Task updated with its next task version and current project order version.",
+            "headers": {
+              "ETag": {
+                "description": "New task version as a quoted integer.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[1-9][0-9]*\"$"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTaskMutationEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ProjectTaskBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/MutationForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ProjectTaskNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/ProjectTaskUpdateConflict"
+          },
+          "428": {
+            "$ref": "#/components/responses/ProjectTaskPreconditionRequired"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/task-order": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectIdPath"
+        }
+      ],
+      "patch": {
+        "tags": [
+          "Project tasks"
+        ],
+        "summary": "Move a project task by one position",
+        "description": "Swaps one non-archived task with its adjacent task in full project order. Requires the current order version in If-Match.",
+        "operationId": "reorderProjectTask",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/OriginHeader"
+          },
+          {
+            "$ref": "#/components/parameters/CsrfHeader"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchTaskOrderVersionHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderProjectTaskRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tasks in the updated project order.",
+            "headers": {
+              "ETag": {
+                "description": "New project order version as a quoted integer.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[1-9][0-9]*\"$"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTaskListEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ProjectTaskBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/MutationForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ProjectTaskNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/ProjectTaskOrderConflict"
+          },
+          "428": {
+            "$ref": "#/components/responses/ProjectTaskPreconditionRequired"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/task-suggestions": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectIdPath"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Project tasks"
+        ],
+        "summary": "List project task suggestions",
+        "description": "Lists pending suggestions oldest first by default. status=all includes resolved suggestions and requires conversationId; conversationId may also be supplied to filter pending suggestions to one conversation.",
+        "operationId": "listProjectTaskSuggestions",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectTaskSuggestionStatusFilter"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectTaskSuggestionConversationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task suggestions matching the selected status and optional conversation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTaskSuggestionListEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ProjectTaskBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/ProjectTaskNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/task-suggestions/{suggestionId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectIdPath"
+        },
+        {
+          "$ref": "#/components/parameters/ProjectTaskSuggestionIdPath"
+        }
+      ],
+      "patch": {
+        "tags": [
+          "Project tasks"
+        ],
+        "summary": "Accept or dismiss a task suggestion",
+        "description": "Acceptance creates one task at the end of the project order. Optional title/details override only their matching proposed values; details may be null to clear them. Dismissal accepts only status=dismissed. Requires the current suggestion version in If-Match.",
+        "operationId": "resolveProjectTaskSuggestion",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/OriginHeader"
+          },
+          {
+            "$ref": "#/components/parameters/CsrfHeader"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchTaskSuggestionVersionHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveProjectTaskSuggestionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Suggestion resolved; accepted responses include the created task and new order version.",
+            "headers": {
+              "ETag": {
+                "description": "New suggestion version as a quoted integer.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[1-9][0-9]*\"$"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTaskSuggestionResolutionEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ProjectTaskBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/MutationForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ProjectTaskNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/ProjectTaskSuggestionConflict"
+          },
+          "428": {
+            "$ref": "#/components/responses/ProjectTaskPreconditionRequired"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -596,7 +1037,16 @@
       "OriginHeader": { "name": "Origin", "in": "header", "required": true, "schema": { "type": "string", "format": "uri" } },
       "CsrfHeader": { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } },
       "IdempotencyHeader": { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 8, "maxLength": 200, "pattern": "^[\\x21-\\x7e]+$" } }
-      ,"IfMatchVersionHeader": { "name": "If-Match", "in": "header", "required": true, "description": "Current positive fact version as a quoted integer, for example \"3\".", "schema": { "type": "string", "pattern": "^\"[1-9][0-9]*\"$" } }
+      ,"IfMatchVersionHeader": { "name": "If-Match", "in": "header", "required": true, "description": "Current positive fact version as a quoted integer, for example \"3\".", "schema": { "type": "string", "pattern": "^\"[1-9][0-9]*\"$" } },
+      "ProjectTaskIdPath": {"name":"taskId","in":"path","required":true,"schema":{"$ref":"#/components/schemas/Uuid"}},
+      "ProjectTaskSuggestionIdPath": {"name":"suggestionId","in":"path","required":true,"schema":{"$ref":"#/components/schemas/Uuid"}},
+      "ProjectTaskFilter": {"name":"status","in":"query","required":false,"description":"Task filter: all (default), open, completed, or archived.","schema":{"type":"string","enum":["all","open","completed","archived"],"default":"all"}},
+      "ProjectTaskSuggestionStatusFilter": {"name":"status","in":"query","required":false,"description":"Use pending (default) for unresolved suggestions or all for pending and resolved suggestions. status=all requires conversationId.","schema":{"type":"string","enum":["pending","all"],"default":"pending"}},
+      "ProjectTaskSuggestionConversationId": {"name":"conversationId","in":"query","required":false,"description":"Optional conversation filter. Required when status=all.","schema":{"$ref":"#/components/schemas/Uuid"}},
+      "IfMatchProjectTaskVersionHeader": {"name":"If-Match","in":"header","required":true,"description":"Current positive task version as a quoted integer, for example \"3\".","schema":{"type":"string","pattern":"^\"[1-9][0-9]*\"$"}},
+      "IfMatchTaskOrderVersionHeader": {"name":"If-Match","in":"header","required":true,"description":"Current positive project order version as a quoted integer, for example \"3\".","schema":{"type":"string","pattern":"^\"[1-9][0-9]*\"$"}},
+      "IfMatchTaskSuggestionVersionHeader": {"name":"If-Match","in":"header","required":true,"description":"Current positive task suggestion version as a quoted integer, for example \"3\".","schema":{"type":"string","pattern":"^\"[1-9][0-9]*\"$"}},
+      "ProjectTaskIdempotencyHeader": {"name":"Idempotency-Key","in":"header","required":true,"description":"Unique retry key for this create request; 1 to 128 ASCII letters, digits, period, underscore, colon, or hyphen.","schema":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]{1,128}$"}}
     },
     "responses": {
       "ValidationError": { "description": "Request validation failed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "VALIDATION_ERROR", "message": "The conversation request is invalid.", "details": [{ "field": "title", "message": "Enter a conversation name." }] } } } } },
@@ -621,7 +1071,14 @@
       "ChangeSetNotFound": { "description": "No proposed change set is available for this owner and run.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "ChangeSetConflict": { "description": "The proposed change set is stale, already decided, blocked, or has an idempotency conflict.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "ChangeSetReviewRequired": { "description": "The apply outcome could not be confirmed and requires manual review.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
-      "InternalError": { "description": "Unexpected server failure.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "INTERNAL_ERROR", "message": "Internal server error." } } } } }
+      "InternalError": { "description": "Unexpected server failure.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "data": null, "error": { "code": "INTERNAL_ERROR", "message": "Internal server error." } } } } },
+      "ProjectTaskBadRequest": {"description":"The task request or filter is invalid, or the required Idempotency-Key is missing or malformed.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"},"examples":{"validation":{"value":{"data":null,"error":{"code":"VALIDATION_ERROR","message":"The project task request is invalid."}}},"idempotency":{"value":{"data":null,"error":{"code":"IDEMPOTENCY_KEY_REQUIRED","message":"A valid Idempotency-Key header is required."}}}}}}},
+      "ProjectTaskNotFound": {"description":"The project, task, or suggestion is not available in the authenticated owner and project scope.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"},"examples":{"project":{"value":{"data":null,"error":{"code":"PROJECT_NOT_FOUND","message":"Project not found."}}},"resource":{"value":{"data":null,"error":{"code":"PROJECT_TASK_NOT_FOUND","message":"The requested project task resource was not found."}}}}}}},
+      "ProjectTaskPreconditionRequired": {"description":"If-Match is missing or is not a quoted positive version.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"},"example":{"data":null,"error":{"code":"PRECONDITION_REQUIRED","message":"A valid If-Match version is required."}}}}},
+      "ProjectTaskCreateConflict": {"description":"The project is archived or the Idempotency-Key was already used for different content.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"},"examples":{"projectArchived":{"value":{"data":null,"error":{"code":"PROJECT_ARCHIVED","message":"This project is archived. Its tasks and suggestions are read-only."}}},"idempotencyReused":{"value":{"data":null,"error":{"code":"IDEMPOTENCY_KEY_REUSED","message":"The Idempotency-Key was already used for a different request."}}}}}}},
+      "ProjectTaskUpdateConflict": {"description":"The project is archived, the task version is stale, the status transition is invalid, or the task is archived.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"},"examples":{"projectArchived":{"value":{"data":null,"error":{"code":"PROJECT_ARCHIVED","message":"This project is archived. Its tasks and suggestions are read-only."}}},"version":{"value":{"data":null,"error":{"code":"PROJECT_TASK_VERSION_CONFLICT","message":"This task changed before the request was applied. Reload the latest version and try again."}}},"status":{"value":{"data":null,"error":{"code":"PROJECT_TASK_STATUS_CONFLICT","message":"This task cannot move to that status."}}},"archived":{"value":{"data":null,"error":{"code":"PROJECT_TASK_ARCHIVED","message":"This task is archived and cannot be changed."}}}}}}},
+      "ProjectTaskOrderConflict": {"description":"The project is archived, the task order version is stale, the task is archived, or the requested adjacent move is at an order boundary.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"},"examples":{"projectArchived":{"value":{"data":null,"error":{"code":"PROJECT_ARCHIVED","message":"This project is archived. Its tasks and suggestions are read-only."}}},"order":{"value":{"data":null,"error":{"code":"PROJECT_TASK_ORDER_CONFLICT","message":"The project task order changed. Reload the latest order and try again."}}},"archived":{"value":{"data":null,"error":{"code":"PROJECT_TASK_ARCHIVED","message":"This task is archived and cannot be changed."}}},"boundary":{"value":{"data":null,"error":{"code":"PROJECT_TASK_ORDER_BOUNDARY","message":"This task is already at the requested end of the list."}}}}}}},
+      "ProjectTaskSuggestionConflict": {"description":"The project is archived, the suggestion version is stale, or the suggestion has already been resolved.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"},"examples":{"projectArchived":{"value":{"data":null,"error":{"code":"PROJECT_ARCHIVED","message":"This project is archived. Its tasks and suggestions are read-only."}}},"version":{"value":{"data":null,"error":{"code":"PROJECT_TASK_VERSION_CONFLICT","message":"This task changed before the request was applied. Reload the latest version and try again."}}},"resolved":{"value":{"data":null,"error":{"code":"PROJECT_TASK_SUGGESTION_RESOLVED","message":"This suggestion was already resolved another way."}}}}}}}
     },
     "schemas": {
       "Uuid": { "type": "string", "format": "uuid" },
@@ -681,7 +1138,36 @@
       "WorkspaceListEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/WorkspaceList" }, "error": { "type": "null" } }, "additionalProperties": false },
       "WorkspaceTreeEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/WorkspaceTree" }, "error": { "type": "null" } }, "additionalProperties": false },
       "WorkspaceReadEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/WorkspaceRead" }, "error": { "type": "null" } }, "additionalProperties": false },
-      "WorkspaceSearchEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/WorkspaceSearch" }, "error": { "type": "null" } }, "additionalProperties": false }
+      "WorkspaceSearchEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/WorkspaceSearch" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "ProjectTaskStatus": {"type":"string","enum":["todo","in_progress","blocked","done","archived"]},
+      "ProjectTaskSourceKind": {"type":"string","enum":["user","assistant_suggestion"]},
+      "ProjectTaskSuggestionStatus": {"type":"string","enum":["pending","accepted","dismissed"]},
+      "ProjectTaskSource": {"oneOf":[{"$ref":"#/components/schemas/UserProjectTaskSource"},{"$ref":"#/components/schemas/AssistantSuggestionProjectTaskSource"}],"description":"Server-owned immutable task provenance. User-authored tasks have null suggestion/run/conversation linkage and acceptedAt; accepted suggestions have server-recorded linkage and timestamp."},
+      "ProjectTask": {"type":"object","required":["id","projectId","title","details","status","position","version","source","createdAt","updatedAt","completedAt","archivedAt"],"properties":{"id":{"$ref":"#/components/schemas/Uuid"},"projectId":{"$ref":"#/components/schemas/Uuid"},"title":{"type":"string","minLength":1,"maxLength":120,"description":"Trimmed title, at most 120 Unicode code points after normalization."},"details":{"type":"string","maxLength":4096,"nullable":true,"description":"Plain text, at most 4,096 UTF-8 bytes after normalization. Newline and tab are allowed."},"status":{"$ref":"#/components/schemas/ProjectTaskStatus"},"position":{"type":"integer","minimum":0,"description":"Zero-based position in the active project order; archived tasks are excluded."},"version":{"type":"integer","minimum":1},"source":{"$ref":"#/components/schemas/ProjectTaskSource"},"createdAt":{"type":"string","format":"date-time"},"updatedAt":{"type":"string","format":"date-time"},"completedAt":{"type":"string","format":"date-time","nullable":true},"archivedAt":{"type":"string","format":"date-time","nullable":true}},"additionalProperties":false},
+      "ProjectTaskSuggestionSource": {"type":"object","required":["kind","label"],"properties":{"kind":{"type":"string","enum":["assistant"]},"label":{"type":"string","enum":["Suggested by the assistant"]}},"additionalProperties":false},
+      "ProjectTaskSuggestion": {"type":"object","description":"Persisted assistant proposal. It remains a draft until explicitly accepted or dismissed.","required":["id","projectId","runId","conversationId","title","details","status","version","taskId","source","createdAt","resolvedAt"],"properties":{"id":{"$ref":"#/components/schemas/Uuid"},"projectId":{"$ref":"#/components/schemas/Uuid"},"runId":{"$ref":"#/components/schemas/Uuid"},"conversationId":{"$ref":"#/components/schemas/Uuid"},"title":{"type":"string","minLength":1,"maxLength":120,"description":"Trimmed title, at most 120 Unicode code points after normalization."},"details":{"type":"string","maxLength":4096,"nullable":true,"description":"Plain text, at most 4,096 UTF-8 bytes after normalization. Newline and tab are allowed."},"status":{"$ref":"#/components/schemas/ProjectTaskSuggestionStatus"},"version":{"type":"integer","minimum":1},"taskId":{"type":"string","format":"uuid","nullable":true,"description":"Null for pending or dismissed suggestions; populated with the accepted task ID."},"source":{"$ref":"#/components/schemas/ProjectTaskSuggestionSource"},"createdAt":{"type":"string","format":"date-time"},"resolvedAt":{"type":"string","format":"date-time","nullable":true}},"additionalProperties":false},
+      "ProjectTaskList": {"type":"object","required":["tasks","orderVersion"],"properties":{"tasks":{"type":"array","items":{"$ref":"#/components/schemas/ProjectTask"}},"orderVersion":{"type":"integer","minimum":1}},"additionalProperties":false},
+      "ProjectTaskListEnvelope": {"type":"object","required":["data","error"],"properties":{"data":{"$ref":"#/components/schemas/ProjectTaskList"},"error":{"type":"null"}},"additionalProperties":false},
+      "ProjectTaskMutation": {"type":"object","required":["task","orderVersion"],"properties":{"task":{"$ref":"#/components/schemas/ProjectTask"},"orderVersion":{"type":"integer","minimum":1}},"additionalProperties":false},
+      "ProjectTaskMutationEnvelope": {"type":"object","required":["data","error"],"properties":{"data":{"$ref":"#/components/schemas/ProjectTaskMutation"},"error":{"type":"null"}},"additionalProperties":false},
+      "ProjectTaskSuggestionList": {"type":"object","required":["taskSuggestions"],"properties":{"taskSuggestions":{"type":"array","items":{"$ref":"#/components/schemas/ProjectTaskSuggestion"}}},"additionalProperties":false},
+      "ProjectTaskSuggestionListEnvelope": {"type":"object","required":["data","error"],"properties":{"data":{"$ref":"#/components/schemas/ProjectTaskSuggestionList"},"error":{"type":"null"}},"additionalProperties":false},
+      "CreateProjectTaskRequest": {"type":"object","description":"Creates a user-authored task. The server assigns status todo, provenance, position, owner, project, and timestamps.","required":["title"],"properties":{"title":{"type":"string","minLength":1,"maxLength":120,"description":"Trimmed title, at most 120 Unicode code points after normalization."},"details":{"type":"string","maxLength":4096,"nullable":true,"description":"Plain text, at most 4,096 UTF-8 bytes after normalization. Newline and tab are allowed."}},"additionalProperties":false},
+      "UpdateProjectTaskTextRequest": {"type":"object","required":[],"properties":{"title":{"type":"string","minLength":1,"maxLength":120,"description":"Trimmed title, at most 120 Unicode code points after normalization."},"details":{"type":"string","maxLength":4096,"nullable":true,"description":"Plain text, at most 4,096 UTF-8 bytes after normalization. Newline and tab are allowed."}},"additionalProperties":false,"minProperties":1,"description":"Supply title, details, or both. Unknown fields are rejected."},
+      "UpdateProjectTaskStatusRequest": {"type":"object","description":"Applies one allowed status transition. Unknown fields are rejected.","required":["status"],"properties":{"status":{"$ref":"#/components/schemas/ProjectTaskStatus"}},"additionalProperties":false},
+      "UpdateProjectTaskRequest": {"oneOf":[{"$ref":"#/components/schemas/UpdateProjectTaskTextRequest"},{"$ref":"#/components/schemas/UpdateProjectTaskStatusRequest"}],"description":"A strict text update or a strict single status update."},
+      "ReorderProjectTaskRequest": {"type":"object","description":"Moves one non-archived task exactly one place in full project order.","required":["taskId","direction"],"properties":{"taskId":{"$ref":"#/components/schemas/Uuid"},"direction":{"type":"string","enum":["up","down"]}},"additionalProperties":false},
+      "AcceptProjectTaskSuggestionRequest": {"type":"object","description":"Optional edited title/details override only the supplied fields; omitted fields use the proposal.","required":["status"],"properties":{"status":{"type":"string","enum":["accepted"]},"title":{"type":"string","minLength":1,"maxLength":120,"description":"Trimmed title, at most 120 Unicode code points after normalization."},"details":{"type":"string","maxLength":4096,"nullable":true,"description":"Plain text, at most 4,096 UTF-8 bytes after normalization. Newline and tab are allowed."}},"additionalProperties":false},
+      "DismissProjectTaskSuggestionRequest": {"type":"object","description":"Dismissal accepts only the status field.","required":["status"],"properties":{"status":{"type":"string","enum":["dismissed"]}},"additionalProperties":false},
+      "ResolveProjectTaskSuggestionRequest": {"oneOf":[{"$ref":"#/components/schemas/AcceptProjectTaskSuggestionRequest"},{"$ref":"#/components/schemas/DismissProjectTaskSuggestionRequest"}],"description":"A strict acceptance or dismissal request. Unknown fields are rejected."},
+      "ProjectTaskSuggestionAcceptance": {"type":"object","required":["task","taskSuggestion","orderVersion"],"properties":{"task":{"$ref":"#/components/schemas/ProjectTask"},"taskSuggestion":{"$ref":"#/components/schemas/ProjectTaskSuggestion"},"orderVersion":{"type":"integer","minimum":1}},"additionalProperties":false},
+      "ProjectTaskSuggestionDismissal": {"type":"object","required":["taskSuggestion"],"properties":{"taskSuggestion":{"$ref":"#/components/schemas/ProjectTaskSuggestion"}},"additionalProperties":false},
+      "ProjectTaskSuggestionResolution": {"oneOf":[{"$ref":"#/components/schemas/ProjectTaskSuggestionAcceptance"},{"$ref":"#/components/schemas/ProjectTaskSuggestionDismissal"}]},
+      "ProjectTaskSuggestionResolutionEnvelope": {"type":"object","required":["data","error"],"properties":{"data":{"$ref":"#/components/schemas/ProjectTaskSuggestionResolution"},"error":{"type":"null"}},"additionalProperties":false},
+      "AiRunWithTaskSuggestions": {"type":"object","required":["runId","projectId","conversationId","status","phase","manifestHash","decision","safeMessage","cleanup","providerTransmission","stagingItemCount","taskSuggestions"],"properties":{"runId":{"$ref":"#/components/schemas/Uuid"},"projectId":{"$ref":"#/components/schemas/Uuid"},"conversationId":{"$ref":"#/components/schemas/Uuid"},"status":{"type":"string","enum":["pending_approval","rejected","staging","ready","queued","running","waiting_approval","succeeded","failed","cancel_requested","cancelled","blocked","review_required"]},"phase":{"type":"string","enum":["manifest","decision","staging","runtime","inference","terminal","review"]},"manifestHash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"decision":{"type":"string","enum":["pending","approved","rejected"]},"safeMessage":{"type":"string"},"cleanup":{"type":"string","enum":["not_started","complete","unknown"]},"providerTransmission":{"type":"string","enum":["not_started","not_started_confirmed","transmitted_confirmed","unknown"]},"stagingItemCount":{"type":"integer","minimum":0},"runtime":{"type":"object","required":["kind","sandboxReady"],"properties":{"kind":{"type":"string","enum":["fake"]},"sandboxReady":{"type":"boolean","enum":[true]}},"additionalProperties":false},"assistant":{"type":"object","required":["complete","contentLength"],"properties":{"messageId":{"$ref":"#/components/schemas/Uuid"},"complete":{"type":"boolean"},"contentLength":{"type":"integer","minimum":0,"maximum":65536}},"additionalProperties":false},"taskSuggestions":{"type":"array","maxItems":5,"items":{"$ref":"#/components/schemas/ProjectTaskSuggestion"},"description":"Persisted task proposals created by this completed run."}},"additionalProperties":false},
+      "AiRunWithTaskSuggestionsEnvelope": {"type":"object","required":["data","error"],"properties":{"data":{"$ref":"#/components/schemas/AiRunWithTaskSuggestions"},"error":{"type":"null"}},"additionalProperties":false},
+      "UserProjectTaskSource": {"type":"object","required":["kind","label","suggestionId","runId","conversationId","acceptedAt"],"properties":{"kind":{"type":"string","enum":["user"]},"label":{"type":"string","enum":["Added by you"]},"suggestionId":{"type":"string","format":"uuid","nullable":true,"enum":[null]},"runId":{"type":"string","format":"uuid","nullable":true,"enum":[null]},"conversationId":{"type":"string","format":"uuid","nullable":true,"enum":[null]},"acceptedAt":{"type":"string","format":"date-time","nullable":true,"enum":[null]}},"additionalProperties":false},
+      "AssistantSuggestionProjectTaskSource": {"type":"object","required":["kind","label","suggestionId","runId","conversationId","acceptedAt"],"properties":{"kind":{"type":"string","enum":["assistant_suggestion"]},"label":{"type":"string","enum":["Added from an assistant suggestion · accepted by you"]},"suggestionId":{"type":"string","format":"uuid"},"runId":{"type":"string","format":"uuid"},"conversationId":{"type":"string","format":"uuid"},"acceptedAt":{"type":"string","format":"date-time"}},"additionalProperties":false}
     }
   }
 }

@@ -5,6 +5,7 @@ import type {
   AiRunPhase,
   AiRunSnapshot,
   AiRunStatus,
+  AiRunTaskSuggestion,
   CleanupStatus,
   EgressDecision,
   EgressFactDisclosure,
@@ -125,6 +126,7 @@ export function normalizeAiRunSnapshot(value: unknown): AiRunSnapshot {
   }
   const runtime = normalizeRuntime(record.runtime, record.runtimeKind, record.sandboxReady);
   const assistant = normalizeAssistant(record.assistant);
+  const taskSuggestions = normalizeRunTaskSuggestions(record.taskSuggestions, runId, projectId, conversationId);
   return {
     runId,
     projectId,
@@ -138,8 +140,54 @@ export function normalizeAiRunSnapshot(value: unknown): AiRunSnapshot {
     providerTransmission: readProviderTransmission(record.providerTransmission),
     stagingItemCount: readNonNegativeNumber(record.stagingItemCount),
     ...(runtime ? { runtime } : {}),
-    ...(assistant ? { assistant } : {})
+    ...(assistant ? { assistant } : {}),
+    ...(taskSuggestions ? { taskSuggestions } : {})
   };
+}
+
+function normalizeRunTaskSuggestions(value: unknown, runId: string, projectId: string, conversationId: string): readonly AiRunTaskSuggestion[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.length > 5) {
+    throw invalidResponse();
+  }
+  return value.map((entry: unknown) => {
+    const suggestion = asRecord(entry);
+    const source = asRecord(suggestion?.source);
+    const title = readString(suggestion?.title);
+    const details = suggestion?.details;
+    const status = suggestion?.status;
+    const version = suggestion?.version;
+    const taskId = suggestion?.taskId;
+    const createdAt = readString(suggestion?.createdAt);
+    const resolvedAt = suggestion?.resolvedAt;
+    if (!suggestion || !source || suggestion.runId !== runId || suggestion.projectId !== projectId || suggestion.conversationId !== conversationId
+      || source.kind !== 'assistant' || source.label !== 'Suggested by the assistant'
+      || !title || Array.from(title).length > 120 || /[\u0000-\u001f\u007f]/u.test(title)
+      || (details !== null && (typeof details !== 'string' || new TextEncoder().encode(details).length > 4096))
+      || (status !== 'pending' && status !== 'accepted' && status !== 'dismissed')
+      || typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1
+      || (taskId !== null && typeof taskId !== 'string')
+      || !createdAt || !Number.isFinite(Date.parse(createdAt))
+      || (resolvedAt !== null && (typeof resolvedAt !== 'string' || !Number.isFinite(Date.parse(resolvedAt))))) {
+      throw invalidResponse();
+    }
+    return {
+      id: requireString(suggestion.id),
+      projectId,
+      runId,
+      conversationId,
+      title,
+      details,
+      status,
+      version,
+      taskId,
+      source: { kind: 'assistant', label: 'Suggested by the assistant' },
+      createdAt,
+      resolvedAt
+    };
+  });
 }
 
 export function normalizeEgressManifest(value: unknown, runId: string, fallbackManifestHash?: string): EgressManifest {

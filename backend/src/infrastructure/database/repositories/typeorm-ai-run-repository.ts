@@ -10,6 +10,7 @@ import {
 import type { AiRun, CreateAiRunRecord, DecisionResult, DecisionUpdate, EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
 import type { CancelRunUpdate, CompleteRunUpdate, IAiRunRepository, RunMutationResult, StartRunUpdate } from '@/modules/ai-runs/repositories/ai-run-repository';
 import { ProjectArchivedError } from '@/modules/conversations/domain/conversation-errors';
+import type { TaskSuggestionCompletionWriter } from '@/infrastructure/database/repositories/task-suggestion-completion-writer';
 
 interface AiRunRow {
   readonly id: string;
@@ -49,7 +50,7 @@ interface AiRunRow {
 }
 
 export class TypeOrmAiRunRepository implements IAiRunRepository {
-  public constructor(private readonly dataSource: DataSource) {}
+  public constructor(private readonly dataSource: DataSource, private readonly taskSuggestionWriter?: TaskSuggestionCompletionWriter) {}
 
   public async create(input: CreateAiRunRecord): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> {
     const queryRunner = await this.startTransaction();
@@ -299,6 +300,17 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
         assistantId = messageRows[0]?.id ?? null;
         await queryRunner.query('UPDATE "conversations" SET "last_activity_at" = now(), "updated_at" = now() WHERE "id" = $1', [row.conversation_id]);
       }
+      if (input.status === 'succeeded' && input.taskSuggestions && input.taskSuggestions.length > 0) {
+        if (!this.taskSuggestionWriter) {
+          throw new Error('The task suggestion completion writer is unavailable.');
+        }
+        await this.taskSuggestionWriter.persistForRunCompletion(queryRunner, {
+          runId: row.id,
+          ownerId: row.owner_id,
+          projectId: row.project_id,
+          conversationId: row.conversation_id
+        }, input.taskSuggestions);
+      }
       const rows: readonly AiRunRow[] = await queryRunner.query(
         `UPDATE "ai_runs" SET "status" = $1, "phase" = $2, "cleanup" = $3, "provider_transmission" = $4, "assistant_message_id" = $5, "assistant_complete" = $6, "assistant_content_length" = $7, "safe_message" = $8, "updated_at" = now()
          WHERE "owner_id" = $9 AND "id" = $10 AND "status" IN ('queued', 'running', 'waiting_approval') RETURNING *`,
@@ -367,7 +379,7 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
     const queryRunner = await this.startTransaction();
     try {
       const rows: readonly AiRunRow[] = await queryRunner.query(
-        `UPDATE "ai_runs" SET "status" = 'review_required', "phase" = 'review', "cleanup" = 'unknown', "provider_transmission" = 'unknown', "safe_message" = $1, "updated_at" = now()
+        `UPDATE "ai_runs" SET "status" = 'review_required', "phase" = 'review', "cleanup" = 'unknown', "provider_transmission" = CASE WHEN "provider_transmission" = 'transmitted_confirmed' THEN "provider_transmission" ELSE 'unknown' END, "safe_message" = $1, "updated_at" = now()
          WHERE "owner_id" = $2 AND "id" = $3 AND "status" IN ('queued', 'running', 'waiting_approval', 'cancel_requested') RETURNING *`,
         [safeMessage, ownerId, runId]
       );

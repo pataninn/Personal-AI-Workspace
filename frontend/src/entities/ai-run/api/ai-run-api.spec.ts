@@ -71,6 +71,24 @@ describe('AI run API normalizers', () => {
     }).providerTransmission).toBe('transmitted_confirmed');
   });
 
+  it('accepts only suggestions belonging to the owned run snapshot', () => {
+    const run = {
+      runId: RUN_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID,
+      status: 'succeeded', phase: 'terminal', decision: 'approved', manifestHash: HASH,
+      taskSuggestions: [{
+        id: '88888888-8888-4888-8888-000000000001',
+        projectId: PROJECT_ID, runId: RUN_ID, conversationId: CONVERSATION_ID,
+        title: 'Update setup notes', details: null, status: 'pending', version: 1,
+        taskId: null, source: { kind: 'assistant', label: 'Suggested by the assistant' },
+        createdAt: '2026-09-26T00:00:00.000Z', resolvedAt: null
+      }]
+    };
+
+    expect(normalizeAiRunSnapshot(run).taskSuggestions?.map((suggestion) => suggestion.title)).toEqual(['Update setup notes']);
+    expect(() => normalizeAiRunSnapshot({ ...run, taskSuggestions: [{ ...run.taskSuggestions[0], projectId: 'foreign-project' }] })).toThrow(ApiClientError);
+    expect(() => normalizeAiRunSnapshot({ ...run, taskSuggestions: [{ ...run.taskSuggestions[0], status: 'accepted', version: 0 }] })).toThrow(ApiClientError);
+  });
+
   it('unwraps run and manifest resources returned by create and decision endpoints', () => {
     const intent = normalizeAiRunIntent({
       run: {

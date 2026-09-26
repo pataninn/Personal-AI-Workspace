@@ -5,6 +5,7 @@ import type {
   DecisionResult,
   DecisionUpdate
 } from '@/modules/ai-runs/domain/ai-run-types';
+import type { TaskSuggestionDraft } from '@/modules/ai-runs/domain/task-suggestion-draft';
 
 export interface StartRunUpdate {
   readonly ownerId: string;
@@ -29,6 +30,7 @@ export interface CompleteRunUpdate {
   readonly assistantComplete?: boolean;
   readonly cleanup?: AiRun['cleanup'];
   readonly providerTransmission?: AiRun['providerTransmission'];
+  readonly taskSuggestions?: readonly TaskSuggestionDraft[];
 }
 
 export interface RunMutationResult {

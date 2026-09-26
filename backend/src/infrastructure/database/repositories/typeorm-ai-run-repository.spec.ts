@@ -1,6 +1,7 @@
 import type { DataSource, QueryRunner } from 'typeorm';
 
 import { TypeOrmAiRunRepository } from '@/infrastructure/database/repositories/typeorm-ai-run-repository';
+import type { TaskSuggestionCompletionWriter } from '@/infrastructure/database/repositories/task-suggestion-completion-writer';
 import type { EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -73,6 +74,27 @@ describe('TypeOrmAiRunRepository', () => {
     expect(query.mock.calls[0]?.[0]).toContain('"status" IN');
   });
 
+  it('preserves confirmed transmission when a completed provider response needs review', async () => {
+    const reviewed = row({ status: 'review_required', phase: 'review', provider_transmission: 'transmitted_confirmed' });
+    const query = jest.fn().mockResolvedValue([[reviewed], 1]);
+    const queryRunner = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      startTransaction: jest.fn().mockResolvedValue(undefined),
+      query,
+      commitTransaction: jest.fn().mockResolvedValue(undefined),
+      rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue(undefined)
+    } as unknown as QueryRunner;
+    const repository = new TypeOrmAiRunRepository({ createQueryRunner: () => queryRunner } as unknown as DataSource);
+
+    const result = await repository.markReviewRequired(OWNER_ID, RUN_ID, 'The suggestion write needs review.');
+
+    expect(result?.status).toBe('review_required');
+    expect(result?.providerTransmission).toBe('transmitted_confirmed');
+    expect(query.mock.calls[0]?.[0]).toContain('CASE WHEN "provider_transmission" = \'transmitted_confirmed\'');
+    expect(queryRunner.commitTransaction).toHaveBeenCalledTimes(1);
+  });
+
   it('commits approval checkpoint before returning control to staging', async () => {
     const pending = row();
     const approved = row({
@@ -138,5 +160,57 @@ describe('TypeOrmAiRunRepository', () => {
 
     expect(result?.status).toBe('running');
     expect(query.mock.calls[1]?.[0]).toContain("'queued', 'waiting_approval'");
+  });
+
+  it('persists task suggestions inside the existing run completion transaction', async () => {
+    const running = row({ status: 'running', phase: 'inference', decision: 'approved' });
+    const done = row({ status: 'succeeded', phase: 'terminal', decision: 'approved' });
+    const query = jest.fn().mockResolvedValueOnce([running]).mockResolvedValueOnce([[done], 1]);
+    const commitTransaction = jest.fn().mockResolvedValue(undefined);
+    const queryRunner = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      startTransaction: jest.fn().mockResolvedValue(undefined),
+      query,
+      commitTransaction,
+      rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue(undefined)
+    } as unknown as QueryRunner;
+    const persistForRunCompletion = jest.fn().mockResolvedValue(undefined);
+    const writer = { persistForRunCompletion } as TaskSuggestionCompletionWriter;
+    const repository = new TypeOrmAiRunRepository({ createQueryRunner: jest.fn().mockReturnValue(queryRunner) } as unknown as DataSource, writer);
+    const drafts = [{ title: 'Update setup notes', details: null }];
+
+    const result = await repository.completeRun({ ownerId: OWNER_ID, runId: RUN_ID, status: 'succeeded', safeMessage: 'Complete.', taskSuggestions: drafts });
+
+    expect(result?.status).toBe('succeeded');
+    expect(persistForRunCompletion).toHaveBeenCalledWith(queryRunner, {
+      runId: RUN_ID,
+      ownerId: OWNER_ID,
+      projectId: running.project_id,
+      conversationId: running.conversation_id
+    }, drafts);
+    expect(persistForRunCompletion.mock.invocationCallOrder[0]).toBeLessThan(commitTransaction.mock.invocationCallOrder[0]!);
+    expect(queryRunner.commitTransaction).toHaveBeenCalledTimes(1);
+    expect(queryRunner.rollbackTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rolls back run completion when task suggestion persistence fails', async () => {
+    const running = row({ status: 'running', phase: 'inference', decision: 'approved' });
+    const query = jest.fn().mockResolvedValueOnce([running]);
+    const queryRunner = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      startTransaction: jest.fn().mockResolvedValue(undefined),
+      query,
+      commitTransaction: jest.fn().mockResolvedValue(undefined),
+      rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue(undefined)
+    } as unknown as QueryRunner;
+    const writer = { persistForRunCompletion: jest.fn().mockRejectedValue(new Error('write failed')) } as TaskSuggestionCompletionWriter;
+    const repository = new TypeOrmAiRunRepository({ createQueryRunner: jest.fn().mockReturnValue(queryRunner) } as unknown as DataSource, writer);
+
+    await expect(repository.completeRun({ ownerId: OWNER_ID, runId: RUN_ID, status: 'succeeded', safeMessage: 'Complete.', taskSuggestions: [{ title: 'Update setup notes', details: null }] })).rejects.toThrow('write failed');
+    expect(queryRunner.rollbackTransaction).toHaveBeenCalledTimes(1);
+    expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+    expect(query.mock.calls.every(([sql]) => !String(sql).startsWith('UPDATE "ai_runs"'))).toBe(true);
   });
 });

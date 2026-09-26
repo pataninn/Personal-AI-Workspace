@@ -26,6 +26,8 @@ import { TypeOrmAiRunRepository } from '@/infrastructure/database/repositories/t
 import { TypeOrmSandboxCommandRepository } from '@/infrastructure/database/repositories/typeorm-sandbox-command-repository';
 import { TypeOrmProposedChangeSetRepository } from '@/infrastructure/database/repositories/typeorm-change-set-repository';
 import { TypeOrmProjectFactRepository } from '@/infrastructure/database/repositories/typeorm-project-fact-repository';
+import { TypeOrmProjectTaskRepository } from '@/infrastructure/database/repositories/typeorm-project-task-repository';
+import { TypeOrmTaskSuggestionRepository } from '@/infrastructure/database/repositories/task-suggestion-completion-writer';
 import { WorkspaceMutationGatewayAdapter } from '@/infrastructure/workspace/workspace-mutation-gateway';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { runStartupChecks } from '@/infrastructure/startup/startup-checks';
@@ -39,6 +41,7 @@ import { ListWorkspaceFilesUseCase, ReadWorkspaceTextUseCase, SearchWorkspaceTex
 import { StartupChecksError } from '@/shared/errors/app-error';
 import { createLogger, type AppLogger } from '@/shared/logging/logger';
 import { CreateProjectFactUseCase, DeleteProjectFactUseCase, ListProjectFactsUseCase, ReviewProjectFactUseCase, UpdateProjectFactUseCase } from '@/modules/memory';
+import { CreateProjectTaskUseCase, ListProjectTaskSuggestionsUseCase, ListProjectTasksUseCase, ReorderProjectTaskUseCase, ResolveProjectTaskSuggestionUseCase, UpdateProjectTaskUseCase } from '@/modules/tasks';
 
 export interface Application {
   readonly app: Express;
@@ -80,8 +83,10 @@ export async function createApplication(
     const sessionRepository = new TypeOrmSessionRepository(dataSource);
     const projectRepository = new TypeOrmProjectRepository(dataSource);
     const projectFactRepository = new TypeOrmProjectFactRepository(dataSource);
+    const projectTaskRepository = new TypeOrmProjectTaskRepository(dataSource);
+    const taskSuggestionRepository = new TypeOrmTaskSuggestionRepository(dataSource);
     const conversationRepository = new TypeOrmConversationRepository(dataSource);
-    const aiRunRepository = new TypeOrmAiRunRepository(dataSource);
+    const aiRunRepository = new TypeOrmAiRunRepository(dataSource, taskSuggestionRepository);
     const commandRepository = new TypeOrmSandboxCommandRepository(dataSource);
     const changeSetRepository = new TypeOrmProposedChangeSetRepository(dataSource);
     const workspaceBoundary = new WorkspaceBoundaryAdapter({
@@ -175,6 +180,7 @@ export async function createApplication(
           decideEgress: new DecideEgressUseCase(aiRunRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot, projectFactRepository),
           getProposedChangeSet: new GetProposedChangeSetUseCase(changeSetRepository),
           decideProposedChangeSet: new DecideProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository, workspaceMutationGateway),
+          taskSuggestionsForRun: taskSuggestionRepository,
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },
@@ -203,6 +209,17 @@ export async function createApplication(
           updateFact: new UpdateProjectFactUseCase(projectRepository, projectFactRepository),
           reviewFact: new ReviewProjectFactUseCase(projectRepository, projectFactRepository),
           deleteFact: new DeleteProjectFactUseCase(projectRepository, projectFactRepository),
+          appOrigin: config.appOrigin,
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
+        projectTasks: {
+          getSession,
+          listTasks: new ListProjectTasksUseCase(projectRepository, projectTaskRepository),
+          createTask: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository),
+          updateTask: new UpdateProjectTaskUseCase(projectRepository, projectTaskRepository),
+          reorderTask: new ReorderProjectTaskUseCase(projectRepository, projectTaskRepository),
+          listSuggestions: new ListProjectTaskSuggestionsUseCase(projectRepository, projectTaskRepository),
+          resolveSuggestion: new ResolveProjectTaskSuggestionUseCase(projectRepository, projectTaskRepository),
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         }

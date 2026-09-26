@@ -101,6 +101,9 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
         getConversation(projectId, conversationId)
       ]);
       setSnapshot(run);
+      if (run.status === 'succeeded' && (run.taskSuggestions?.length ?? 0) > 0 && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('personal-ai:task-suggestions-refresh', { detail: { conversationId } }));
+      }
       setConversation(history);
       onConversationReconciledRef.current?.(history);
       const linkedMessageId = run.assistant?.messageId;

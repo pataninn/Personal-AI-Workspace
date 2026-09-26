@@ -11,6 +11,8 @@ import { DecideProposedChangeSetUseCase, GetProposedChangeSetUseCase } from '@/m
 import type { ProposedChangeSet } from '@/modules/ai-runs/domain/change-types';
 import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
+import type { ProjectTaskSuggestion } from '@/modules/tasks/domain/project-task';
+import type { IProjectTaskSuggestionQuery } from '@/modules/tasks/repositories/task-suggestion-query';
 
 const createRunSchema = z.object({
   conversationId: z.string(),
@@ -41,6 +43,7 @@ export interface AiRunRouterDependencies {
   readonly decideEgress: DecideEgressUseCase;
   readonly getProposedChangeSet?: GetProposedChangeSetUseCase;
   readonly decideProposedChangeSet?: DecideProposedChangeSetUseCase;
+  readonly taskSuggestionsForRun?: IProjectTaskSuggestionQuery;
   readonly appOrigin: string;
   readonly clearSessionCookie: (response: Response) => void;
 }
@@ -112,7 +115,10 @@ function getHandler(dependencies: AiRunRouterDependencies): RequestHandler {
       }
       const runId = parseUuid(routeParam(request.params.runId), new AiRunNotFoundError());
       const run = await dependencies.getAiRun.execute({ ownerId, runId });
-      sendData(response, serializeSnapshot(run));
+      const taskSuggestions = dependencies.taskSuggestionsForRun
+        ? await dependencies.taskSuggestionsForRun.listForRun(ownerId, run.projectId, run.id)
+        : [];
+      sendData(response, { ...serializeSnapshot(run), taskSuggestions: taskSuggestions.map(serializeTaskSuggestion) });
     } catch (error: unknown) {
       next(error);
     }
@@ -234,6 +240,23 @@ function serializeSnapshot(run: AiRun): Record<string, unknown> {
       }
     } : {}),
     ...(run.runtimeKind && run.sandboxReady ? { runtime: { kind: run.runtimeKind, sandboxReady: true } } : {})
+  };
+}
+
+function serializeTaskSuggestion(suggestion: ProjectTaskSuggestion): Record<string, unknown> {
+  return {
+    id: suggestion.id,
+    projectId: suggestion.projectId,
+    runId: suggestion.runId,
+    conversationId: suggestion.conversationId,
+    title: suggestion.title,
+    details: suggestion.details,
+    status: suggestion.status,
+    version: suggestion.version,
+    taskId: suggestion.taskId,
+    source: suggestion.source,
+    createdAt: suggestion.createdAt.toISOString(),
+    resolvedAt: suggestion.resolvedAt?.toISOString() ?? null
   };
 }
 

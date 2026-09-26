@@ -125,6 +125,21 @@ describe('NvidiaHostedNimProvider', () => {
     ]);
   });
 
+  it('emits bounded task drafts only with successful structured completion', async () => {
+    const fetchImplementation = jest.fn(async (): Promise<Response> => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ message: 'Suggested one task.', taskSuggestions: [{ title: 'Update setup notes' }] }) } }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+
+    const events = await collect(provider.stream(request));
+
+    expect(events.at(-1)).toEqual({
+      type: 'completed',
+      text: 'Suggested one task.',
+      taskSuggestions: [{ title: 'Update setup notes', details: null }]
+    });
+  });
+
   it('fails closed when the provider rejects a request', async () => {
     const fetchImplementation = jest.fn(async (): Promise<Response> => new Response('provider detail with secret', { status: 422 }));
     const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });

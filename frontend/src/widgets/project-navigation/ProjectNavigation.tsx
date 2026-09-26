@@ -40,7 +40,10 @@ export function ProjectNavigation({ onNavigate }: ProjectNavigationProps): React
           <nav aria-label="Active projects" className="project-nav-list">
             {activeProjects.map((project) => <NavLink key={project.id} to={`/projects/${project.id}`} onClick={onNavigate} className="project-nav-item">{project.name}</NavLink>)}
           </nav>
-          {selectedProject ? <nav aria-label={`Selected project ${selectedProject.name}`} className="project-nav-memory"><NavLink data-testid={`project-memory-nav-${selectedProject.id}`} to={`/projects/${encodeURIComponent(selectedProject.id)}/memory`} onClick={onNavigate} className="project-nav-memory-item">Memory</NavLink></nav> : null}
+          {selectedProject ? <nav aria-label={`Selected project ${selectedProject.name}`} className="project-nav-memory">
+            <NavLink data-testid={`project-memory-nav-${selectedProject.id}`} to={`/projects/${encodeURIComponent(selectedProject.id)}/memory`} onClick={onNavigate} className="project-nav-memory-item">Memory</NavLink>
+            <NavLink data-testid={`project-tasks-nav-${selectedProject.id}`} to={`/projects/${encodeURIComponent(selectedProject.id)}/tasks`} onClick={onNavigate} className="project-nav-memory-item">Tasks</NavLink>
+          </nav> : null}
           {archivedProjects.length > 0 ? <p className="project-nav-archived">Archived: {archivedProjects.length}</p> : null}
         </>
       ) : null}

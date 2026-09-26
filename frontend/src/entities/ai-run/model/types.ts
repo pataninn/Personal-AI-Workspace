@@ -63,6 +63,23 @@ export interface AiRunSnapshot {
     readonly complete: boolean;
     readonly contentLength: number;
   };
+  readonly taskSuggestions?: readonly AiRunTaskSuggestion[];
+}
+
+/** Pending or resolved assistant drafts returned with an owned run snapshot. */
+export interface AiRunTaskSuggestion {
+  readonly id: string;
+  readonly projectId: string;
+  readonly runId: string;
+  readonly conversationId: string;
+  readonly title: string;
+  readonly details: string | null;
+  readonly status: 'pending' | 'accepted' | 'dismissed';
+  readonly version: number;
+  readonly taskId: string | null;
+  readonly source: { readonly kind: 'assistant'; readonly label: string };
+  readonly createdAt: string;
+  readonly resolvedAt: string | null;
 }
 
 export interface AiRunIntent extends AiRunSnapshot {

@@ -5,6 +5,7 @@ import { AppShell } from '@/widgets/app-shell';
 import { DashboardPage } from '@/pages/dashboard';
 import { ProjectWorkspacePage } from '@/pages/project-workspace';
 import { ProjectMemoryPage } from '@/pages/project-memory';
+import { ProjectTasksPage } from '@/pages/project-tasks';
 import { LoginPage } from '@/pages/login';
 import { NotFoundPage } from '@/pages/not-found';
 import { selectSessionErrorCode, selectSessionStatus } from '@/entities/user-session';
@@ -51,6 +52,7 @@ export const router = createBrowserRouter([
               { path: 'dashboard', element: <DashboardPage /> },
               { path: 'projects/:projectId', element: <ProjectWorkspacePage /> },
               { path: 'projects/:projectId/memory', element: <ProjectMemoryPage /> },
+              { path: 'projects/:projectId/tasks', element: <ProjectTasksPage /> },
               { path: 'projects/:projectId/conversations', element: <ProjectWorkspacePage /> },
               { path: 'projects/:projectId/conversations/:conversationId', element: <ProjectWorkspacePage /> },
               { path: '*', element: <NotFoundPage /> }

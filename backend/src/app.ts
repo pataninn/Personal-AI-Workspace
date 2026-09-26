@@ -27,6 +27,7 @@ import { SandboxCommandDomainError } from '@/modules/ai-runs/domain/command-erro
 import { ChangeSetDomainError } from '@/modules/ai-runs/domain/change-errors';
 import { ProjectFactDomainError } from '@/modules/memory/domain/project-fact-errors';
 import { createProjectFactRouter, type ProjectFactRouterDependencies } from '@/modules/memory';
+import { createProjectTaskRouter, ProjectTaskDomainError, type ProjectTaskRouterDependencies } from '@/modules/tasks';
 
 export interface CreateAppOptions {
   readonly logger: AppLogger;
@@ -41,6 +42,7 @@ export interface CreateAppOptions {
   readonly sandboxCommands?: SandboxCommandRouterDependencies;
   readonly aiRunChat?: AiRunChatRouterDependencies;
   readonly projectFacts?: ProjectFactRouterDependencies;
+  readonly projectTasks?: ProjectTaskRouterDependencies;
 }
 
 const requestIdMiddleware: RequestHandler = (request, response, next) => {
@@ -113,6 +115,9 @@ function toAppError(error: unknown): AppError | null {
   if (error instanceof ProjectFactDomainError) {
     return new AppError(error.code, error.statusCode, error.message, error.details);
   }
+  if (error instanceof ProjectTaskDomainError) {
+    return new AppError(error.code, error.statusCode, error.message, error.details);
+  }
   if (isMalformedJsonError(error)) {
     return new AppError('VALIDATION_ERROR', 400, 'The request body is not valid JSON.');
   }
@@ -182,6 +187,9 @@ export function createApp(options: CreateAppOptions): Express {
   }
   if (options.projectFacts) {
     app.use('/api/v1/projects/:projectId/facts', createProjectFactRouter(options.projectFacts));
+  }
+  if (options.projectTasks) {
+    app.use('/api/v1/projects/:projectId', createProjectTaskRouter(options.projectTasks));
   }
 
   if (options.staticDirectory && existsSync(options.staticDirectory)) {

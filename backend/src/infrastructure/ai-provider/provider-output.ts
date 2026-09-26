@@ -9,7 +9,11 @@ const MAX_STRUCTURED_BYTES = 128 * 1024;
 const MAX_CHANGES = 100;
 const MAX_PATH_LENGTH = 512;
 const MAX_CONTENT_BYTES = 128 * 1024;
+const MAX_TASK_SUGGESTIONS = 5;
+const MAX_TASK_DETAILS_BYTES = 4096;
 const HASH_PATTERN = /^[0-9a-f]{64}$/u;
+const FORBIDDEN_TITLE_CONTROL = /[\u0000-\u001F\u007F]/u;
+const FORBIDDEN_DETAILS_CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u;
 
 const operationSchema = z.enum(['create', 'edit', 'overwrite', 'rename', 'delete']);
 const changeSchema = z.object({
@@ -30,16 +34,28 @@ const changeSchema = z.object({
     && (change.content === undefined || change.new === undefined || change.content === change.new);
 });
 
+const taskSuggestionSchema = z.object({
+  title: z.string(),
+  details: z.string().nullable().optional()
+}).strict();
+
 const envelopeSchema = z.object({
   message: z.string().max(MAX_OUTPUT_BYTES).optional(),
   text: z.string().max(MAX_OUTPUT_BYTES).optional(),
   changes: z.array(changeSchema).max(MAX_CHANGES).optional(),
-  proposedChanges: z.array(changeSchema).max(MAX_CHANGES).optional()
+  proposedChanges: z.array(changeSchema).max(MAX_CHANGES).optional(),
+  taskSuggestions: z.array(taskSuggestionSchema).max(MAX_TASK_SUGGESTIONS).optional()
 }).strict();
+
+export interface ParsedTaskSuggestion {
+  readonly title: string;
+  readonly details: string | null;
+}
 
 export interface ParsedProviderOutput {
   readonly text: string;
   readonly changes: readonly RuntimeChangeProposal[];
+  readonly taskSuggestions: readonly ParsedTaskSuggestion[];
 }
 
 export function parseProviderOutput(text: string): ParsedProviderOutput {
@@ -48,7 +64,7 @@ export function parseProviderOutput(text: string): ParsedProviderOutput {
   }
   const trimmed = text.trim();
   if (!trimmed.startsWith('{')) {
-    return { text: redactEgressText(text), changes: [] };
+    return { text: redactEgressText(text), changes: [], taskSuggestions: [] };
   }
   if (Buffer.byteLength(trimmed, 'utf8') > MAX_STRUCTURED_BYTES) {
     throw new ModelProviderOutputError();
@@ -69,8 +85,18 @@ export function parseProviderOutput(text: string): ParsedProviderOutput {
       throw new ModelProviderOutputError();
     }
   }
+  const taskSuggestions = (parsed.data.taskSuggestions ?? []).map((suggestion) => {
+    const title = suggestion.title.trim();
+    const details = suggestion.details?.trim() || null;
+    if (title.length === 0 || Array.from(title).length > 120 || FORBIDDEN_TITLE_CONTROL.test(title)
+      || (details !== null && (Buffer.byteLength(details, 'utf8') > MAX_TASK_DETAILS_BYTES || FORBIDDEN_DETAILS_CONTROL.test(details)))
+      || containsCredentialLikeValue(title) || (details !== null && containsCredentialLikeValue(details))) {
+      throw new ModelProviderOutputError();
+    }
+    return { title, details };
+  });
   const responseText = redactEgressText(parsed.data.message ?? parsed.data.text ?? '');
-  return { text: responseText, changes: changes.map(toRuntimeChangeProposal) };
+  return { text: responseText, changes: changes.map(toRuntimeChangeProposal), taskSuggestions };
 }
 
 function toRuntimeChangeProposal(change: z.infer<typeof changeSchema>): RuntimeChangeProposal {

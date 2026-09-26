@@ -11,6 +11,7 @@ import { hashText } from '@/modules/ai-runs/use-cases/manifest-builder';
 import { assertActiveAiRunProject } from '@/modules/ai-runs/use-cases/assert-ai-run-project';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { RuntimeChangeProposal } from '@/modules/ai-runs/domain/change-types';
+import type { TaskSuggestionDraft } from '@/modules/ai-runs/domain/task-suggestion-draft';
 
 export interface RuntimeCommandProposalPort {
   execute(input: {
@@ -151,7 +152,13 @@ export class StartAiRunUseCase {
       await this.finishFromEvent(run.ownerId, run.id, terminal, assistantText);
     } catch {
       const current = await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
-      await this.finish(current ?? run, 'review_required', 'The assistant run stopped, but the app could not confirm its final outcome. Refresh run status before retrying.');
+      if (terminal?.type === 'completed' && (terminal.taskSuggestions?.length ?? 0) > 0) {
+        // A suggestion write may have failed or its commit outcome may be uncertain.
+        // Keep the provider response out of a second completion transaction.
+        await this.markReview(run.id, run.ownerId, 'The assistant response needs review because its task suggestions could not be confirmed. Refresh run status before retrying.');
+      } else {
+        await this.finish(current ?? run, 'review_required', 'The assistant run stopped, but the app could not confirm its final outcome. Refresh run status before retrying.');
+      }
     } finally {
       await this.destroySafely(run);
     }
@@ -310,17 +317,17 @@ export class StartAiRunUseCase {
       : event.type === 'blocked' ? 'Run blocked by policy. This run was not completed.'
         : 'The assistant could not complete this run.';
     if (current) {
-      await this.finish(current, status, safeMessage, assistantText);
+      await this.finish(current, status, safeMessage, assistantText, event.type === 'completed' ? event.taskSuggestions ?? [] : []);
     }
   }
 
-  private async finish(run: AiRun, status: 'succeeded' | 'failed' | 'blocked' | 'review_required', safeMessage: string, assistantText = ''): Promise<void> {
+  private async finish(run: AiRun, status: 'succeeded' | 'failed' | 'blocked' | 'review_required', safeMessage: string, assistantText = '', taskSuggestions: readonly TaskSuggestionDraft[] = []): Promise<void> {
     const bounded = sanitizeAssistantText(assistantText, MAX_ASSISTANT_OUTPUT_BYTES);
     const providerTransmission = status === 'review_required' && run.providerTransmission !== 'transmitted_confirmed'
       ? 'unknown'
       : run.providerTransmission;
     let updated = this.aiRunRepository.completeRun
-      ? await this.aiRunRepository.completeRun({ ownerId: run.ownerId, runId: run.id, status, safeMessage, assistantText: bounded, assistantComplete: status === 'succeeded', cleanup: status === 'review_required' ? 'unknown' : 'complete', providerTransmission })
+      ? await this.aiRunRepository.completeRun({ ownerId: run.ownerId, runId: run.id, status, safeMessage, assistantText: bounded, assistantComplete: status === 'succeeded', cleanup: status === 'review_required' ? 'unknown' : 'complete', providerTransmission, ...(status === 'succeeded' && taskSuggestions.length > 0 ? { taskSuggestions } : {}) })
       : await this.completeLegacy(run, status, safeMessage, bounded);
     if (updated?.status === status && bounded && !updated.assistantMessageId && this.conversationRepository.addAssistantMessage) {
       const message = await this.conversationRepository.addAssistantMessage({ ownerId: run.ownerId, projectId: run.projectId, conversationId: run.conversationId, content: bounded, idempotencyKey: `run-assistant-${run.id}`, requestFingerprint: hashText(JSON.stringify({ runId: run.id, content: bounded })) });
@@ -368,7 +375,7 @@ export class StartAiRunUseCase {
 
   private async markReview(runId: string, ownerId: string, message: string): Promise<void> {
     const updated = this.aiRunRepository.markReviewRequired ? await this.aiRunRepository.markReviewRequired(ownerId, runId, message) : null;
-    if (updated) {
+    if (updated?.status === 'review_required') {
       this.publishTerminal(updated);
     }
   }

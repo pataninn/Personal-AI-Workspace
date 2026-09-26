@@ -206,6 +206,62 @@ describe('StartAiRunUseCase', () => {
     expect(completed.providerTransmission).toBe('transmitted_confirmed');
   });
 
+  it('passes validated task drafts only to successful run completion', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const completeRun = jest.spyOn(repository, 'completeRun');
+    const conversations = conversationRepository();
+    const runtime = new FakeAgentRuntime();
+    runtime.runOptions = { events: [
+      { type: 'provider.response_received' },
+      { type: 'completed', text: 'Two suggested next steps.', taskSuggestions: [
+        { title: 'Update setup notes', details: 'Document startup.' },
+        { title: 'Check tests', details: null }
+      ] }
+    ] };
+    const events = new InMemoryRunEventPublisher();
+    const run = await readyRun(repository);
+    const start = new StartAiRunUseCase(repository, conversations, runtime, events);
+
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-task-drafts-5-2' });
+    await waitForStatus(repository, run.id, 'succeeded');
+
+    expect(completeRun).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'succeeded',
+      taskSuggestions: [
+        { title: 'Update setup notes', details: 'Document startup.' },
+        { title: 'Check tests', details: null }
+      ]
+    }));
+    const persisted = await repository.listForRun(OWNER_ID, PROJECT_ID, run.id);
+    expect(persisted.map((suggestion) => suggestion.title)).toEqual(['Update setup notes', 'Check tests']);
+    expect(await repository.listForRun('00000000-0000-4000-8000-000000000000', PROJECT_ID, run.id)).toEqual([]);
+  });
+
+  it('marks a failed task-suggestion completion for review without a success event or second provider call', async () => {
+    const repository = new InMemoryAiRunRepository();
+    jest.spyOn(repository, 'completeRun').mockRejectedValue(new Error('write failed'));
+    const conversations = conversationRepository();
+    const runtime = new FakeAgentRuntime();
+    runtime.runOptions = { events: [
+      { type: 'provider.response_received' },
+      { type: 'completed', text: 'Suggested one task.', taskSuggestions: [{ title: 'Update notes', details: null }] }
+    ] };
+    const events = new InMemoryRunEventPublisher();
+    const published: string[] = [];
+    const run = await readyRun(repository);
+    events.subscribe(run.id, (event) => { published.push(event.type); });
+    const start = new StartAiRunUseCase(repository, conversations, runtime, events);
+
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-task-write-failure-5-2' });
+    const reviewed = await waitForStatus(repository, run.id, 'review_required');
+
+    expect(reviewed.assistantMessageId).toBeUndefined();
+    expect(conversations.assistantMessages).toHaveLength(0);
+    expect(runtime.startedRuns).toHaveLength(1);
+    expect(published).not.toContain('run.completed');
+    expect(published).toContain('run.needs_manual_review');
+  });
+
   it('requires review when provider transmission starts without a response confirmation', async () => {
     const repository = new InMemoryAiRunRepository();
     const conversations = conversationRepository();

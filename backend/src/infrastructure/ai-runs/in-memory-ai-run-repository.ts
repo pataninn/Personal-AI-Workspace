@@ -15,14 +15,18 @@ import type {
 } from '@/modules/ai-runs/domain/ai-run-types';
 import type { CancelRunUpdate, CompleteRunUpdate, RunMutationResult, StartRunUpdate } from '@/modules/ai-runs/repositories/ai-run-repository';
 import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-repository';
+import type { ProjectTaskSuggestion } from '@/modules/tasks/domain/project-task';
+import { normalizeTaskSuggestionDrafts } from '@/modules/tasks/domain/project-task-validation';
+import type { IProjectTaskSuggestionQuery } from '@/modules/tasks/repositories/task-suggestion-query';
 
 interface IdempotentRunRecord {
   readonly fingerprint: string;
   readonly resourceId: string;
 }
 
-export class InMemoryAiRunRepository implements IAiRunRepository {
+export class InMemoryAiRunRepository implements IAiRunRepository, IProjectTaskSuggestionQuery {
   private readonly runs = new Map<string, AiRun>();
+  private readonly taskSuggestions = new Map<string, readonly ProjectTaskSuggestion[]>();
   private readonly idempotency = new Map<string, IdempotentRunRecord>();
   private readonly locks = new Map<string, Promise<void>>();
 
@@ -71,6 +75,11 @@ export class InMemoryAiRunRepository implements IAiRunRepository {
   public async findByIdForOwner(ownerId: string, runId: string): Promise<AiRun | null> {
     const run = this.runs.get(runId);
     return run?.ownerId === ownerId ? run : null;
+  }
+
+  public async listForRun(ownerId: string, projectId: string, runId: string): Promise<readonly ProjectTaskSuggestion[]> {
+    const run = this.runs.get(runId);
+    return run?.ownerId === ownerId && run.projectId === projectId ? this.taskSuggestions.get(runId) ?? [] : [];
   }
 
   public async recordDecision(input: DecisionUpdate): Promise<DecisionResult> {
@@ -226,6 +235,22 @@ export class InMemoryAiRunRepository implements IAiRunRepository {
         return run;
       }
       const text = input.assistantText ?? '';
+      const drafts = input.status === 'succeeded' ? normalizeTaskSuggestionDrafts(input.taskSuggestions ?? []) : [];
+      const now = new Date();
+      const suggestions: readonly ProjectTaskSuggestion[] = drafts.map((draft) => ({
+        id: randomUUID(),
+        projectId: run.projectId,
+        runId: run.id,
+        conversationId: run.conversationId,
+        title: draft.title,
+        details: draft.details ?? null,
+        status: 'pending',
+        version: 1,
+        taskId: null,
+        source: { kind: 'assistant', label: 'Suggested by the assistant' },
+        createdAt: now,
+        resolvedAt: null
+      }));
       const assistantFields = input.assistantText === undefined
         ? {}
         : { assistantComplete: input.assistantComplete ?? (input.status === 'succeeded'), assistantContentLength: text.length };
@@ -240,6 +265,9 @@ export class InMemoryAiRunRepository implements IAiRunRepository {
         updatedAt: new Date()
       };
       this.runs.set(updated.id, updated);
+      if (suggestions.length > 0) {
+        this.taskSuggestions.set(updated.id, suggestions);
+      }
       return updated;
     });
   }
@@ -268,7 +296,7 @@ export class InMemoryAiRunRepository implements IAiRunRepository {
       if (!['queued', 'running', 'waiting_approval', 'cancel_requested'].includes(run.status)) {
         return run;
       }
-      const updated: AiRun = { ...run, status: 'review_required', phase: 'review', cleanup: 'unknown', providerTransmission: 'unknown', safeMessage, updatedAt: new Date() };
+      const updated: AiRun = { ...run, status: 'review_required', phase: 'review', cleanup: 'unknown', providerTransmission: run.providerTransmission === 'transmitted_confirmed' ? 'transmitted_confirmed' : 'unknown', safeMessage, updatedAt: new Date() };
       this.runs.set(runId, updated);
       return updated;
     });
