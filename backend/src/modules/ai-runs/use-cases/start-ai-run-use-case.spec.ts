@@ -237,6 +237,24 @@ describe('StartAiRunUseCase', () => {
     expect(await repository.listForRun('00000000-0000-4000-8000-000000000000', PROJECT_ID, run.id)).toEqual([]);
   });
 
+  it('persists only provider-reported token counts from optional usage metadata', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const conversations = conversationRepository();
+    const runtime = new FakeAgentRuntime();
+    runtime.runOptions = { events: [
+      { type: 'provider.response_received' },
+      { type: 'provider.usage', usage: { promptTokens: 120, completionTokens: 45, totalTokens: 165 } },
+      { type: 'completed', text: 'Usage was reported.' }
+    ] };
+    const run = await readyRun(repository);
+    const start = new StartAiRunUseCase(repository, conversations, runtime, new InMemoryRunEventPublisher());
+
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-usage-report-6-1' });
+    const completed = await waitForStatus(repository, run.id, 'succeeded');
+
+    expect(completed.providerUsage).toEqual({ promptTokens: 120, completionTokens: 45, totalTokens: 165 });
+  });
+
   it('marks a failed task-suggestion completion for review without a success event or second provider call', async () => {
     const repository = new InMemoryAiRunRepository();
     jest.spyOn(repository, 'completeRun').mockRejectedValue(new Error('write failed'));

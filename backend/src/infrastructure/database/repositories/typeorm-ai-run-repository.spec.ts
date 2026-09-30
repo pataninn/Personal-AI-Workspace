@@ -62,6 +62,49 @@ function row(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 }
 
 describe('TypeOrmAiRunRepository', () => {
+  it('lists bounded project activity with owner/project scope, stable cursor ordering, and safe usage counts', async () => {
+    const projectId = '33333333-3333-4333-8333-333333333333';
+    const activityRow = {
+      ...row({ provider_prompt_tokens: '14', provider_completion_tokens: null, provider_total_tokens: '14' }),
+      activity_change_status: 'applied',
+      activity_change_operation_count: '2',
+      activity_change_applied_count: '1',
+      activity_change_skipped_count: '1',
+      activity_change_failed_count: '0',
+      activity_change_backup_count: '1'
+    };
+    const query = jest.fn().mockResolvedValue([activityRow]);
+    const repository = new TypeOrmAiRunRepository({ query } as unknown as DataSource);
+
+    const result = await repository.listActivityForProjectOwner({
+      ownerId: OWNER_ID,
+      projectId,
+      filter: 'attention',
+      limit: 3,
+      cursor: { createdAt: new Date('2026-09-15T12:30:00.000Z'), id: RUN_ID }
+    });
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0]?.[0]).not.toMatch(/\bCOUNT\s*\(/iu);
+    expect(query.mock.calls[0]?.[0]).toContain('r."owner_id" = $1 AND r."project_id" = $2');
+    expect(query.mock.calls[0]?.[0]).toContain('r."created_at" DESC, r."id" ASC');
+    expect(query.mock.calls[0]?.[1]).toEqual([OWNER_ID, projectId, new Date('2026-09-15T12:30:00.000Z'), RUN_ID, 4]);
+    expect(result.records[0]?.run.providerUsage).toEqual({ promptTokens: 14, totalTokens: 14 });
+    expect(result.records[0]?.changeSet).toEqual({ status: 'applied', operationCount: 2, appliedCount: 1, skippedCount: 1, failedCount: 0, backupCount: 1 });
+  });
+
+  it('stores provider usage with owner-scoped nullable count fields', async () => {
+    const updated = row({ provider_prompt_tokens: '20', provider_completion_tokens: '4', provider_total_tokens: '24' });
+    const query = jest.fn().mockResolvedValue([updated]);
+    const repository = new TypeOrmAiRunRepository({ query } as unknown as DataSource);
+
+    const result = await repository.recordProviderUsage(OWNER_ID, RUN_ID, { promptTokens: 20, completionTokens: 4, totalTokens: 24 });
+
+    expect(query.mock.calls[0]?.[0]).toContain('COALESCE("provider_prompt_tokens", $1::bigint)');
+    expect(query.mock.calls[0]?.[1]).toEqual([20, 4, 24, OWNER_ID, RUN_ID]);
+    expect(result?.providerUsage).toEqual({ promptTokens: 20, completionTokens: 4, totalTokens: 24 });
+  });
+
   it('records confirmed provider transmission with an enum cast and a narrow update', async () => {
     const updated = row({ status: 'running', provider_transmission: 'transmitted_confirmed' });
     const query = jest.fn().mockResolvedValue([[updated], 1]);

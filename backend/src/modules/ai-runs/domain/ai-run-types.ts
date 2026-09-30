@@ -21,6 +21,12 @@ export type CleanupStatus = 'not_started' | 'complete' | 'unknown';
 
 export type ProviderTransmissionStatus = 'not_started' | 'not_started_confirmed' | 'transmitted_confirmed' | 'unknown';
 
+export interface ProviderTokenUsage {
+  readonly promptTokens?: number;
+  readonly completionTokens?: number;
+  readonly totalTokens?: number;
+}
+
 export interface EgressFileEntry {
   readonly relativePath: string;
   readonly sourceHash: string;
@@ -88,6 +94,7 @@ export interface AiRun {
   readonly assistantMessageId?: string;
   readonly assistantComplete?: boolean;
   readonly assistantContentLength?: number;
+  readonly providerUsage?: ProviderTokenUsage;
   readonly startIdempotencyKey?: string;
   readonly startFingerprint?: string;
   readonly cancelIdempotencyKey?: string;

@@ -13,6 +13,7 @@ import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
 import type { ProjectTaskSuggestion } from '@/modules/tasks/domain/project-task';
 import type { IProjectTaskSuggestionQuery } from '@/modules/tasks/repositories/task-suggestion-query';
+import type { GetAiRunActivityUseCase, ListAiRunActivityUseCase } from '@/modules/ai-runs/use-cases/activity-use-cases';
 
 const createRunSchema = z.object({
   conversationId: z.string(),
@@ -44,6 +45,8 @@ export interface AiRunRouterDependencies {
   readonly getProposedChangeSet?: GetProposedChangeSetUseCase;
   readonly decideProposedChangeSet?: DecideProposedChangeSetUseCase;
   readonly taskSuggestionsForRun?: IProjectTaskSuggestionQuery;
+  readonly listActivity?: ListAiRunActivityUseCase;
+  readonly getActivity?: GetAiRunActivityUseCase;
   readonly appOrigin: string;
   readonly clearSessionCookie: (response: Response) => void;
 }
@@ -68,6 +71,49 @@ function parseUuid(value: string, error: Error): string {
     throw error;
   }
   return value;
+}
+
+function queryValue(value: unknown): unknown {
+  return typeof value === 'string' ? value : value === undefined ? undefined : '';
+}
+
+function listActivityHandler(dependencies: AiRunRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const ownerId = request.auth?.principal.id;
+      if (!ownerId || !dependencies.listActivity) {
+        next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
+        return;
+      }
+      const projectId = parseUuid(routeParam(request.params.projectId), new AiRunNotFoundError());
+      const result = await dependencies.listActivity.execute({
+        ownerId,
+        projectId,
+        limit: queryValue(request.query.limit),
+        cursor: queryValue(request.query.cursor),
+        filter: queryValue(request.query.filter)
+      });
+      sendData(response, result);
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
+function activityDetailHandler(dependencies: AiRunRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const ownerId = request.auth?.principal.id;
+      if (!ownerId || !dependencies.getActivity) {
+        next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
+        return;
+      }
+      const runId = parseUuid(routeParam(request.params.runId), new AiRunNotFoundError());
+      sendData(response, await dependencies.getActivity.execute({ ownerId, runId }));
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
 }
 
 function requiredIdempotencyKey(request: Parameters<RequestHandler>[0]): string {
@@ -361,6 +407,12 @@ function serializeProposedChangeSet(changeSet: ProposedChangeSet): Record<string
 export function createAiRunRouter(dependencies: AiRunRouterDependencies): Router {
   const router = Router();
   const authenticate = authenticateRequest(dependencies.getSession, dependencies.clearSessionCookie);
+  if (dependencies.listActivity) {
+    router.get('/projects/:projectId/ai-runs', authenticate, listActivityHandler(dependencies));
+  }
+  if (dependencies.getActivity) {
+    router.get('/ai-runs/:runId/activity', authenticate, activityDetailHandler(dependencies));
+  }
   router.post('/projects/:projectId/ai-runs', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, createHandler(dependencies));
   router.get('/ai-runs/:runId', authenticate, getHandler(dependencies));
   router.get('/ai-runs/:runId/egress-manifest', authenticate, manifestHandler(dependencies));

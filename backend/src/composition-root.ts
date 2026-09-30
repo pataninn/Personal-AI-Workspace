@@ -42,6 +42,7 @@ import { StartupChecksError } from '@/shared/errors/app-error';
 import { createLogger, type AppLogger } from '@/shared/logging/logger';
 import { CreateProjectFactUseCase, DeleteProjectFactUseCase, ListProjectFactsUseCase, ReviewProjectFactUseCase, UpdateProjectFactUseCase } from '@/modules/memory';
 import { CreateProjectTaskUseCase, ListProjectTaskSuggestionsUseCase, ListProjectTasksUseCase, ReorderProjectTaskUseCase, ResolveProjectTaskSuggestionUseCase, UpdateProjectTaskUseCase } from '@/modules/tasks';
+import { GetAiRunActivityUseCase, ListAiRunActivityUseCase } from '@/modules/ai-runs/use-cases/activity-use-cases';
 
 export interface Application {
   readonly app: Express;
@@ -181,6 +182,8 @@ export async function createApplication(
           getProposedChangeSet: new GetProposedChangeSetUseCase(changeSetRepository),
           decideProposedChangeSet: new DecideProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository, workspaceMutationGateway),
           taskSuggestionsForRun: taskSuggestionRepository,
+          listActivity: new ListAiRunActivityUseCase(projectRepository, aiRunRepository),
+          getActivity: new GetAiRunActivityUseCase(aiRunRepository, changeSetRepository, conversationRepository),
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },

@@ -181,6 +181,18 @@ export class StartAiRunUseCase {
       }
       return { assistantText, terminal: false };
     }
+    if (event.type === 'provider.usage') {
+      const usage = safeProviderUsage(event.usage);
+      if (Object.keys(usage).length > 0) {
+        const recorded = this.aiRunRepository.recordProviderUsage
+          ? await this.aiRunRepository.recordProviderUsage(run.ownerId, run.id, usage)
+          : await this.recordLegacyProviderUsage(run, usage);
+        if (!recorded) {
+          return { assistantText, terminal: false, suppressed: true };
+        }
+      }
+      return { assistantText, terminal: false };
+    }
     if (event.type === 'assistant.delta') {
       if (Buffer.byteLength(event.text, 'utf8') > MAX_ASSISTANT_DELTA_BYTES || assistantTextExceedsLimit(`${assistantText}${event.text}`)) {
         return { assistantText: sanitizeAssistantText(`${assistantText}${event.text}`), terminal: false, outputLimitExceeded: true };
@@ -259,6 +271,24 @@ export class StartAiRunUseCase {
       return { assistantText, terminal: true };
     }
     return { assistantText, terminal: false };
+  }
+
+  private async recordLegacyProviderUsage(run: AiRun, usage: NonNullable<AiRun['providerUsage']>): Promise<AiRun | null> {
+    const current = await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
+    if (!current) {
+      return null;
+    }
+    const prior = current.providerUsage ?? {};
+    const next: AiRun = {
+      ...current,
+      providerUsage: {
+        ...(prior.promptTokens !== undefined ? { promptTokens: prior.promptTokens } : usage.promptTokens !== undefined ? { promptTokens: usage.promptTokens } : {}),
+        ...(prior.completionTokens !== undefined ? { completionTokens: prior.completionTokens } : usage.completionTokens !== undefined ? { completionTokens: usage.completionTokens } : {}),
+        ...(prior.totalTokens !== undefined ? { totalTokens: prior.totalTokens } : usage.totalTokens !== undefined ? { totalTokens: usage.totalTokens } : {})
+      }
+    };
+    await this.aiRunRepository.save(next);
+    return next;
   }
 
   private async projectCommand(run: AiRun, event: Extract<RuntimeInferenceEvent, { readonly type: 'tool.proposed' }>): Promise<boolean> {
@@ -421,6 +451,14 @@ export class StartAiRunUseCase {
   private publish(runId: string, type: Parameters<IRunEventPublisher['publish']>[0]['type'], payload: Readonly<Record<string, unknown>>): void {
     this.events.publish({ runId, type, payload });
   }
+}
+
+function safeProviderUsage(value: NonNullable<AiRun['providerUsage']>): NonNullable<AiRun['providerUsage']> {
+  return {
+    ...(Number.isSafeInteger(value.promptTokens) && (value.promptTokens ?? -1) >= 0 ? { promptTokens: value.promptTokens } : {}),
+    ...(Number.isSafeInteger(value.completionTokens) && (value.completionTokens ?? -1) >= 0 ? { completionTokens: value.completionTokens } : {}),
+    ...(Number.isSafeInteger(value.totalTokens) && (value.totalTokens ?? -1) >= 0 ? { totalTokens: value.totalTokens } : {})
+  };
 }
 
 function isStopState(status: AiRun['status']): boolean {

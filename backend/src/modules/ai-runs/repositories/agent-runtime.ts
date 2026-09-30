@@ -1,4 +1,4 @@
-import type { EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
+import type { EgressManifest, ProviderTokenUsage } from '@/modules/ai-runs/domain/ai-run-types';
 import type { CommandLimits, CommandResult } from '@/modules/ai-runs/domain/command-types';
 import type { RuntimeChangeProposal } from '@/modules/ai-runs/domain/change-types';
 import type { TaskSuggestionDraft } from '@/modules/ai-runs/domain/task-suggestion-draft';
@@ -34,6 +34,7 @@ export type RuntimeInferenceEvent =
   | { readonly type: 'started' }
   | { readonly type: 'provider.request_started' }
   | { readonly type: 'provider.response_received' }
+  | { readonly type: 'provider.usage'; readonly usage: ProviderTokenUsage }
   | { readonly type: 'assistant.delta'; readonly text: string }
   | { readonly type: 'assistant.message.completed'; readonly text: string }
   | { readonly type: 'tool.proposed'; readonly proposal: RuntimeCommandProposalInput }

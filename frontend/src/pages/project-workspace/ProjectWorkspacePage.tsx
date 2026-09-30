@@ -58,6 +58,12 @@ export function ProjectWorkspacePage(): React.JSX.Element {
         </div>
         <Button type="button" variant={isArchived ? 'primary' : 'destructive'} data-testid={isArchived ? 'project-restore-trigger' : 'project-archive-trigger'} onClick={() => setActionProject(project)}>{isArchived ? 'Restore project' : 'Archive project'}</Button>
       </header>
+      <nav className="project-section-nav" aria-label="Project sections">
+        <Link aria-current="page" to={`/projects/${encodeURIComponent(project.id)}`}>Workspace</Link>
+        <Link to={`/projects/${encodeURIComponent(project.id)}/memory`}>Memory</Link>
+        <Link to={`/projects/${encodeURIComponent(project.id)}/tasks`}>Tasks</Link>
+        <Link data-testid="project-activity-link" to={`/projects/${encodeURIComponent(project.id)}/activity`}>Activity</Link>
+      </nav>
       <Card className="project-boundary-card" data-testid="project-boundary-card">
         <h2>Authoritative workspace boundary</h2>
         <p>The app can use only this project folder inside the configured local workspace. The server checks the boundary before each project operation. The root is fixed after creation; archive this project and create a new one to choose a different root.</p>

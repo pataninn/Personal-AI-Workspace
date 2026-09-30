@@ -1,4 +1,4 @@
-import type { EgressManifest, EgressProjectFact } from '@/modules/ai-runs/domain/ai-run-types';
+import type { EgressManifest, EgressProjectFact, ProviderTokenUsage } from '@/modules/ai-runs/domain/ai-run-types';
 import type { RuntimeChangeProposal } from '@/modules/ai-runs/domain/change-types';
 import type { TaskSuggestionDraft } from '@/modules/ai-runs/domain/task-suggestion-draft';
 
@@ -25,6 +25,7 @@ export type ModelProviderEvent =
   | { readonly type: 'started' }
   | { readonly type: 'provider.request_started' }
   | { readonly type: 'provider.response_received' }
+  | { readonly type: 'provider.usage'; readonly usage: ProviderTokenUsage }
   | { readonly type: 'assistant.delta'; readonly text: string }
   | { readonly type: 'assistant.message.completed'; readonly text: string }
   | { readonly type: 'changes.proposed'; readonly changes: readonly RuntimeChangeProposal[] }

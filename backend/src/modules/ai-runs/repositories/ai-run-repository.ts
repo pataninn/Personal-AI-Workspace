@@ -6,6 +6,7 @@ import type {
   DecisionUpdate
 } from '@/modules/ai-runs/domain/ai-run-types';
 import type { TaskSuggestionDraft } from '@/modules/ai-runs/domain/task-suggestion-draft';
+import type { AiRunActivityRecordPage, ListAiRunActivityInput } from '@/modules/ai-runs/domain/activity-types';
 
 export interface StartRunUpdate {
   readonly ownerId: string;
@@ -30,6 +31,7 @@ export interface CompleteRunUpdate {
   readonly assistantComplete?: boolean;
   readonly cleanup?: AiRun['cleanup'];
   readonly providerTransmission?: AiRun['providerTransmission'];
+  readonly providerUsage?: AiRun['providerUsage'];
   readonly taskSuggestions?: readonly TaskSuggestionDraft[];
 }
 
@@ -57,4 +59,6 @@ export interface IAiRunRepository {
    * transitions remain outside the callback.
    */
   readonly withRunProjection?: (ownerId: string, runId: string, projection: (run: AiRun) => void) => Promise<boolean>;
+  readonly listActivityForProjectOwner?: (input: ListAiRunActivityInput) => Promise<AiRunActivityRecordPage>;
+  readonly recordProviderUsage?: (ownerId: string, runId: string, usage: NonNullable<AiRun['providerUsage']>) => Promise<AiRun | null>;
 }

@@ -86,6 +86,7 @@ describe('NvidiaHostedNimProvider', () => {
       expect(body.max_tokens).toBe(4096);
       expect(body.reasoning_effort).toBe('none');
       expect(body.chat_template_kwargs.force_nonempty_content).toBe(true);
+      expect(body).not.toHaveProperty('stream_options');
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ message: 'Done', changes: [] }) } }] }), {
         status: 200,
         headers: { 'content-type': 'application/json' }
@@ -123,6 +124,32 @@ describe('NvidiaHostedNimProvider', () => {
       { type: 'assistant.message.completed', text: 'hello world' },
       { type: 'completed', text: 'hello world' }
     ]);
+  });
+
+  it('accepts optional streamed usage metadata and ignores unsafe count values', async () => {
+    const fetchImplementation = jest.fn(async (): Promise<Response> => new Response(
+      'data: {"choices":[{"delta":{"content":"Usage captured."}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":14,"completion_tokens":-1,"total_tokens":"18"}}\n\ndata: [DONE]\n\n',
+      { status: 200, headers: { 'content-type': 'text/event-stream' } }
+    ));
+    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+
+    const events = await collect(provider.stream(request));
+
+    expect(events).toContainEqual({ type: 'provider.usage', usage: { promptTokens: 14 } });
+    expect(events.at(-1)).toEqual({ type: 'completed', text: 'Usage captured.' });
+  });
+
+  it('preserves safe usage metadata when a non-stream provider response has invalid output', async () => {
+    const fetchImplementation = jest.fn(async (): Promise<Response> => new Response(JSON.stringify({
+      choices: [{ message: { content: 5 } }],
+      usage: { prompt_tokens: 18, completion_tokens: -2, total_tokens: 18 }
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+
+    const events = await collect(provider.stream(request));
+
+    expect(events).toContainEqual({ type: 'provider.usage', usage: { promptTokens: 18, totalTokens: 18 } });
+    expect(events.at(-1)).toMatchObject({ type: 'failed' });
   });
 
   it('emits bounded task drafts only with successful structured completion', async () => {

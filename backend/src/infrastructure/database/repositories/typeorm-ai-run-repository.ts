@@ -8,6 +8,7 @@ import {
   AiRunStateConflictError
 } from '@/modules/ai-runs/domain/ai-run-errors';
 import type { AiRun, CreateAiRunRecord, DecisionResult, DecisionUpdate, EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
+import type { AiRunActivityRecordPage, ListAiRunActivityInput } from '@/modules/ai-runs/domain/activity-types';
 import type { CancelRunUpdate, CompleteRunUpdate, IAiRunRepository, RunMutationResult, StartRunUpdate } from '@/modules/ai-runs/repositories/ai-run-repository';
 import { ProjectArchivedError } from '@/modules/conversations/domain/conversation-errors';
 import type { TaskSuggestionCompletionWriter } from '@/infrastructure/database/repositories/task-suggestion-completion-writer';
@@ -36,6 +37,9 @@ interface AiRunRow {
   readonly assistant_message_id: string | null;
   readonly assistant_complete: boolean;
   readonly assistant_content_length: number | null;
+  readonly provider_prompt_tokens?: number | string | null;
+  readonly provider_completion_tokens?: number | string | null;
+  readonly provider_total_tokens?: number | string | null;
   readonly start_idempotency_key: string | null;
   readonly start_fingerprint: string | null;
   readonly cancel_idempotency_key: string | null;
@@ -96,6 +100,73 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
     return rows[0] ? toAiRun(rows[0]) : null;
   }
 
+  public async listActivityForProjectOwner(input: ListAiRunActivityInput): Promise<AiRunActivityRecordPage> {
+    const parameters: unknown[] = [input.ownerId, input.projectId];
+    const filters: Record<ListAiRunActivityInput['filter'], string> = {
+      all: '',
+      active: ` AND r."status" IN ('pending_approval', 'staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested')`,
+      succeeded: ` AND r."status" = 'succeeded'`,
+      attention: ` AND r."status" IN ('failed', 'blocked', 'review_required')`,
+      cancelled: ` AND r."status" = 'cancelled'`,
+      rejected: ` AND r."status" = 'rejected'`
+    };
+    let cursorFilter = '';
+    if (input.cursor) {
+      parameters.push(input.cursor.createdAt, input.cursor.id);
+      cursorFilter = ` AND (r."created_at" < $3 OR (r."created_at" = $3 AND r."id" > $4))`;
+    }
+    parameters.push(input.limit + 1);
+    const rows: readonly (AiRunRow & {
+      readonly activity_change_status: string | null;
+      readonly activity_change_operation_count: number | string | null;
+      readonly activity_change_applied_count: number | string | null;
+      readonly activity_change_skipped_count: number | string | null;
+      readonly activity_change_failed_count: number | string | null;
+      readonly activity_change_backup_count: number | string | null;
+    })[] = await this.dataSource.query(
+      `SELECT r.*, cs."status" AS "activity_change_status",
+        jsonb_array_length(cs."operations") AS "activity_change_operation_count",
+        COALESCE((cs."result"->>'appliedCount')::bigint, 0) AS "activity_change_applied_count",
+        COALESCE((cs."result"->>'skippedCount')::bigint, 0) AS "activity_change_skipped_count",
+        COALESCE((cs."result"->>'failedCount')::bigint, 0) AS "activity_change_failed_count",
+        COALESCE((cs."result"->>'backupCount')::bigint, 0) AS "activity_change_backup_count"
+       FROM "ai_runs" r
+       LEFT JOIN "ai_run_change_sets" cs ON cs."owner_id" = r."owner_id" AND cs."project_id" = r."project_id" AND cs."run_id" = r."id"
+       WHERE r."owner_id" = $1 AND r."project_id" = $2${filters[input.filter]}${cursorFilter}
+       ORDER BY r."created_at" DESC, r."id" ASC LIMIT $${parameters.length}`,
+      parameters
+    );
+    const hasMore = rows.length > input.limit;
+    const page = hasMore ? rows.slice(0, input.limit) : rows;
+    return {
+      records: page.map((row) => ({
+        run: toAiRun(row),
+        changeSet: row.activity_change_status ? {
+          status: row.activity_change_status as NonNullable<AiRunActivityRecordPage['records'][number]['changeSet']>['status'],
+          operationCount: safeCountOrZero(row.activity_change_operation_count),
+          appliedCount: safeCountOrZero(row.activity_change_applied_count),
+          skippedCount: safeCountOrZero(row.activity_change_skipped_count),
+          failedCount: safeCountOrZero(row.activity_change_failed_count),
+          backupCount: safeCountOrZero(row.activity_change_backup_count)
+        } : null
+      })),
+      hasMore
+    };
+  }
+
+  public async recordProviderUsage(ownerId: string, runId: string, usage: NonNullable<AiRun['providerUsage']>): Promise<AiRun | null> {
+    const rows: readonly AiRunRow[] = await this.dataSource.query(
+      `UPDATE "ai_runs" SET
+        "provider_prompt_tokens" = COALESCE("provider_prompt_tokens", $1::bigint),
+        "provider_completion_tokens" = COALESCE("provider_completion_tokens", $2::bigint),
+        "provider_total_tokens" = COALESCE("provider_total_tokens", $3::bigint)
+       WHERE "owner_id" = $4 AND "id" = $5 RETURNING *`,
+      [usage.promptTokens ?? null, usage.completionTokens ?? null, usage.totalTokens ?? null, ownerId, runId]
+    );
+    const row = returningRow(rows);
+    return row ? toAiRun(row) : null;
+  }
+
   public async recordDecision(input: DecisionUpdate): Promise<DecisionResult> {
     const queryRunner = await this.startTransaction();
     try {
@@ -147,9 +218,9 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
 
   public async save(run: AiRun): Promise<void> {
     await this.dataSource.query(
-      `UPDATE "ai_runs" SET "status" = $1, "phase" = $2, "decision" = $3, "manifest_invalidated" = $4, "cleanup" = $5, "provider_transmission" = $6, "staging_item_count" = $7, "runtime_kind" = $8, "sandbox_ready" = $9, "runtime_reference" = $10, "request_message_id" = $11, "assistant_message_id" = $12, "assistant_complete" = $13, "assistant_content_length" = $14, "start_idempotency_key" = $15, "start_fingerprint" = $16, "cancel_idempotency_key" = $17, "cancel_fingerprint" = $18, "safe_message" = $19, "updated_at" = now()
-       WHERE "owner_id" = $20 AND "id" = $21`,
-      [run.status, run.phase, run.decision, run.manifestInvalidated, run.cleanup, run.providerTransmission, run.stagingItemCount, run.runtimeKind ?? null, run.sandboxReady, run.runtimeReference ?? null, run.requestMessageId ?? null, run.assistantMessageId ?? null, run.assistantComplete ?? false, run.assistantContentLength ?? null, run.startIdempotencyKey ?? null, run.startFingerprint ?? null, run.cancelIdempotencyKey ?? null, run.cancelFingerprint ?? null, run.safeMessage, run.ownerId, run.id]
+      `UPDATE "ai_runs" SET "status" = $1, "phase" = $2, "decision" = $3, "manifest_invalidated" = $4, "cleanup" = $5, "provider_transmission" = $6, "staging_item_count" = $7, "runtime_kind" = $8, "sandbox_ready" = $9, "runtime_reference" = $10, "request_message_id" = $11, "assistant_message_id" = $12, "assistant_complete" = $13, "assistant_content_length" = $14, "provider_prompt_tokens" = $15, "provider_completion_tokens" = $16, "provider_total_tokens" = $17, "start_idempotency_key" = $18, "start_fingerprint" = $19, "cancel_idempotency_key" = $20, "cancel_fingerprint" = $21, "safe_message" = $22, "updated_at" = now()
+       WHERE "owner_id" = $23 AND "id" = $24`,
+      [run.status, run.phase, run.decision, run.manifestInvalidated, run.cleanup, run.providerTransmission, run.stagingItemCount, run.runtimeKind ?? null, run.sandboxReady, run.runtimeReference ?? null, run.requestMessageId ?? null, run.assistantMessageId ?? null, run.assistantComplete ?? false, run.assistantContentLength ?? null, run.providerUsage?.promptTokens ?? null, run.providerUsage?.completionTokens ?? null, run.providerUsage?.totalTokens ?? null, run.startIdempotencyKey ?? null, run.startFingerprint ?? null, run.cancelIdempotencyKey ?? null, run.cancelFingerprint ?? null, run.safeMessage, run.ownerId, run.id]
     );
   }
 
@@ -461,6 +532,7 @@ async function assertProjectActive(queryRunner: QueryRunner, ownerId: string, pr
 
 function toAiRun(row: AiRunRow): AiRun {
   const manifest = parseManifest(row.manifest, row.manifest_hash);
+  const providerUsage = readProviderUsage(row);
   return {
     id: row.id,
     ownerId: row.owner_id,
@@ -484,6 +556,7 @@ function toAiRun(row: AiRunRow): AiRun {
     ...(row.assistant_message_id ? { assistantMessageId: row.assistant_message_id } : {}),
     ...(row.assistant_complete ? { assistantComplete: true } : {}),
     ...(typeof row.assistant_content_length === 'number' ? { assistantContentLength: row.assistant_content_length } : {}),
+    ...(providerUsage ? { providerUsage } : {}),
     ...(row.start_idempotency_key ? { startIdempotencyKey: row.start_idempotency_key } : {}),
     ...(row.start_fingerprint ? { startFingerprint: row.start_fingerprint } : {}),
     ...(row.cancel_idempotency_key ? { cancelIdempotencyKey: row.cancel_idempotency_key } : {}),
@@ -494,6 +567,40 @@ function toAiRun(row: AiRunRow): AiRun {
     createdAt: toDate(row.created_at),
     updatedAt: toDate(row.updated_at)
   };
+}
+
+function readProviderUsage(row: AiRunRow): AiRun['providerUsage'] {
+  const promptTokens = safeUsageCount(row.provider_prompt_tokens);
+  const completionTokens = safeUsageCount(row.provider_completion_tokens);
+  const totalTokens = safeUsageCount(row.provider_total_tokens);
+  if (promptTokens === null && completionTokens === null && totalTokens === null) {
+    return undefined;
+  }
+  return {
+    ...(promptTokens !== null ? { promptTokens } : {}),
+    ...(completionTokens !== null ? { completionTokens } : {}),
+    ...(totalTokens !== null ? { totalTokens } : {})
+  };
+}
+
+function safeCountOrZero(value: number | string | null | undefined): number {
+  return safeUsageCount(value) ?? 0;
+}
+
+function safeUsageCount(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+    return value;
+  }
+  if (typeof value === 'string' && /^\d+$/u.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+  return null;
 }
 
 const rowToAiRun = toAiRun;

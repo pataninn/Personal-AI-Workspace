@@ -170,6 +170,17 @@ export class TypeOrmConversationRepository implements IConversationRepository {
     };
   }
 
+  public async findMessageForOwner(input: { readonly ownerId: string; readonly projectId: string; readonly conversationId: string; readonly messageId: string }): Promise<Message | null> {
+    const rows: readonly MessageRow[] = await this.dataSource.query(
+      `SELECT m."id", m."conversation_id", m."role", m."sequence", m."content", m."created_at"
+       FROM "messages" m
+       INNER JOIN "conversations" c ON c."id" = m."conversation_id"
+       WHERE c."owner_id" = $1 AND c."project_id" = $2 AND c."id" = $3 AND m."id" = $4 LIMIT 1`,
+      [input.ownerId, input.projectId, input.conversationId, input.messageId]
+    );
+    return rows[0] ? toMessage(rows[0]) : null;
+  }
+
   public async create(input: CreateConversationRecord): Promise<PersistedResource<Conversation>> {
     const queryRunner = await this.startTransaction();
     try {

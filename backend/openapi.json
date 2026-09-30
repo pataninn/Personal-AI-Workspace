@@ -103,6 +103,24 @@
     },
     "/api/v1/projects/{projectId}/ai-runs": {
       "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
+      "get": {
+        "tags": ["AI runs"],
+        "summary": "List project AI activity and provider usage",
+        "operationId": "listProjectAiRunActivity",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 } },
+          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 2048 }, "description": "Opaque keyset cursor for stable createdAt descending, id ascending pagination." },
+          { "name": "filter", "in": "query", "required": false, "schema": { "type": "string", "enum": ["all", "active", "succeeded", "attention", "cancelled", "rejected"], "default": "all" } }
+        ],
+        "responses": {
+          "200": { "description": "Owner-scoped activity page with bounded, redacted run previews and nullable provider-reported token counts.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AiRunActivityListEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/ProjectNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
       "post": {
         "tags": ["AI runs"],
         "summary": "Create an AI run intent and provider disclosure",
@@ -136,6 +154,21 @@
         "security": [{ "sessionCookie": [] }],
         "responses": {
           "200": { "description": "Safe run lifecycle snapshot with persisted task suggestions for this run.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AiRunWithTaskSuggestionsEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/AiRunNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/ai-runs/{runId}/activity": {
+      "parameters": [{ "$ref": "#/components/parameters/AiRunIdPath" }],
+      "get": {
+        "tags": ["AI runs"],
+        "summary": "Read bounded, redacted run activity details",
+        "operationId": "getAiRunActivity",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Owner-scoped run details with redacted previews and file operation outcomes; context bodies, change previews, hashes, credentials, and recovery references are excluded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AiRunActivityDetailEnvelope" } } } },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "404": { "$ref": "#/components/responses/AiRunNotFound" },
           "500": { "$ref": "#/components/responses/InternalError" }
@@ -1112,6 +1145,14 @@
       "AiRunIntent": { "type": "object", "required": ["run", "manifest"], "properties": { "run": { "$ref": "#/components/schemas/AiRunSnapshot" }, "manifest": { "$ref": "#/components/schemas/EgressManifest" } }, "additionalProperties": false },
       "AiRunEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunSnapshot" }, "error": { "type": "null" } }, "additionalProperties": false },
       "AiRunIntentEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunIntent" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "AiRunActivityUsage": { "type": "object", "required": ["status", "promptTokens", "completionTokens", "totalTokens"], "properties": { "status": { "type": "string", "enum": ["reported", "partial", "not_reported", "not_transmitted", "unknown", "unavailable"] }, "promptTokens": { "type": "integer", "minimum": 0, "nullable": true }, "completionTokens": { "type": "integer", "minimum": 0, "nullable": true }, "totalTokens": { "type": "integer", "minimum": 0, "nullable": true } }, "additionalProperties": false },
+      "AiRunActivityChangeSummary": { "type": "object", "required": ["status", "operationCount", "appliedCount", "skippedCount", "failedCount", "backupCount"], "properties": { "status": { "type": "string", "enum": ["awaiting_approval", "applying", "applied", "rejected", "stale", "blocked", "failed", "needs_manual_review"] }, "operationCount": { "type": "integer", "minimum": 0 }, "appliedCount": { "type": "integer", "minimum": 0 }, "skippedCount": { "type": "integer", "minimum": 0 }, "failedCount": { "type": "integer", "minimum": 0 }, "backupCount": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
+      "AiRunActivityItem": { "type": "object", "required": ["runId", "projectId", "conversationId", "status", "decision", "providerTransmission", "createdAt", "updatedAt", "provider", "model", "requestPreview", "context", "usage", "cost", "changeSet"], "properties": { "runId": { "$ref": "#/components/schemas/Uuid" }, "projectId": { "$ref": "#/components/schemas/Uuid" }, "conversationId": { "$ref": "#/components/schemas/Uuid" }, "status": { "type": "string" }, "decision": { "type": "string", "enum": ["pending", "approved", "rejected"] }, "providerTransmission": { "type": "string", "enum": ["not_started", "not_started_confirmed", "transmitted_confirmed", "unknown"] }, "createdAt": { "type": "string", "format": "date-time" }, "updatedAt": { "type": "string", "format": "date-time" }, "provider": { "type": "string" }, "model": { "type": "string" }, "requestPreview": { "type": "string", "maxLength": 800 }, "context": { "type": "object", "required": ["categories", "fileCount", "factCount", "messageCount", "estimatedTokens"], "properties": { "categories": { "type": "array", "items": { "type": "string" } }, "fileCount": { "type": "integer", "minimum": 0 }, "factCount": { "type": "integer", "minimum": 0 }, "messageCount": { "type": "integer", "minimum": 0 }, "estimatedTokens": { "type": "integer", "minimum": 0 } }, "additionalProperties": false }, "usage": { "$ref": "#/components/schemas/AiRunActivityUsage" }, "cost": { "type": "object", "required": ["status", "label"], "properties": { "status": { "type": "string", "enum": ["unavailable"] }, "label": { "type": "string", "enum": ["Unavailable — no rate configured"] } }, "additionalProperties": false }, "changeSet": { "nullable": true, "allOf": [{ "$ref": "#/components/schemas/AiRunActivityChangeSummary" }] } }, "additionalProperties": false },
+      "AiRunActivityList": { "type": "object", "required": ["projectId", "items", "nextCursor"], "properties": { "projectId": { "$ref": "#/components/schemas/Uuid" }, "items": { "type": "array", "maxItems": 50, "items": { "$ref": "#/components/schemas/AiRunActivityItem" } }, "nextCursor": { "type": "string", "nullable": true } }, "additionalProperties": false },
+      "AiRunActivityOperation": { "type": "object", "required": ["operation", "path", "outcome", "backupStatus"], "properties": { "operation": { "type": "string" }, "path": { "type": "string", "maxLength": 512 }, "outcome": { "type": "string" }, "backupStatus": { "type": "string" } }, "additionalProperties": false },
+      "AiRunActivityDetail": { "allOf": [{ "$ref": "#/components/schemas/AiRunActivityItem" }, { "type": "object", "required": ["assistantPreview", "selectedFiles", "selectedFactTitles", "operations", "omittedOperationCount"], "properties": { "assistantPreview": { "type": "string", "nullable": true, "maxLength": 800 }, "selectedFiles": { "type": "array", "maxItems": 100, "items": { "type": "string", "maxLength": 512 } }, "selectedFactTitles": { "type": "array", "maxItems": 25, "items": { "type": "string", "maxLength": 256 } }, "operations": { "type": "array", "maxItems": 100, "items": { "$ref": "#/components/schemas/AiRunActivityOperation" } }, "omittedOperationCount": { "type": "integer", "minimum": 0 } } }] },
+      "AiRunActivityListEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunActivityList" }, "error": { "type": "null" } }, "additionalProperties": false },
+      "AiRunActivityDetailEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunActivityDetail" }, "error": { "type": "null" } }, "additionalProperties": false },
       "EgressManifestEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/EgressManifest" }, "error": { "type": "null" } }, "additionalProperties": false },
       "EgressDecisionEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/AiRunIntent" }, "error": { "type": "null" } }, "additionalProperties": false },
       "ProposedChangeSetDecisionRequest": { "type": "object", "required": ["proposalHash", "decision"], "properties": { "proposalHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "decision": { "type": "string", "enum": ["approve", "reject"] } }, "additionalProperties": false },

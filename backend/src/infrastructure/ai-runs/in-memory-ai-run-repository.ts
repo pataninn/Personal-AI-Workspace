@@ -13,6 +13,7 @@ import type {
   DecisionResult,
   DecisionUpdate
 } from '@/modules/ai-runs/domain/ai-run-types';
+import type { AiRunActivityRecordPage, ListAiRunActivityInput } from '@/modules/ai-runs/domain/activity-types';
 import type { CancelRunUpdate, CompleteRunUpdate, RunMutationResult, StartRunUpdate } from '@/modules/ai-runs/repositories/ai-run-repository';
 import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-repository';
 import type { ProjectTaskSuggestion } from '@/modules/tasks/domain/project-task';
@@ -75,6 +76,36 @@ export class InMemoryAiRunRepository implements IAiRunRepository, IProjectTaskSu
   public async findByIdForOwner(ownerId: string, runId: string): Promise<AiRun | null> {
     const run = this.runs.get(runId);
     return run?.ownerId === ownerId ? run : null;
+  }
+
+  public async listActivityForProjectOwner(input: ListAiRunActivityInput): Promise<AiRunActivityRecordPage> {
+    const selected = [...this.runs.values()]
+      .filter((run) => run.ownerId === input.ownerId && run.projectId === input.projectId && matchesActivityFilter(run.status, input.filter))
+      .filter((run) => !input.cursor || run.createdAt < input.cursor.createdAt || (run.createdAt.getTime() === input.cursor.createdAt.getTime() && run.id.localeCompare(input.cursor.id) > 0))
+      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime() || left.id.localeCompare(right.id));
+    const page = selected.slice(0, input.limit + 1);
+    const hasMore = page.length > input.limit;
+    return { records: page.slice(0, input.limit).map((run) => ({ run, changeSet: null })), hasMore };
+  }
+
+  public async recordProviderUsage(ownerId: string, runId: string, usage: NonNullable<AiRun['providerUsage']>): Promise<AiRun | null> {
+    return this.withLock(`usage:${runId}`, async () => {
+      const run = this.runs.get(runId);
+      if (!run || run.ownerId !== ownerId) {
+        return null;
+      }
+      const current = run.providerUsage ?? {};
+      const updated: AiRun = {
+        ...run,
+        providerUsage: {
+          ...(current.promptTokens === undefined && isSafeProviderCount(usage.promptTokens) ? { promptTokens: usage.promptTokens } : current.promptTokens !== undefined ? { promptTokens: current.promptTokens } : {}),
+          ...(current.completionTokens === undefined && isSafeProviderCount(usage.completionTokens) ? { completionTokens: usage.completionTokens } : current.completionTokens !== undefined ? { completionTokens: current.completionTokens } : {}),
+          ...(current.totalTokens === undefined && isSafeProviderCount(usage.totalTokens) ? { totalTokens: usage.totalTokens } : current.totalTokens !== undefined ? { totalTokens: current.totalTokens } : {})
+        }
+      };
+      this.runs.set(run.id, updated);
+      return updated;
+    });
   }
 
   public async listForRun(ownerId: string, projectId: string, runId: string): Promise<readonly ProjectTaskSuggestion[]> {
@@ -344,6 +375,19 @@ export class InMemoryAiRunRepository implements IAiRunRepository, IProjectTaskSu
   private createLockKey(ownerId: string, projectId: string, key: string): string {
     return `create:${this.idempotencyKey(ownerId, projectId, key)}`;
   }
+}
+
+function matchesActivityFilter(status: AiRun['status'], filter: ListAiRunActivityInput['filter']): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'active') return ['pending_approval', 'staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested'].includes(status);
+  if (filter === 'succeeded') return status === 'succeeded';
+  if (filter === 'attention') return status === 'failed' || status === 'blocked' || status === 'review_required';
+  if (filter === 'cancelled') return status === 'cancelled';
+  return status === 'rejected';
+}
+
+function isSafeProviderCount(value: number | undefined): value is number {
+  return value !== undefined && Number.isSafeInteger(value) && value >= 0;
 }
 
 function isTerminal(status: AiRun['status']): boolean {
