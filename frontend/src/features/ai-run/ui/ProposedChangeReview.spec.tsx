@@ -2,6 +2,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { userSessionReducer } from '@/entities/user-session';
@@ -20,7 +21,7 @@ const applied: ProposedChangeSetSnapshot = { ...pending, status: 'applied', deci
 
 function renderReview(readOnly = false): void {
   const store = configureStore({ reducer: { userSession: userSessionReducer }, preloadedState: { userSession: session } });
-  render(<Provider store={store}><ProposedChangeReview runId={RUN_ID} readOnly={readOnly} conversationHref="/projects/p/conversations/c" /></Provider>);
+  render(<MemoryRouter><Provider store={store}><ProposedChangeReview runId={RUN_ID} readOnly={readOnly} conversationHref="/projects/p/conversations/c" /></Provider></MemoryRouter>);
 }
 
 describe('ProposedChangeReview', () => {
@@ -46,7 +47,7 @@ describe('ProposedChangeReview', () => {
     expect(screen.queryByTestId('change-apply-result')).not.toBeInTheDocument();
   });
 
-  it('renders the exact fake provenance, operation counts, hashes, and labelled rename endpoints', async () => {
+  it('renders fake provenance, operation counts, hides raw hashes, and labels rename endpoints', async () => {
     const rename = { ...operation, operationId: 'rename-1', operation: 'rename' as const, path: 'src/old.ts', destinationPath: 'src/new.ts', destinationPresent: true, expectedDestinationHash: HASH, backupRequired: true };
     const fullSet: ProposedChangeSetSnapshot = { ...pending, operations: [{ ...operation, operationId: 'create-1', operation: 'create' as const, path: 'src/new.ts', sourcePresent: false, destinationPresent: false, backupRequired: false, expectedSourceHash: undefined }, { ...operation, operationId: 'edit-1', operation: 'edit' as const, path: 'src/edit.ts', backupRequired: false }, { ...operation, operationId: 'overwrite-1', operation: 'overwrite' as const, path: 'src/overwrite.ts' }, rename, operation], counts: { total: 5, creates: 1, edits: 1, overwrites: 1, renames: 1, deletes: 1, destructive: 3 } };
     getProposedChangeSetMock.mockResolvedValueOnce(fullSet);
@@ -54,10 +55,10 @@ describe('ProposedChangeReview', () => {
 
     expect(await screen.findByTestId('change-review-fake-mode-notice')).toHaveTextContent('Development preview - fake runtime. These proposed changes are simulated; live OpenShell, Hermes, and NVIDIA NIM provenance is not verified.');
     expect(screen.getByTestId('change-set-summary')).toHaveTextContent('Recovery snapshots required');
-    expect(screen.getByTestId('change-proposal-freshness')).toHaveTextContent('Reviewed against the project version at proposal time.');
-    expect(screen.getByTestId('change-proposal-version')).toHaveTextContent(HASH);
+    expect(screen.getByTestId('change-proposal-freshness')).toHaveTextContent('Source versions are rechecked before applying.');
+    expect(screen.queryByTestId('change-proposal-version')).not.toBeInTheDocument();
     await userEvent.setup().click(screen.getAllByRole('button', { name: /Rename file/u })[0]!);
-    expect(screen.getByTestId('change-operation-detail')).toHaveTextContent(HASH);
+    expect(screen.getByTestId('change-operation-detail')).not.toHaveTextContent(HASH);
     expect(screen.getAllByText('From').length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText('To').length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText('src/new.ts').length).toBeGreaterThanOrEqual(2);
@@ -124,5 +125,29 @@ describe('ProposedChangeReview', () => {
     renderReview();
     expect(await screen.findByTestId('change-recovery-snapshot-results')).toBeInTheDocument();
     expect(screen.getByTestId('change-recovery-snapshot-result')).toHaveTextContent('Recovery snapshot created for src/old.ts.');
+  });
+
+  it('renders line-diff labels and provides path history links', async () => {
+    const withDiff: ProposedChangeSetSnapshot = { ...pending, operations: [{ ...operation, operation: 'edit', preview: { text: '  kept\n- old line\n+ new line', limited: false, kind: 'diff' } }] };
+    getProposedChangeSetMock.mockResolvedValueOnce(withDiff);
+    renderReview();
+    expect(screen.queryByTestId('change-diff')).not.toBeInTheDocument();
+    await userEvent.setup().click(await screen.findByTestId('change-diff-toggle'));
+    expect(await screen.findByTestId('change-diff')).toHaveTextContent('Unchanged');
+    expect(screen.getByTestId('change-diff-counts')).toHaveTextContent('1 added, 1 removed');
+    expect(screen.getByTestId('change-diff')).toHaveTextContent('Removed');
+    expect(screen.getByTestId('change-diff')).toHaveTextContent('Added');
+    expect(screen.getByRole('link', { name: 'View file history for src/old.ts' })).toHaveAttribute('href', `/projects/${pending.projectId}/file-history?path=src%2Fold.ts`);
+  });
+
+  it('states partial stale outcomes and links to the conflict path without offering a replay', async () => {
+    const stale: ProposedChangeSetSnapshot = { ...pending, status: 'stale', decision: 'approved', result: { persisted: true, appliedCount: 1, skippedCount: 1, failedCount: 0, backupCount: 1, conflictPath: 'src/conflict.ts', operations: [{ operationId: operation.operationId, operation: operation.operation, path: operation.path, status: 'applied', backup: 'created', safeMessage: 'Applied.' }] } };
+    getProposedChangeSetMock.mockResolvedValueOnce(stale);
+    renderReview();
+    expect(await screen.findByTestId('change-stale')).toHaveTextContent('1 earlier operation was applied');
+    expect(screen.getByTestId('change-stale')).toHaveTextContent('src/conflict.ts');
+    expect(screen.getByRole('link', { name: 'View file history for this path' })).toHaveAttribute('href', `/projects/${pending.projectId}/file-history?path=src%2Fconflict.ts`);
+    expect(screen.getByRole('link', { name: 'Open conversation' })).toHaveAttribute('href', '/projects/p/conversations/c');
+    expect(screen.getByTestId('change-approve')).toBeDisabled();
   });
 });

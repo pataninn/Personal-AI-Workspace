@@ -134,6 +134,7 @@ function RunDetails({ detail }: { readonly detail: import('@/entities/ai-run/mod
     <section>
       <h3>File operations</h3>
       {detail.operations.length === 0 ? <p>No file changes were proposed for this run.</p> : <ul className="project-activity-operations">{detail.operations.map((operation, index) => <li key={`${operation.operation}-${operation.path}-${index}`}><strong>{formatStatus(operation.operation)}</strong> <code>{operation.path}</code><span>{formatStatus(operation.outcome)} · backup {formatStatus(operation.backupStatus)}</span></li>)}</ul>}
+      {detail.operations.map((operation, index) => <p key={`history-${operation.path}-${index}`}><Link to={`/projects/${encodeURIComponent(detail.projectId)}/file-history?path=${encodeURIComponent(operation.path)}`}>View file history for {operation.path}</Link>{operation.destinationPath ? <> · <Link to={`/projects/${encodeURIComponent(detail.projectId)}/file-history?path=${encodeURIComponent(operation.destinationPath)}`}>View file history for {operation.destinationPath}</Link></> : null}</p>)}
       {detail.omittedOperationCount > 0 && <p>{detail.omittedOperationCount} additional operations are not shown.</p>}
     </section>
   </div>;

@@ -14,6 +14,7 @@ import { sendData } from '@/shared/http/response';
 import type { ProjectTaskSuggestion } from '@/modules/tasks/domain/project-task';
 import type { IProjectTaskSuggestionQuery } from '@/modules/tasks/repositories/task-suggestion-query';
 import type { GetAiRunActivityUseCase, ListAiRunActivityUseCase } from '@/modules/ai-runs/use-cases/activity-use-cases';
+import type { ListProjectFileHistoryUseCase } from '@/modules/ai-runs/use-cases/file-history-use-cases';
 
 const createRunSchema = z.object({
   conversationId: z.string(),
@@ -47,6 +48,7 @@ export interface AiRunRouterDependencies {
   readonly taskSuggestionsForRun?: IProjectTaskSuggestionQuery;
   readonly listActivity?: ListAiRunActivityUseCase;
   readonly getActivity?: GetAiRunActivityUseCase;
+  readonly listFileHistory?: ListProjectFileHistoryUseCase;
   readonly appOrigin: string;
   readonly clearSessionCookie: (response: Response) => void;
 }
@@ -110,6 +112,29 @@ function activityDetailHandler(dependencies: AiRunRouterDependencies): RequestHa
       }
       const runId = parseUuid(routeParam(request.params.runId), new AiRunNotFoundError());
       sendData(response, await dependencies.getActivity.execute({ ownerId, runId }));
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
+function fileHistoryHandler(dependencies: AiRunRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const ownerId = request.auth?.principal.id;
+      if (!ownerId || !dependencies.listFileHistory) {
+        next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
+        return;
+      }
+      const projectId = parseUuid(routeParam(request.params.projectId), new AiRunNotFoundError());
+      sendData(response, await dependencies.listFileHistory.execute({
+        ownerId,
+        projectId,
+        path: queryValue(request.query.path),
+        outcome: queryValue(request.query.outcome),
+        limit: queryValue(request.query.limit),
+        cursor: queryValue(request.query.cursor)
+      }));
     } catch (error: unknown) {
       next(error);
     }
@@ -388,6 +413,7 @@ function serializeProposedChangeSet(changeSet: ProposedChangeSet): Record<string
         skippedCount: changeSet.result.skippedCount,
         failedCount: changeSet.result.failedCount,
         backupCount: changeSet.result.backupCount,
+        ...(changeSet.result.conflictPath ? { conflictPath: changeSet.result.conflictPath } : {}),
         operations: changeSet.result.operations.map((operation) => ({
           operationId: operation.operationId,
           operation: operation.operation,
@@ -412,6 +438,9 @@ export function createAiRunRouter(dependencies: AiRunRouterDependencies): Router
   }
   if (dependencies.getActivity) {
     router.get('/ai-runs/:runId/activity', authenticate, activityDetailHandler(dependencies));
+  }
+  if (dependencies.listFileHistory) {
+    router.get('/projects/:projectId/file-history', authenticate, fileHistoryHandler(dependencies));
   }
   router.post('/projects/:projectId/ai-runs', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, createHandler(dependencies));
   router.get('/ai-runs/:runId', authenticate, getHandler(dependencies));

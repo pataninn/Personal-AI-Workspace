@@ -228,7 +228,11 @@ export class DecideProposedChangeSetUseCase {
       return this.saveManualReview(changeSet);
     }
     if (applied.outcome === 'stale') {
-      const stale = withStatus(changeSet, 'stale', 'The project changed after this proposal was prepared. No changes from this proposal were applied.');
+      const result = toChangeSetResult(applied);
+      const safeMessage = result.appliedCount > 0
+        ? `The project changed at ${applied.conflict?.path ?? 'a file'} after this proposal was prepared. Some earlier operations were applied. Review the operation results and current files before requesting new changes.`
+        : `The project changed at ${applied.conflict?.path ?? 'a file'} after this proposal was prepared. No operations from this proposal were applied.`;
+      const stale = withResult(withStatus(changeSet, 'stale', safeMessage), { ...result, ...(applied.conflict?.path ? { conflictPath: applied.conflict.path } : {}) });
       await this.changeSets.save(stale);
       throw new ChangeSetConflictError(stale.safeMessage);
     }
@@ -329,24 +333,66 @@ function createPreview(operation: RuntimeChangeProposal['operation'], source: Wo
     return boundPreview(before, 'before');
   }
   if (operation === 'rename') {
-    return boundPreview(before, 'diff');
+    return boundPreview(before, 'before');
   }
-  return boundPreview(makeDiff(before, after), 'diff');
+  const diff = makeDiff(before, after);
+  return boundPreview(diff.text, 'diff', diff.limited);
 }
 
-function boundPreview(value: string, kind: 'before' | 'after' | 'diff'): ProposedChangeOperation['preview'] {
+function boundPreview(value: string, kind: 'before' | 'after' | 'diff', wasLimited = false): ProposedChangeOperation['preview'] {
   const lines = value.split(/\r\n|\r|\n/u);
   const lineLimited = lines.length > CHANGE_SET_LIMITS.maxPreviewLines;
   const lineBounded = lines.slice(0, CHANGE_SET_LIMITS.maxPreviewLines).join('\n');
   const text = truncateUtf8(lineBounded, CHANGE_SET_LIMITS.maxPreviewBytes);
-  const limited = lineLimited || text.length !== lineBounded.length;
+  const limited = wasLimited || lineLimited || text.length !== lineBounded.length;
   return { text, limited, kind };
 }
 
-function makeDiff(before: string, after: string): string {
-  const beforeLines = before.split(/\r\n|\r|\n/u).map((line) => `- ${line}`);
-  const afterLines = after.split(/\r\n|\r|\n/u).map((line) => `+ ${line}`);
-  return [...beforeLines, ...afterLines].join('\n');
+function makeDiff(before: string, after: string): { readonly text: string; readonly limited: boolean } {
+  const maxInputLines = 100;
+  const maxOutputLines = 200;
+  const maxOutputBytes = 8 * 1024;
+  const originalBefore = before.split(/\r\n|\r|\n/u);
+  const originalAfter = after.split(/\r\n|\r|\n/u);
+  const beforeLines = originalBefore.slice(0, maxInputLines);
+  const afterLines = originalAfter.slice(0, maxInputLines);
+  const lcs: number[][] = Array.from({ length: beforeLines.length + 1 }, () => Array<number>(afterLines.length + 1).fill(0));
+  for (let left = beforeLines.length - 1; left >= 0; left--) {
+    for (let right = afterLines.length - 1; right >= 0; right--) {
+      lcs[left]![right] = beforeLines[left] === afterLines[right]
+        ? (lcs[left + 1]?.[right + 1] ?? 0) + 1
+        : Math.max(lcs[left + 1]?.[right] ?? 0, lcs[left]?.[right + 1] ?? 0);
+    }
+  }
+  const output: string[] = [];
+  let bytes = 0;
+  let left = 0;
+  let right = 0;
+  let limited = originalBefore.length > maxInputLines || originalAfter.length > maxInputLines;
+  const append = (line: string): boolean => {
+    const lineBytes = Buffer.byteLength(line, 'utf8') + (output.length > 0 ? 1 : 0);
+    if (output.length >= maxOutputLines || bytes + lineBytes > maxOutputBytes) {
+      limited = true;
+      return false;
+    }
+    output.push(line);
+    bytes += lineBytes;
+    return true;
+  };
+  while (left < beforeLines.length || right < afterLines.length) {
+    if (left < beforeLines.length && right < afterLines.length && beforeLines[left] === afterLines[right]) {
+      if (!append(`  ${beforeLines[left] ?? ''}`)) break;
+      left++;
+      right++;
+    } else if (left < beforeLines.length && (right >= afterLines.length || (lcs[left + 1]?.[right] ?? 0) >= (lcs[left]?.[right + 1] ?? 0))) {
+      if (!append(`- ${beforeLines[left] ?? ''}`)) break;
+      left++;
+    } else {
+      if (!append(`+ ${afterLines[right] ?? ''}`)) break;
+      right++;
+    }
+  }
+  return { text: output.join('\n'), limited };
 }
 
 function safeSummary(value: string | undefined, operation: RuntimeChangeProposal['operation'], relativePath: string): string {
@@ -381,7 +427,8 @@ function toChangeSetResult(result: WorkspaceApplyResult): NonNullable<ProposedCh
     appliedCount: operations.filter((operation) => operation.status === 'applied').length,
     skippedCount: operations.filter((operation) => operation.status === 'skipped').length,
     failedCount: operations.filter((operation) => operation.status === 'failed' || operation.status === 'needs_manual_review').length,
-    backupCount: operations.filter((operation) => operation.backup === 'created').length
+    backupCount: operations.filter((operation) => operation.backup === 'created').length,
+    ...(result.conflict?.path ? { conflictPath: result.conflict.path } : {})
   };
 }
 

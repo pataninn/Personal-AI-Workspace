@@ -34,7 +34,7 @@ export async function getAiRunActivity(runId: string): Promise<AiRunActivityDeta
     selectedFactTitles: record.selectedFactTitles.map(readString),
     operations: record.operations.map((operation) => {
       const item = asRecord(operation);
-      return { operation: readString(item?.operation), path: readString(item?.path), outcome: readString(item?.outcome), backupStatus: readString(item?.backupStatus) };
+      return { operation: readString(item?.operation), path: readString(item?.path), ...(item?.destinationPath === undefined ? {} : { destinationPath: readString(item.destinationPath) }), outcome: readString(item?.outcome), backupStatus: readString(item?.backupStatus) };
     }),
     omittedOperationCount: readNonNegativeInteger(record.omittedOperationCount)
   };

@@ -161,12 +161,15 @@ function normalizeResult(value: unknown): ProposedChangeSetResult | undefined {
   if (operations.length !== record.operations.length) {
     return undefined;
   }
+  const conflictPath = record.conflictPath === undefined ? undefined : safeRelativePath(record.conflictPath);
+  if (record.conflictPath !== undefined && !conflictPath) return undefined;
   return {
     persisted: true,
     appliedCount: readBoundedNumber(record.appliedCount),
     skippedCount: readBoundedNumber(record.skippedCount),
     failedCount: readBoundedNumber(record.failedCount),
     backupCount: readBoundedNumber(record.backupCount),
+    ...(conflictPath ? { conflictPath } : {}),
     operations
   };
 }

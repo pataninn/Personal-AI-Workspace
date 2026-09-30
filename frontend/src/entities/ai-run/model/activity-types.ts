@@ -47,7 +47,7 @@ export interface AiRunActivityDetail extends AiRunActivityItem {
   readonly assistantPreview: string | null;
   readonly selectedFiles: readonly string[];
   readonly selectedFactTitles: readonly string[];
-  readonly operations: readonly { readonly operation: string; readonly path: string; readonly outcome: string; readonly backupStatus: string }[];
+  readonly operations: readonly { readonly operation: string; readonly path: string; readonly destinationPath?: string; readonly outcome: string; readonly backupStatus: string }[];
   readonly omittedOperationCount: number;
 }
 

@@ -74,6 +74,7 @@ export interface AiRunActivityItem {
 export interface AiRunActivityOperation {
   readonly operation: string;
   readonly path: string;
+  readonly destinationPath?: string;
   readonly outcome: string;
   readonly backupStatus: string;
 }

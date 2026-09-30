@@ -15,6 +15,7 @@ describe('AI run OpenAPI document', () => {
     const paths = asRecord(document.paths);
     const expected: Record<string, Record<string, string[]>> = {
       '/api/v1/projects/{projectId}/ai-runs': { post: ['200', '202', '400', '401', '403', '404', '409', '500', '503'] },
+      '/api/v1/projects/{projectId}/file-history': { get: ['200', '400', '401', '404', '500'] },
       '/api/v1/ai-runs/{runId}': { get: ['200', '401', '404', '500'] },
       '/api/v1/ai-runs/{runId}/egress-manifest': { get: ['200', '401', '404', '409', '500'] },
       '/api/v1/ai-runs/{runId}/egress-decision': { post: ['200', '400', '401', '403', '404', '409', '500', '503'] },
@@ -37,7 +38,7 @@ describe('AI run OpenAPI document', () => {
       }
     }
     const schemas = asRecord(asRecord(document.components).schemas);
-    ['CreateAiRunRequest', 'EgressDecisionRequest', 'AiRunSnapshot', 'EgressManifest', 'AiRunIntentEnvelope', 'EgressDecisionEnvelope', 'ProposedChangeSetDecisionRequest', 'ProposedChangeSet', 'ProposedChangeOperation', 'ProposedChangeSetResult', 'ProposedChangeSetEnvelope', 'SandboxCommandDecisionRequest', 'SandboxCommand', 'SandboxCommandListEnvelope', 'SandboxCommandEnvelope', 'EmptyObject'].forEach((schema) => {
+    ['CreateAiRunRequest', 'EgressDecisionRequest', 'AiRunSnapshot', 'EgressManifest', 'AiRunIntentEnvelope', 'EgressDecisionEnvelope', 'ProposedChangeSetDecisionRequest', 'ProposedChangeSet', 'ProposedChangeOperation', 'ProposedChangeOperationResult', 'ProposedChangeSetResult', 'ProposedChangeSetEnvelope', 'ProjectFileHistoryItem', 'ProjectFileHistoryPage', 'ProjectFileHistoryEnvelope', 'SandboxCommandDecisionRequest', 'SandboxCommand', 'SandboxCommandListEnvelope', 'SandboxCommandEnvelope', 'EmptyObject'].forEach((schema) => {
       expect(schemas[schema]).toBeDefined();
     });
     const runSnapshot = asRecord(schemas.AiRunSnapshot);
@@ -46,5 +47,9 @@ describe('AI run OpenAPI document', () => {
     const listSchema = asRecord(schemas.SandboxCommandList);
     const listProperties = asRecord(listSchema.properties);
     expect(asRecord(listProperties.commands).maxItems).toBe(100);
+    const operationResult = asRecord(schemas.ProposedChangeOperationResult);
+    expect(asRecord(asRecord(operationResult.properties).backup).enum).toContain('not_created');
+    const fileHistoryItem = asRecord(schemas.ProjectFileHistoryItem);
+    expect(asRecord(asRecord(fileHistoryItem.properties).backupStatus).enum).toContain('not_created');
   });
 });

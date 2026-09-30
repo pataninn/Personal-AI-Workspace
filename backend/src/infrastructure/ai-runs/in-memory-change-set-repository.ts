@@ -13,6 +13,7 @@ import type {
   ProposedChangeSet
 } from '@/modules/ai-runs/domain/change-types';
 import type { IProposedChangeSetRepository } from '@/modules/ai-runs/repositories/change-set-repository';
+import type { ListProjectFileHistoryInput, ProjectFileHistoryRecord, ProjectFileHistoryRecordPage } from '@/modules/ai-runs/domain/file-history-types';
 
 export class InMemoryProposedChangeSetRepository implements IProposedChangeSetRepository {
   private readonly changeSets = new Map<string, ProposedChangeSet>();
@@ -54,6 +55,39 @@ export class InMemoryProposedChangeSetRepository implements IProposedChangeSetRe
 
   public async findByRunForOwner(ownerId: string, runId: string): Promise<ProposedChangeSet | null> {
     return [...this.changeSets.values()].find((candidate) => candidate.ownerId === ownerId && candidate.runId === runId) ?? null;
+  }
+
+  public async listFileHistoryForProjectOwner(input: ListProjectFileHistoryInput): Promise<ProjectFileHistoryRecordPage> {
+    const records: ProjectFileHistoryRecord[] = [...this.changeSets.values()]
+      .filter((changeSet) => changeSet.ownerId === input.ownerId && changeSet.projectId === input.projectId)
+      .flatMap((changeSet) => changeSet.operations.flatMap((operation, operationIndex) => {
+        const matchedPath = operation.path === input.path ? operation.path : operation.destinationPath === input.path ? operation.destinationPath : undefined;
+        if (!matchedPath) return [];
+        const result = changeSet.result?.operations.find((candidate) => candidate.operationId === operation.operationId);
+        if (input.outcome === 'applied' && result?.status !== 'applied') return [];
+        return [{
+          changeSetId: changeSet.id,
+          projectId: changeSet.projectId,
+          runId: changeSet.runId,
+          conversationId: null,
+          operationId: operation.operationId,
+          operationIndex,
+          operation: operation.operation,
+          matchedPath,
+          path: operation.path,
+          ...(operation.destinationPath ? { destinationPath: operation.destinationPath } : {}),
+          summary: operation.summary,
+          changeSetStatus: changeSet.status,
+          operationStatus: result?.status ?? null,
+          backupStatus: result?.backup ?? historyBackupStatus(changeSet.status, operation.backupRequired),
+          createdAt: changeSet.createdAt,
+          updatedAt: changeSet.updatedAt
+        }];
+      }))
+      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime() || left.changeSetId.localeCompare(right.changeSetId) || left.operationIndex - right.operationIndex)
+      .filter((record) => !input.cursor || record.createdAt < input.cursor.createdAt ||
+        (record.createdAt.getTime() === input.cursor.createdAt.getTime() && (record.changeSetId > input.cursor.changeSetId || (record.changeSetId === input.cursor.changeSetId && record.operationIndex > input.cursor.operationIndex))));
+    return { records: records.slice(0, input.limit), hasMore: records.length > input.limit };
   }
 
   public async recordDecision(input: ChangeSetDecisionUpdate): Promise<ChangeSetDecisionResult> {
@@ -105,4 +139,11 @@ export class InMemoryProposedChangeSetRepository implements IProposedChangeSetRe
       }
     }
   }
+}
+
+function historyBackupStatus(status: ProposedChangeSet['status'], backupRequired: boolean): 'not_required' | 'pending' | 'not_created' | 'unknown' {
+  if (!backupRequired) return 'not_required';
+  if (status === 'applying') return 'pending';
+  if (status === 'stale' || status === 'needs_manual_review') return 'unknown';
+  return 'not_created';
 }

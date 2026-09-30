@@ -1,4 +1,4 @@
-import type { BackupCheckpoint, ChangeOperationKind, ProposedChangeOperation } from '@/modules/ai-runs/domain/change-types';
+import type { BackupCheckpoint, ChangeBackupStatus, ChangeOperationKind, ProposedChangeOperation } from '@/modules/ai-runs/domain/change-types';
 
 export interface WorkspaceMutationScope {
   readonly projectId: string;
@@ -23,7 +23,7 @@ export interface WorkspaceApplyResult {
     readonly path: string;
     readonly destinationPath?: string;
     readonly status: 'applied' | 'skipped' | 'failed' | 'needs_manual_review';
-    readonly backup: 'not_required' | 'created' | 'failed' | 'unknown';
+    readonly backup: ChangeBackupStatus;
     /** Internal recovery reference. The REST serializer must omit it. */
     readonly backupReference?: string;
     readonly safeMessage: string;

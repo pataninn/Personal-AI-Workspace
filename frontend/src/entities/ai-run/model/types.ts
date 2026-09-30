@@ -190,6 +190,7 @@ export interface ProposedChangeSetResult {
   readonly skippedCount: number;
   readonly failedCount: number;
   readonly backupCount: number;
+  readonly conflictPath?: string;
   readonly operations: readonly ProposedChangeOperationResult[];
 }
 

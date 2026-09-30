@@ -15,6 +15,7 @@ import { AddConfirmedProviderTransmission1710000008000 } from '@/infrastructure/
 import { CreateProjectFacts1710000009000 } from '@/infrastructure/database/migrations/1710000009000-create-project-facts';
 import { CreateProjectTasks1710000010000 } from '@/infrastructure/database/migrations/1710000010000-create-project-tasks';
 import { AddAiRunProviderUsage1710000011000 } from '@/infrastructure/database/migrations/1710000011000-add-ai-run-provider-usage';
+import { AddChangeSetOperationPathIndex1710000012000 } from '@/infrastructure/database/migrations/1710000012000-add-change-set-operation-path-index';
 
 export function createDataSource(config: DatabaseConfig): DataSource {
   return new DataSource({
@@ -22,7 +23,7 @@ export function createDataSource(config: DatabaseConfig): DataSource {
     url: config.url,
     synchronize: false,
     migrationsRun: false,
-    migrations: [CreateApplicationMetadata1710000000000, CreateUsersAndSessions1710000001000, CreateProjects1710000002000, CreateConversationsAndMessages1710000003000, CreateAiRunsAndEgress1710000004000, CreateSandboxCommands1710000005000, CreateAiRunChat1710000006000, CreateAiRunChangeSets1710000007000, AddConfirmedProviderTransmission1710000008000, CreateProjectFacts1710000009000, CreateProjectTasks1710000010000, AddAiRunProviderUsage1710000011000],
+    migrations: [CreateApplicationMetadata1710000000000, CreateUsersAndSessions1710000001000, CreateProjects1710000002000, CreateConversationsAndMessages1710000003000, CreateAiRunsAndEgress1710000004000, CreateSandboxCommands1710000005000, CreateAiRunChat1710000006000, CreateAiRunChangeSets1710000007000, AddConfirmedProviderTransmission1710000008000, CreateProjectFacts1710000009000, CreateProjectTasks1710000010000, AddAiRunProviderUsage1710000011000, AddChangeSetOperationPathIndex1710000012000],
     entities: [],
     logging: false
   });

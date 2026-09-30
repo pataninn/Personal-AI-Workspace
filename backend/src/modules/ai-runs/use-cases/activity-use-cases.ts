@@ -82,6 +82,7 @@ export class GetAiRunActivityUseCase {
       return {
         operation: operation.operation,
         path: safePreview(operation.path, 512),
+        ...(operation.destinationPath ? { destinationPath: safePreview(operation.destinationPath, 512) } : {}),
         outcome: result?.status ?? changeSet?.status ?? 'unknown',
         backupStatus: result?.backup ?? (operation.backupRequired ? 'pending' : 'not_required')
       };

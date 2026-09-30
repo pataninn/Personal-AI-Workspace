@@ -35,6 +35,15 @@ describe('proposed change-set use cases', () => {
     expect(await repository.findByRunForOwner(OWNER_ID, RUN_ID)).toEqual(result);
   });
 
+  it('builds a line diff with unchanged context, additions, and removals', async () => {
+    const workspace = new WorkspaceFixture();
+    workspace.snapshotContent = 'first\nkeep\nold\n';
+    const useCase = new CollectProposedChangeSetUseCase(new RunRepository(), new ProjectRepository(), workspace, new InMemoryProposedChangeSetRepository());
+    const result = await useCase.execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation: 'edit', path: FILE_PATH, content: 'first\nkeep\nnew\n' }], fakeRuntime: true });
+    expect(result.operations[0]?.preview).toMatchObject({ kind: 'diff', limited: false });
+    expect(result.operations[0]?.preview?.text).toBe('  first\n  keep\n- old\n+ new\n  ');
+  });
+
   it('persists the decision before applying and persists the authoritative applied result', async () => {
     const workspace = new WorkspaceFixture();
     const repository = new InMemoryProposedChangeSetRepository();
@@ -61,6 +70,25 @@ describe('proposed change-set use cases', () => {
 
     await expect(decision.execute({ ownerId: OWNER_ID, runId: RUN_ID, proposalHash: changeSet.proposalHash, decision: 'approve', idempotencyKey: 'decision-2' })).rejects.toBeInstanceOf(ChangeSetConflictError);
     expect((await repository.findByRunForOwner(OWNER_ID, RUN_ID))?.status).toBe('stale');
+    expect((await repository.findByRunForOwner(OWNER_ID, RUN_ID))?.result).toMatchObject({ appliedCount: 0, skippedCount: 1, conflictPath: FILE_PATH });
+  });
+
+  it('preserves known earlier writes when a later operation becomes stale', async () => {
+    const workspace = new WorkspaceFixture();
+    workspace.applyOutcome = {
+      outcome: 'stale', conflict: { path: 'src/second.ts', reason: 'changed' }, operations: [
+        { operationId: 'first-result', operation: 'edit', path: FILE_PATH, status: 'applied', backup: 'created', safeMessage: 'done' },
+      { operationId: 'second-result', operation: 'create', path: 'src/second.ts', status: 'skipped', backup: 'not_required', safeMessage: 'stale' }
+      ]
+    };
+    const repository = new InMemoryProposedChangeSetRepository();
+    const collect = new CollectProposedChangeSetUseCase(new RunRepository(), new ProjectRepository(), workspace, repository);
+    const decision = new DecideProposedChangeSetUseCase(new RunRepository(), new ProjectRepository(), repository, workspace);
+    const changeSet = await collect.execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation: 'edit', path: FILE_PATH, content: 'first' }, { operation: 'create', path: 'src/second.ts', content: 'second' }], fakeRuntime: true });
+    await expect(decision.execute({ ownerId: OWNER_ID, runId: RUN_ID, proposalHash: changeSet.proposalHash, decision: 'approve', idempotencyKey: 'partial-stale' })).rejects.toBeInstanceOf(ChangeSetConflictError);
+    const saved = await repository.findByRunForOwner(OWNER_ID, RUN_ID);
+    expect(saved?.result).toMatchObject({ appliedCount: 1, skippedCount: 1, backupCount: 1, conflictPath: 'src/second.ts' });
+    expect(saved?.safeMessage).toContain('Some earlier operations were applied');
   });
 
   it('persists a private recovery checkpoint before the workspace reports success and safely replays a lost response', async () => {
@@ -171,9 +199,10 @@ class WorkspaceFixture implements IWorkspaceMutationGateway {
   public applied = false;
   public applyCalls = 0;
   public checkpointedBeforeMutation = false;
+  public snapshotContent = ORIGINAL;
   public applyOutcome: WorkspaceApplyResult = { outcome: 'applied', operations: [{ operationId: 'edit-src', operation: 'edit', path: FILE_PATH, status: 'applied', backup: 'created', safeMessage: 'Edited.' }] };
   public async inspect(_scope: WorkspaceMutationScope, relativePath: string): Promise<WorkspaceFileSnapshot> {
-    return relativePath === FILE_PATH ? { path: relativePath, exists: true, isDirectory: false, sizeBytes: Buffer.byteLength(ORIGINAL), content: ORIGINAL, hash: ORIGINAL_HASH } : { path: relativePath, exists: false, isDirectory: false, sizeBytes: 0 };
+    return relativePath === FILE_PATH ? { path: relativePath, exists: true, isDirectory: false, sizeBytes: Buffer.byteLength(this.snapshotContent), content: this.snapshotContent, hash: hash(this.snapshotContent) } : { path: relativePath, exists: false, isDirectory: false, sizeBytes: 0 };
   }
   public async applyChangeSet(_scope: WorkspaceMutationScope, operations: readonly ProposedChangeOperation[], _runId: string, _proposalHash: string, options?: WorkspaceMutationApplyOptions): Promise<WorkspaceApplyResult> {
     this.applyCalls += 1;

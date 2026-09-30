@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import { ChangeSetDomainError, ChangeSetValidationError } from '@/modules/ai-runs/domain/change-errors';
 import { CHANGE_SET_LIMITS, isDestructiveOperation } from '@/modules/ai-runs/domain/change-policy';
-import type { BackupCheckpoint, ChangeOperationKind, ProposedChangeOperation } from '@/modules/ai-runs/domain/change-types';
+import type { BackupCheckpoint, ChangeBackupStatus, ChangeOperationKind, ProposedChangeOperation } from '@/modules/ai-runs/domain/change-types';
 import type {
   IWorkspaceMutationGateway,
   WorkspaceApplyResult,
@@ -75,7 +75,7 @@ interface ClaimOptions {
 }
 
 class MutationConflictError extends Error {
-  public constructor(public readonly relativePath: string, public readonly reason: string) {
+  public constructor(public readonly relativePath: string, public readonly reason: string, public readonly backupStatus: ChangeBackupStatus = 'not_required') {
     super(reason);
     this.name = 'MutationConflictError';
   }
@@ -95,6 +95,13 @@ class AmbiguousMutationError extends Error {
   public constructor(message: string) {
     super(message);
     this.name = 'AmbiguousMutationError';
+  }
+}
+
+class MutationOperationError extends Error {
+  public constructor(public readonly backupStatus: ChangeBackupStatus, public readonly ambiguous: boolean) {
+    super('The file operation could not be completed safely.');
+    this.name = 'MutationOperationError';
   }
 }
 
@@ -138,7 +145,7 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
             path: operation.path,
             ...(operation.destinationPath ? { destinationPath: operation.destinationPath } : {}),
             status: 'skipped' as const,
-            backup: 'not_required' as const,
+            backup: backupBeforeOperation(operation),
             safeMessage: 'The change set is stale and was not applied.'
           })),
         };
@@ -151,7 +158,7 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
         results.push(await this.applyOne(context, item, runId, proposalHash, options));
       } catch (error: unknown) {
         if (error instanceof MutationConflictError) {
-          results.push(this.failureResult(item.operation, 'skipped', 'The change set became stale before this operation could run.', 'not_required'));
+          results.push(this.failureResult(item.operation, 'skipped', 'The change set became stale before this operation could run.', error.backupStatus));
           results.push(...remainingResults(prepared, prepared.indexOf(item), 'skipped'));
           return {
             outcome: 'stale',
@@ -159,15 +166,18 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
             operations: results
           };
         }
-        const ambiguous = error instanceof AmbiguousMutationError
+        const ambiguous = error instanceof MutationOperationError && error.ambiguous
+          || error instanceof AmbiguousMutationError
           || (error instanceof BackupMutationError && error.ambiguous);
         const outcome = ambiguous ? 'needs_manual_review' : 'failed';
         const safeMessage = ambiguous
           ? 'The file operation outcome could not be confirmed.'
           : 'The file operation failed before completion.';
-        const backup = error instanceof BackupMutationError
+        const backup: ChangeBackupStatus = error instanceof BackupMutationError
           ? (error.ambiguous ? 'unknown' : 'failed')
-          : (ambiguous ? 'unknown' : 'not_required');
+          : error instanceof MutationOperationError
+            ? error.backupStatus
+            : backupBeforeOperation(item.operation);
         results.push(this.failureResult(item.operation, outcome, safeMessage, backup));
         results.push(...remainingResults(prepared, prepared.indexOf(item), 'skipped'));
         return { outcome, operations: results };
@@ -227,27 +237,28 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
   }
 
   private assertPrecondition(operation: ProposedChangeOperation, source: WorkspaceFileSnapshot, destination: WorkspaceFileSnapshot): void {
+    const backupStatus = backupBeforeOperation(operation);
     if (operation.operation === 'create') {
       if (source.exists) {
-        throw new MutationConflictError(operation.path, 'Destination now exists.');
+        throw new MutationConflictError(operation.path, 'Destination now exists.', backupStatus);
       }
       return;
     }
     if (!source.exists || source.isDirectory) {
-      throw new MutationConflictError(operation.path, 'Source is missing or is not a file.');
+      throw new MutationConflictError(operation.path, 'Source is missing or is not a file.', backupStatus);
     }
     if (source.hash !== operation.expectedSourceHash) {
-      throw new MutationConflictError(operation.path, 'Source changed after this proposal was prepared.');
+      throw new MutationConflictError(operation.path, 'Source changed after this proposal was prepared.', backupStatus);
     }
     if (operation.operation === 'rename') {
       if (operation.destinationPresent !== destination.exists) {
-        throw new MutationConflictError(operation.destinationPath ?? operation.path, destination.exists ? 'Destination now exists.' : 'Destination is missing.');
+        throw new MutationConflictError(operation.destinationPath ?? operation.path, destination.exists ? 'Destination now exists.' : 'Destination is missing.', backupStatus);
       }
       if (destination.exists && destination.hash !== operation.expectedDestinationHash) {
-        throw new MutationConflictError(operation.destinationPath ?? operation.path, 'Destination changed after this proposal was prepared.');
+        throw new MutationConflictError(operation.destinationPath ?? operation.path, 'Destination changed after this proposal was prepared.', backupStatus);
       }
       if (destination.isDirectory) {
-        throw new MutationConflictError(operation.destinationPath ?? operation.path, 'Destination is a directory.');
+        throw new MutationConflictError(operation.destinationPath ?? operation.path, 'Destination is a directory.', backupStatus);
       }
     }
   }
@@ -287,14 +298,21 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     this.assertPrecondition(operation, latestSource, latestDestination);
     const backupRequired = isDestructiveOperation(operation.operation, latestDestination.exists);
     const backup = backupRequired ? await this.createBackups(context, operation, latestSource, latestDestination, runId, proposalHash, options) : { status: 'not_required' as const };
-    if (operation.operation === 'delete') {
-      await this.deleteFile(context, operation.path, operation.expectedSourceHash, operation.operationId);
-    } else if (operation.operation === 'rename') {
-      await this.renameFile(context, operation.path, operation.destinationPath ?? '', operation.expectedSourceHash, operation.expectedDestinationHash, operation.operationId, latestSource.sizeBytes, options);
-    } else if (operation.operation === 'overwrite') {
-      await this.overwriteFile(context, operation.path, operation.content ?? '', operation.expectedSourceHash, operation.operationId);
-    } else {
-      await this.writeFile(context, operation.path, operation.content ?? '', operation.operation === 'create' ? undefined : operation.expectedSourceHash);
+    try {
+      if (operation.operation === 'delete') {
+        await this.deleteFile(context, operation.path, operation.expectedSourceHash, operation.operationId);
+      } else if (operation.operation === 'rename') {
+        await this.renameFile(context, operation.path, operation.destinationPath ?? '', operation.expectedSourceHash, operation.expectedDestinationHash, operation.operationId, latestSource.sizeBytes, options);
+      } else if (operation.operation === 'overwrite') {
+        await this.overwriteFile(context, operation.path, operation.content ?? '', operation.expectedSourceHash, operation.operationId);
+      } else {
+        await this.writeFile(context, operation.path, operation.content ?? '', operation.operation === 'create' ? undefined : operation.expectedSourceHash);
+      }
+    } catch (error: unknown) {
+      if (error instanceof MutationConflictError) {
+        throw new MutationConflictError(error.relativePath, error.reason, backup.status);
+      }
+      throw new MutationOperationError(backup.status, error instanceof AmbiguousMutationError);
     }
     return {
       operationId: operation.operationId,
@@ -338,7 +356,13 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
       }
       return { status: 'created', ...(checkpoints[0]?.reference ? { reference: checkpoints[0].reference } : {}) };
     } catch (error: unknown) {
-      if (error instanceof MutationConflictError || error instanceof AmbiguousMutationError) {
+      if (error instanceof MutationConflictError) {
+        if (checkpoints.length > 0) {
+          throw new MutationConflictError(error.relativePath, error.reason, 'created');
+        }
+        throw error;
+      }
+      if (error instanceof AmbiguousMutationError) {
         throw error;
       }
       if (error instanceof BackupMutationError) {
@@ -793,16 +817,20 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     return parsed.value;
   }
 
-  private failureResult(operation: ProposedChangeOperation, status: 'applied' | 'skipped' | 'failed' | 'needs_manual_review', safeMessage: string, backup: 'not_required' | 'failed' | 'unknown' | 'created' = 'not_required'): WorkspaceApplyResult['operations'][number] {
+  private failureResult(operation: ProposedChangeOperation, status: 'applied' | 'skipped' | 'failed' | 'needs_manual_review', safeMessage: string, backup: ChangeBackupStatus = backupBeforeOperation(operation)): WorkspaceApplyResult['operations'][number] {
     return { operationId: operation.operationId, operation: operation.operation, path: operation.path, ...(operation.destinationPath ? { destinationPath: operation.destinationPath } : {}), status, backup, safeMessage };
   }
 }
 
 function remainingResults(prepared: readonly PreparedOperation[], completedIndex: number, status: 'skipped'): WorkspaceApplyResult['operations'] {
-  return prepared.slice(completedIndex + 1).map((item) => ({ operationId: item.operation.operationId, operation: item.operation.operation, path: item.operation.path, ...(item.operation.destinationPath ? { destinationPath: item.operation.destinationPath } : {}), status, backup: 'not_required' as const, safeMessage: 'The change set did not continue after an earlier failure.' }));
+  return prepared.slice(completedIndex + 1).map((item) => ({ operationId: item.operation.operationId, operation: item.operation.operation, path: item.operation.path, ...(item.operation.destinationPath ? { destinationPath: item.operation.destinationPath } : {}), status, backup: backupBeforeOperation(item.operation), safeMessage: 'The change set did not continue after an earlier failure.' }));
 }
 
-function messageFor(operation: ChangeOperationKind, backup: 'not_required' | 'created' | 'failed' | 'unknown'): string {
+function backupBeforeOperation(operation: ProposedChangeOperation): ChangeBackupStatus {
+  return operation.backupRequired ? 'not_created' : 'not_required';
+}
+
+function messageFor(operation: ChangeOperationKind, backup: ChangeBackupStatus): string {
   if (operation === 'overwrite') return backup === 'created' ? 'Overwritten after a recovery snapshot.' : 'Overwritten.';
   if (operation === 'rename') return backup === 'created' ? 'Renamed after a recovery snapshot.' : 'Renamed.';
   if (operation === 'delete') return backup === 'created' ? 'Deleted after a recovery snapshot.' : 'Deleted.';

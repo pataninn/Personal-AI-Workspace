@@ -1992,8 +1992,12 @@ textarea:focus-visible {
     min-width: 0;
   }
 
+  .account-menu-container {
+    min-width: 0;
+  }
+
   .account-area .button {
-    max-width: 10rem;
+    max-width: min(10rem, 100%);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2412,6 +2416,159 @@ textarea:focus-visible {
   text-align: center;
 }
 
+.project-file-history-page,
+.project-file-history {
+  min-width: 0;
+}
+
+.project-file-history-toolbar {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.project-file-history-toolbar > div,
+.project-file-history-toolbar label {
+  display: grid;
+  min-width: min(100%, 18rem);
+  gap: var(--space-1);
+}
+
+.project-file-history-toolbar code,
+.project-file-history-entry code {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.project-file-history-toolbar select {
+  min-height: 2.75rem;
+  max-width: 100%;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+}
+
+.project-file-history-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.project-file-history-entry {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-3);
+}
+
+.project-file-history-entry > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.project-file-history-entry h2,
+.project-file-history-entry p {
+  margin: 0;
+}
+
+.project-file-history-entry h2 {
+  overflow-wrap: anywhere;
+  font-size: 1rem;
+}
+
+.project-file-history-entry p,
+.project-file-history-destination {
+  color: var(--color-text-muted);
+}
+
+.project-file-history-entry dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.project-file-history-entry dt {
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}
+
+.project-file-history-entry dd {
+  margin: var(--space-1) 0 0;
+  overflow-wrap: anywhere;
+}
+
+.project-file-history-status {
+  max-width: 14rem;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: 9999px;
+  text-transform: capitalize;
+}
+
+.project-file-history-loading,
+.project-file-history-empty {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.project-file-history-more {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--space-4);
+}
+
+.project-file-history-live {
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+.change-review-diff {
+  display: grid;
+  gap: 1px;
+  margin: var(--space-3) 0 0;
+  padding: var(--space-2);
+  overflow-x: auto;
+  list-style: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+}
+
+.change-review-diff-line {
+  display: grid;
+  grid-template-columns: 6rem minmax(max-content, 1fr);
+  gap: var(--space-3);
+  padding: 2px var(--space-2);
+  white-space: pre;
+}
+
+.change-review-diff-label {
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}
+
+.change-review-diff-line.is-added {
+  background: var(--color-success-surface);
+}
+
+.change-review-diff-line.is-removed {
+  background: var(--color-error-surface);
+}
+
+.change-review-diff-line code {
+  color: var(--color-text);
+}
+
 @media (max-width: 40rem) {
   .project-activity-header,
   .project-activity-card-header,
@@ -2427,6 +2584,20 @@ textarea:focus-visible {
 
   .project-activity-status {
     align-self: flex-start;
+  }
+
+  .project-file-history-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .project-file-history-toolbar > div,
+  .project-file-history-toolbar label {
+    min-width: 0;
+  }
+
+  .change-review-diff-line {
+    grid-template-columns: 5rem minmax(max-content, 1fr);
   }
 }
 

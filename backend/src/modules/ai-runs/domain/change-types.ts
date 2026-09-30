@@ -13,7 +13,7 @@ export type ChangeSetStatus =
 export type ChangeSetDecision = 'pending' | 'approved' | 'rejected';
 
 export type ChangeOperationResultStatus = 'applied' | 'skipped' | 'failed' | 'needs_manual_review';
-export type ChangeBackupStatus = 'not_required' | 'created' | 'failed' | 'unknown';
+export type ChangeBackupStatus = 'not_required' | 'not_created' | 'created' | 'failed' | 'unknown';
 
 export interface ChangeSetCounts {
   readonly total: number;
@@ -89,6 +89,7 @@ export interface ChangeSetResult {
   readonly skippedCount: number;
   readonly failedCount: number;
   readonly backupCount: number;
+  readonly conflictPath?: string;
 }
 
 export interface ProposedChangeSet {

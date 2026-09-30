@@ -3,6 +3,25 @@ import type { DataSource, QueryRunner } from 'typeorm';
 import { TypeOrmProposedChangeSetRepository } from '@/infrastructure/database/repositories/typeorm-change-set-repository';
 
 describe('TypeOrmProposedChangeSetRepository', () => {
+  it('lists bounded owner and project scoped file history without loading raw JSON content or counting rows', async () => {
+    const query = jest.fn(async (_sql: string, _parameters?: unknown[]) => []);
+    const repository = new TypeOrmProposedChangeSetRepository({ query } as unknown as DataSource);
+    await repository.listFileHistoryForProjectOwner({ ownerId: 'owner', projectId: 'project', path: 'src/app.ts', outcome: 'all', limit: 20 });
+    const sql = query.mock.calls[0]?.[0] as string;
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(sql).toContain('change_set."owner_id" = $1 AND change_set."project_id" = $2');
+    expect(sql).toContain('change_set."operation_paths" @> ARRAY[$3]::text[]');
+    expect(sql).toContain('jsonb_array_elements(change_set."operations") WITH ORDINALITY');
+    expect(sql).toContain("WHEN change_set.\"status\" IN ('stale', 'needs_manual_review') THEN 'unknown'");
+    expect(sql).toContain("$4::text = 'all' OR result.item->>'status' = 'applied'");
+    expect(sql).not.toContain("change_set.\"status\" = 'applied' AND result.item->>'status'");
+    expect(sql).toContain("ELSE 'not_created'");
+    expect(sql).toContain('LIMIT $8');
+    expect(sql).not.toMatch(/\bCOUNT\s*\(/iu);
+    expect(sql).not.toMatch(/SELECT\s+change_set\."operations"/iu);
+    expect(sql).not.toMatch(/SELECT\s+change_set\."result"/iu);
+  });
+
   it('maps PostgreSQL UPDATE RETURNING rows before applying a confirmed decision', async () => {
     const ownerId = '11111111-1111-4111-8111-111111111111';
     const runId = '22222222-2222-4222-8222-222222222222';

@@ -8,9 +8,10 @@ const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const PROJECT_ID = '22222222-2222-4222-8222-222222222222';
 const RUN_ID = '33333333-3333-4333-8333-333333333333';
 
-function appWithActivity(): { readonly app: express.Express; readonly listActivity: jest.Mock; readonly getActivity: jest.Mock } {
+function appWithActivity(): { readonly app: express.Express; readonly listActivity: jest.Mock; readonly getActivity: jest.Mock; readonly listFileHistory: jest.Mock } {
   const listActivity = jest.fn(async () => ({ projectId: PROJECT_ID, items: [], nextCursor: null }));
   const getActivity = jest.fn(async () => ({ runId: RUN_ID, projectId: PROJECT_ID }));
+  const listFileHistory = jest.fn(async () => ({ projectId: PROJECT_ID, path: 'src/app.ts', outcome: 'all', items: [], nextCursor: null }));
   const app = express();
   app.use(cookieParser());
   app.use('/api/v1', createAiRunRouter({
@@ -20,10 +21,11 @@ function appWithActivity(): { readonly app: express.Express; readonly listActivi
     decideEgress: {} as never,
     listActivity: { execute: listActivity } as never,
     getActivity: { execute: getActivity } as never,
+    listFileHistory: { execute: listFileHistory } as never,
     appOrigin: 'https://127.0.0.1:8443',
     clearSessionCookie: () => undefined
   }));
-  return { app, listActivity, getActivity };
+  return { app, listActivity, getActivity, listFileHistory };
 }
 
 describe('AI run activity routes', () => {
@@ -49,5 +51,15 @@ describe('AI run activity routes', () => {
     expect(response.status).toBe(200);
     expect(response.body.data).toEqual({ runId: RUN_ID, projectId: PROJECT_ID });
     expect(getActivity).toHaveBeenCalledWith({ ownerId: OWNER_ID, runId: RUN_ID });
+  });
+
+  it('mounts owner-scoped file history with explicit path and outcome filters', async () => {
+    const { app, listFileHistory } = appWithActivity();
+    const response = await request(app)
+      .get(`/api/v1/projects/${PROJECT_ID}/file-history?path=src%2Fapp.ts&outcome=applied&limit=10`)
+      .set('Cookie', '__Host-pa_session=session-token');
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({ projectId: PROJECT_ID, path: 'src/app.ts', outcome: 'all' });
+    expect(listFileHistory).toHaveBeenCalledWith({ ownerId: OWNER_ID, projectId: PROJECT_ID, path: 'src/app.ts', outcome: 'applied', limit: '10', cursor: undefined });
   });
 });

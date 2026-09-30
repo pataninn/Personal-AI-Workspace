@@ -16,6 +16,7 @@ import type {
   ProposedChangeSet
 } from '@/modules/ai-runs/domain/change-types';
 import type { IProposedChangeSetRepository } from '@/modules/ai-runs/repositories/change-set-repository';
+import type { ListProjectFileHistoryInput, ProjectFileHistoryRecord, ProjectFileHistoryRecordPage } from '@/modules/ai-runs/domain/file-history-types';
 import { ProjectArchivedError } from '@/modules/conversations/domain/conversation-errors';
 
 interface ChangeSetRow {
@@ -41,6 +42,25 @@ interface ChangeSetRow {
   readonly updated_at: Date | string;
 }
 
+interface FileHistoryRow {
+  readonly change_set_id: string;
+  readonly project_id: string;
+  readonly run_id: string;
+  readonly conversation_id: string | null;
+  readonly operation_id: string;
+  readonly operation_index: number | string;
+  readonly operation: ProjectFileHistoryRecord['operation'];
+  readonly matched_path: string;
+  readonly path: string;
+  readonly destination_path: string | null;
+  readonly summary: string;
+  readonly change_set_status: ProjectFileHistoryRecord['changeSetStatus'];
+  readonly operation_status: ProjectFileHistoryRecord['operationStatus'];
+  readonly backup_status: ProjectFileHistoryRecord['backupStatus'] | null;
+  readonly created_at: Date | string;
+  readonly updated_at: Date | string;
+}
+
 export class TypeOrmProposedChangeSetRepository implements IProposedChangeSetRepository {
   public constructor(private readonly dataSource: DataSource) {}
 
@@ -57,10 +77,10 @@ export class TypeOrmProposedChangeSetRepository implements IProposedChangeSetRep
         return toChangeSet(existing);
       }
       const rows: readonly ChangeSetRow[] = await queryRunner.query(
-        `INSERT INTO "ai_run_change_sets" ("owner_id", "project_id", "run_id", "proposal_hash", "operations", "total_size_bytes", "total_line_count", "preview_limit_bytes", "preview_limit_lines", "fake_runtime", "backup_checkpoints", "safe_message")
-         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11::jsonb, $12)
+        `INSERT INTO "ai_run_change_sets" ("owner_id", "project_id", "run_id", "proposal_hash", "operations", "operation_paths", "total_size_bytes", "total_line_count", "preview_limit_bytes", "preview_limit_lines", "fake_runtime", "backup_checkpoints", "safe_message")
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6::text[], $7, $8, $9, $10, $11, $12::jsonb, $13)
          RETURNING *`,
-        [input.ownerId, input.projectId, input.runId, input.proposalHash, JSON.stringify(input.operations), input.totalSizeBytes, input.totalLineCount, input.previewLimitBytes, input.previewLimitLines, input.fakeRuntime, '[]', 'Review the proposed changes before applying them.']
+        [input.ownerId, input.projectId, input.runId, input.proposalHash, JSON.stringify(input.operations), operationPaths(input.operations), input.totalSizeBytes, input.totalLineCount, input.previewLimitBytes, input.previewLimitLines, input.fakeRuntime, '[]', 'Review the proposed changes before applying them.']
       );
       const row = rows[0];
       if (!row) {
@@ -131,13 +151,50 @@ export class TypeOrmProposedChangeSetRepository implements IProposedChangeSetRep
 
   public async save(changeSet: ProposedChangeSet): Promise<void> {
     const rows: readonly ChangeSetRow[] = await this.dataSource.query(
-      `UPDATE "ai_run_change_sets" SET "status" = $1, "decision" = $2, "operations" = $3::jsonb, "backup_checkpoints" = $4::jsonb, "result" = $5::jsonb, "safe_message" = $6, "updated_at" = now()
-       WHERE "owner_id" = $7 AND "run_id" = $8 AND "id" = $9 RETURNING *`,
-      [changeSet.status, changeSet.decision, JSON.stringify(changeSet.operations), JSON.stringify(changeSet.backupCheckpoints ?? []), changeSet.result ? JSON.stringify(changeSet.result) : null, changeSet.safeMessage, changeSet.ownerId, changeSet.runId, changeSet.id]
+      `UPDATE "ai_run_change_sets" SET "status" = $1, "decision" = $2, "operations" = $3::jsonb, "operation_paths" = $4::text[], "backup_checkpoints" = $5::jsonb, "result" = $6::jsonb, "safe_message" = $7, "updated_at" = now()
+       WHERE "owner_id" = $8 AND "run_id" = $9 AND "id" = $10 RETURNING *`,
+      [changeSet.status, changeSet.decision, JSON.stringify(changeSet.operations), operationPaths(changeSet.operations), JSON.stringify(changeSet.backupCheckpoints ?? []), changeSet.result ? JSON.stringify(changeSet.result) : null, changeSet.safeMessage, changeSet.ownerId, changeSet.runId, changeSet.id]
     );
     if (!rows[0]) {
       throw new ChangeSetNotFoundError();
     }
+  }
+
+  public async listFileHistoryForProjectOwner(input: ListProjectFileHistoryInput): Promise<ProjectFileHistoryRecordPage> {
+    const cursor = input.cursor;
+    const rows: readonly FileHistoryRow[] = await this.dataSource.query(
+      `SELECT change_set."id" AS change_set_id, change_set."project_id", change_set."run_id", ai_run."conversation_id",
+         operation.item->>'operationId' AS operation_id, (operation.ordinality - 1)::integer AS operation_index,
+         operation.item->>'operation' AS operation,
+         CASE WHEN operation.item->>'path' = $3 THEN operation.item->>'path' ELSE operation.item->>'destinationPath' END AS matched_path,
+         operation.item->>'path' AS path, operation.item->>'destinationPath' AS destination_path,
+         operation.item->>'summary' AS summary, change_set."status" AS change_set_status,
+         result.item->>'status' AS operation_status,
+         COALESCE(result.item->>'backup', CASE
+           WHEN operation.item->>'backupRequired' <> 'true' THEN 'not_required'
+           WHEN change_set."status" = 'applying' THEN 'pending'
+           WHEN change_set."status" IN ('stale', 'needs_manual_review') THEN 'unknown'
+           ELSE 'not_created'
+         END) AS backup_status,
+         change_set."created_at", change_set."updated_at"
+       FROM "ai_run_change_sets" AS change_set
+       JOIN "ai_runs" AS ai_run ON ai_run."id" = change_set."run_id" AND ai_run."owner_id" = change_set."owner_id" AND ai_run."project_id" = change_set."project_id"
+       CROSS JOIN LATERAL jsonb_array_elements(change_set."operations") WITH ORDINALITY AS operation(item, ordinality)
+       LEFT JOIN LATERAL (
+         SELECT item FROM jsonb_array_elements(COALESCE(change_set."result"->'operations', '[]'::jsonb)) AS results(item)
+         WHERE item->>'operationId' = operation.item->>'operationId' LIMIT 1
+       ) AS result ON true
+       WHERE change_set."owner_id" = $1 AND change_set."project_id" = $2
+         AND change_set."operation_paths" @> ARRAY[$3]::text[]
+         AND (operation.item->>'path' = $3 OR operation.item->>'destinationPath' = $3)
+         AND ($4::text = 'all' OR result.item->>'status' = 'applied')
+         AND ($5::timestamptz IS NULL OR change_set."created_at" < $5 OR
+           (change_set."created_at" = $5 AND (change_set."id" > $6 OR (change_set."id" = $6 AND operation.ordinality - 1 > $7))))
+       ORDER BY change_set."created_at" DESC, change_set."id" ASC, operation.ordinality ASC
+       LIMIT $8`,
+      [input.ownerId, input.projectId, input.path, input.outcome, cursor?.createdAt ?? null, cursor?.changeSetId ?? null, cursor?.operationIndex ?? -1, input.limit + 1]
+    );
+    return { records: rows.slice(0, input.limit).map(toFileHistoryRecord), hasMore: rows.length > input.limit };
   }
 
   private async startTransaction(): Promise<QueryRunner> {
@@ -156,6 +213,31 @@ export class TypeOrmProposedChangeSetRepository implements IProposedChangeSetRep
     const rows: readonly ChangeSetRow[] = await queryRunner.query('SELECT * FROM "ai_run_change_sets" WHERE "owner_id" = $1 AND "run_id" = $2 LIMIT 1 FOR UPDATE', [ownerId, runId]);
     return rows[0] ?? null;
   }
+}
+
+function operationPaths(operations: readonly ProposedChangeOperation[]): string[] {
+  return [...new Set(operations.flatMap((operation) => [operation.path, ...(operation.destinationPath ? [operation.destinationPath] : [])]))];
+}
+
+function toFileHistoryRecord(row: FileHistoryRow): ProjectFileHistoryRecord {
+  return {
+    changeSetId: row.change_set_id,
+    projectId: row.project_id,
+    runId: row.run_id,
+    conversationId: row.conversation_id,
+    operationId: row.operation_id,
+    operationIndex: Number(row.operation_index),
+    operation: row.operation,
+    matchedPath: row.matched_path,
+    path: row.path,
+    ...(row.destination_path ? { destinationPath: row.destination_path } : {}),
+    summary: row.summary,
+    changeSetStatus: row.change_set_status,
+    operationStatus: row.operation_status,
+    backupStatus: row.backup_status ?? 'not_created',
+    createdAt: toDate(row.created_at),
+    updatedAt: toDate(row.updated_at)
+  };
 }
 
 function returningRow(rows: readonly ChangeSetRow[]): ChangeSetRow | undefined {

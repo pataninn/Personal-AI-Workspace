@@ -43,6 +43,7 @@ import { createLogger, type AppLogger } from '@/shared/logging/logger';
 import { CreateProjectFactUseCase, DeleteProjectFactUseCase, ListProjectFactsUseCase, ReviewProjectFactUseCase, UpdateProjectFactUseCase } from '@/modules/memory';
 import { CreateProjectTaskUseCase, ListProjectTaskSuggestionsUseCase, ListProjectTasksUseCase, ReorderProjectTaskUseCase, ResolveProjectTaskSuggestionUseCase, UpdateProjectTaskUseCase } from '@/modules/tasks';
 import { GetAiRunActivityUseCase, ListAiRunActivityUseCase } from '@/modules/ai-runs/use-cases/activity-use-cases';
+import { ListProjectFileHistoryUseCase } from '@/modules/ai-runs/use-cases/file-history-use-cases';
 
 export interface Application {
   readonly app: Express;
@@ -184,6 +185,7 @@ export async function createApplication(
           taskSuggestionsForRun: taskSuggestionRepository,
           listActivity: new ListAiRunActivityUseCase(projectRepository, aiRunRepository),
           getActivity: new GetAiRunActivityUseCase(aiRunRepository, changeSetRepository, conversationRepository),
+          listFileHistory: new ListProjectFileHistoryUseCase(projectRepository, changeSetRepository),
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },

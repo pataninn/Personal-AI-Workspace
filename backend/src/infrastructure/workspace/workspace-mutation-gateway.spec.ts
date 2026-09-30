@@ -81,14 +81,18 @@ describe('WorkspaceMutationGatewayAdapter', () => {
   it('returns stale and performs no writes when a precondition hash is no longer current', async () => {
     const adapter = makeAdapter(root, recoveryRoot);
     const operationToApply = operation('edit', 'edit.txt', { content: 'unsafe\n', expectedSourceHash: hash('edit-before\n') });
+    const operationAfterStale = operation('create', 'new.txt', { content: 'new\n' });
     await fs.writeFile(path.join(projectRoot, 'edit.txt'), 'changed-by-user\n', 'utf8');
 
-    const result = await adapter.applyChangeSet(SCOPE, [operationToApply], RUN_ID, PROPOSAL_HASH);
+    const result = await adapter.applyChangeSet(SCOPE, [operationToApply, operationAfterStale], RUN_ID, PROPOSAL_HASH);
 
     expect(result.outcome).toBe('stale');
     expect(result.conflict?.path).toBe('edit.txt');
     await expect(fs.readFile(path.join(projectRoot, 'edit.txt'), 'utf8')).resolves.toBe('changed-by-user\n');
-    expect(result.operations[0]?.status).toBe('skipped');
+    expect(result.operations).toMatchObject([
+      { status: 'skipped', backup: 'not_created' },
+      { status: 'skipped', backup: 'not_required' }
+    ]);
   });
 
   it('fails closed before mutation when a recovery backup cannot be opened', async () => {
@@ -116,6 +120,28 @@ describe('WorkspaceMutationGatewayAdapter', () => {
     expect(result.outcome).toBe('needs_manual_review');
     expect(result.operations[0]).toMatchObject({ status: 'needs_manual_review', backup: 'unknown' });
     await expect(fs.readFile(path.join(projectRoot, 'delete.txt'), 'utf8')).resolves.toBe('delete-before\n');
+  });
+
+  it('retains created backup status when the later file write outcome is ambiguous', async () => {
+    const fileSystem = makeFileSystem();
+    const realOpen = fileSystem.open;
+    const failingFileSystem: MutationFileSystem = {
+      ...fileSystem,
+      open: async (filePath, flags) => {
+        if (filePath.endsWith('.tmp')) throw Object.assign(new Error('write unavailable'), { code: 'EACCES' });
+        return realOpen(filePath, flags);
+      }
+    };
+    const adapter = makeAdapter(root, recoveryRoot, failingFileSystem);
+
+    const result = await adapter.applyChangeSet(SCOPE, [operation('overwrite', 'overwrite.txt', {
+      content: 'overwrite-after\n',
+      expectedSourceHash: hash('overwrite-before\n')
+    })], RUN_ID, PROPOSAL_HASH);
+
+    expect(result.outcome).toBe('needs_manual_review');
+    expect(result.operations[0]).toMatchObject({ status: 'needs_manual_review', backup: 'created' });
+    await expect(fs.readFile(path.join(projectRoot, 'overwrite.txt'), 'utf8')).resolves.toBe('overwrite-before\n');
   });
 
   it('rejects a missing exact source hash before touching the workspace', async () => {
@@ -193,6 +219,7 @@ describe('WorkspaceMutationGatewayAdapter', () => {
     const result = await adapter.applyChangeSet(SCOPE, [operation('overwrite', 'overwrite.txt', { content: 'unsafe\n', expectedSourceHash: hash('overwrite-before\n') })], RUN_ID, PROPOSAL_HASH);
 
     expect(result.outcome).toBe('stale');
+    expect(result.operations[0]).toMatchObject({ status: 'skipped', backup: 'created' });
     await expect(fs.readFile(path.join(projectRoot, 'overwrite.txt'), 'utf8')).resolves.toBe('changed-before-claim\n');
   });
 
@@ -229,6 +256,7 @@ describe('WorkspaceMutationGatewayAdapter', () => {
     })], RUN_ID, PROPOSAL_HASH);
 
     expect(result.outcome).toBe('stale');
+    expect(result.operations[0]).toMatchObject({ status: 'skipped', backup: 'created' });
     await expect(fs.readFile(path.join(projectRoot, 'rename.txt'), 'utf8')).resolves.toBe('rename-before\n');
     await expect(fs.readFile(destinationPath, 'utf8')).resolves.toBe('changed-before-claim\n');
   });
