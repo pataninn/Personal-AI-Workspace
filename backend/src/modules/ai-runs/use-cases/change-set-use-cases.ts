@@ -440,6 +440,7 @@ function defaultChangePolicy() {
     maxReadLines: CHANGE_SET_LIMITS.maxPreviewLines,
     maxReadOutputBytes: CHANGE_SET_LIMITS.maxPreviewBytes,
     maxSearchFiles: 200,
+    maxSearchLines: 20_000,
     maxSearchMatches: 200,
     maxSearchFileBytes: CHANGE_SET_LIMITS.maxContentBytes,
     maxSearchOutputBytes: CHANGE_SET_LIMITS.maxPreviewBytes,

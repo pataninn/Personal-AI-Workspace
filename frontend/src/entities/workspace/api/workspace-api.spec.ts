@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getWorkspaceTree, flattenWorkspaceFiles, normalizeWorkspaceTree } from '@/entities/workspace';
+import { getWorkspaceTree, flattenWorkspaceFiles, normalizeWorkspaceSearch, normalizeWorkspaceTree, searchWorkspaceFiles } from '@/entities/workspace';
 
 const { getJsonMock } = vi.hoisted(() => ({ getJsonMock: vi.fn() }));
 
@@ -48,5 +48,33 @@ describe('workspace file candidates', () => {
       { path: 'notes/readme.md', sizeBytes: 12 },
       { path: 'src/nested.ts', sizeBytes: 0 }
     ]);
+  });
+
+  it('searches the selected project using an encoded query and bounded result count', async () => {
+    getJsonMock.mockResolvedValue({
+      directory: '', query: 'task suggestion', filesScanned: 12, truncated: true,
+      matches: [{ path: 'backend/src/tasks.ts', line: 8, column: 3, text: 'Task suggestions are persisted.' }]
+    });
+
+    const response = await searchWorkspaceFiles('project/id', ' task suggestion ', 500);
+
+    expect(getJsonMock).toHaveBeenCalledWith('/api/v1/projects/project%2Fid/files/search?query=task+suggestion&maxResults=50');
+    expect(response.matches[0]?.path).toBe('backend/src/tasks.ts');
+    expect(response.truncated).toBe(true);
+    expect(response.filesScanned).toBe(12);
+  });
+
+  it('drops malformed and absolute search paths before they reach a disclosure checkbox', () => {
+    const response = normalizeWorkspaceSearch({
+      directory: '', query: 'search', filesScanned: 4, truncated: false,
+      matches: [
+        { path: 'src/search.ts', line: 2, column: 1, text: 'safe match' },
+        { path: 'C:\\private\\secret.ts', line: 1, column: 1, text: 'unsafe path' },
+        { path: '../outside.ts', line: 1, column: 1, text: 'traversal' },
+        { path: 'src/bad.ts', line: 0, column: 1, text: 'invalid location' }
+      ]
+    });
+
+    expect(response.matches).toEqual([{ path: 'src/search.ts', line: 2, column: 1, text: 'safe match' }]);
   });
 });

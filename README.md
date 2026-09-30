@@ -112,6 +112,11 @@ application repository. Workspace inspection still blocks <code>.git</code>, <co
 paths. File changes continue to require normal proposal review, current hashes,
 pre-destructive backups, and atomic promotion.
 
+When preparing an AI run, use <strong>Choose context</strong> to browse or search project
+files. Search ranks phrase and term matches deterministically, reports when its bounded
+scan may be incomplete, and never selects results automatically. Search snippets are
+redacted locally; only files you select appear in the separate provider consent review.
+
 ## Rollback
 
 Keep Compose stopped while changing the workspace root. To return to the

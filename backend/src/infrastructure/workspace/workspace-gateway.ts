@@ -48,6 +48,7 @@ import {
 } from '@/infrastructure/workspace/workspace-gateway-fs';
 import { WorkspaceOperationContext } from '@/infrastructure/workspace/workspace-operation';
 import { assertQueryLength, boundText, decodeUtf8, redactSensitiveText, truncateUtf8 } from '@/infrastructure/workspace/workspace-text';
+import { createWorkspaceSearchQuery, extractWorkspaceSearchTerms, rankWorkspaceSearchLine, type WorkspaceSearchQuery } from '@/infrastructure/workspace/workspace-search-ranking';
 
 export interface WorkspaceGatewayOptions {
   readonly containerRoot: string;
@@ -127,9 +128,16 @@ export class WorkspaceGatewayAdapter implements IWorkspaceGateway {
     if (!Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > this.policy.maxSearchMatches) {
       throw new WorkspaceLimitExceededError('The requested workspace search result limit is outside the safe limit.');
     }
-    const state: SearchState = { filesScanned: 0, outputBytes: 0, truncated: false, matches: [], stop: false };
-    await this.searchDirectory(paths, directory.path, this.policy.maxTreeDepth, input.query, maxResults, context, state);
-    return { directory: directory.path, query: input.query, matches: state.matches, filesScanned: state.filesScanned, truncated: state.truncated };
+    const state: SearchState = { filesScanned: 0, linesScanned: 0, matchCount: 0, outputBytes: 0, truncated: false, matches: [], stop: false };
+    const searchQuery = createWorkspaceSearchQuery(input.query);
+    await this.searchDirectory(paths, directory.path, this.policy.maxTreeDepth, searchQuery, maxResults, context, state);
+    return {
+      directory: directory.path,
+      query: input.query,
+      matches: state.matches.map((ranked) => ranked.match),
+      filesScanned: state.filesScanned,
+      truncated: state.truncated || state.matchCount > state.matches.length
+    };
   }
 
   private createContext(signal: AbortSignal | undefined): WorkspaceOperationContext {
@@ -292,7 +300,7 @@ export class WorkspaceGatewayAdapter implements IWorkspaceGateway {
     paths: WorkspaceScopePaths,
     directoryPath: string,
     remainingDepth: number,
-    query: string,
+    query: WorkspaceSearchQuery,
     maxResults: number,
     context: WorkspaceOperationContext,
     state: SearchState
@@ -326,7 +334,7 @@ export class WorkspaceGatewayAdapter implements IWorkspaceGateway {
   private async searchFile(
     paths: WorkspaceScopePaths,
     candidate: DirectoryEntryCandidate,
-    query: string,
+    query: WorkspaceSearchQuery,
     maxResults: number,
     context: WorkspaceOperationContext,
     state: SearchState
@@ -359,32 +367,31 @@ export class WorkspaceGatewayAdapter implements IWorkspaceGateway {
       throw error;
     }
     const lines = redactSensitiveText(text).split(/\r\n|\r|\n/u);
+    const remainingLineLimit = this.policy.maxSearchLines - state.linesScanned;
+    if (remainingLineLimit <= 0) {
+      state.truncated = true;
+      state.stop = true;
+      return;
+    }
+    if (lines.length > remainingLineLimit) {
+      lines.length = remainingLineLimit;
+      state.truncated = true;
+      state.stop = true;
+    }
+    state.linesScanned += lines.length;
+    const fileTerms = collectFileTerms(lines, query);
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index] ?? '';
-      let start = line.indexOf(query);
-      while (start >= 0) {
-        const redactedLine = truncateUtf8(line, this.policy.maxSearchLineBytes);
-        const match: WorkspaceSearchMatch = {
-          path: candidate.relativePath,
-          line: index + 1,
-          column: Array.from(line.slice(0, start)).length + 1,
-          text: redactedLine
-        };
-        const matchBytes = Buffer.byteLength(match.text, 'utf8');
-        if (state.matches.length >= maxResults || state.outputBytes + matchBytes > this.policy.maxSearchOutputBytes) {
-          state.truncated = true;
-          state.stop = true;
-          return;
-        }
-        state.outputBytes += matchBytes;
-        state.matches.push(match);
-        if (state.matches.length >= maxResults) {
-          state.truncated = true;
-          state.stop = true;
-          return;
-        }
-        start = line.indexOf(query, start + Math.max(1, query.length));
-      }
+      const relevance = rankWorkspaceSearchLine(line, query, fileTerms);
+      if (!relevance) continue;
+      const match: WorkspaceSearchMatch = {
+        path: candidate.relativePath,
+        line: index + 1,
+        column: relevance.column,
+        text: truncateUtf8(line, Math.min(this.policy.maxSearchLineBytes, this.policy.maxSearchOutputBytes))
+      };
+      state.matchCount += 1;
+      insertRankedMatch(state, { match, score: relevance.score }, maxResults, this.policy.maxSearchOutputBytes);
     }
   }
 
@@ -463,10 +470,48 @@ export class WorkspaceGatewayAdapter implements IWorkspaceGateway {
 
 interface SearchState {
   filesScanned: number;
+  linesScanned: number;
+  matchCount: number;
   outputBytes: number;
-  matches: WorkspaceSearchMatch[];
+  matches: RankedWorkspaceSearchMatch[];
   truncated: boolean;
   stop: boolean;
+}
+
+interface RankedWorkspaceSearchMatch {
+  readonly match: WorkspaceSearchMatch;
+  readonly score: number;
+}
+
+function collectFileTerms(lines: readonly string[], query: WorkspaceSearchQuery): ReadonlySet<string> {
+  const terms = new Set<string>();
+  const queryTerms = new Set(query.terms);
+  for (const line of lines) {
+    for (const term of extractWorkspaceSearchTerms(line)) if (queryTerms.has(term)) terms.add(term);
+  }
+  return terms;
+}
+
+function insertRankedMatch(state: SearchState, candidate: RankedWorkspaceSearchMatch, maxResults: number, maxOutputBytes: number): void {
+  state.matches.push(candidate);
+  state.matches.sort(compareRankedMatches);
+  if (state.matches.length > maxResults) state.matches.pop();
+  state.outputBytes = state.matches.reduce((total, item) => total + Buffer.byteLength(item.match.text, 'utf8'), 0);
+  while (state.matches.length > 0 && state.outputBytes > maxOutputBytes) {
+    const removed = state.matches.pop();
+    if (removed) state.outputBytes -= Buffer.byteLength(removed.match.text, 'utf8');
+  }
+}
+
+function compareRankedMatches(left: RankedWorkspaceSearchMatch, right: RankedWorkspaceSearchMatch): number {
+  return right.score - left.score
+    || compareWorkspacePath(left.match.path, right.match.path)
+    || left.match.line - right.match.line
+    || left.match.column - right.match.column;
+}
+
+function compareWorkspacePath(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function assertReadableTextPath(relativePath: string, stats: WorkspaceGatewayStats, policy: WorkspaceInspectionPolicy): void {

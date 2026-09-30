@@ -33,6 +33,7 @@ interface FixtureFileSystemOptions {
   readonly closeError?: Error;
   readonly reparsePoint?: boolean;
   readonly extraFiles?: readonly string[];
+  readonly fileContents?: Readonly<Record<string, string>>;
 }
 
 class FixtureBoundary implements IWorkspaceBoundary {
@@ -79,7 +80,7 @@ class FixtureFileSystem implements WorkspaceGatewayFileSystem {
     this.file('/workspace/apps/control-mixed.txt', Buffer.from([9, 10, 13, 31]));
     this.file('/workspace/apps/control-c1.txt', Buffer.from([0xc2, 0x81]));
     for (const fileName of options.extraFiles ?? []) {
-      this.file(`/workspace/apps/${fileName}`, 'extra\n');
+      this.file(`/workspace/apps/${fileName}`, options.fileContents?.[fileName] ?? 'extra\n');
     }
     this.file('/workspace/apps/src/main.ts', 'const greeting = "世界";\nconst token = "secret-value";\n');
     this.file('/workspace/apps/src/nested/deep.ts', 'deep match\n');
@@ -177,6 +178,7 @@ const BASE_POLICY: WorkspaceInspectionPolicy = {
   maxReadLines: 4000,
   maxReadOutputBytes: 128 * 1024,
   maxSearchFiles: 200,
+  maxSearchLines: 20_000,
   maxSearchMatches: 200,
   maxSearchFileBytes: 64 * 1024,
   maxSearchOutputBytes: 128 * 1024,
@@ -232,6 +234,60 @@ describe('WorkspaceGatewayAdapter', () => {
     expect(surroundingTextSearch.matches[0]).toMatchObject({ path: 'notes.txt', line: 5, text: 'after' });
   });
 
+  it('ranks multi-word relevance across the bounded scan before applying the result limit', async () => {
+    const fileSystem = new FixtureFileSystem({
+      extraFiles: ['a-noise.txt', 'z-context.ts'],
+      fileContents: {
+        'a-noise.txt': 'This note mentions project only.\n',
+        'z-context.ts': 'Project overview.\nTask suggestion completion uses a writer.\n'
+      }
+    });
+    const gateway = new WorkspaceGatewayAdapter({ containerRoot: '/workspace', workspaceBoundary: new FixtureBoundary(), fileSystem, policy: { ...BASE_POLICY, maxSearchMatches: 1 } });
+    const startedAt = performance.now();
+    const result = await gateway.searchText(PROJECT, { directory: '', query: 'project task suggestion', maxResults: 1 });
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(result.matches).toEqual([{ path: 'z-context.ts', line: 2, column: 1, text: 'Task suggestion completion uses a writer.' }]);
+    expect(result.filesScanned).toBeLessThanOrEqual(BASE_POLICY.maxSearchFiles);
+    expect(result.truncated).toBe(true);
+    expect(elapsedMs).toBeLessThan(BASE_POLICY.operationTimeoutMs);
+    expect(result.matches.reduce((bytes, match) => bytes + Buffer.byteLength(match.text, 'utf8'), 0)).toBeLessThanOrEqual(BASE_POLICY.maxSearchOutputBytes);
+  });
+
+  it('benchmarks retrieval quality and latency with a repository-shaped synthetic corpus', async () => {
+    const decoyFiles = Array.from({ length: 118 }, (_, index) => `decoy-${String(index).padStart(3, '0')}.txt`);
+    const fileContents = Object.fromEntries(decoyFiles.map((fileName) => [fileName, 'Provider endpoint settings are documented here.\n']));
+    fileContents['a-overview.txt'] = 'Provider overview without task details.\n';
+    fileContents['z-task-suggestions.ts'] = 'Task suggestion lifecycle\nThe provider saves the accepted task suggestion after completion.\n';
+    const fileSystem = new FixtureFileSystem({ extraFiles: [...decoyFiles, 'a-overview.txt', 'z-task-suggestions.ts'], fileContents });
+    const gateway = new WorkspaceGatewayAdapter({ containerRoot: '/workspace', workspaceBoundary: new FixtureBoundary(), fileSystem, policy: BASE_POLICY });
+    const startedAt = performance.now();
+    const result = await gateway.searchText(PROJECT, { directory: '', query: 'provider task suggestion', maxResults: 10 });
+    const elapsedMs = performance.now() - startedAt;
+    const outputTextBytes = result.matches.reduce((bytes, match) => bytes + Buffer.byteLength(match.text, 'utf8'), 0);
+
+    expect(result.matches[0]).toMatchObject({ path: 'z-task-suggestions.ts', line: 2 });
+    expect(result.filesScanned).toBeLessThanOrEqual(BASE_POLICY.maxSearchFiles);
+    expect(outputTextBytes).toBeLessThanOrEqual(BASE_POLICY.maxSearchOutputBytes);
+    expect(result.truncated).toBe(true);
+    expect(elapsedMs).toBeLessThan(BASE_POLICY.operationTimeoutMs);
+    if (process.env.PAI_CONTEXT_SEARCH_BENCHMARK === '1') {
+      process.stdout.write(`CONTEXT_SEARCH_BENCHMARK ${JSON.stringify({ query: 'provider task suggestion', filesScanned: result.filesScanned, returnedMatches: result.matches.length, outputTextBytes, elapsedMs: Number(elapsedMs.toFixed(2)), topPath: result.matches[0]?.path })}\n`);
+    }
+  });
+
+  it('orders tied matches by path and line regardless of discovery order', async () => {
+    const fileSystem = new FixtureFileSystem({
+      extraFiles: ['z-last.txt', 'a-first.txt'],
+      fileContents: { 'z-last.txt': 'shared search term\n', 'a-first.txt': 'shared search term\n' }
+    });
+    const gateway = new WorkspaceGatewayAdapter({ containerRoot: '/workspace', workspaceBoundary: new FixtureBoundary(), fileSystem, policy: BASE_POLICY });
+
+    const result = await gateway.searchText(PROJECT, { directory: '', query: 'shared search term' });
+
+    expect(result.matches.slice(0, 2).map((match) => match.path)).toEqual(['a-first.txt', 'z-last.txt']);
+  });
+
   it('bounds tree depth, search results, and redacts search matches', async () => {
     const { gateway } = makeGateway(undefined, {
       ...BASE_POLICY,
@@ -243,7 +299,7 @@ describe('WorkspaceGatewayAdapter', () => {
     const search = await gateway.searchText(PROJECT, { directory: '', query: 'match', maxResults: 1 });
     expect(search.matches).toHaveLength(1);
     expect(search.matches[0]?.text).toContain('match');
-    expect(search.truncated).toBe(true);
+    expect(search.truncated).toBe(false);
   });
 
   it('does not let a depth boundary suppress files at the current level', async () => {

@@ -551,6 +551,7 @@
       "get": {
         "tags": ["Workspace files"],
         "summary": "Search approved UTF-8 text files",
+        "description": "Matches case-insensitive phrases or query terms. Exact phrases and lines containing more query terms rank first, with stable path and line tie-breaking. Results are redacted project-relative snippets from a bounded local scan.",
         "operationId": "searchWorkspaceText",
         "security": [{ "sessionCookie": [] }],
         "parameters": [
@@ -559,7 +560,7 @@
           { "$ref": "#/components/parameters/WorkspaceMaxResults" }
         ],
         "responses": {
-          "200": { "description": "Bounded project-relative text matches.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceSearchEnvelope" } } } },
+          "200": { "description": "Ranked, redacted project-relative text matches. `truncated` is true when directory depth, file/line count, result count, or output size may omit matches. A timeout returns the existing safe error response.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceSearchEnvelope" } } } },
           "400": { "$ref": "#/components/responses/ValidationError" },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "403": { "$ref": "#/components/responses/WorkspaceForbidden" },
@@ -1032,7 +1033,7 @@
       "WorkspaceDirectory": { "name": "directory", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 2048 }, "description": "Normalized project-relative directory. Absolute and host paths are rejected." },
       "WorkspaceDepth": { "name": "depth", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 0, "maximum": 6, "default": 2 } },
       "WorkspacePath": { "name": "path", "in": "query", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 2048 }, "description": "Normalized project-relative text file path." },
-      "WorkspaceQuery": { "name": "query", "in": "query", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 256 } },
+      "WorkspaceQuery": { "name": "query", "in": "query", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 256 }, "description": "Case-insensitive phrase or multi-term query. Matching lines rank by phrase, line-term coverage, then file-term coverage." },
       "WorkspaceMaxResults": { "name": "maxResults", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 200 } },
       "OriginHeader": { "name": "Origin", "in": "header", "required": true, "schema": { "type": "string", "format": "uri" } },
       "CsrfHeader": { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } },
@@ -1133,8 +1134,8 @@
       "WorkspaceTreeNode": { "allOf": [{ "$ref": "#/components/schemas/WorkspaceEntry" }, { "type": "object", "properties": { "children": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceTreeNode" } } }, "additionalProperties": false }] },
       "WorkspaceTree": { "type": "object", "required": ["directory", "depth", "entries", "truncated"], "properties": { "directory": { "type": "string" }, "depth": { "type": "integer", "minimum": 0 }, "entries": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceTreeNode" } }, "truncated": { "type": "boolean" } }, "additionalProperties": false },
       "WorkspaceRead": { "type": "object", "required": ["path", "content", "encoding", "sizeBytes", "lineCount", "truncated"], "properties": { "path": { "type": "string" }, "content": { "type": "string" }, "encoding": { "type": "string", "enum": ["utf-8"] }, "sizeBytes": { "type": "integer", "minimum": 0 }, "lineCount": { "type": "integer", "minimum": 0 }, "truncated": { "type": "boolean" } }, "additionalProperties": false },
-      "WorkspaceSearchMatch": { "type": "object", "required": ["path", "line", "column", "text"], "properties": { "path": { "type": "string" }, "line": { "type": "integer", "minimum": 1 }, "column": { "type": "integer", "minimum": 1 }, "text": { "type": "string" } }, "additionalProperties": false },
-      "WorkspaceSearch": { "type": "object", "required": ["directory", "query", "matches", "filesScanned", "truncated"], "properties": { "directory": { "type": "string" }, "query": { "type": "string" }, "matches": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceSearchMatch" } }, "filesScanned": { "type": "integer", "minimum": 0 }, "truncated": { "type": "boolean" } }, "additionalProperties": false },
+      "WorkspaceSearchMatch": { "type": "object", "description": "Redacted single-line excerpt. Paths are relative to the selected project root.", "required": ["path", "line", "column", "text"], "properties": { "path": { "type": "string" }, "line": { "type": "integer", "minimum": 1 }, "column": { "type": "integer", "minimum": 1 }, "text": { "type": "string" } }, "additionalProperties": false },
+      "WorkspaceSearch": { "type": "object", "description": "Ranked deterministic matches. Search considers no more than 200 file candidates and 20,000 lines, subject to per-file, output-byte, depth, and operation-time limits. `filesScanned` counts candidates reached, including candidates later skipped by size or text checks. `truncated` indicates possible omissions; a timeout returns an error instead.", "required": ["directory", "query", "matches", "filesScanned", "truncated"], "properties": { "directory": { "type": "string" }, "query": { "type": "string" }, "matches": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceSearchMatch" } }, "filesScanned": { "type": "integer", "minimum": 0, "description": "Number of bounded file candidates processed, including candidates skipped by size or text checks." }, "truncated": { "type": "boolean" } }, "additionalProperties": false },
       "WorkspaceListEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/WorkspaceList" }, "error": { "type": "null" } }, "additionalProperties": false },
       "WorkspaceTreeEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/WorkspaceTree" }, "error": { "type": "null" } }, "additionalProperties": false },
       "WorkspaceReadEnvelope": { "type": "object", "required": ["data", "error"], "properties": { "data": { "$ref": "#/components/schemas/WorkspaceRead" }, "error": { "type": "null" } }, "additionalProperties": false },

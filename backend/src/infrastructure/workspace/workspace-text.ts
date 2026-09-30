@@ -40,7 +40,7 @@ export function boundText(
 }
 
 export function assertQueryLength(query: string, maxLength: number): void {
-  if (query.length === 0 || Array.from(query).length > maxLength) {
+  if (query.trim().length === 0 || Array.from(query).length > maxLength) {
     throw new WorkspaceLimitExceededError('The workspace search query is empty or too long.');
   }
 }

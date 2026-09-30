@@ -1250,6 +1250,77 @@ textarea:focus-visible {
   padding: var(--space-2) var(--space-3);
 }
 
+.context-file-search,
+.context-search-results {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+.context-file-search > label {
+  font-weight: 600;
+}
+
+.context-file-search-controls {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.context-file-search-controls input {
+  min-width: min(16rem, 100%);
+  min-height: 2.75rem;
+  flex: 1 1 16rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: var(--space-2) var(--space-3);
+}
+
+.context-file-search-controls input:focus-visible {
+  outline: 3px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+.context-search-file-list {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  list-style: none;
+}
+
+.context-search-file-list li {
+  min-width: 0;
+}
+
+.context-search-file-list .context-scope-checkbox {
+  align-items: flex-start;
+  padding-block: var(--space-1);
+}
+
+.context-search-file-list .context-scope-checkbox input {
+  margin-top: 0.25rem;
+}
+
+.context-search-file-list .context-scope-checkbox span {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.context-search-file-list small {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.context-search-truncated {
+  margin: 0;
+  border-left: 3px solid var(--color-warning-border);
+  background: var(--color-warning-surface);
+  color: var(--color-warning);
+  padding: var(--space-2) var(--space-3);
+}
+
 .context-scope-actions {
   margin-top: var(--space-4);
 }

@@ -17,7 +17,7 @@ import { sendData } from '@/shared/http/response';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const directorySchema = z.string().max(2048).default('');
 const pathSchema = z.string().min(1).max(2048);
-const querySchema = z.string().min(1).max(256);
+const querySchema = z.string().trim().min(1).max(256);
 
 export interface WorkspaceRouterDependencies {
   readonly getSession: GetSessionUseCase;

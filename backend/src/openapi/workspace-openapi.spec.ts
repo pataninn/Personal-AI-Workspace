@@ -30,5 +30,9 @@ describe('workspace OpenAPI document', () => {
     }
     const schemas = record(record(document.components).schemas);
     ['WorkspaceEntry', 'WorkspaceList', 'WorkspaceTree', 'WorkspaceRead', 'WorkspaceSearch', 'WorkspaceListEnvelope', 'WorkspaceTreeEnvelope', 'WorkspaceReadEnvelope', 'WorkspaceSearchEnvelope'].forEach((schema) => expect(schemas[schema]).toBeDefined());
+    const search = record(record(paths['/api/v1/projects/{projectId}/files/search']).get);
+    expect(search.description).toMatch(/case-insensitive phrases or query terms/iu);
+    expect(search.description).toMatch(/rank first/iu);
+    expect(record(schemas.WorkspaceSearch).description).toMatch(/20,000 lines/iu);
   });
 });

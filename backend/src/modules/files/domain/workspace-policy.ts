@@ -16,6 +16,7 @@ export interface WorkspaceInspectionPolicy {
   readonly maxReadLines: number;
   readonly maxReadOutputBytes: number;
   readonly maxSearchFiles: number;
+  readonly maxSearchLines: number;
   readonly maxSearchMatches: number;
   readonly maxSearchFileBytes: number;
   readonly maxSearchOutputBytes: number;
@@ -36,6 +37,7 @@ export const DEFAULT_WORKSPACE_INSPECTION_POLICY: WorkspaceInspectionPolicy = {
   maxReadLines: 4000,
   maxReadOutputBytes: 128 * 1024,
   maxSearchFiles: 200,
+  maxSearchLines: 20_000,
   maxSearchMatches: 200,
   maxSearchFileBytes: 64 * 1024,
   maxSearchOutputBytes: 128 * 1024,

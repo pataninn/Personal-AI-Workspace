@@ -1,13 +1,21 @@
 import { getJson } from '@/shared/api';
-import type { WorkspaceFileCandidate, WorkspaceTreeNode, WorkspaceTreeResponse } from '@/entities/workspace/model/types';
+import type { WorkspaceFileCandidate, WorkspaceFileSearchMatch, WorkspaceFileSearchResponse, WorkspaceTreeNode, WorkspaceTreeResponse } from '@/entities/workspace/model/types';
 
 const PROJECTS_PATH = '/api/v1/projects';
 const MAX_TREE_DEPTH = 6;
 const MAX_FILES = 500;
+const MAX_SEARCH_RESULTS = 50;
 
 export function getWorkspaceTree(projectId: string, depth = 4): Promise<WorkspaceTreeResponse> {
   const boundedDepth = Math.max(0, Math.min(MAX_TREE_DEPTH, Math.floor(depth)));
   return getJson<unknown>(`${PROJECTS_PATH}/${encodeURIComponent(projectId)}/files/tree?depth=${boundedDepth}`).then((value) => normalizeWorkspaceTree(value));
+}
+
+export function searchWorkspaceFiles(projectId: string, query: string, maxResults = MAX_SEARCH_RESULTS): Promise<WorkspaceFileSearchResponse> {
+  const boundedResults = Math.max(1, Math.min(MAX_SEARCH_RESULTS, Math.floor(maxResults)));
+  const parameters = new URLSearchParams({ query: query.trim(), maxResults: String(boundedResults) });
+  return getJson<unknown>(`${PROJECTS_PATH}/${encodeURIComponent(projectId)}/files/search?${parameters.toString()}`)
+    .then((value) => normalizeWorkspaceSearch(value));
 }
 
 export function flattenWorkspaceFiles(tree: WorkspaceTreeResponse): readonly WorkspaceFileCandidate[] {
@@ -27,6 +35,20 @@ export function normalizeWorkspaceTree(value: unknown): WorkspaceTreeResponse {
     depth: readNonNegativeInteger(record.depth),
     entries,
     truncated: record.truncated === true
+  };
+}
+
+export function normalizeWorkspaceSearch(value: unknown): WorkspaceFileSearchResponse {
+  const record = asRecord(value);
+  if (!record) throw new Error('The local app returned invalid project search results.');
+  const rawMatches = Array.isArray(record.matches) ? record.matches : [];
+  const matches = normalizeSearchMatches(rawMatches);
+  return {
+    directory: safeDirectory(record.directory),
+    query: typeof record.query === 'string' ? record.query.slice(0, 256) : '',
+    matches,
+    filesScanned: readNonNegativeInteger(record.filesScanned),
+    truncated: record.truncated === true || rawMatches.length > matches.length
   };
 }
 
@@ -63,6 +85,20 @@ function normalizeNodes(value: readonly unknown[], depth: number): readonly Work
   return nodes;
 }
 
+function normalizeSearchMatches(value: readonly unknown[]): readonly WorkspaceFileSearchMatch[] {
+  const matches: WorkspaceFileSearchMatch[] = [];
+  for (const candidate of value) {
+    const record = asRecord(candidate);
+    const path = safeRelativePath(record?.path);
+    const line = readPositiveInteger(record?.line);
+    const column = readPositiveInteger(record?.column);
+    if (!path || line === null || column === null || typeof record?.text !== 'string') continue;
+    matches.push({ path, line, column, text: record.text.slice(0, 16_384) });
+    if (matches.length >= MAX_SEARCH_RESULTS) break;
+  }
+  return matches;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
@@ -88,4 +124,8 @@ function safeName(value: unknown): string | null {
 
 function readNonNegativeInteger(value: unknown): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function readPositiveInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
