@@ -31,6 +31,30 @@ export class InMemoryAiRunRepository implements IAiRunRepository, IProjectTaskSu
   private readonly idempotency = new Map<string, IdempotentRunRecord>();
   private readonly locks = new Map<string, Promise<void>>();
 
+  public async recoverInterruptedRunsForReview(): Promise<number> {
+    let recovered = 0;
+    for (const run of [...this.runs.values()]) {
+      await this.withLock(`start:${run.id}`, async () => {
+        const current = this.runs.get(run.id);
+        if (!current || !['staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested'].includes(current.status)) return;
+        const updated: AiRun = {
+          ...current,
+          status: 'review_required',
+          phase: 'review',
+          cleanup: 'unknown',
+          providerTransmission: current.providerTransmission === 'transmitted_confirmed' || current.providerTransmission === 'not_started_confirmed'
+            ? current.providerTransmission
+            : 'unknown',
+          safeMessage: 'The app restarted while this run was active. Review its saved status; no work was resumed automatically.',
+          updatedAt: new Date()
+        };
+        this.runs.set(updated.id, updated);
+        recovered += 1;
+      });
+    }
+    return recovered;
+  }
+
   public async create(input: CreateAiRunRecord): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> {
     return this.withLock(this.createLockKey(input.ownerId, input.projectId, input.idempotencyKey), async () => {
       const key = this.idempotencyKey(input.ownerId, input.projectId, input.idempotencyKey);

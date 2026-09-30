@@ -90,6 +90,7 @@ function ActivityCard({ item, expanded, detailState, onToggle, onRetryDetail }: 
         <div className="project-activity-actions">
           <Button type="button" variant="secondary" aria-expanded={expanded} aria-controls={`activity-detail-${item.runId}`} data-testid={`activity-details-${item.runId}`} onClick={onToggle}>{expanded ? 'Hide details' : 'View details'}</Button>
           <Link to={`/projects/${encodeURIComponent(item.projectId)}/conversations/${encodeURIComponent(item.conversationId)}`}>Open conversation</Link>
+          {isUnresolvedRun(item.status) ? <Link data-testid={`activity-review-run-${item.runId}`} to={`/projects/${encodeURIComponent(item.projectId)}/conversations/${encodeURIComponent(item.conversationId)}?runId=${encodeURIComponent(item.runId)}`}>Review run</Link> : null}
         </div>
         {expanded && <div id={`activity-detail-${item.runId}`} className="project-activity-detail" data-testid={`activity-detail-${item.runId}`}>
           {detailState?.status === 'loading' && <div className="project-activity-loading" aria-busy="true"><Spinner label="Loading run details" /><span role="status">Loading run details…</span></div>}
@@ -161,4 +162,8 @@ function formatTransmission(value: AiRunActivityItem['providerTransmission']): s
   if (value === 'not_started' || value === 'not_started_confirmed') return 'Not transmitted';
   if (value === 'transmitted_confirmed') return 'Transmitted';
   return 'Unknown';
+}
+
+function isUnresolvedRun(status: AiRunActivityItem['status']): boolean {
+  return ['pending_approval', 'staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested', 'review_required'].includes(status);
 }

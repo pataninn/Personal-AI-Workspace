@@ -10,6 +10,7 @@ const MODEL = 'nvidia/nemotron-3-super-120b-a12b';
 test('discloses a remembered permission, auto-uses its exact scope, then revokes it', async ({ page }) => {
   let permissions: Array<Record<string, unknown>> = [];
   let firstManifest: Record<string, unknown> | null = null;
+  const snapshots = new Map<string, Record<string, unknown>>();
   let createCount = 0;
   let decisionBody: Record<string, unknown> | null = null;
   let revokeHeaders: Record<string, string> | null = null;
@@ -34,6 +35,7 @@ test('discloses a remembered permission, auto-uses its exact scope, then revokes
     const payload = await previewResponse.json() as { data: { run: Record<string, unknown>; manifest: Record<string, unknown> } };
     if (createCount === 1) {
       firstManifest = payload.data.manifest;
+      snapshots.set(String(payload.data.run.runId), payload.data.run);
       await route.fulfill({ response: previewResponse });
       return;
     }
@@ -51,7 +53,36 @@ test('discloses a remembered permission, auto-uses its exact scope, then revokes
       providerApprovalMode: 'remembered_permission',
       safeMessage: 'A matching project permission approved this request.'
     };
+    snapshots.set(runId, run);
     await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ data: { run, manifest }, error: null }) });
+  });
+
+  await page.route('**/api/v1/ai-runs/**', async (route) => {
+    const url = new URL(route.request().url());
+    const parts = url.pathname.split('/').filter(Boolean);
+    const runId = parts[3];
+    const suffix = parts.slice(4).join('/');
+    const current = snapshots.get(runId);
+    if (route.request().method() === 'GET' && suffix === '' && current) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: current, error: null }) });
+      return;
+    }
+    if (route.request().method() === 'POST' && suffix === 'start' && current) {
+      const complete = {
+        ...current,
+        status: 'succeeded',
+        phase: 'terminal',
+        decision: 'approved',
+        safeMessage: 'Preview run completed.',
+        cleanup: 'complete',
+        providerTransmission: 'transmitted_confirmed',
+        assistant: { complete: true, contentLength: 0 }
+      };
+      snapshots.set(runId, complete);
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: complete, error: null }) });
+      return;
+    }
+    await route.fallback();
   });
 
   await page.route('**/api/v1/ai-runs/*/egress-decision', async (route) => {

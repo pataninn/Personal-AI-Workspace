@@ -57,6 +57,22 @@ interface AiRunRow {
 export class TypeOrmAiRunRepository implements IAiRunRepository {
   public constructor(private readonly dataSource: DataSource, private readonly taskSuggestionWriter?: TaskSuggestionCompletionWriter) {}
 
+  public async recoverInterruptedRunsForReview(): Promise<number> {
+    const rows: unknown = await this.dataSource.query(
+      `UPDATE "ai_runs"
+       SET "status" = 'review_required', "phase" = 'review', "cleanup" = 'unknown',
+           "provider_transmission" = CASE
+             WHEN "provider_transmission" IN ('transmitted_confirmed', 'not_started_confirmed') THEN "provider_transmission"
+             ELSE 'unknown'
+           END,
+           "safe_message" = $1, "updated_at" = now()
+       WHERE "status" IN ('staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested')
+       RETURNING "id"`,
+      ['The app restarted while this run was active. Review its saved status; no work was resumed automatically.']
+    );
+    return returnedCount(rows);
+  }
+
   public async create(input: CreateAiRunRecord): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> {
     const queryRunner = await this.startTransaction();
     try {
@@ -625,6 +641,12 @@ const rowToAiRun = toAiRun;
 function returningRow(rows: readonly AiRunRow[]): AiRunRow | undefined {
   const first: unknown = rows[0];
   return Array.isArray(first) ? first[0] as AiRunRow | undefined : first as AiRunRow | undefined;
+}
+
+function returnedCount(result: unknown): number {
+  if (!Array.isArray(result)) return 0;
+  const rows = Array.isArray(result[0]) ? result[0] : result;
+  return rows.length;
 }
 
 function parseManifest(value: unknown, manifestHash: string): EgressManifest {

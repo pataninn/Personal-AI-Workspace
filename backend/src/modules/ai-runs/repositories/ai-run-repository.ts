@@ -62,4 +62,10 @@ export interface IAiRunRepository {
   readonly withRunProjection?: (ownerId: string, runId: string, projection: (run: AiRun) => void) => Promise<boolean>;
   readonly listActivityForProjectOwner?: (input: ListAiRunActivityInput) => Promise<AiRunActivityRecordPage>;
   readonly recordProviderUsage?: (ownerId: string, runId: string, usage: NonNullable<AiRun['providerUsage']>) => Promise<AiRun | null>;
+  /**
+   * Fence runs interrupted by a previous single-server process before serving
+   * requests. Implementations must preserve confirmed provider transmission
+   * states and must never resume external work.
+   */
+  recoverInterruptedRunsForReview?(): Promise<number>;
 }

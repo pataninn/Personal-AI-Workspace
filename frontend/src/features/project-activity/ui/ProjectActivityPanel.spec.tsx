@@ -49,6 +49,16 @@ describe('ProjectActivityPanel', () => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith(`/ai-runs/${RUN_ID}/activity`))).toBe(true);
   });
 
+  it('links unresolved activity to the exact run in its conversation', async () => {
+    const unresolved = { ...item, status: 'review_required' as const };
+    fetchMock.mockImplementation(async () => envelope({ projectId: PROJECT_ID, items: [unresolved], nextCursor: null }));
+    render(<MemoryRouter><ProjectActivityPanel projectId={PROJECT_ID} archived={false} /></MemoryRouter>);
+
+    const reviewLink = await screen.findByTestId(`activity-review-run-${RUN_ID}`);
+    expect(reviewLink).toHaveTextContent('Review run');
+    expect(reviewLink).toHaveAttribute('href', `/projects/${PROJECT_ID}/conversations/${item.conversationId}?runId=${RUN_ID}`);
+  });
+
   it('announces read only archived history and distinguishes an empty filtered result', async () => {
     fetchMock.mockImplementation(async () => envelope({ projectId: PROJECT_ID, items: [], nextCursor: null }));
     const user = userEvent.setup();

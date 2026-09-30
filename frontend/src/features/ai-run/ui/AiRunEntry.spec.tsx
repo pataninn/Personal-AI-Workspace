@@ -2,6 +2,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { userSessionReducer } from '@/entities/user-session';
@@ -105,13 +106,22 @@ function renderEntry(request = 'Inspect the project'): void {
   const store = configureStore({ reducer: { userSession: userSessionReducer }, preloadedState: { userSession: session } });
   render(
     <Provider store={store}>
-      <AiRunEntry projectId={PROJECT_ID} conversationId={CONVERSATION_ID} request={request} disabled={false} />
+      <MemoryRouter initialEntries={[window.location.pathname + window.location.search]}>
+        <AiRunEntry projectId={PROJECT_ID} conversationId={CONVERSATION_ID} request={request} disabled={false} />
+        <LocationProbe />
+      </MemoryRouter>
     </Provider>
   );
 }
 
+function LocationProbe(): React.JSX.Element {
+  const location = useLocation();
+  return <output data-testid="current-url">{location.pathname}{location.search}</output>;
+}
+
 describe('AiRunEntry', () => {
   beforeEach(() => {
+    window.history.replaceState({}, '', '/');
     createAiRunMock.mockReset();
     getAiRunMock.mockReset();
     getEgressManifestMock.mockReset();
@@ -122,6 +132,75 @@ describe('AiRunEntry', () => {
     listFactsMock.mockReset().mockResolvedValue([projectFact]);
     createAiRunMock.mockResolvedValue({ ...pending, manifest } satisfies AiRunIntent);
     getEgressManifestMock.mockResolvedValue(manifest);
+  });
+
+  it('restores the exact pending provider disclosure and consent dialog from the conversation URL', async () => {
+    window.history.replaceState({}, '', `/?runId=${RUN_ID}`);
+    getAiRunMock.mockResolvedValue(pending);
+    renderEntry();
+
+    expect(await screen.findByTestId('provider-consent-alert-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('provider-consent-context')).toHaveTextContent('src/index.ts');
+    expect(createAiRunMock).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the run scope when the same URL is opened in another conversation', async () => {
+    window.history.replaceState({}, '', `/?runId=${RUN_ID}`);
+    getAiRunMock.mockResolvedValue(pending);
+    const store = configureStore({ reducer: { userSession: userSessionReducer }, preloadedState: { userSession: session } });
+    const renderConversation = (conversationId: string): React.JSX.Element => (
+      <Provider store={store}>
+        <MemoryRouter initialEntries={[window.location.pathname + window.location.search]}>
+          <AiRunEntry projectId={PROJECT_ID} conversationId={conversationId} request="Inspect the project" disabled={false} />
+        </MemoryRouter>
+      </Provider>
+    );
+    const view = render(renderConversation(CONVERSATION_ID));
+    expect(await screen.findByTestId('provider-consent-alert-dialog')).toBeInTheDocument();
+
+    view.rerender(renderConversation('44444444-4444-4444-8444-000000000002'));
+
+    expect(await screen.findByTestId('ai-run-restore-error')).toHaveTextContent('could not be restored in this conversation');
+    expect(screen.queryByTestId('provider-consent-alert-dialog')).not.toBeInTheDocument();
+    expect(getAiRunMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('blocks Ask AI while a restored run is still staging', async () => {
+    window.history.replaceState({}, '', `/?runId=${RUN_ID}`);
+    getAiRunMock.mockResolvedValue({ ...pending, status: 'staging', phase: 'staging', decision: 'approved' });
+    renderEntry();
+
+    expect(await screen.findByTestId('run-staging')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-run-submit')).toBeDisabled();
+    expect(screen.getByTestId('ai-run-new-request-blocked')).toHaveTextContent('This run is still unresolved');
+    expect(createAiRunMock).not.toHaveBeenCalled();
+  });
+
+  it('requires a duplicate-work warning before starting a separate run after ambiguous provider transmission', async () => {
+    window.history.replaceState({}, '', `/?runId=${RUN_ID}`);
+    getAiRunMock.mockResolvedValue({ ...pending, status: 'failed', phase: 'runtime', decision: 'approved', providerTransmission: 'unknown' });
+    renderEntry();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('ai-run-separate-request'));
+    expect(screen.getByTestId('ai-run-duplicate-work-warning')).toHaveTextContent('may repeat provider work');
+    expect(createAiRunMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Confirm and start separate run' }));
+    await waitFor(() => expect(createAiRunMock).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('current-url')).toHaveTextContent(`runId=${RUN_ID}`);
+  });
+
+  it('allows a safe retry from review only when no provider transmission is confirmed', async () => {
+    window.history.replaceState({}, '', `/?runId=${RUN_ID}`);
+    getAiRunMock.mockResolvedValue({ ...pending, status: 'review_required', phase: 'review', decision: 'approved', providerTransmission: 'not_started_confirmed' });
+    renderEntry();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('ai-run-safe-retry'));
+
+    await waitFor(() => expect(createAiRunMock).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('ai-run-duplicate-work-warning')).not.toBeInTheDocument();
   });
 
   it('keeps Ask AI disabled for an empty request and explains the required action', () => {

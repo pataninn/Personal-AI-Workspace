@@ -31,6 +31,7 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
   });
   const terminal = ['succeeded', 'failed', 'blocked', 'cancelled', 'review_required', 'rejected'].includes(timeline.snapshot.status);
   const reviewRequired = timeline.snapshot.status === 'review_required' || (timeline.connection === 'error' && timeline.snapshot.providerTransmission === 'unknown');
+  const showReconciliationNotice = timeline.connection === 'disconnected' || ['loading', 'partial', 'failed'].includes(timeline.reconciliationStatus);
   const statusText = statusLabel(timeline.snapshot.status, timeline.connection);
   const partialResponse = timeline.assistantText.length > 0 && ['failed', 'blocked', 'cancelled', 'review_required'].includes(timeline.snapshot.status);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -74,7 +75,7 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
         {timeline.snapshot.status === 'failed' ? <Alert tone="error" data-testid="run-failed" role="alert"><p>The assistant could not complete this run.</p>{partialResponse ? <p>Incomplete response.</p> : null}</Alert> : null}
         {timeline.snapshot.status === 'blocked' ? <Alert tone="error" data-testid="run-blocked" role="alert"><p>Run blocked by policy. This run was not completed.</p></Alert> : null}
         {timeline.snapshot.status === 'review_required' ? <Alert tone="warning" role="alert" data-testid="ai-run-review-required"><p>The run needs manual review. Refresh run status before trying again.</p><Button type="button" variant="secondary" data-testid="ai-run-review-refresh" onClick={timeline.refresh}>Refresh run status</Button></Alert> : null}
-        {timeline.connection === 'disconnected' ? <Alert tone="warning" role="alert" data-testid="ai-run-disconnected"><p>Live updates disconnected. The saved run and conversation were refetched; no event replay was attempted.</p><Button type="button" variant="secondary" data-testid="ai-run-disconnected-refresh" onClick={timeline.refresh}>Refresh run status</Button></Alert> : null}
+        {showReconciliationNotice ? <Alert tone="warning" role="alert" data-testid="ai-run-disconnected"><p>{reconciliationMessage(timeline.connection, timeline.reconciliationStatus, timeline.reconciliationReads)}</p><Button type="button" variant="secondary" data-testid="ai-run-disconnected-refresh" onClick={timeline.refresh}>Refresh run status</Button></Alert> : null}
         {timeline.cancelError ? <Alert tone="error" role="alert" data-testid="run-cancel-error"><p>{timeline.cancelError}</p><Button type="button" variant="secondary" data-testid="run-cancel-error-refresh" onClick={timeline.refresh}>Refresh run status</Button></Alert> : null}
         {timeline.error && timeline.connection !== 'disconnected' && timeline.snapshot.status !== 'review_required' ? <Alert tone="error" role="alert" data-testid="ai-run-timeline-error">{timeline.error}</Alert> : null}
         {!terminal && timeline.snapshot.status !== 'cancel_requested' ? <Button type="button" variant="secondary" data-testid="ai-run-cancel" disabled={timeline.cancelPending || disabled || !csrfToken} aria-busy={timeline.cancelPending} onClick={timeline.cancel}>{timeline.cancelPending ? 'Stopping assistant run...' : 'Cancel run'}</Button> : null}
@@ -148,4 +149,16 @@ function terminalHeading(status: AiRunSnapshot['status'], reviewRequired: boolea
 
 function formatModel(model: string): string {
   return model === 'nvidia/nemotron-3-super-120b-a12b' ? 'Nemotron 3 Super 120B' : model;
+}
+
+function reconciliationMessage(connection: ReturnType<typeof useAiRunTimeline>['connection'], status: ReturnType<typeof useAiRunTimeline>['reconciliationStatus'], reads: ReturnType<typeof useAiRunTimeline>['reconciliationReads']): string {
+  const prefix = connection === 'disconnected' ? 'Live updates disconnected. ' : '';
+  if (status === 'loading' || status === 'idle') return `${prefix}Checking the saved run and conversation; no work will be restarted.`;
+  if (status === 'complete') return 'Live updates disconnected. The saved run and conversation were refetched; no event replay was attempted.';
+  if (status === 'partial') {
+    const refreshed = reads.run ? 'saved run' : 'conversation';
+    const failed = reads.run ? 'conversation' : 'saved run';
+    return `${prefix}The ${refreshed} was refreshed, but the ${failed} could not be loaded. Refresh to try again; no work will be restarted.`;
+  }
+  return `${prefix}The saved run and conversation could not be refreshed. Check your connection and refresh to try again; no work will be restarted.`;
 }

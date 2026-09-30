@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAppSelector } from '@/app/store/hooks';
 import {
@@ -13,7 +14,7 @@ import type { ConversationHistoryResponse } from '@/entities/conversation';
 import { selectCsrfToken } from '@/entities/user-session';
 import { listProjectFacts } from '@/entities/project-fact';
 import { ApiClientError } from '@/shared/api';
-import { Alert, Button } from '@/shared/ui';
+import { Alert, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogRoot, AlertDialogTitle, Button } from '@/shared/ui';
 import { createIdempotencyKey } from '@/shared/lib/idempotency-key';
 
 import { ProviderConsentDialog } from '@/features/ai-run/ui/ProviderConsentDialog';
@@ -40,6 +41,8 @@ const STALE_DISCLOSURE_ERROR = 'This disclosure is no longer current. Review the
 
 export function AiRunEntry({ projectId, conversationId, request, recentMessageCount = 0, disabled, archivedDescriptionId, onConversationReconciled }: AiRunEntryProps): React.JSX.Element {
   const csrfToken = useAppSelector(selectCsrfToken);
+  const location = useLocation();
+  const navigate = useNavigate();
   const [intentLoading, setIntentLoading] = useState(false);
   const [intentError, setIntentError] = useState<string | null>(null);
   const [runState, setRunState] = useState<RunStatusState | null>(null);
@@ -50,6 +53,10 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
   const [decisionOutcomeUnknown, setDecisionOutcomeUnknown] = useState(false);
   const [rememberProviderPermission, setRememberProviderPermission] = useState(false);
   const [permissionListReady, setPermissionListReady] = useState(false);
+  const [runRestoreReady, setRunRestoreReady] = useState(() => !new URLSearchParams(location.search).has('runId'));
+  const [runRestoreError, setRunRestoreError] = useState<string | null>(null);
+  const [runRestoreAttempt, setRunRestoreAttempt] = useState(0);
+  const [duplicateWorkConfirm, setDuplicateWorkConfirm] = useState(false);
   const [intentKey, setIntentKey] = useState<string | null>(null);
   const [intentRequest, setIntentRequest] = useState<string | null>(null);
   const [intentContextKey, setIntentContextKey] = useState<string | null>(null);
@@ -61,6 +68,14 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
   const [selectedFactVersions, setSelectedFactVersions] = useState<Readonly<Record<string, number>>>({});
   const [memoryChoiceRequired, setMemoryChoiceRequired] = useState(false);
   const askAiButtonRef = useRef<HTMLButtonElement>(null);
+  const handledRunQueryRef = useRef<string | null | undefined>(undefined);
+  const replaceRunIdInUrl = useCallback((runId: string | null): void => {
+    const searchParams = new URLSearchParams(location.search);
+    if (runId) searchParams.set('runId', runId);
+    else searchParams.delete('runId');
+    const search = searchParams.toString();
+    navigate({ pathname: location.pathname, search: search ? `?${search}` : '', hash: location.hash }, { replace: true });
+  }, [location.hash, location.pathname, location.search, navigate]);
 
   const trimmedRequest = request.trim();
   const blankRequest = trimmedRequest.length === 0;
@@ -80,6 +95,45 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
     setIntentRequest(null);
     setIntentContextKey(null);
   }, [projectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const runId = new URLSearchParams(location.search).get('runId');
+    const runRestoreKey = JSON.stringify([projectId, conversationId, runId]);
+    if (handledRunQueryRef.current === runRestoreKey) {
+      return () => { cancelled = true; };
+    }
+    handledRunQueryRef.current = runRestoreKey;
+    setRunState(null);
+    setDialogOpen(false);
+    setDuplicateWorkConfirm(false);
+    setRunRestoreError(null);
+    if (!runId) {
+      setRunRestoreReady(true);
+      return () => { cancelled = true; };
+    }
+    setRunRestoreReady(false);
+    void getAiRun(runId)
+      .then(async (snapshot) => {
+        if (snapshot.projectId !== projectId || snapshot.conversationId !== conversationId) {
+          throw new Error('This run belongs to a different project or conversation.');
+        }
+        let manifest: EgressManifest | null = null;
+        if (snapshot.status === 'pending_approval' && snapshot.decision === 'pending') {
+          manifest = await getEgressManifest(snapshot.runId);
+        }
+        if (cancelled) return;
+        setRunState({ snapshot, manifest });
+        setDialogOpen(snapshot.status === 'pending_approval' && snapshot.decision === 'pending');
+        setRunRestoreReady(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setRunRestoreError('The selected run could not be restored in this conversation. Retry the lookup or remove the run link.');
+        setRunRestoreReady(true);
+      });
+    return () => { cancelled = true; };
+  }, [conversationId, location.search, projectId, runRestoreAttempt]);
 
   useEffect(() => {
     const handlePermissionChange = (): void => {
@@ -108,9 +162,14 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
     }
   }, [contextSelectionKey, intentContextKey, intentRequest, request]);
 
-  async function beginRun(forceFreshIntent = false): Promise<void> {
+  async function beginRun(forceFreshIntent = false, explicitlyConfirmedFreshRun = false): Promise<void> {
     setIntentError(null);
-    if (blankRequest || disabled || intentLoading || decisionLoading || memoryChoiceRequired) {
+    if (blankRequest || disabled || intentLoading || decisionLoading || memoryChoiceRequired || !runRestoreReady || runRestoreError) {
+      return;
+    }
+    if (runState && blocksAskAi(runState.snapshot.status) && !explicitlyConfirmedFreshRun) return;
+    if (runState && requiresDuplicateConfirmation(runState.snapshot) && !explicitlyConfirmedFreshRun) {
+      setDuplicateWorkConfirm(true);
       return;
     }
     if (!csrfToken) {
@@ -122,7 +181,7 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
     setIntentRequest(request);
     setIntentContextKey(contextSelectionKey);
     setIntentLoading(true);
-    setRunState(null);
+    setDuplicateWorkConfirm(false);
     setRememberProviderPermission(false);
     setDecisionError(null);
     setDecisionOutcomeUnknown(false);
@@ -161,6 +220,10 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
         throw new ApiClientError(200, 'INVALID_RESPONSE', 'The local app did not return a provider disclosure.');
       }
       setRunState({ snapshot: intent, manifest });
+      setRunRestoreError(null);
+      setRunRestoreReady(true);
+      handledRunQueryRef.current = JSON.stringify([projectId, conversationId, intent.runId]);
+      replaceRunIdInUrl(intent.runId);
       setDialogOpen(intent.status === 'pending_approval' && intent.decision === 'pending');
     } catch (error: unknown) {
       if (error instanceof ApiClientError && (error.code === 'EGRESS_MANIFEST_CONFLICT' || error.code === 'EGRESS_SOURCE_CHANGED')) {
@@ -286,14 +349,27 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
   }
 
   function retryRun(): void {
-    setRunState(null);
     setIntentError(null);
     setDecisionError(null);
     setDecisionOutcomeUnknown(false);
+    setDuplicateWorkConfirm(false);
     setIntentKey(null);
     setIntentRequest(null);
     setIntentContextKey(null);
-    void beginRun(true);
+    void beginRun(true, true);
+  }
+
+  function confirmSeparateRun(): void {
+    setDuplicateWorkConfirm(false);
+    void beginRun(true, true);
+  }
+
+  function removeRunLink(): void {
+    handledRunQueryRef.current = null;
+    replaceRunIdInUrl(null);
+    setRunState(null);
+    setRunRestoreError(null);
+    setRunRestoreReady(true);
   }
 
   function continueWithoutMemory(): void {
@@ -318,6 +394,7 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
 
   const formError = intentError ? <Alert tone="error" data-testid="ai-run-error" role="alert"><p>{intentError}</p>{memoryChoiceRequired ? <Button type="button" variant="secondary" data-testid="memory-context-continue-without" onClick={continueWithoutMemory}>Continue without project memory</Button> : <Button type="button" variant="secondary" data-testid="ai-run-error-retry" disabled={disabled || intentLoading} onClick={() => { void beginRun(); }}>Try again</Button>}</Alert> : memoryChoiceRequired ? <Alert tone="warning" data-testid="memory-context-choice-required" role="alert"><p>Review project memory and confirm the facts for this run, or explicitly continue without project memory.</p><Button type="button" variant="secondary" data-testid="memory-context-continue-without" onClick={continueWithoutMemory}>Continue without project memory</Button></Alert> : null;
   const blankMessage = blankRequest ? 'Enter a request before asking the assistant.' : null;
+  const askAiBlockedByRun = Boolean(runState && blocksAskAi(runState.snapshot.status));
 
   return (
     <>
@@ -355,16 +432,20 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
               data-testid="ai-run-submit"
               aria-busy={intentLoading}
               aria-describedby={["ai-run-help", blankMessage ? requestErrorId : null, disabled ? archivedDescription : null].filter(Boolean).join(' ')}
-              disabled={disabled || intentLoading || decisionLoading || memoryChoiceRequired || !permissionListReady || !csrfToken || blankRequest}
+              disabled={disabled || intentLoading || decisionLoading || memoryChoiceRequired || !permissionListReady || !csrfToken || blankRequest || !runRestoreReady || Boolean(runRestoreError) || askAiBlockedByRun}
             >
               {intentLoading ? <><span data-testid="ai-run-manifest-loading">Preparing provider disclosure…</span></> : 'Ask AI'}
             </Button>
           </div>
           {intentLoading ? <p className="form-status" data-testid="ai-run-manifest-loading-status" role="status" aria-live="polite">Preparing provider disclosure…</p> : null}
           {formError}
+          {runRestoreError ? <Alert tone="error" role="alert" data-testid="ai-run-restore-error"><p>{runRestoreError}</p><div className="run-status-actions"><Button type="button" variant="secondary" onClick={() => { handledRunQueryRef.current = null; setRunRestoreAttempt((attempt) => attempt + 1); }}>Retry lookup</Button><Button type="button" variant="secondary" onClick={removeRunLink}>Remove run link</Button></div></Alert> : null}
+          {askAiBlockedByRun ? <p className="field-help" data-testid="ai-run-new-request-blocked" role="status">This run is still unresolved. Review or refresh it before starting another run.</p> : null}
         </form>
         <ProviderPermissionManager projectId={projectId} csrfToken={csrfToken} onListStateChange={handlePermissionListStateChange} />
         {runState ? <RunStatusCard state={runState} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} onRetry={retryRun} onRefresh={refreshStatus} /> : null}
+        {runState && canSafelyRetry(runState.snapshot) ? <Button type="button" variant="secondary" data-testid="ai-run-safe-retry" disabled={disabled || intentLoading || decisionLoading || !csrfToken} onClick={retryRun}>Try again</Button> : null}
+        {runState && requiresDuplicateConfirmation(runState.snapshot) ? <Button type="button" variant="secondary" data-testid="ai-run-separate-request" disabled={disabled || intentLoading || decisionLoading || !csrfToken} onClick={() => setDuplicateWorkConfirm(true)}>Start a separate run</Button> : null}
         {runState && shouldRenderTimeline(runState.snapshot) ? <AiRunTimeline snapshot={runState.snapshot} manifest={runState.manifest} projectId={projectId} conversationId={conversationId} csrfToken={csrfToken} disabled={disabled} onSnapshotChange={(snapshot) => { setRunState((current) => current ? { ...current, snapshot } : current); }} onConversationReconciled={onConversationReconciled} /> : null}
         {runState && shouldRenderChangeReview(runState.snapshot) ? <ProposedChangeReview runId={runState.snapshot.runId} readOnly={disabled} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} /> : null}
       </section>
@@ -388,6 +469,16 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
           askAiButtonRef.current?.focus();
         }}
       />
+      <AlertDialogRoot open={duplicateWorkConfirm} onOpenChange={(open) => { if (!open) setDuplicateWorkConfirm(false); }}>
+        <AlertDialogContent data-testid="ai-run-duplicate-work-warning" onCloseAutoFocus={(event) => { event.preventDefault(); askAiButtonRef.current?.focus(); }}>
+          <AlertDialogTitle>Start a separate AI run?</AlertDialogTitle>
+          <AlertDialogDescription>The provider may already have received the earlier request. Starting a separate run may repeat provider work.</AlertDialogDescription>
+          <div className="dialog-actions">
+            <AlertDialogCancel asChild><Button type="button" variant="secondary">Keep current run</Button></AlertDialogCancel>
+            <Button type="button" data-testid="ai-run-separate-confirm" disabled={disabled || intentLoading || decisionLoading} onClick={confirmSeparateRun}>Confirm and start separate run</Button>
+          </div>
+        </AlertDialogContent>
+      </AlertDialogRoot>
     </>
   );
 }
@@ -400,6 +491,21 @@ function shouldRenderTimeline(snapshot: AiRunSnapshot): boolean {
 
 function shouldRenderChangeReview(snapshot: AiRunSnapshot): boolean {
   return snapshot.status === 'succeeded';
+}
+
+function blocksAskAi(status: AiRunSnapshot['status']): boolean {
+  return ['pending_approval', 'staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested', 'review_required'].includes(status);
+}
+
+function canSafelyRetry(snapshot: AiRunSnapshot): boolean {
+  if (snapshot.status === 'failed' && snapshot.phase === 'staging') return false;
+  return (snapshot.status === 'failed' || snapshot.status === 'review_required')
+    && snapshot.providerTransmission === 'not_started_confirmed';
+}
+
+function requiresDuplicateConfirmation(snapshot: AiRunSnapshot): boolean {
+  return ['failed', 'blocked', 'cancelled', 'review_required'].includes(snapshot.status)
+    && snapshot.providerTransmission !== 'not_started_confirmed';
 }
 
 async function loadSelectedFactsForReview(projectId: string): Promise<ReadonlyMap<string, number> | null> {

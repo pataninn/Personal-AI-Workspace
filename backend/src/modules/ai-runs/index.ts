@@ -14,6 +14,7 @@ export { CancelAiRunUseCase, type CancelAiRunInput } from '@/modules/ai-runs/use
 export { CollectProposedChangeSetUseCase, DecideProposedChangeSetUseCase, GetProposedChangeSetUseCase } from '@/modules/ai-runs/use-cases/change-set-use-cases';
 export { GetAiRunActivityUseCase, ListAiRunActivityUseCase } from '@/modules/ai-runs/use-cases/activity-use-cases';
 export { ListProjectFileHistoryUseCase } from '@/modules/ai-runs/use-cases/file-history-use-cases';
+export { RecoverInterruptedAiRunsUseCase } from '@/modules/ai-runs/use-cases/recover-interrupted-ai-runs-use-case';
 export { ListProviderPermissionsUseCase, RevokeProviderPermissionUseCase } from '@/modules/ai-runs/use-cases/provider-permission-use-cases';
 export type { IAgentRuntime, IAiRunRepository, ISandboxCommandRepository, IStagingGateway, IProposedChangeSetRepository, IWorkspaceMutationGateway } from '@/modules/ai-runs/repositories';
 export type { IProviderPermissionRepository } from '@/modules/ai-runs/repositories';

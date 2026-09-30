@@ -214,6 +214,17 @@ describe('AiRunTimeline lifecycle', () => {
     expect(onHistory).toHaveBeenCalledWith(history);
   });
 
+  it('states which REST reconciliation read failed after an SSE disconnect', async () => {
+    getAiRunMock.mockResolvedValue(running);
+    getConversationMock.mockRejectedValue(new Error('conversation temporarily unavailable'));
+    render(<AiRunTimeline snapshot={running} projectId={PROJECT_ID} conversationId={CONVERSATION_ID} csrfToken="csrf-token" />);
+    await waitFor(() => expect(ControlledEventSource.instances).toHaveLength(1));
+
+    ControlledEventSource.instances[0].emitError();
+
+    await waitFor(() => expect(screen.getByTestId('ai-run-disconnected')).toHaveTextContent('The saved run was refreshed, but the conversation could not be loaded'));
+  });
+
   it('does not reopen EventSource after disconnect reconciliation until an explicit refresh', async () => {
     getAiRunMock.mockResolvedValue(running);
     render(<HookHarness />);
@@ -278,6 +289,7 @@ describe('AiRunTimeline lifecycle', () => {
 
     await waitFor(() => expect(screen.getByTestId('ai-run-disconnected')).toBeInTheDocument());
     expect(screen.getByTestId('ai-run-disconnected')).toHaveAttribute('role', 'alert');
+    expect(screen.getByTestId('ai-run-disconnected')).toHaveTextContent('The saved run and conversation were refetched');
     expect(screen.queryAllByRole('status')).toHaveLength(0);
   });
 

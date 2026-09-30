@@ -62,6 +62,20 @@ function row(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 }
 
 describe('TypeOrmAiRunRepository', () => {
+  it('moves interrupted persisted runs to manual review without changing confirmed transmission facts', async () => {
+    const query = jest.fn().mockResolvedValue([{ id: RUN_ID }, { id: '33333333-3333-4333-8333-333333333333' }]);
+    const repository = new TypeOrmAiRunRepository({ query } as unknown as DataSource);
+
+    await expect(repository.recoverInterruptedRunsForReview()).resolves.toBe(2);
+
+    const sql = String(query.mock.calls[0]?.[0]);
+    expect(sql).toContain("'staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested'");
+    expect(sql).toContain("IN ('transmitted_confirmed', 'not_started_confirmed') THEN \"provider_transmission\"");
+    expect(sql).toContain("'review_required'");
+    expect(sql).toContain("'unknown'");
+    expect(query.mock.calls[0]?.[1]).toEqual(['The app restarted while this run was active. Review its saved status; no work was resumed automatically.']);
+  });
+
   it('lists bounded project activity with owner/project scope, stable cursor ordering, and safe usage counts', async () => {
     const projectId = '33333333-3333-4333-8333-333333333333';
     const activityRow = {

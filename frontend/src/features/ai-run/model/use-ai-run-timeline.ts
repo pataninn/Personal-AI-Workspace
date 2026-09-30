@@ -17,6 +17,7 @@ import { createIdempotencyKey } from '@/shared/lib/idempotency-key';
 export const MAX_TIMELINE_OUTPUT_BYTES = 64 * 1024;
 
 export type AiRunTimelineConnection = 'idle' | 'starting' | 'connecting' | 'streaming' | 'disconnected' | 'complete' | 'error';
+export type AiRunReconciliationStatus = 'idle' | 'loading' | 'complete' | 'partial' | 'failed';
 
 export interface UseAiRunTimelineOptions {
   readonly snapshot: AiRunSnapshot;
@@ -34,6 +35,8 @@ export interface UseAiRunTimelineResult {
   readonly assistantText: string;
   readonly events: readonly AiRunEvent[];
   readonly conversation: ConversationHistoryResponse | null;
+  readonly reconciliationStatus: AiRunReconciliationStatus;
+  readonly reconciliationReads: { readonly run: boolean; readonly conversation: boolean };
   readonly error: string | null;
   readonly cancelError: string | null;
   readonly cancelPending: boolean;
@@ -69,6 +72,8 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
   const [assistantText, setAssistantText] = useState('');
   const [events, setEvents] = useState<readonly AiRunEvent[]>([]);
   const [conversation, setConversation] = useState<ConversationHistoryResponse | null>(null);
+  const [reconciliationStatus, setReconciliationStatus] = useState<AiRunReconciliationStatus>('idle');
+  const [reconciliationReads, setReconciliationReads] = useState({ run: false, conversation: false });
   const [error, setError] = useState<string | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [cancelPending, setCancelPending] = useState(false);
@@ -95,35 +100,45 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
   }, []);
 
   const reconcile = useCallback(async (fallbackError?: string): Promise<void> => {
-    try {
-      const [run, history] = await Promise.all([
-        getAiRun(snapshot.runId),
-        getConversation(projectId, conversationId)
-      ]);
+    setReconciliationStatus('loading');
+    setReconciliationReads({ run: false, conversation: false });
+    const [runResult, historyResult] = await Promise.allSettled([
+      getAiRun(snapshot.runId),
+      getConversation(projectId, conversationId)
+    ]);
+    const runRead = runResult.status === 'fulfilled';
+    const conversationRead = historyResult.status === 'fulfilled';
+    setReconciliationReads({ run: runRead, conversation: conversationRead });
+    setReconciliationStatus(runRead && conversationRead ? 'complete' : runRead || conversationRead ? 'partial' : 'failed');
+    if (runRead) {
+      const run = runResult.value;
       setSnapshot(run);
       if (run.status === 'succeeded' && (run.taskSuggestions?.length ?? 0) > 0 && typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('personal-ai:task-suggestions-refresh', { detail: { conversationId } }));
       }
-      setConversation(history);
-      onConversationReconciledRef.current?.(history);
-      const linkedMessageId = run.assistant?.messageId;
-      const linkedAssistant = linkedMessageId
-        ? history.messages.find((message) => message.id === linkedMessageId && message.role === 'assistant')
-        : undefined;
-      if (linkedAssistant) {
-        setAssistantText(boundText(linkedAssistant.content));
-      } else if (TERMINAL_STATUSES.has(run.status)) {
-        // A terminal REST snapshot without its run-linked assistant message is
-        // authoritative: clear provisional stream text, including empty success.
-        setAssistantText('');
-      }
       const keepFallbackError = fallbackError !== undefined && (run.status === 'ready' || run.status === 'pending_approval');
       setError(keepFallbackError ? fallbackError : null);
-      if (TERMINAL_STATUSES.has(run.status)) {
-        setConnection('complete');
+      if (TERMINAL_STATUSES.has(run.status) && conversationRead) setConnection('complete');
+    } else {
+      setError(fallbackError ?? 'The saved run could not be refreshed. Check your connection and refresh the run status.');
+    }
+    if (conversationRead) {
+      const history = historyResult.value;
+      setConversation(history);
+      onConversationReconciledRef.current?.(history);
+      if (runRead) {
+        const linkedMessageId = runResult.value.assistant?.messageId;
+        const linkedAssistant = linkedMessageId
+          ? history.messages.find((message) => message.id === linkedMessageId && message.role === 'assistant')
+          : undefined;
+        if (linkedAssistant) {
+          setAssistantText(boundText(linkedAssistant.content));
+        } else if (runRead && TERMINAL_STATUSES.has(runResult.value.status)) {
+          // A terminal REST snapshot without its run-linked assistant message is
+          // authoritative: clear provisional stream text, including empty success.
+          setAssistantText('');
+        }
       }
-    } catch {
-      setError(fallbackError ?? 'Live updates stopped. Refresh the run and conversation to confirm the saved result.');
     }
   }, [conversationId, projectId, setSnapshot, snapshot.runId]);
 
@@ -141,6 +156,8 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
     setAssistantText('');
     setEvents([]);
     setConversation(null);
+    setReconciliationStatus('idle');
+    setReconciliationReads({ run: false, conversation: false });
     setError(null);
     setCancelError(null);
     setCancelPending(false);
@@ -293,10 +310,11 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
   const refresh = useCallback((): void => {
     reconnectSuppressed.current = false;
     setCancelError(null);
+    setReconciliationStatus('loading');
     setRefreshVersion((value) => value + 1);
   }, []);
 
-  return { snapshot: localSnapshot, connection, assistantText, events, conversation, error, cancelError, cancelPending, cancel, refresh };
+  return { snapshot: localSnapshot, connection, assistantText, events, conversation, reconciliationStatus, reconciliationReads, error, cancelError, cancelPending, cancel, refresh };
 }
 
 function applyEvent(

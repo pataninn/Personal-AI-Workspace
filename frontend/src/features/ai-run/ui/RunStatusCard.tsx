@@ -36,6 +36,14 @@ export function RunStatusCard({ state, conversationHref, onRetry, onRefresh }: R
     </Card></div>;
   }
 
+  if (snapshot.status === 'staging') {
+    return <div data-testid="ai-run-status-card"><Card className="run-status-card" data-testid="run-staging">
+      <h3 ref={headingRef} tabIndex={-1}>Preparing the approved context</h3>
+      <Alert tone="info" role="status"><p>The selected context is being prepared locally. Refresh checks the saved status and does not restart the run.</p></Alert>
+      <Button type="button" variant="secondary" data-testid="run-staging-refresh" onClick={onRefresh}>Refresh run status</Button>
+    </Card></div>;
+  }
+
   if (snapshot.status !== 'rejected' && (snapshot.status !== 'failed' || snapshot.phase !== 'staging')) {
     return null;
   }
