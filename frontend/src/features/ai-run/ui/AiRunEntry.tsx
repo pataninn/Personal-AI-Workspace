@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useAppSelector } from '@/app/store/hooks';
 import {
@@ -22,6 +22,7 @@ import { ContextScopePicker } from '@/features/ai-run/ui/ContextScopePicker';
 import { MemoryContextPicker } from '@/features/ai-run/ui/MemoryContextPicker';
 import { ProposedChangeReview } from '@/features/ai-run/ui/ProposedChangeReview';
 import { RunStatusCard, type RunStatusState } from '@/features/ai-run/ui/RunStatusCard';
+import { ProviderPermissionManager } from '@/features/ai-run/ui/ProviderPermissionManager';
 
 interface AiRunEntryProps {
   readonly projectId: string;
@@ -47,6 +48,8 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
   const [decisionAction, setDecisionAction] = useState<'approve' | 'reject' | null>(null);
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const [decisionOutcomeUnknown, setDecisionOutcomeUnknown] = useState(false);
+  const [rememberProviderPermission, setRememberProviderPermission] = useState(false);
+  const [permissionListReady, setPermissionListReady] = useState(false);
   const [intentKey, setIntentKey] = useState<string | null>(null);
   const [intentRequest, setIntentRequest] = useState<string | null>(null);
   const [intentContextKey, setIntentContextKey] = useState<string | null>(null);
@@ -64,6 +67,7 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
   const contextSelectionKey = contextKey(projectId, selectedPaths, includeRecentMessages, selectedFactIds, selectedFactVersions);
   const requestErrorId = 'ai-run-request-error';
   const archivedDescription = archivedDescriptionId ?? 'project-archived-message';
+  const handlePermissionListStateChange = useCallback((ready: boolean): void => setPermissionListReady(ready), []);
 
   useEffect(() => {
     setSelectedPaths([]);
@@ -71,10 +75,30 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
     setSelectedFactIds([]);
     setSelectedFactVersions({});
     setMemoryChoiceRequired(false);
+    setPermissionListReady(false);
     setIntentKey(null);
     setIntentRequest(null);
     setIntentContextKey(null);
   }, [projectId]);
+
+  useEffect(() => {
+    const handlePermissionChange = (): void => {
+      const runId = runState?.snapshot.runId;
+      if (!runId) return;
+      void getAiRun(runId).then((snapshot) => {
+        setRunState((current) => current?.snapshot.runId === runId ? { ...current, snapshot } : current);
+        if (snapshot.status === 'pending_approval' && snapshot.decision === 'pending') setDialogOpen(true);
+      }).catch(() => undefined);
+    };
+    window.addEventListener('personal-ai:provider-permissions-revoked', handlePermissionChange);
+    return () => window.removeEventListener('personal-ai:provider-permissions-revoked', handlePermissionChange);
+  }, [runState?.snapshot.runId]);
+
+  useEffect(() => {
+    if (runState?.manifest && runState.snapshot.status === 'pending_approval' && runState.snapshot.decision === 'pending') {
+      setDialogOpen(true);
+    }
+  }, [runState?.manifest, runState?.snapshot.decision, runState?.snapshot.status]);
 
   useEffect(() => {
     if (intentRequest !== null && (intentRequest !== request || intentContextKey !== contextSelectionKey)) {
@@ -99,6 +123,7 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
     setIntentContextKey(contextSelectionKey);
     setIntentLoading(true);
     setRunState(null);
+    setRememberProviderPermission(false);
     setDecisionError(null);
     setDecisionOutcomeUnknown(false);
     try {
@@ -160,8 +185,16 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
     const key = decisionKey ?? createIdempotencyKey();
     setDecisionKey(key);
     try {
-      const snapshot = await decideEgress(manifest.runId, { manifestHash: manifest.manifestHash, decision }, csrfToken, key);
+      const snapshot = await decideEgress(manifest.runId, {
+        manifestHash: manifest.manifestHash,
+        decision,
+        ...(decision === 'approve' && rememberProviderPermission ? { rememberProviderPermission: true } : {})
+      }, csrfToken, key);
       setRunState({ snapshot, manifest });
+      if (decision === 'approve' && rememberProviderPermission) {
+        window.dispatchEvent(new CustomEvent('personal-ai:provider-permissions-changed'));
+      }
+      setRememberProviderPermission(false);
       setDialogOpen(false);
       setDecisionKey(null);
       setIntentKey(null);
@@ -291,6 +324,7 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
       <section className="ai-run-entry" data-testid="ai-run-entry" aria-describedby={disabled ? archivedDescription : undefined}>
         <form data-testid="ai-run-form" onSubmit={(event) => { event.preventDefault(); void beginRun(); }}>
           <p className="field-help" id="ai-run-help">Ask AI first shows what will be sent to NVIDIA NIM. Saving a message does not start a run.</p>
+          <p className="field-help" data-testid="ai-run-approval-classification"><strong>Safe:</strong> choosing project context only prepares a local disclosure. <strong>Sensitive:</strong> sending it to NVIDIA needs your one-time approval or a saved provider permission. File changes and commands always need separate approval.</p>
           <ContextScopePicker
             projectId={projectId}
             selectedPaths={selectedPaths}
@@ -321,7 +355,7 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
               data-testid="ai-run-submit"
               aria-busy={intentLoading}
               aria-describedby={["ai-run-help", blankMessage ? requestErrorId : null, disabled ? archivedDescription : null].filter(Boolean).join(' ')}
-              disabled={disabled || intentLoading || decisionLoading || memoryChoiceRequired || !csrfToken || blankRequest}
+              disabled={disabled || intentLoading || decisionLoading || memoryChoiceRequired || !permissionListReady || !csrfToken || blankRequest}
             >
               {intentLoading ? <><span data-testid="ai-run-manifest-loading">Preparing provider disclosure…</span></> : 'Ask AI'}
             </Button>
@@ -329,6 +363,7 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
           {intentLoading ? <p className="form-status" data-testid="ai-run-manifest-loading-status" role="status" aria-live="polite">Preparing provider disclosure…</p> : null}
           {formError}
         </form>
+        <ProviderPermissionManager projectId={projectId} csrfToken={csrfToken} onListStateChange={handlePermissionListStateChange} />
         {runState ? <RunStatusCard state={runState} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} onRetry={retryRun} onRefresh={refreshStatus} /> : null}
         {runState && shouldRenderTimeline(runState.snapshot) ? <AiRunTimeline snapshot={runState.snapshot} manifest={runState.manifest} projectId={projectId} conversationId={conversationId} csrfToken={csrfToken} disabled={disabled} onSnapshotChange={(snapshot) => { setRunState((current) => current ? { ...current, snapshot } : current); }} onConversationReconciled={onConversationReconciled} /> : null}
         {runState && shouldRenderChangeReview(runState.snapshot) ? <ProposedChangeReview runId={runState.snapshot.runId} readOnly={disabled} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} /> : null}
@@ -341,8 +376,10 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
         decisionError={decisionError}
         decisionOutcomeUnknown={decisionOutcomeUnknown}
         approveEnabled={runState?.snapshot.status === 'pending_approval' && runState.snapshot.decision === 'pending'}
+        rememberProviderPermission={rememberProviderPermission}
         onOpenChange={handleDialogOpenChange}
         onApprove={() => { void submitDecision('approve'); }}
+        onRememberProviderPermissionChange={setRememberProviderPermission}
         onReject={() => { void submitDecision('reject'); }}
         onRefreshDisclosure={() => { void refreshDisclosure(); }}
         onRefreshStatus={() => { void refreshStatus(); }}

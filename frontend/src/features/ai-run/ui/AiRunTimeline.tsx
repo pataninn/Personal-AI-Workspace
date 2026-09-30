@@ -50,7 +50,11 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
     <section className="ai-run-timeline" data-testid="ai-run-timeline" aria-labelledby="ai-run-timeline-heading">
       <Card className="ai-run-timeline-card">
         <h3 ref={headingRef} id="ai-run-timeline-heading" data-testid="ai-run-timeline-heading" tabIndex={-1}>{terminalHeading(timeline.snapshot.status, reviewRequired)}</h3>
-        <Alert tone="info" data-testid="ai-run-provider-notice"><p>{DIRECT_PROVIDER_NOTICE}</p>{manifest ? <p className="field-help">Provider: {manifest.provider}. Model: {formatModel(manifest.model)}. Selected files: {manifest.itemCount}. Recent messages: {manifest.messageCount}.</p> : null}</Alert>
+        <Alert tone="info" data-testid="ai-run-provider-notice">
+          <p>{DIRECT_PROVIDER_NOTICE}</p>
+          {timeline.snapshot.providerApprovalMode === 'remembered_permission' ? <p data-testid="ai-run-remembered-permission-notice">This run was approved by a saved project permission. Revoking it stops runs that have not started; a request already in progress or sent cannot be recalled.</p> : null}
+          {manifest ? <p className="field-help">Provider: {manifest.provider}. Model: {formatModel(manifest.model)}. Selected files: {manifest.itemCount}. Recent messages: {manifest.messageCount}.</p> : null}
+        </Alert>
         <div
           className="ai-run-timeline-status"
           data-testid="ai-run-timeline-status"

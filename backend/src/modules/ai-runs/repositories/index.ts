@@ -12,6 +12,7 @@ export type {
   RuntimeRunInput
 } from '@/modules/ai-runs/repositories/agent-runtime';
 export type { CancelRunUpdate, CompleteRunUpdate, IAiRunRepository, RunMutationResult, StartRunUpdate } from '@/modules/ai-runs/repositories/ai-run-repository';
+export type { IProviderPermissionRepository } from '@/modules/ai-runs/repositories/provider-permission-repository';
 export type { IStagingGateway, StageInput, StageResult } from '@/modules/ai-runs/repositories/staging-gateway';
 export type {
   IModelProvider,

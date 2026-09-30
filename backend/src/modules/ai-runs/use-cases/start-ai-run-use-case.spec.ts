@@ -3,6 +3,7 @@ import type { IConversationRepository } from '@/modules/conversations/repositori
 import type { AiRun, EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
 import { InMemoryAiRunRepository } from '@/infrastructure/ai-runs/in-memory-ai-run-repository';
 import { InMemoryRunEventPublisher } from '@/infrastructure/ai-runs/in-memory-run-event-publisher';
+import { InMemoryProviderPermissionRepository } from '@/infrastructure/ai-runs/in-memory-provider-permission-repository';
 import { FakeAgentRuntime } from '@/infrastructure/sandbox/fake-agent-runtime';
 import { CancelAiRunUseCase } from '@/modules/ai-runs/use-cases/cancel-ai-run-use-case';
 import { StartAiRunUseCase, type RuntimeCommandProposalPort } from '@/modules/ai-runs/use-cases/start-ai-run-use-case';
@@ -96,6 +97,46 @@ describe('StartAiRunUseCase', () => {
     expect(conversations.assistantMessages[0]?.content).toContain('[REDACTED]');
     expect(conversations.assistantMessages[0]?.content).not.toContain('super-secret');
     expect(received).toEqual(expect.arrayContaining(['run.status_changed', 'run.started', 'assistant.delta', 'run.completed']));
+  });
+
+  it('does not start a queued run when revocation reopens consent before the worker transition', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const conversations = conversationRepository();
+    const runtime = new FakeAgentRuntime();
+    const events = new InMemoryRunEventPublisher();
+    const permissions = new InMemoryProviderPermissionRepository();
+    const permission = await permissions.grant({ ownerId: OWNER_ID, projectId: PROJECT_ID, providerProfile: 'nvidia-hosted-nim', model: 'nvidia/nemotron-3-super-120b-a12b' });
+    const run = await readyRun(repository);
+    await repository.save({ ...run, providerPermissionId: permission.id });
+
+    let markRunningStarted = (): void => undefined;
+    let allowMarkRunning = (): void => undefined;
+    let markRunningFinished = (): void => undefined;
+    const waitingForMarkRunning = new Promise<void>((resolve) => { markRunningStarted = resolve; });
+    const markRunningGate = new Promise<void>((resolve) => { allowMarkRunning = resolve; });
+    const markRunningDone = new Promise<void>((resolve) => { markRunningFinished = resolve; });
+    const markRunning = repository.markRunning.bind(repository);
+    jest.spyOn(repository, 'markRunning').mockImplementation(async (ownerId, runId) => {
+      markRunningStarted();
+      await markRunningGate;
+      const result = await markRunning(ownerId, runId);
+      markRunningFinished();
+      return result;
+    });
+    const start = new StartAiRunUseCase(repository, conversations, runtime, events, undefined, undefined, undefined, permissions);
+
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-run-permission-race' });
+    await waitingForMarkRunning;
+    await permissions.revoke({ ownerId: OWNER_ID, projectId: PROJECT_ID, permissionId: permission.id });
+    const reopened = await repository.reopenProviderPermissionDecision({ ownerId: OWNER_ID, runId: run.id, permissionId: permission.id });
+    expect(reopened).toMatchObject({ status: 'pending_approval', decision: 'pending' });
+    expect(reopened).not.toHaveProperty('startIdempotencyKey');
+
+    allowMarkRunning();
+    await markRunningDone;
+
+    expect(runtime.startedRuns).toEqual([]);
+    await expect(repository.findByIdForOwner(OWNER_ID, run.id)).resolves.toMatchObject({ status: 'pending_approval', decision: 'pending' });
   });
 
   it('wins the cancellation race and never overwrites a cancelled run with a late result', async () => {

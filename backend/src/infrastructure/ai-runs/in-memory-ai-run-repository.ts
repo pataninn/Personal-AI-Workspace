@@ -148,6 +148,7 @@ export class InMemoryAiRunRepository implements IAiRunRepository, IProjectTaskSu
           status: 'staging',
           phase: 'staging',
           decision: 'approved',
+          ...(input.providerPermissionId ? { providerPermissionId: input.providerPermissionId } : {}),
           decisionIdempotencyKey: input.idempotencyKey,
           decisionFingerprint: input.requestFingerprint,
           safeMessage: 'Preparing a private run environment.',
@@ -164,6 +165,26 @@ export class InMemoryAiRunRepository implements IAiRunRepository, IProjectTaskSu
       throw new AiRunNotFoundError();
     }
     this.runs.set(run.id, run);
+  }
+
+  public async reopenProviderPermissionDecision(input: { readonly ownerId: string; readonly runId: string; readonly permissionId: string }): Promise<AiRun | null> {
+    return this.withLock(`start:${input.runId}`, async () => {
+      const current = this.runs.get(input.runId);
+      if (!current || current.ownerId !== input.ownerId || current.providerPermissionId !== input.permissionId
+        || (current.status !== 'ready' && current.status !== 'queued') || current.providerTransmission !== 'not_started_confirmed') return null;
+      const reopened: AiRun = {
+        ...withoutRememberedPermissionApproval(current),
+        status: 'pending_approval',
+        phase: 'decision',
+        decision: 'pending',
+        sandboxReady: false,
+        stagingItemCount: 0,
+        safeMessage: 'The saved provider permission was revoked. Review this context before continuing.',
+        updatedAt: new Date()
+      };
+      this.runs.set(reopened.id, reopened);
+      return reopened;
+    });
   }
 
   public async beginStart(input: StartRunUpdate): Promise<RunMutationResult> {
@@ -375,6 +396,11 @@ export class InMemoryAiRunRepository implements IAiRunRepository, IProjectTaskSu
   private createLockKey(ownerId: string, projectId: string, key: string): string {
     return `create:${this.idempotencyKey(ownerId, projectId, key)}`;
   }
+}
+
+function withoutRememberedPermissionApproval(run: AiRun): Omit<AiRun, 'providerPermissionId' | 'runtimeKind' | 'runtimeReference' | 'decisionIdempotencyKey' | 'decisionFingerprint' | 'startIdempotencyKey' | 'startFingerprint'> {
+  const omitted = new Set(['providerPermissionId', 'runtimeKind', 'runtimeReference', 'decisionIdempotencyKey', 'decisionFingerprint', 'startIdempotencyKey', 'startFingerprint']);
+  return Object.fromEntries(Object.entries(run).filter(([key]) => !omitted.has(key))) as Omit<AiRun, 'providerPermissionId' | 'runtimeKind' | 'runtimeReference' | 'decisionIdempotencyKey' | 'decisionFingerprint' | 'startIdempotencyKey' | 'startFingerprint'>;
 }
 
 function matchesActivityFilter(status: AiRun['status'], filter: ListAiRunActivityInput['filter']): boolean {

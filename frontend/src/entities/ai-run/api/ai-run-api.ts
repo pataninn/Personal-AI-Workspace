@@ -1,4 +1,4 @@
-import { ApiClientError, getJson, postJson } from '@/shared/api';
+import { ApiClientError, deleteNoContent, getJson, postJson } from '@/shared/api';
 import { createIdempotencyKey } from '@/shared/lib/idempotency-key';
 import type {
   AiRunIntent,
@@ -10,6 +10,7 @@ import type {
   EgressDecision,
   EgressFactDisclosure,
   EgressManifest,
+  ProviderPermission,
   ProviderTransmissionStatus
 } from '@/entities/ai-run/model/types';
 
@@ -35,6 +36,18 @@ export interface CreateAiRunRequest {
 export interface EgressDecisionRequest {
   readonly manifestHash: string;
   readonly decision: 'approve' | 'reject';
+  readonly rememberProviderPermission?: boolean;
+}
+
+export function listProviderPermissions(projectId: string): Promise<readonly ProviderPermission[]> {
+  return getJson<unknown>(`${PROJECTS_PATH}/${encodeURIComponent(projectId)}/provider-permissions`).then(normalizeProviderPermissions);
+}
+
+export function revokeProviderPermission(projectId: string, permissionId: string, csrfToken: string): Promise<void> {
+  return deleteNoContent(
+    `${PROJECTS_PATH}/${encodeURIComponent(projectId)}/provider-permissions/${encodeURIComponent(permissionId)}`,
+    { 'X-CSRF-Token': csrfToken }
+  );
 }
 
 export function createAiRun(
@@ -135,6 +148,7 @@ export function normalizeAiRunSnapshot(value: unknown): AiRunSnapshot {
     phase,
     manifestHash,
     decision,
+    ...(record.providerApprovalMode === 'remembered_permission' || record.providerApprovalMode === 'one_time' ? { providerApprovalMode: record.providerApprovalMode } : {}),
     safeMessage: readSafeMessage(readString(record.safeMessage)),
     cleanup: readCleanup(record.cleanup),
     providerTransmission: readProviderTransmission(record.providerTransmission),
@@ -143,6 +157,32 @@ export function normalizeAiRunSnapshot(value: unknown): AiRunSnapshot {
     ...(assistant ? { assistant } : {}),
     ...(taskSuggestions ? { taskSuggestions } : {})
   };
+}
+
+export function normalizeProviderPermissions(value: unknown): readonly ProviderPermission[] {
+  const envelope = asRecord(value) ?? {};
+  const entries = envelope.permissions;
+  if (!Array.isArray(entries)) throw invalidResponse();
+  return entries.map((entry): ProviderPermission => {
+    const record = asRecord(entry);
+    const subject = asRecord(record?.subject);
+    if (!record || !subject || record.capability !== 'send_selected_context' || record.persistence !== 'until_revoked'
+      || record.expiresAt !== null || record.revokedAt !== null && typeof record.revokedAt !== 'string') {
+      throw invalidResponse();
+    }
+    return {
+      id: requireString(record.id),
+      ownerId: requireString(subject.ownerId),
+      projectId: requireString(record.projectId),
+      providerProfile: requireString(record.providerProfile),
+      model: requireString(record.model),
+      capability: 'send_selected_context',
+      persistence: 'until_revoked',
+      expiresAt: null,
+      createdAt: requireString(record.createdAt),
+      revokedAt: record.revokedAt
+    };
+  });
 }
 
 function normalizeRunTaskSuggestions(value: unknown, runId: string, projectId: string, conversationId: string): readonly AiRunTaskSuggestion[] | undefined {

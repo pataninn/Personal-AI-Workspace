@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { ApiClientError } from '@/shared/api';
-import { normalizeAiRunIntent, normalizeAiRunSnapshot, normalizeEgressManifest } from '@/entities/ai-run/api/ai-run-api';
+import { normalizeAiRunIntent, normalizeAiRunSnapshot, normalizeEgressManifest, normalizeProviderPermissions } from '@/entities/ai-run/api/ai-run-api';
 
 const RUN_ID = '77777777-7777-4777-8777-000000000001';
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
@@ -143,5 +143,34 @@ describe('AI run API normalizers', () => {
       manifestHash: HASH,
       content: { facts: [{ ...factDisclosure, verificationStatus: 'needs_review' }] }
     }, RUN_ID)).toThrow(ApiClientError);
+  });
+
+  it('normalizes persistent project/provider permissions and rejects widened scope or expiry', () => {
+    const permission = {
+      id: '66666666-6666-4666-8666-666666666666',
+      subject: { ownerId: '99999999-9999-4999-8999-999999999999', label: 'Signed-in account' },
+      projectId: PROJECT_ID,
+      providerProfile: 'nvidia-hosted-nim',
+      model: 'nvidia/nemotron-3-super-120b-a12b',
+      capability: 'send_selected_context',
+      persistence: 'until_revoked',
+      expiresAt: null,
+      createdAt: '2026-09-29T00:00:00.000Z',
+      revokedAt: null
+    };
+    expect(normalizeProviderPermissions({ permissions: [permission] })).toEqual([{
+      id: permission.id,
+      ownerId: permission.subject.ownerId,
+      projectId: permission.projectId,
+      providerProfile: permission.providerProfile,
+      model: permission.model,
+      capability: 'send_selected_context',
+      persistence: 'until_revoked',
+      expiresAt: null,
+      createdAt: permission.createdAt,
+      revokedAt: null
+    }]);
+    expect(() => normalizeProviderPermissions({ permissions: [{ ...permission, capability: 'write_files' }] })).toThrow(ApiClientError);
+    expect(() => normalizeProviderPermissions({ permissions: [{ ...permission, expiresAt: '2030-01-01T00:00:00.000Z' }] })).toThrow(ApiClientError);
   });
 });

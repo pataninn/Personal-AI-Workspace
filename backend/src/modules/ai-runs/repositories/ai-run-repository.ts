@@ -45,6 +45,7 @@ export interface IAiRunRepository {
   findByIdForOwner(ownerId: string, runId: string): Promise<AiRun | null>;
   recordDecision(input: DecisionUpdate): Promise<DecisionResult>;
   save(run: AiRun): Promise<void>;
+  reopenProviderPermissionDecision?(input: { readonly ownerId: string; readonly runId: string; readonly permissionId: string }): Promise<AiRun | null>;
   readonly beginStart?: (input: StartRunUpdate) => Promise<RunMutationResult>;
   readonly markRunning?: (ownerId: string, runId: string) => Promise<AiRun | null>;
   readonly recordProviderTransmission?: (ownerId: string, runId: string, transmission: AiRun['providerTransmission']) => Promise<AiRun | null>;

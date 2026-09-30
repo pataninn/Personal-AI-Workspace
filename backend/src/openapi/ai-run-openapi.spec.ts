@@ -16,6 +16,8 @@ describe('AI run OpenAPI document', () => {
     const expected: Record<string, Record<string, string[]>> = {
       '/api/v1/projects/{projectId}/ai-runs': { post: ['200', '202', '400', '401', '403', '404', '409', '500', '503'] },
       '/api/v1/projects/{projectId}/file-history': { get: ['200', '400', '401', '404', '500'] },
+      '/api/v1/projects/{projectId}/provider-permissions': { get: ['200', '401', '500'] },
+      '/api/v1/projects/{projectId}/provider-permissions/{permissionId}': { delete: ['200', '401', '403', '404', '500'] },
       '/api/v1/ai-runs/{runId}': { get: ['200', '401', '404', '500'] },
       '/api/v1/ai-runs/{runId}/egress-manifest': { get: ['200', '401', '404', '409', '500'] },
       '/api/v1/ai-runs/{runId}/egress-decision': { post: ['200', '400', '401', '403', '404', '409', '500', '503'] },
@@ -38,7 +40,7 @@ describe('AI run OpenAPI document', () => {
       }
     }
     const schemas = asRecord(asRecord(document.components).schemas);
-    ['CreateAiRunRequest', 'EgressDecisionRequest', 'AiRunSnapshot', 'EgressManifest', 'AiRunIntentEnvelope', 'EgressDecisionEnvelope', 'ProposedChangeSetDecisionRequest', 'ProposedChangeSet', 'ProposedChangeOperation', 'ProposedChangeOperationResult', 'ProposedChangeSetResult', 'ProposedChangeSetEnvelope', 'ProjectFileHistoryItem', 'ProjectFileHistoryPage', 'ProjectFileHistoryEnvelope', 'SandboxCommandDecisionRequest', 'SandboxCommand', 'SandboxCommandListEnvelope', 'SandboxCommandEnvelope', 'EmptyObject'].forEach((schema) => {
+    ['CreateAiRunRequest', 'EgressDecisionRequest', 'AiRunSnapshot', 'EgressManifest', 'AiRunIntentEnvelope', 'EgressDecisionEnvelope', 'ProviderPermission', 'ProviderPermissionList', 'ProviderPermissionListEnvelope', 'ProviderPermissionEnvelope', 'ProposedChangeSetDecisionRequest', 'ProposedChangeSet', 'ProposedChangeOperation', 'ProposedChangeOperationResult', 'ProposedChangeSetResult', 'ProposedChangeSetEnvelope', 'ProjectFileHistoryItem', 'ProjectFileHistoryPage', 'ProjectFileHistoryEnvelope', 'SandboxCommandDecisionRequest', 'SandboxCommand', 'SandboxCommandListEnvelope', 'SandboxCommandEnvelope', 'EmptyObject'].forEach((schema) => {
       expect(schemas[schema]).toBeDefined();
     });
     const runSnapshot = asRecord(schemas.AiRunSnapshot);

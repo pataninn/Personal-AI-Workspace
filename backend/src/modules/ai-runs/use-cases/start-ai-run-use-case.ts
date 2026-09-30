@@ -1,4 +1,4 @@
-import { AiRunStateConflictError } from '@/modules/ai-runs/domain/ai-run-errors';
+import { AiRunProviderPermissionRevokedError, AiRunStateConflictError } from '@/modules/ai-runs/domain/ai-run-errors';
 import { ChangeSetDomainError } from '@/modules/ai-runs/domain/change-errors';
 import { ASSISTANT_OUTPUT_LIMIT_MESSAGE, MAX_ASSISTANT_DELTA_BYTES, MAX_ASSISTANT_OUTPUT_BYTES, assistantTextExceedsLimit, sanitizeAssistantText, truncateAssistantDelta } from '@/modules/ai-runs/domain/assistant-output';
 import type { AiRun } from '@/modules/ai-runs/domain/ai-run-types';
@@ -12,6 +12,7 @@ import { assertActiveAiRunProject } from '@/modules/ai-runs/use-cases/assert-ai-
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { RuntimeChangeProposal } from '@/modules/ai-runs/domain/change-types';
 import type { TaskSuggestionDraft } from '@/modules/ai-runs/domain/task-suggestion-draft';
+import type { IProviderPermissionRepository } from '@/modules/ai-runs/repositories/provider-permission-repository';
 
 export interface RuntimeCommandProposalPort {
   execute(input: {
@@ -48,7 +49,8 @@ export class StartAiRunUseCase {
     private readonly events: IRunEventPublisher,
     private readonly commandProposals?: RuntimeCommandProposalPort,
     private readonly projectRepository?: IProjectRepository,
-    private readonly changeSetProposals?: RuntimeChangeSetProposalPort
+    private readonly changeSetProposals?: RuntimeChangeSetProposalPort,
+    private readonly providerPermissionRepository?: IProviderPermissionRepository
   ) {}
 
   public async execute(input: StartAiRunInput): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> {
@@ -56,6 +58,14 @@ export class StartAiRunUseCase {
     const requestFingerprint = hashText(JSON.stringify({ action: 'start', runId: input.runId }));
     if (this.projectRepository) {
       await assertActiveAiRunProject(this.aiRunRepository, this.projectRepository, input.ownerId, input.runId);
+    }
+    const current = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
+    if (current?.providerPermissionId && this.providerPermissionRepository) {
+      const permission = await this.providerPermissionRepository.findActiveById({ ownerId: input.ownerId, projectId: current.projectId, permissionId: current.providerPermissionId });
+      if (!permission || permission.providerProfile !== current.manifest.providerProfile || permission.model !== current.manifest.model) {
+        await this.aiRunRepository.reopenProviderPermissionDecision?.({ ownerId: input.ownerId, runId: input.runId, permissionId: current.providerPermissionId });
+        throw new AiRunProviderPermissionRevokedError();
+      }
     }
     const result = this.aiRunRepository.beginStart
       ? await this.aiRunRepository.beginStart({ ownerId: input.ownerId, runId: input.runId, idempotencyKey, requestFingerprint })
@@ -98,7 +108,7 @@ export class StartAiRunUseCase {
     const running = this.aiRunRepository.markRunning
       ? await this.aiRunRepository.markRunning(run.ownerId, run.id)
       : await this.markRunningLegacy(run);
-    if (!running || isStopState(running.status)) {
+    if (!running || running.status !== 'running') {
       return;
     }
     if (!await this.publishStatus(running, 'run.started')) {

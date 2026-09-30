@@ -9,8 +9,10 @@ interface ProviderConsentDialogProps {
   readonly decisionError: string | null;
   readonly decisionOutcomeUnknown: boolean;
   readonly approveEnabled: boolean;
+  readonly rememberProviderPermission: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onApprove: () => void;
+  readonly onRememberProviderPermissionChange: (checked: boolean) => void;
   readonly onReject: () => void;
   readonly onRefreshDisclosure: () => void;
   readonly onRefreshStatus: () => void;
@@ -25,8 +27,10 @@ export function ProviderConsentDialog({
   decisionError,
   decisionOutcomeUnknown,
   approveEnabled,
+  rememberProviderPermission,
   onOpenChange,
   onApprove,
+  onRememberProviderPermissionChange,
   onReject,
   onRefreshDisclosure,
   onRefreshStatus,
@@ -69,6 +73,15 @@ export function ProviderConsentDialog({
         <Alert tone="warning" data-testid="provider-consent-no-staging-notice">
           {manifest.preConsentNotice}
         </Alert>
+
+        <Alert tone="warning" data-testid="provider-consent-sensitive-classification">
+          <strong>Sensitive action:</strong> approving sends the request and selected context to NVIDIA&apos;s hosted service. Choosing files, messages, or facts is a safe local step; it does not send them by itself.
+        </Alert>
+
+        <div className="provider-consent-terms" data-testid="provider-consent-provider-terms">
+          <p>NVIDIA API Catalog trial terms require you to have rights to submit content, prohibit confidential or sensitive data, and allow submitted content to be reviewed and used to improve services. Do not send confidential, regulated, personal, or restricted information. Other NVIDIA subscriptions may have different terms.</p>
+          <a href="https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf" target="_blank" rel="noreferrer">Read NVIDIA API Trial Terms</a>
+        </div>
 
         <div className="provider-consent-manifest" data-testid="provider-consent-manifest">
           <dl className="provider-consent-details">
@@ -132,6 +145,28 @@ export function ProviderConsentDialog({
           </p>
           <p className="field-help">Automatic secret detection is best effort. Review the listed relative paths before approving.</p>
         </div>
+
+        <section className="provider-permission-grant" aria-labelledby="provider-permission-grant-heading">
+          <h3 id="provider-permission-grant-heading">Remember this provider permission?</h3>
+          <label className="provider-permission-check">
+            <input
+              type="checkbox"
+              data-testid="provider-consent-remember-permission"
+              checked={rememberProviderPermission}
+              onChange={(event) => onRememberProviderPermissionChange(event.currentTarget.checked)}
+              disabled={actionsDisabled}
+            />
+            <span>Allow future Ask AI requests in this project to send their request and the context I select to {manifest.provider} using {formatModelLabel(manifest.model)}, until I revoke it.</span>
+          </label>
+          {rememberProviderPermission ? <dl className="provider-permission-scope" data-testid="provider-consent-permission-scope">
+            <div><dt>Granted to</dt><dd>You, in this signed-in account</dd></div>
+            <div><dt>Project</dt><dd>This project only</dd></div>
+            <div><dt>Provider</dt><dd>{manifest.provider} · {formatModelLabel(manifest.model)}</dd></div>
+            <div><dt>Capability</dt><dd>Send the request and explicitly selected project context</dd></div>
+            <div><dt>Lasts</dt><dd>Until revoked in Provider permissions above the prompt</dd></div>
+            <div><dt>Other approvals</dt><dd>File changes and commands still require their own approval</dd></div>
+          </dl> : null}
+        </section>
 
         {decisionError ? <Alert tone={isStale ? 'warning' : 'error'} data-testid="provider-consent-error" role="alert">{decisionError}</Alert> : null}
         {statusText ? <div className="form-status" data-testid="provider-consent-status" role="status" aria-live="polite" aria-busy="true"><Spinner label={statusText} /><span>{statusText}</span></div> : null}

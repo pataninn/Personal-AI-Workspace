@@ -84,6 +84,7 @@ export interface AiRun {
   readonly status: AiRunStatus;
   readonly phase: AiRunPhase;
   readonly decision: EgressDecision;
+  readonly providerPermissionId?: string;
   readonly cleanup: CleanupStatus;
   readonly providerTransmission: ProviderTransmissionStatus;
   readonly stagingItemCount: number;
@@ -130,6 +131,7 @@ export interface DecisionUpdate {
   readonly decision: 'approve' | 'reject';
   readonly idempotencyKey: string;
   readonly requestFingerprint: string;
+  readonly providerPermissionId?: string;
 }
 
 export interface DecisionResult {
@@ -145,6 +147,7 @@ export interface AiRunSnapshot {
   readonly phase: AiRunPhase;
   readonly manifestHash: string;
   readonly decision: EgressDecision;
+  readonly providerApprovalMode?: 'remembered_permission' | 'one_time';
   readonly safeMessage: string;
   readonly cleanup: CleanupStatus;
   readonly providerTransmission: ProviderTransmissionStatus;

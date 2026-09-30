@@ -1598,6 +1598,87 @@ textarea:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.provider-consent-terms,
+.provider-permission-grant {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+}
+
+.provider-consent-terms p,
+.provider-permission-grant h3 {
+  margin-top: 0;
+}
+
+.provider-permission-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  line-height: 1.5;
+}
+
+.provider-permission-check input {
+  flex: 0 0 auto;
+  margin-top: 0.25rem;
+  min-width: 1rem;
+  min-height: 1rem;
+}
+
+.provider-permission-scope,
+.provider-permission-list dl {
+  display: grid;
+  gap: 0.65rem;
+  margin: 1rem 0;
+}
+
+.provider-permission-scope > div,
+.provider-permission-list dl > div {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.7fr) minmax(0, 1.3fr);
+  gap: 0.75rem;
+}
+
+.provider-permission-scope dt,
+.provider-permission-list dt {
+  font-weight: 650;
+}
+
+.provider-permission-scope dd,
+.provider-permission-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.provider-permission-manager {
+  display: grid;
+  gap: 0.65rem;
+  margin-block: 0.75rem 1rem;
+}
+
+.provider-permission-manager summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.5rem 0;
+}
+
+.provider-permission-manager summary:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 3px;
+}
+
+.provider-permission-list {
+  display: grid;
+  gap: 0.85rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.provider-permission-list > li {
+  border-block-start: 1px solid var(--color-border);
+  padding-block: 0.75rem;
+}
+
 .provider-consent-context code {
   font-family: var(--font-mono);
   font-size: 0.9em;
@@ -1973,6 +2054,12 @@ textarea:focus-visible {
 }
 
 @media (max-width: 40rem) {
+  .provider-permission-scope > div,
+  .provider-permission-list dl > div {
+    grid-template-columns: 1fr;
+    gap: 0.2rem;
+  }
+
   .bootstrap-view,
   .login-view {
     place-items: start center;

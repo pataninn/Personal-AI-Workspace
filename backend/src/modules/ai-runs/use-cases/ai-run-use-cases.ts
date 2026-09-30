@@ -23,6 +23,8 @@ import { buildManifest, hashText, toEgressProjectFact, type ManifestMessage } fr
 import { redactEgressText } from '@/shared/egress/redaction';
 import type { IProjectFactRepository } from '@/modules/memory/repositories/project-fact-repository';
 import { ProjectFactNotFoundError } from '@/modules/memory/domain/project-fact-errors';
+import type { IProviderPermissionRepository } from '@/modules/ai-runs/repositories/provider-permission-repository';
+import { AiRunProviderPermissionRevokedError } from '@/modules/ai-runs/domain/ai-run-errors';
 
 export interface CreateAiRunInput {
   readonly ownerId: string;
@@ -148,6 +150,8 @@ export interface DecideEgressInput {
   readonly runId: string;
   readonly manifestHash: unknown;
   readonly decision: unknown;
+  readonly rememberProviderPermission?: unknown;
+  readonly rememberedPermissionId?: string;
   readonly idempotencyKey: string;
 }
 
@@ -159,12 +163,17 @@ export class DecideEgressUseCase {
     private readonly stagingGateway: IStagingGateway | undefined,
     private readonly agentRuntime: IAgentRuntime,
     private readonly workspaceRoot: string,
-    private readonly factRepository?: IProjectFactRepository
+    private readonly factRepository?: IProjectFactRepository,
+    private readonly providerPermissionRepository?: IProviderPermissionRepository
   ) {}
 
   public async execute(input: DecideEgressInput): Promise<AiRun> {
     const manifestHash = validateManifestHash(input.manifestHash);
     const decision = validateDecision(input.decision);
+    const rememberProviderPermission = input.rememberProviderPermission === true;
+    if (rememberProviderPermission && decision !== 'approve') {
+      throw new AiRunValidationError([{ field: 'rememberProviderPermission', message: 'A saved provider permission can only be created while approving a run.' }]);
+    }
     const idempotencyKey = validateIdempotencyKey(input.idempotencyKey);
     const current = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
     if (!current) {
@@ -186,19 +195,68 @@ export class DecideEgressUseCase {
         throw error;
       }
     }
-    const requestFingerprint = hashText(JSON.stringify({ manifestHash, decision }));
+    let permissionFingerprintId: string | undefined;
+    if (input.rememberedPermissionId) {
+      const permission = await this.providerPermissionRepository?.findActiveById({ ownerId: input.ownerId, projectId: current.projectId, permissionId: input.rememberedPermissionId });
+      if (!permission || permission.providerProfile !== current.manifest.providerProfile || permission.model !== current.manifest.model) {
+        throw new AiRunProviderPermissionRevokedError();
+      }
+      permissionFingerprintId = permission.id;
+    } else if (rememberProviderPermission) {
+      if (!this.providerPermissionRepository) {
+        throw new AiRunValidationError([{ field: 'rememberProviderPermission', message: 'Provider permissions are not available.' }]);
+      }
+    }
+    const requestFingerprint = hashText(JSON.stringify({ manifestHash, decision, rememberProviderPermission, rememberedPermissionId: permissionFingerprintId ?? null }));
     const result = await this.aiRunRepository.recordDecision({
       ownerId: input.ownerId,
       runId: input.runId,
       manifestHash,
       decision,
       idempotencyKey,
-      requestFingerprint
+      requestFingerprint,
+      ...(decision === 'approve' && input.rememberedPermissionId ? { providerPermissionId: input.rememberedPermissionId } : {})
     });
-    if (result.replayed || decision === 'reject') {
-      return result.resource;
+    let permissionSaveFailed = false;
+    if (decision === 'approve' && rememberProviderPermission && !input.rememberedPermissionId) {
+      try {
+        await this.providerPermissionRepository?.grant({
+          ownerId: input.ownerId,
+          projectId: current.projectId,
+          providerProfile: current.manifest.providerProfile,
+          model: current.manifest.model
+        });
+      } catch {
+        // The recorded approval still authorizes this exact run; a failed saved grant must not widen future approvals.
+        permissionSaveFailed = true;
+      }
     }
-    return this.prepareApprovedRun(result.resource);
+    if (result.replayed || decision === 'reject') {
+      return permissionSaveFailed ? withPermissionSaveNotice(result.resource) : result.resource;
+    }
+    const prepared = await this.prepareApprovedRun(result.resource);
+    return permissionSaveFailed ? withPermissionSaveNotice(prepared) : prepared;
+  }
+
+  public async approveWithRememberedPermission(input: { readonly ownerId: string; readonly runId: string }): Promise<AiRun | null> {
+    if (!this.providerPermissionRepository) return null;
+    const current = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
+    if (!current || current.decision !== 'pending' || current.manifestInvalidated) return null;
+    const permission = await this.providerPermissionRepository.findActive({
+      ownerId: input.ownerId,
+      projectId: current.projectId,
+      providerProfile: current.manifest.providerProfile,
+      model: current.manifest.model
+    });
+    if (!permission) return null;
+    return this.execute({
+      ownerId: input.ownerId,
+      runId: input.runId,
+      manifestHash: current.manifest.manifestHash,
+      decision: 'approve',
+      idempotencyKey: `permission-${permission.id}-${current.id}`,
+      rememberedPermissionId: permission.id
+    });
   }
 
   private async prepareApprovedRun(run: AiRun): Promise<AiRun> {
@@ -395,6 +453,13 @@ export class DecideEgressUseCase {
   }
 }
 
+function withPermissionSaveNotice(run: AiRun): AiRun {
+  return {
+    ...run,
+    safeMessage: `${run.safeMessage} The saved permission could not be created, so this approval applies only to this run.`
+  };
+}
+
 export function toSnapshot(run: AiRun): AiRunSnapshot {
   return {
     runId: run.id,
@@ -404,6 +469,7 @@ export function toSnapshot(run: AiRun): AiRunSnapshot {
     phase: run.phase,
     manifestHash: run.manifest.manifestHash,
     decision: run.decision,
+    ...(run.decision === 'approved' ? { providerApprovalMode: run.providerPermissionId ? 'remembered_permission' : 'one_time' } : {}),
     safeMessage: run.safeMessage,
     cleanup: run.cleanup,
     providerTransmission: run.providerTransmission,

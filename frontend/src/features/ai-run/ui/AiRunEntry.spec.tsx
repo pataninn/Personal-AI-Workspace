@@ -10,13 +10,15 @@ import type { ProjectFact } from '@/entities/project-fact';
 import { ApiClientError } from '@/shared/api';
 import { AiRunEntry } from '@/features/ai-run/ui/AiRunEntry';
 
-const { createAiRunMock, getAiRunMock, getEgressManifestMock, decideEgressMock, startAiRunMock, listFactsMock } = vi.hoisted(() => ({
+const { createAiRunMock, getAiRunMock, getEgressManifestMock, decideEgressMock, startAiRunMock, listFactsMock, listPermissionsMock, revokePermissionMock } = vi.hoisted(() => ({
   createAiRunMock: vi.fn(),
   getAiRunMock: vi.fn(),
   getEgressManifestMock: vi.fn(),
   decideEgressMock: vi.fn(),
   startAiRunMock: vi.fn(),
-  listFactsMock: vi.fn()
+  listFactsMock: vi.fn(),
+  listPermissionsMock: vi.fn(),
+  revokePermissionMock: vi.fn()
 }));
 
 vi.mock('@/entities/ai-run/api/ai-run-api', () => ({
@@ -24,7 +26,9 @@ vi.mock('@/entities/ai-run/api/ai-run-api', () => ({
   getAiRun: getAiRunMock,
   getEgressManifest: getEgressManifestMock,
   decideEgress: decideEgressMock,
-  startAiRun: startAiRunMock
+  startAiRun: startAiRunMock,
+  listProviderPermissions: listPermissionsMock,
+  revokeProviderPermission: revokePermissionMock
 }));
 
 vi.mock('@/entities/project-fact/api/project-fact-api', () => ({ listProjectFacts: listFactsMock }));
@@ -113,6 +117,8 @@ describe('AiRunEntry', () => {
     getEgressManifestMock.mockReset();
     decideEgressMock.mockReset();
     startAiRunMock.mockReset();
+    listPermissionsMock.mockReset().mockResolvedValue([]);
+    revokePermissionMock.mockReset().mockResolvedValue(undefined);
     listFactsMock.mockReset().mockResolvedValue([projectFact]);
     createAiRunMock.mockResolvedValue({ ...pending, manifest } satisfies AiRunIntent);
     getEgressManifestMock.mockResolvedValue(manifest);
@@ -142,6 +148,70 @@ describe('AiRunEntry', () => {
     expect(screen.getByTestId('provider-consent-file-count')).toHaveTextContent('1');
     expect(screen.getByTestId('provider-consent-message-count')).toHaveTextContent('0');
     expect(decideEgressMock).not.toHaveBeenCalled();
+  });
+
+  it('shows the full remembered permission scope before saving it with explicit consent', async () => {
+    decideEgressMock.mockResolvedValue({ ...pending, status: 'ready', phase: 'runtime', decision: 'approved', runtime: { kind: 'fake', sandboxReady: true } });
+    startAiRunMock.mockReturnValue(new Promise(() => undefined));
+    renderEntry();
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('ai-run-submit'));
+    await user.click(await screen.findByTestId('provider-consent-remember-permission'));
+
+    expect(screen.getByTestId('provider-consent-permission-scope')).toHaveTextContent('You, in this signed-in account');
+    expect(screen.getByTestId('provider-consent-permission-scope')).toHaveTextContent('This project only');
+    expect(screen.getByTestId('provider-consent-permission-scope')).toHaveTextContent('Send the request and explicitly selected project context');
+    expect(screen.getByTestId('provider-consent-permission-scope')).toHaveTextContent('Until revoked');
+    expect(screen.getByTestId('provider-consent-provider-terms')).toHaveTextContent('prohibit confidential or sensitive data');
+
+    await user.click(screen.getByTestId('provider-consent-approve'));
+    await waitFor(() => expect(decideEgressMock).toHaveBeenCalledWith(RUN_ID, {
+      manifestHash: HASH,
+      decision: 'approve',
+      rememberProviderPermission: true
+    }, 'csrf-token', expect.any(String)));
+    expect(listPermissionsMock).toHaveBeenCalledWith(PROJECT_ID);
+  });
+
+  it('uses an active remembered permission on a later Ask AI action without showing the consent dialog again', async () => {
+    createAiRunMock.mockResolvedValue({ ...pending, status: 'ready', phase: 'runtime', decision: 'approved', providerApprovalMode: 'remembered_permission', manifest } satisfies AiRunIntent);
+    listPermissionsMock.mockResolvedValue([{
+      id: '66666666-6666-4666-8666-666666666666',
+      ownerId: 'user-1',
+      projectId: PROJECT_ID,
+      providerProfile: 'nvidia-hosted-nim',
+      model: 'nvidia/nemotron-3-super-120b-a12b',
+      capability: 'send_selected_context',
+      persistence: 'until_revoked',
+      expiresAt: null,
+      createdAt: '2026-09-29T00:00:00.000Z',
+      revokedAt: null
+    }]);
+    startAiRunMock.mockReturnValue(new Promise(() => undefined));
+    renderEntry();
+    const user = userEvent.setup();
+    expect(await screen.findByTestId('provider-permission-active-notice')).toHaveTextContent('without another provider approval');
+    await user.click(screen.getByTestId('ai-run-submit'));
+
+    await waitFor(() => expect(startAiRunMock).toHaveBeenCalledWith(RUN_ID, 'csrf-token', expect.any(String)));
+    expect(screen.queryByTestId('provider-consent-alert-dialog')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('ai-run-remembered-permission-notice')).toHaveTextContent('saved project permission');
+  });
+
+  it('revokes the active permission with the current CSRF token', async () => {
+    listPermissionsMock.mockResolvedValueOnce([{
+      id: '66666666-6666-4666-8666-666666666666', ownerId: 'user-1', projectId: PROJECT_ID,
+      providerProfile: 'nvidia-hosted-nim', model: 'nvidia/nemotron-3-super-120b-a12b',
+      capability: 'send_selected_context', persistence: 'until_revoked', expiresAt: null,
+      createdAt: '2026-09-29T00:00:00.000Z', revokedAt: null
+    }]).mockResolvedValueOnce([]);
+    renderEntry();
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId('provider-permission-manager-toggle'));
+    await user.click(await screen.findByTestId('provider-permission-revoke'));
+
+    await waitFor(() => expect(revokePermissionMock).toHaveBeenCalledWith(PROJECT_ID, '66666666-6666-4666-8666-666666666666', 'csrf-token'));
+    expect(await screen.findByText('No remembered provider permissions for this project.')).toBeInTheDocument();
   });
 
   it('sends only explicitly selected project facts and shows their exact content before consent', async () => {

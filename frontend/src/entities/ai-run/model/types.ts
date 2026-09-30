@@ -53,6 +53,7 @@ export interface AiRunSnapshot {
   readonly phase: AiRunPhase;
   readonly manifestHash: string;
   readonly decision: EgressDecision;
+  readonly providerApprovalMode?: 'remembered_permission' | 'one_time';
   readonly safeMessage: string;
   readonly cleanup: CleanupStatus;
   readonly providerTransmission: ProviderTransmissionStatus;
@@ -64,6 +65,19 @@ export interface AiRunSnapshot {
     readonly contentLength: number;
   };
   readonly taskSuggestions?: readonly AiRunTaskSuggestion[];
+}
+
+export interface ProviderPermission {
+  readonly id: string;
+  readonly ownerId: string;
+  readonly projectId: string;
+  readonly providerProfile: string;
+  readonly model: string;
+  readonly capability: 'send_selected_context';
+  readonly persistence: 'until_revoked';
+  readonly expiresAt: null;
+  readonly createdAt: string;
+  readonly revokedAt: string | null;
 }
 
 /** Pending or resolved assistant drafts returned with an owned run snapshot. */

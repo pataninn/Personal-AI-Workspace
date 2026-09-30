@@ -48,6 +48,7 @@ interface AiRunRow {
   readonly request_fingerprint: string;
   readonly decision_idempotency_key: string | null;
   readonly decision_fingerprint: string | null;
+  readonly provider_permission_id: string | null;
   readonly safe_message: string;
   readonly created_at: Date | string;
   readonly updated_at: Date | string;
@@ -196,9 +197,9 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
         ? 'This run was not started. No project content was staged or sent to NVIDIA.'
         : 'Preparing a private run environment.';
       const updatedRows: readonly AiRunRow[] = await queryRunner.query(
-        `UPDATE "ai_runs" SET "status" = $1, "phase" = $2, "decision" = $3, "decision_idempotency_key" = $4, "decision_fingerprint" = $5, "safe_message" = $6, "updated_at" = now()
-         WHERE "id" = $7 RETURNING *`,
-        [status, phase, decision, input.idempotencyKey, input.requestFingerprint, safeMessage, input.runId]
+        `UPDATE "ai_runs" SET "status" = $1, "phase" = $2, "decision" = $3, "provider_permission_id" = $4, "decision_idempotency_key" = $5, "decision_fingerprint" = $6, "safe_message" = $7, "updated_at" = now()
+         WHERE "id" = $8 RETURNING *`,
+        [status, phase, decision, input.decision === 'approve' ? input.providerPermissionId ?? null : null, input.idempotencyKey, input.requestFingerprint, safeMessage, input.runId]
       );
       const updated = returningRow(updatedRows);
       if (!updated) {
@@ -218,10 +219,25 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
 
   public async save(run: AiRun): Promise<void> {
     await this.dataSource.query(
-      `UPDATE "ai_runs" SET "status" = $1, "phase" = $2, "decision" = $3, "manifest_invalidated" = $4, "cleanup" = $5, "provider_transmission" = $6, "staging_item_count" = $7, "runtime_kind" = $8, "sandbox_ready" = $9, "runtime_reference" = $10, "request_message_id" = $11, "assistant_message_id" = $12, "assistant_complete" = $13, "assistant_content_length" = $14, "provider_prompt_tokens" = $15, "provider_completion_tokens" = $16, "provider_total_tokens" = $17, "start_idempotency_key" = $18, "start_fingerprint" = $19, "cancel_idempotency_key" = $20, "cancel_fingerprint" = $21, "safe_message" = $22, "updated_at" = now()
-       WHERE "owner_id" = $23 AND "id" = $24`,
-      [run.status, run.phase, run.decision, run.manifestInvalidated, run.cleanup, run.providerTransmission, run.stagingItemCount, run.runtimeKind ?? null, run.sandboxReady, run.runtimeReference ?? null, run.requestMessageId ?? null, run.assistantMessageId ?? null, run.assistantComplete ?? false, run.assistantContentLength ?? null, run.providerUsage?.promptTokens ?? null, run.providerUsage?.completionTokens ?? null, run.providerUsage?.totalTokens ?? null, run.startIdempotencyKey ?? null, run.startFingerprint ?? null, run.cancelIdempotencyKey ?? null, run.cancelFingerprint ?? null, run.safeMessage, run.ownerId, run.id]
+      `UPDATE "ai_runs" SET "status" = $1, "phase" = $2, "decision" = $3, "provider_permission_id" = $4, "manifest_invalidated" = $5, "cleanup" = $6, "provider_transmission" = $7, "staging_item_count" = $8, "runtime_kind" = $9, "sandbox_ready" = $10, "runtime_reference" = $11, "request_message_id" = $12, "assistant_message_id" = $13, "assistant_complete" = $14, "assistant_content_length" = $15, "provider_prompt_tokens" = $16, "provider_completion_tokens" = $17, "provider_total_tokens" = $18, "start_idempotency_key" = $19, "start_fingerprint" = $20, "cancel_idempotency_key" = $21, "cancel_fingerprint" = $22, "safe_message" = $23, "updated_at" = now()
+       WHERE "owner_id" = $24 AND "id" = $25`,
+      [run.status, run.phase, run.decision, run.providerPermissionId ?? null, run.manifestInvalidated, run.cleanup, run.providerTransmission, run.stagingItemCount, run.runtimeKind ?? null, run.sandboxReady, run.runtimeReference ?? null, run.requestMessageId ?? null, run.assistantMessageId ?? null, run.assistantComplete ?? false, run.assistantContentLength ?? null, run.providerUsage?.promptTokens ?? null, run.providerUsage?.completionTokens ?? null, run.providerUsage?.totalTokens ?? null, run.startIdempotencyKey ?? null, run.startFingerprint ?? null, run.cancelIdempotencyKey ?? null, run.cancelFingerprint ?? null, run.safeMessage, run.ownerId, run.id]
     );
+  }
+
+  public async reopenProviderPermissionDecision(input: { readonly ownerId: string; readonly runId: string; readonly permissionId: string }): Promise<AiRun | null> {
+    const rows: readonly AiRunRow[] = await this.dataSource.query(
+      `UPDATE "ai_runs" SET "status" = 'pending_approval', "phase" = 'decision', "decision" = 'pending',
+         "provider_permission_id" = NULL, "decision_idempotency_key" = NULL, "decision_fingerprint" = NULL,
+         "start_idempotency_key" = NULL, "start_fingerprint" = NULL,
+         "runtime_kind" = NULL, "sandbox_ready" = false, "runtime_reference" = NULL, "staging_item_count" = 0,
+         "safe_message" = 'The saved provider permission was revoked. Review this context before continuing.', "updated_at" = now()
+       WHERE "owner_id" = $1 AND "id" = $2 AND "provider_permission_id" = $3
+         AND "status" IN ('ready', 'queued') AND "provider_transmission" = 'not_started_confirmed' RETURNING *`,
+      [input.ownerId, input.runId, input.permissionId]
+    );
+    const row = returningRow(rows);
+    return row ? toAiRun(row) : null;
   }
 
   public async beginStart(input: StartRunUpdate): Promise<RunMutationResult> {
@@ -546,6 +562,7 @@ function toAiRun(row: AiRunRow): AiRun {
     status: row.status,
     phase: row.phase,
     decision: row.decision,
+    ...(row.provider_permission_id ? { providerPermissionId: row.provider_permission_id } : {}),
     cleanup: row.cleanup,
     providerTransmission: row.provider_transmission,
     stagingItemCount: row.staging_item_count,

@@ -88,3 +88,9 @@ export class AiRunCancellationReviewRequiredError extends AiRunDomainError {
     super('RUN_REVIEW_REQUIRED', 503, 'The app could not confirm whether the assistant run stopped. Refresh the run status before retrying.');
   }
 }
+
+export class AiRunProviderPermissionRevokedError extends AiRunDomainError {
+  public constructor() {
+    super('PROVIDER_PERMISSION_REVOKED', 409, 'The saved provider permission was revoked before this request started. Review the context and approve this run once, or create a new run.');
+  }
+}

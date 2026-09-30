@@ -14,5 +14,8 @@ export { CancelAiRunUseCase, type CancelAiRunInput } from '@/modules/ai-runs/use
 export { CollectProposedChangeSetUseCase, DecideProposedChangeSetUseCase, GetProposedChangeSetUseCase } from '@/modules/ai-runs/use-cases/change-set-use-cases';
 export { GetAiRunActivityUseCase, ListAiRunActivityUseCase } from '@/modules/ai-runs/use-cases/activity-use-cases';
 export { ListProjectFileHistoryUseCase } from '@/modules/ai-runs/use-cases/file-history-use-cases';
+export { ListProviderPermissionsUseCase, RevokeProviderPermissionUseCase } from '@/modules/ai-runs/use-cases/provider-permission-use-cases';
 export type { IAgentRuntime, IAiRunRepository, ISandboxCommandRepository, IStagingGateway, IProposedChangeSetRepository, IWorkspaceMutationGateway } from '@/modules/ai-runs/repositories';
+export type { IProviderPermissionRepository } from '@/modules/ai-runs/repositories';
+export type { ProviderPermission } from '@/modules/ai-runs/domain/provider-permission';
 export type { ChangeOperationKind, ChangeSetDecision, ChangeSetStatus, ProposedChangeOperation, ProposedChangeSet, RuntimeChangeProposal } from '@/modules/ai-runs/domain/change-types';

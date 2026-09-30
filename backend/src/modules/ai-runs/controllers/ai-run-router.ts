@@ -4,9 +4,11 @@ import { z } from 'zod';
 
 import { authenticateRequest, requireCsrf, sameOrigin } from '@/modules/auth/controllers/request-auth';
 import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
-import { AiRunManifestConflictError, AiRunNotFoundError } from '@/modules/ai-runs/domain/ai-run-errors';
+import { AiRunManifestConflictError, AiRunNotFoundError, AiRunProviderPermissionRevokedError } from '@/modules/ai-runs/domain/ai-run-errors';
 import type { AiRun, EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
+import type { ProviderPermission } from '@/modules/ai-runs/domain/provider-permission';
 import { CreateAiRunUseCase, DecideEgressUseCase, GetAiRunUseCase } from '@/modules/ai-runs/use-cases/ai-run-use-cases';
+import { ListProviderPermissionsUseCase, RevokeProviderPermissionUseCase } from '@/modules/ai-runs/use-cases/provider-permission-use-cases';
 import { DecideProposedChangeSetUseCase, GetProposedChangeSetUseCase } from '@/modules/ai-runs/use-cases/change-set-use-cases';
 import type { ProposedChangeSet } from '@/modules/ai-runs/domain/change-types';
 import { AppError } from '@/shared/errors/app-error';
@@ -28,7 +30,8 @@ const createRunSchema = z.object({
 
 const decisionSchema = z.object({
   manifestHash: z.string(),
-  decision: z.enum(['approve', 'reject'])
+  decision: z.enum(['approve', 'reject']),
+  rememberProviderPermission: z.boolean().optional()
 }).strict();
 
 const changeSetDecisionSchema = z.object({
@@ -49,6 +52,8 @@ export interface AiRunRouterDependencies {
   readonly listActivity?: ListAiRunActivityUseCase;
   readonly getActivity?: GetAiRunActivityUseCase;
   readonly listFileHistory?: ListProjectFileHistoryUseCase;
+  readonly listProviderPermissions?: ListProviderPermissionsUseCase;
+  readonly revokeProviderPermission?: RevokeProviderPermissionUseCase;
   readonly appOrigin: string;
   readonly clearSessionCookie: (response: Response) => void;
 }
@@ -141,6 +146,41 @@ function fileHistoryHandler(dependencies: AiRunRouterDependencies): RequestHandl
   };
 }
 
+function providerPermissionsHandler(dependencies: AiRunRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const ownerId = request.auth?.principal.id;
+      if (!ownerId || !dependencies.listProviderPermissions) {
+        next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
+        return;
+      }
+      const projectId = parseUuid(routeParam(request.params.projectId), new AiRunNotFoundError());
+      const permissions = await dependencies.listProviderPermissions.execute({ ownerId, projectId });
+      sendData(response, { permissions: permissions.map(serializeProviderPermission) });
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
+function revokeProviderPermissionHandler(dependencies: AiRunRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const ownerId = request.auth?.principal.id;
+      if (!ownerId || !dependencies.revokeProviderPermission) {
+        next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
+        return;
+      }
+      const projectId = parseUuid(routeParam(request.params.projectId), new AiRunNotFoundError());
+      const permissionId = parseUuid(routeParam(request.params.permissionId), new AiRunNotFoundError());
+      const permission = await dependencies.revokeProviderPermission.execute({ ownerId, projectId, permissionId });
+      sendData(response, { permission: serializeProviderPermission(permission) });
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
 function requiredIdempotencyKey(request: Parameters<RequestHandler>[0]): string {
   return request.header('idempotency-key') ?? '';
 }
@@ -165,10 +205,16 @@ function createHandler(dependencies: AiRunRouterDependencies): RequestHandler {
         includeRecentMessages: body.context?.includeRecentMessages ?? false,
         idempotencyKey: requiredIdempotencyKey(request)
       });
-      response.location(`/api/v1/ai-runs/${result.resource.id}`);
+      let run = result.resource;
+      try {
+        run = await dependencies.decideEgress.approveWithRememberedPermission({ ownerId, runId: run.id }) ?? run;
+      } catch (error: unknown) {
+        if (!(error instanceof AiRunProviderPermissionRevokedError)) throw error;
+      }
+      response.location(`/api/v1/ai-runs/${run.id}`);
       sendData(response, {
-        run: serializeSnapshot(result.resource),
-        manifest: serializeManifest(result.resource)
+        run: serializeSnapshot(run),
+        manifest: serializeManifest(run)
       }, result.replayed ? 200 : 202);
     } catch (error: unknown) {
       next(error);
@@ -232,6 +278,7 @@ function decisionHandler(dependencies: AiRunRouterDependencies): RequestHandler 
         runId,
         manifestHash: body.manifestHash,
         decision: body.decision,
+        rememberProviderPermission: body.rememberProviderPermission ?? false,
         idempotencyKey: requiredIdempotencyKey(request)
       });
       sendData(response, { run: serializeSnapshot(run), manifest: serializeManifest(run) });
@@ -310,7 +357,23 @@ function serializeSnapshot(run: AiRun): Record<string, unknown> {
         contentLength: run.assistantContentLength ?? 0
       }
     } : {}),
-    ...(run.runtimeKind && run.sandboxReady ? { runtime: { kind: run.runtimeKind, sandboxReady: true } } : {})
+    ...(run.runtimeKind && run.sandboxReady ? { runtime: { kind: run.runtimeKind, sandboxReady: true } } : {}),
+    ...(run.decision === 'approved' ? { providerApprovalMode: run.providerPermissionId ? 'remembered_permission' : 'one_time' } : {})
+  };
+}
+
+function serializeProviderPermission(permission: ProviderPermission): Record<string, unknown> {
+  return {
+    id: permission.id,
+    subject: { ownerId: permission.ownerId, label: 'Signed-in account' },
+    projectId: permission.projectId,
+    providerProfile: permission.providerProfile,
+    model: permission.model,
+    capability: permission.capability,
+    persistence: 'until_revoked',
+    expiresAt: null,
+    createdAt: permission.createdAt.toISOString(),
+    revokedAt: permission.revokedAt?.toISOString() ?? null
   };
 }
 
@@ -441,6 +504,10 @@ export function createAiRunRouter(dependencies: AiRunRouterDependencies): Router
   }
   if (dependencies.listFileHistory) {
     router.get('/projects/:projectId/file-history', authenticate, fileHistoryHandler(dependencies));
+  }
+  if (dependencies.listProviderPermissions && dependencies.revokeProviderPermission) {
+    router.get('/projects/:projectId/provider-permissions', authenticate, providerPermissionsHandler(dependencies));
+    router.delete('/projects/:projectId/provider-permissions/:permissionId', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, revokeProviderPermissionHandler(dependencies));
   }
   router.post('/projects/:projectId/ai-runs', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, createHandler(dependencies));
   router.get('/ai-runs/:runId', authenticate, getHandler(dependencies));
