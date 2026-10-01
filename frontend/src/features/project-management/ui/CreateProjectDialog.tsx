@@ -36,7 +36,7 @@ function messageForError(error: ApiClientError): { field?: keyof ProjectDraftErr
     return { field: 'relativeRoot', message: 'This folder cannot be used as a project root. Choose a normal child folder inside the workspace.' };
   }
   if (error.code === 'PROJECT_ROOT_NOT_FOUND') {
-    return { field: 'relativeRoot', message: 'Choose an existing folder inside the workspace.' };
+    return { field: 'relativeRoot', message: 'This path contains a file where a folder is needed. Choose a different folder path.' };
   }
   if (error.code === 'PROJECT_ROOT_INVALID') {
     return { field: 'relativeRoot', message: 'Use a relative folder beneath the configured workspace.' };
@@ -114,7 +114,7 @@ export function CreateProjectDialog({ open, onOpenChange, onRetryBoundary, onCre
     <DialogRoot open={open} onOpenChange={(nextOpen) => !isCreating && onOpenChange(nextOpen)}>
       <DialogContent data-testid="project-create-dialog" onOpenAutoFocus={(event) => { event.preventDefault(); nameRef.current?.focus(); }}>
         <DialogTitle>Create project</DialogTitle>
-        <DialogDescription>Give this workspace area a name. The project root must be a relative folder inside the configured local workspace.</DialogDescription>
+        <DialogDescription>Create a project in the configured local workspace. New folders are created there automatically.</DialogDescription>
         <form className="project-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
           <div className="field-group">
             <Label htmlFor="project-name">Project name</Label>
@@ -133,7 +133,7 @@ export function CreateProjectDialog({ open, onOpenChange, onRetryBoundary, onCre
             {errors.name ? <p id="project-name-error" className="field-error" data-testid="project-name-error" role="alert">{errors.name}</p> : null}
           </div>
           <div className="field-group">
-            <Label htmlFor="project-relative-root">Relative project root</Label>
+            <Label htmlFor="project-relative-root">Folder inside your workspace</Label>
             <Input
               ref={rootRef}
               id="project-relative-root"
@@ -145,7 +145,7 @@ export function CreateProjectDialog({ open, onOpenChange, onRetryBoundary, onCre
               aria-describedby={errors.relativeRoot ? 'project-relative-root-error' : 'project-root-help'}
               disabled={isCreating}
             />
-            <p id="project-root-help" className="field-help" data-testid="project-root-help">Examples: apps/website or notes/research. The server validates containment and keeps this root fixed after creation. Do not enter a C:\\ path, /workspace path, leading slash, .., or a protected folder.</p>
+            <p id="project-root-help" className="field-help" data-testid="project-root-help">For example, apps/website or notes/research. This folder will be created under the local folder configured by WORKSPACE_HOST_ROOT. Do not enter a full path, leading slash, .., or a protected folder. The folder stays fixed after creation.</p>
             {errors.relativeRoot ? <p id="project-relative-root-error" className="field-error" data-testid="project-relative-root-error" role="alert">{errors.relativeRoot}</p> : null}
           </div>
           <Alert tone="info">The server checks this folder when you create the project. An active project root cannot be changed later. Archive this project and create a new one to use a different root.</Alert>

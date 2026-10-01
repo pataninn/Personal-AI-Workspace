@@ -19,12 +19,14 @@ export interface WorkspaceStats {
 
 export interface WorkspaceFileSystem {
   lstat(filePath: string): Promise<WorkspaceStats>;
+  mkdir?(filePath: string): Promise<void>;
   readFile(filePath: string): Promise<string>;
   realpath(filePath: string): Promise<string>;
 }
 
 const defaultFileSystem: WorkspaceFileSystem = {
   lstat: (filePath) => nodeFs.lstat(filePath),
+  mkdir: async (filePath) => { await nodeFs.mkdir(filePath); },
   readFile: (filePath) => nodeFs.readFile(filePath, 'utf8'),
   realpath: (filePath) => nodeFs.realpath(filePath)
 };
@@ -93,6 +95,40 @@ export class WorkspaceBoundaryAdapter implements IWorkspaceBoundary {
       throw new ProjectRootInvalidError();
     }
     return normalizeProjectRoot(canonicalRelativeRoot);
+  }
+
+  public async createProjectRoot(relativeRoot: string): Promise<string> {
+    const normalizedRoot = normalizeProjectRoot(relativeRoot);
+    await this.assertReady();
+    if (normalizedRoot === '.') {
+      return normalizedRoot;
+    }
+    if (!this.fileSystem.mkdir) {
+      throw new WorkspaceBoundaryUnavailableError();
+    }
+    let currentPath = this.options.containerRoot;
+    for (const segment of normalizedRoot.split('/')) {
+      currentPath = path.posix.join(currentPath, segment);
+      try {
+        await this.fileSystem.lstat(currentPath);
+      } catch {
+        try {
+          await this.fileSystem.mkdir(currentPath);
+        } catch (error: unknown) {
+          // Another request may have created the same directory; validate it below.
+          if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')) {
+            throw new WorkspaceBoundaryUnavailableError();
+          }
+        }
+      }
+      await this.assertDirectoryWithoutReparse(currentPath);
+    }
+    const canonicalRoot = await this.fileSystem.realpath(this.options.containerRoot);
+    const canonicalProjectRoot = await this.fileSystem.realpath(currentPath);
+    if (!isContained(canonicalRoot, canonicalProjectRoot)) {
+      throw new ProjectRootInvalidError();
+    }
+    return normalizeProjectRoot(path.posix.relative(canonicalRoot, canonicalProjectRoot));
   }
 
   private async verifyConfiguredRoot(): Promise<void> {

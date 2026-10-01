@@ -125,7 +125,7 @@ describe('DashboardPage project workspace flow', () => {
     await user.click(screen.getByTestId('project-create-trigger'));
     expect(screen.getByRole('dialog', { name: 'Create project' })).toBeInTheDocument();
     await user.type(screen.getByLabelText('Project name'), createdProject.name);
-    await user.type(screen.getByLabelText('Relative project root'), createdProject.relativeRoot);
+    await user.type(screen.getByLabelText('Folder inside your workspace'), createdProject.relativeRoot);
     await user.click(screen.getByTestId('project-create-submit'));
 
     await waitFor(() => expect(screen.getByTestId('location-probe')).toHaveTextContent(`/projects/${createdProject.id}`));
@@ -141,7 +141,7 @@ describe('DashboardPage project workspace flow', () => {
     const user = userEvent.setup();
 
     await user.click(screen.getByTestId('project-create-trigger'));
-    const rootInput = screen.getByLabelText('Relative project root');
+    const rootInput = screen.getByLabelText('Folder inside your workspace');
     await user.type(screen.getByLabelText('Project name'), 'Unsafe project');
     await user.type(rootInput, '../outside');
     await user.click(screen.getByTestId('project-create-submit'));
@@ -162,14 +162,14 @@ describe('DashboardPage project workspace flow', () => {
 
     await user.click(screen.getByTestId('project-create-trigger'));
     await user.type(screen.getByLabelText('Project name'), 'Overlapping project');
-    await user.type(screen.getByLabelText('Relative project root'), 'apps/website-child');
+    await user.type(screen.getByLabelText('Folder inside your workspace'), 'apps/website-child');
     await user.click(screen.getByTestId('project-create-submit'));
 
     expect(await screen.findByTestId('project-relative-root-error')).toHaveTextContent(
       'already used by another active project'
     );
     expect(screen.queryByText('internal overlap detail')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Relative project root')).toHaveFocus();
+    expect(screen.getByLabelText('Folder inside your workspace')).toHaveFocus();
   });
 
   it('archives an active project only after confirmation and shows its archived representation', async () => {
@@ -236,7 +236,7 @@ describe('DashboardPage project workspace flow', () => {
 
     await user.click(screen.getByTestId('project-create-trigger'));
     await user.type(screen.getByLabelText('Project name'), 'Expired project');
-    await user.type(screen.getByLabelText('Relative project root'), 'expired');
+    await user.type(screen.getByLabelText('Folder inside your workspace'), 'expired');
     await user.click(screen.getByTestId('project-create-submit'));
     await waitFor(() => expect(store.getState().userSession.status).toBe('unauthenticated'));
     unregister();

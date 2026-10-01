@@ -24,15 +24,19 @@ export class CreateProjectUseCase {
     const identity = normalizeProjectName(input.name);
     const requestedRoot = normalizeProjectRoot(input.relativeRoot);
     await this.workspaceBoundary.assertReady();
-    const relativeRoot = await this.workspaceBoundary.validateProjectRoot(requestedRoot);
+    const relativeRoot = requestedRoot;
     const activeRoots = await this.projectRepository.listActiveRoots(input.ownerId);
     assertProjectRootDoesNotOverlap(relativeRoot, activeRoots);
+    const projectRoot = this.workspaceBoundary.createProjectRoot
+      ? await this.workspaceBoundary.createProjectRoot(relativeRoot)
+      : relativeRoot;
+    assertProjectRootDoesNotOverlap(projectRoot, activeRoots);
     return this.projectRepository.create({
       ownerId: input.ownerId,
       name: identity.name,
       slug: identity.slug,
-      relativeRoot,
-      relativeRootKey: projectRootOverlapKey(relativeRoot)
+      relativeRoot: projectRoot,
+      relativeRootKey: projectRootOverlapKey(projectRoot)
     });
   }
 }
