@@ -393,7 +393,7 @@ export class DecideEgressUseCase {
       } catch {
         throw new AiRunSourceChangedError();
       }
-      if (read.truncated || read.sizeBytes !== file.sizeBytes || hashText(read.content) !== file.sourceHash) {
+      if (read.truncated || read.sizeBytes !== file.sizeBytes || (read.sourceHash ?? hashText(read.content)) !== file.sourceHash) {
         throw new AiRunSourceChangedError();
       }
     }

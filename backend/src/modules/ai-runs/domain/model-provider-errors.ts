@@ -2,6 +2,24 @@ import type { ErrorDetail } from '@/shared/errors/app-error';
 
 export const PROVIDER_TRUNCATED_MESSAGE = 'NVIDIA reached the response length limit before finishing. Ask for fewer files or a smaller step; no changes from this response were applied.';
 
+const PROVIDER_OUTPUT_FAILURES = {
+  json_syntax: 'NVIDIA returned malformed JSON. Its proposed changes could not be read. No changes from this response were applied.',
+  schema: 'NVIDIA returned incorrect fields in its file-change response. No changes from this response were applied.',
+  ambiguous_changes: 'NVIDIA returned conflicting lists of proposed file changes. No changes from this response were applied.',
+  credential: 'NVIDIA proposed content that triggered the credential check. No changes from this response were applied.',
+  task_suggestions: 'NVIDIA returned invalid task suggestions. No changes from this response were applied.',
+  content_size: 'NVIDIA returned more file content than the safe response limit allows. No changes from this response were applied.',
+  response_size: 'NVIDIA returned a response larger than the safe transport limit. No changes from this response were applied.',
+  response_format: 'NVIDIA returned an unreadable response body. No changes from this response were applied.',
+  stream_incomplete: 'The NVIDIA response stream ended without its completion marker. No changes from this response were applied.',
+  stream_format: 'NVIDIA returned a malformed response stream. No changes from this response were applied.',
+  incomplete_envelope: 'NVIDIA returned an unfinished JSON object. No changes from this response were applied.',
+  multiple_envelopes: 'NVIDIA returned more than one file-change response. No changes from this response were applied.',
+  empty_response: 'NVIDIA returned no usable message or proposed changes. No changes from this response were applied.'
+} as const;
+
+type ProviderOutputFailureReason = keyof typeof PROVIDER_OUTPUT_FAILURES;
+
 const PROVIDER_HTTP_FAILURES: Readonly<Record<number, string>> = {
   400: 'NVIDIA rejected the request format (HTTP 400). Check the configured model and request settings.',
   401: 'NVIDIA rejected the API key (HTTP 401). Check the configured credential.',
@@ -23,6 +41,7 @@ export function safeProviderFailureMessage(message: string): string {
     return 'NVIDIA returned a response the app could not validate. Try asking for one smaller step. No changes from this response were applied.';
   }
   if (message === PROVIDER_TRUNCATED_MESSAGE || Object.values(PROVIDER_HTTP_FAILURES).includes(message)
+    || Object.values(PROVIDER_OUTPUT_FAILURES).some((failure) => failure === message)
     || ['The NVIDIA provider rejected the request.', 'The approved provider request exceeded the safe size limit.', 'The approved provider context is unavailable.', 'The provider request could not be completed safely.'].includes(message)) {
     return message;
   }
@@ -60,8 +79,8 @@ export class ModelProviderRequestError extends ModelProviderError {
 }
 
 export class ModelProviderOutputError extends ModelProviderError {
-  public constructor() {
-    super('PROVIDER_OUTPUT_INVALID', 'The NVIDIA provider returned an invalid response.');
+  public constructor(reason?: ProviderOutputFailureReason) {
+    super('PROVIDER_OUTPUT_INVALID', reason ? PROVIDER_OUTPUT_FAILURES[reason] : 'The NVIDIA provider returned an invalid response.');
   }
 }
 

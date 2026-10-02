@@ -74,7 +74,7 @@ export async function buildManifest(input: ManifestBuildInput): Promise<Manifest
     }
     files.push({
       relativePath: canonicalPath,
-      sourceHash: hashText(readResult.content),
+      sourceHash: readResult.sourceHash ?? hashText(readResult.content),
       sizeBytes: readResult.sizeBytes
     });
     includedBytes += readResult.sizeBytes;

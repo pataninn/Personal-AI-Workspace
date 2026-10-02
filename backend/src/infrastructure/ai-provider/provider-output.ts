@@ -61,29 +61,32 @@ export interface ParsedProviderOutput {
 
 export function parseProviderOutput(text: string): ParsedProviderOutput {
   if (Buffer.byteLength(text, 'utf8') > MAX_OUTPUT_BYTES) {
-    throw new ModelProviderOutputError();
+    throw new ModelProviderOutputError('content_size');
   }
   const envelope = extractProviderEnvelope(text.trim());
   if (envelope === null) {
     return { text: redactEgressText(text), changes: [], taskSuggestions: [] };
   }
   if (Buffer.byteLength(envelope, 'utf8') > MAX_STRUCTURED_BYTES) {
-    throw new ModelProviderOutputError();
+    throw new ModelProviderOutputError('content_size');
   }
   let candidate: unknown;
   try {
     candidate = JSON.parse(envelope) as unknown;
   } catch {
-    throw new ModelProviderOutputError();
+    throw new ModelProviderOutputError('json_syntax');
   }
   const parsed = envelopeSchema.safeParse(candidate);
-  if (!parsed.success || (parsed.data.changes && parsed.data.proposedChanges)) {
-    throw new ModelProviderOutputError();
+  if (!parsed.success) {
+    throw new ModelProviderOutputError('schema');
+  }
+  if (parsed.data.changes && parsed.data.proposedChanges) {
+    throw new ModelProviderOutputError('ambiguous_changes');
   }
   const changes = parsed.data.changes ?? parsed.data.proposedChanges ?? [];
   for (const change of changes) {
     if (containsCredentialLikeValue(change.content ?? '') || containsCredentialLikeValue(change.new ?? '') || containsCredentialLikeValue(change.old ?? '') || containsCredentialLikeValue(change.summary ?? '')) {
-      throw new ModelProviderOutputError();
+      throw new ModelProviderOutputError('credential');
     }
   }
   const taskSuggestions = (parsed.data.taskSuggestions ?? []).map((suggestion) => {
@@ -92,7 +95,7 @@ export function parseProviderOutput(text: string): ParsedProviderOutput {
     if (title.length === 0 || Array.from(title).length > 120 || FORBIDDEN_TITLE_CONTROL.test(title)
       || (details !== null && (Buffer.byteLength(details, 'utf8') > MAX_TASK_DETAILS_BYTES || FORBIDDEN_DETAILS_CONTROL.test(details)))
       || containsCredentialLikeValue(title) || (details !== null && containsCredentialLikeValue(details))) {
-      throw new ModelProviderOutputError();
+      throw new ModelProviderOutputError('task_suggestions');
     }
     return { title, details };
   });

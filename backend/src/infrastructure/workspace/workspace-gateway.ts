@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   WorkspaceBinaryFileError,
   WorkspaceDomainError,
@@ -111,6 +113,7 @@ export class WorkspaceGatewayAdapter implements IWorkspaceGateway {
     return {
       path: entry.path,
       content: bounded.text,
+      sourceHash: createHash('sha256').update(buffer.bytes).digest('hex'),
       encoding: 'utf-8',
       sizeBytes: bounded.sizeBytes,
       lineCount: decoded.split(/\r\n|\r|\n/u).length,

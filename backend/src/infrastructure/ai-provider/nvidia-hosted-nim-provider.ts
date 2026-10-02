@@ -15,6 +15,7 @@ import type {
 import type { ProviderTokenUsage } from '@/modules/ai-runs/domain/ai-run-types';
 import { maxProviderOutputBytes, parseProviderOutput } from '@/infrastructure/ai-provider/provider-output';
 import { systemInstruction } from '@/infrastructure/ai-provider/provider-system-instruction';
+import { NVIDIA_RESPONSE_FORMAT } from '@/infrastructure/ai-provider/provider-response-format';
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_REQUEST_BYTES = 256 * 1024;
@@ -133,14 +134,14 @@ export class NvidiaHostedNimProvider implements IModelProvider {
 
   private async *parseJsonResponse(raw: string): AsyncIterable<ModelProviderEvent> {
     if (Buffer.byteLength(raw, 'utf8') > MAX_RESPONSE_BYTES) {
-      yield { type: 'failed', message: new ModelProviderOutputError().message };
+      yield { type: 'failed', message: new ModelProviderOutputError('response_size').message };
       return;
     }
     let payload: unknown;
     try {
       payload = JSON.parse(raw) as unknown;
     } catch {
-      yield { type: 'failed', message: new ModelProviderOutputError().message };
+      yield { type: 'failed', message: new ModelProviderOutputError('response_format').message };
       return;
     }
     const usage = extractProviderUsage(payload);
@@ -185,7 +186,7 @@ export class NvidiaHostedNimProvider implements IModelProvider {
         signal.throwIfAborted();
         totalBytes += chunk.value.byteLength;
         if (totalBytes > MAX_STREAM_BYTES) {
-          throw new ModelProviderOutputError();
+          throw new ModelProviderOutputError('response_size');
         }
         buffer += decoder.decode(chunk.value, { stream: true });
         const lines = buffer.split(/\r?\n/u);
@@ -200,7 +201,7 @@ export class NvidiaHostedNimProvider implements IModelProvider {
             sawDone = true;
           } else if (parsed.text) {
             contentBytes += Buffer.byteLength(parsed.text, 'utf8');
-            if (contentBytes > maxProviderOutputBytes()) throw new ModelProviderOutputError();
+            if (contentBytes > maxProviderOutputBytes()) throw new ModelProviderOutputError('content_size');
             accumulated += parsed.text;
             deltas.push(parsed.text);
             if (!structured && accumulated.trimStart().startsWith('{')) {
@@ -220,7 +221,7 @@ export class NvidiaHostedNimProvider implements IModelProvider {
           sawDone = true;
         } else if (parsed.text) {
           contentBytes += Buffer.byteLength(parsed.text, 'utf8');
-          if (contentBytes > maxProviderOutputBytes()) throw new ModelProviderOutputError();
+          if (contentBytes > maxProviderOutputBytes()) throw new ModelProviderOutputError('content_size');
           accumulated += parsed.text;
           deltas.push(parsed.text);
           if (!structured && accumulated.trimStart().startsWith('{')) {
@@ -232,7 +233,7 @@ export class NvidiaHostedNimProvider implements IModelProvider {
       reader.releaseLock();
     }
     if (!sawDone) {
-      yield { type: 'failed', message: new ModelProviderOutputError().message };
+      yield { type: 'failed', message: new ModelProviderOutputError('stream_incomplete').message };
       return;
     }
     if (truncated) {
@@ -244,7 +245,7 @@ export class NvidiaHostedNimProvider implements IModelProvider {
 
   private async *outputEvents(text: string, structured = text.trimStart().startsWith('{'), rawDeltas: readonly string[] = [], usage?: ProviderTokenUsage): AsyncIterable<ModelProviderEvent> {
     if (Buffer.byteLength(text, 'utf8') > maxProviderOutputBytes()) {
-      yield { type: 'failed', message: new ModelProviderOutputError().message };
+      yield { type: 'failed', message: new ModelProviderOutputError('content_size').message };
       return;
     }
     let parsed;
@@ -255,7 +256,7 @@ export class NvidiaHostedNimProvider implements IModelProvider {
       return;
     }
     if (parsed.changes.length === 0 && parsed.taskSuggestions.length === 0 && parsed.text.length === 0) {
-      yield { type: 'failed', message: new ModelProviderOutputError().message };
+      yield { type: 'failed', message: new ModelProviderOutputError('empty_response').message };
       return;
     }
     if (parsed.text) {
@@ -296,6 +297,7 @@ function buildRequestBody(input: ModelProviderRequest, model: string): Record<st
     model,
     messages,
     stream: true,
+    response_format: NVIDIA_RESPONSE_FORMAT,
     temperature: 1.0,
     top_p: 0.95,
     max_tokens: 16384,
@@ -328,13 +330,13 @@ function parseStreamLine(line: string, sawDone: boolean): { readonly done: boole
     return { done: true, text: '' };
   }
   if (sawDone) {
-    throw new ModelProviderOutputError();
+    throw new ModelProviderOutputError('stream_format');
   }
   let payload: unknown;
   try {
     payload = JSON.parse(data) as unknown;
   } catch {
-    throw new ModelProviderOutputError();
+    throw new ModelProviderOutputError('stream_format');
   }
   if (isRecord(payload) && 'error' in payload) {
     throw new ModelProviderUnavailableError();
@@ -353,7 +355,7 @@ function parseSseLine(line: string): string | null {
 
 function extractDeltaPayload(payload: unknown, hasUsage: boolean): string {
   if (!isRecord(payload) || !Array.isArray(payload.choices)) {
-    throw new ModelProviderOutputError();
+    throw new ModelProviderOutputError('stream_format');
   }
   if (payload.choices.length === 0 && hasUsage) {
     return '';
@@ -363,13 +365,13 @@ function extractDeltaPayload(payload: unknown, hasUsage: boolean): string {
     return '';
   }
   if (!isRecord(choice) || !isRecord(choice.delta)) {
-    throw new ModelProviderOutputError();
+    throw new ModelProviderOutputError('stream_format');
   }
   if (choice.delta.content === undefined) {
     return '';
   }
   if (typeof choice.delta.content !== 'string') {
-    throw new ModelProviderOutputError();
+    throw new ModelProviderOutputError('stream_format');
   }
   return choice.delta.content;
 }
@@ -400,11 +402,11 @@ function extractCompletionText(payload: unknown): string {
     throw new ModelProviderUnavailableError();
   }
   if (!isRecord(payload) || !Array.isArray(payload.choices)) {
-    throw new ModelProviderOutputError();
+    throw new ModelProviderOutputError('response_format');
   }
   const choice = payload.choices[0];
   if (!isRecord(choice) || !isRecord(choice.message) || typeof choice.message.content !== 'string') {
-    throw new ModelProviderOutputError();
+    throw new ModelProviderOutputError('response_format');
   }
   return choice.message.content;
 }
@@ -426,7 +428,7 @@ async function readBoundedBody(body: ReadableStream<Uint8Array>, signal: AbortSi
       signal.throwIfAborted();
       totalBytes += chunk.value.byteLength;
       if (totalBytes > MAX_RESPONSE_BYTES) {
-        throw new ModelProviderOutputError();
+        throw new ModelProviderOutputError('response_size');
       }
       chunks.push(chunk.value);
     }
@@ -442,7 +444,7 @@ async function readBoundedBody(body: ReadableStream<Uint8Array>, signal: AbortSi
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   } catch {
-    throw new ModelProviderOutputError();
+    throw new ModelProviderOutputError('response_format');
   }
 }
 

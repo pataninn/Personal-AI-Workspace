@@ -8,7 +8,8 @@ export function extractProviderEnvelope(text: string): string | null {
   let opening: RegExpExecArray | null;
   while ((opening = openings.exec(text)) !== null) {
     const end = findObjectEnd(text, opening.index);
-    if (end === null || envelope !== null) throw new ModelProviderOutputError();
+    if (end === null) throw new ModelProviderOutputError('incomplete_envelope');
+    if (envelope !== null) throw new ModelProviderOutputError('multiple_envelopes');
     envelope = text.slice(opening.index, end);
     openings.lastIndex = end;
   }

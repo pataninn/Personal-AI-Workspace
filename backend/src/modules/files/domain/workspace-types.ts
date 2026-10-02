@@ -53,6 +53,8 @@ export interface WorkspaceTreeResult {
 export interface WorkspaceReadResult {
   readonly path: string;
   readonly content: string;
+  /** SHA-256 of original file bytes before text normalization or redaction. */
+  readonly sourceHash?: string;
   readonly encoding: 'utf-8';
   readonly sizeBytes: number;
   readonly lineCount: number;
