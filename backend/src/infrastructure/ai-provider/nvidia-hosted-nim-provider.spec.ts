@@ -28,6 +28,42 @@ const request: ModelProviderRequest = {
 };
 
 describe('NvidiaHostedNimProvider', () => {
+  it('still rejects generated content over the limit before publishing changes', async () => {
+    const output = JSON.stringify({ message: 'Created file.', changes: [{ operation: 'create', path: 'index.html', content: 'x'.repeat(64 * 1024) }] });
+    const wire = `data: ${JSON.stringify({ choices: [{ delta: { content: output } }] })}\n\ndata: [DONE]\n\n`;
+    const fetchImplementation = jest.fn(async () => new Response(wire, { headers: { 'content-type': 'text/event-stream' } }));
+    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const events = await collect(provider.stream(request));
+    expect(events.at(-1)).toMatchObject({ type: 'failed' });
+    expect(events.some((event) => event.type === 'changes.proposed' || event.type === 'completed')).toBe(false);
+  });
+
+  it('keeps a bounded transport budget even for SSE metadata without content', async () => {
+    const wire = ': ' + 'x'.repeat(8 * 1024 * 1024) + '\n\ndata: [DONE]\n\n';
+    const fetchImplementation = jest.fn(async () => new Response(wire, { headers: { 'content-type': 'text/event-stream' } }));
+    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const events = await collect(provider.stream(request));
+    expect(events.at(-1)).toMatchObject({ type: 'failed' });
+    expect(events.some((event) => event.type === 'completed')).toBe(false);
+  });
+  it('accepts bounded file content when repeated SSE metadata exceeds the JSON body limit', async () => {
+    const content = '<main>' + 'portfolio section '.repeat(750) + '</main>';
+    const output = JSON.stringify({ message: 'Created portfolio.', changes: [{ operation: 'create', path: 'index.html', content }] });
+    const frames: string[] = [];
+    for (let offset = 0; offset < output.length; offset += 4) {
+      frames.push(`data: ${JSON.stringify({ id: 'synthetic-completion', object: 'chat.completion.chunk', model: request.manifest.model, choices: [{ index: 0, delta: { content: output.slice(offset, offset + 4) }, finish_reason: null }] })}\n\n`);
+    }
+    frames.push('data: {"choices":[],"usage":{"completion_tokens":4000}}\n\ndata: [DONE]\n\n');
+    const wire = frames.join('');
+    expect(Buffer.byteLength(wire)).toBeGreaterThan(192 * 1024);
+    expect(Buffer.byteLength(output)).toBeLessThan(64 * 1024);
+    const fetchImplementation = jest.fn(async () => new Response(wire, { headers: { 'content-type': 'text/event-stream' } }));
+    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const events = await collect(provider.stream(request));
+    expect(events).toContainEqual({ type: 'changes.proposed', changes: [{ operation: 'create', path: 'index.html', content }] });
+    expect(events).toContainEqual({ type: 'provider.usage', usage: { completionTokens: 4000 } });
+    expect(events.at(-1)).toMatchObject({ type: 'completed' });
+  });
   it.each(['json', 'stream'])('rejects a truncated %s response before publishing changes', async (format) => {
     const content = JSON.stringify({ message: 'Created notes.', changes: [{ operation: 'create', path: 'notes.md', content: 'Partial' }] });
     const payload = format === 'json'

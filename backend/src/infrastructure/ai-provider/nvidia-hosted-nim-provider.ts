@@ -18,6 +18,8 @@ import { maxProviderOutputBytes, parseProviderOutput } from '@/infrastructure/ai
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_REQUEST_BYTES = 256 * 1024;
 const MAX_RESPONSE_BYTES = 192 * 1024;
+// SSE repeats model and choice metadata in each chunk; count content separately.
+const MAX_STREAM_BYTES = 8 * 1024 * 1024;
 const SAFE_DELTA_CHARS = 32;
 
 export interface NvidiaHostedNimProviderOptions {
@@ -167,6 +169,7 @@ export class NvidiaHostedNimProvider implements IModelProvider {
     const decoder = new TextDecoder();
     let buffer = '';
     let totalBytes = 0;
+    let contentBytes = 0;
     let accumulated = '';
     const deltas: string[] = [];
     let structured = false;
@@ -180,7 +183,7 @@ export class NvidiaHostedNimProvider implements IModelProvider {
         }
         signal.throwIfAborted();
         totalBytes += chunk.value.byteLength;
-        if (totalBytes > MAX_RESPONSE_BYTES) {
+        if (totalBytes > MAX_STREAM_BYTES) {
           throw new ModelProviderOutputError();
         }
         buffer += decoder.decode(chunk.value, { stream: true });
@@ -195,6 +198,8 @@ export class NvidiaHostedNimProvider implements IModelProvider {
           if (parsed.done) {
             sawDone = true;
           } else if (parsed.text) {
+            contentBytes += Buffer.byteLength(parsed.text, 'utf8');
+            if (contentBytes > maxProviderOutputBytes()) throw new ModelProviderOutputError();
             accumulated += parsed.text;
             deltas.push(parsed.text);
             if (!structured && accumulated.trimStart().startsWith('{')) {
@@ -213,6 +218,8 @@ export class NvidiaHostedNimProvider implements IModelProvider {
         if (parsed.done) {
           sawDone = true;
         } else if (parsed.text) {
+          contentBytes += Buffer.byteLength(parsed.text, 'utf8');
+          if (contentBytes > maxProviderOutputBytes()) throw new ModelProviderOutputError();
           accumulated += parsed.text;
           deltas.push(parsed.text);
           if (!structured && accumulated.trimStart().startsWith('{')) {
