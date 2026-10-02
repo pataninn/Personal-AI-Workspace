@@ -62,7 +62,7 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
           {timeline.snapshot.providerApprovalMode === 'remembered_permission' ? <p data-testid="ai-run-remembered-permission-notice">This run was approved by a saved project permission. Revoking it stops runs that have not started; a request already in progress or sent cannot be recalled.</p> : null}
           {manifest ? <p className="field-help">Provider: {manifest.provider}. Model: {formatModel(manifest.model)}. Selected files: {manifest.itemCount}. Recent messages: {manifest.messageCount}.</p> : null}
         </Alert> : null}
-        <div
+        {timeline.snapshot.status !== 'failed' ? <div
           className="ai-run-timeline-status"
           data-testid="ai-run-timeline-status"
           aria-label="Run status"
@@ -72,7 +72,7 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
         >
           {!terminal && timeline.connection !== 'disconnected' && timeline.connection !== 'error' ? <Spinner label={statusText} /> : null}
           {timeline.connection !== 'disconnected' ? <span data-testid="run-connection-status">{statusText}</span> : null}
-        </div>
+        </div> : null}
         {timeline.assistantText ? <article className="ai-run-assistant-output" data-testid="ai-run-assistant-output" aria-labelledby="ai-run-assistant-heading"><h4 id="ai-run-assistant-heading">Assistant response</h4>{partialResponse ? <p className="field-help" data-testid="assistant-stream-partial">Incomplete response</p> : null}<p data-testid="assistant-stream">{timeline.assistantText}</p></article> : null}
         {!timeline.assistantText && ['ready', 'queued', 'running', 'waiting_approval'].includes(timeline.snapshot.status) ? <p className="field-help" data-testid="assistant-stream-empty">Waiting for the assistant...</p> : null}
         {!timeline.assistantText && timeline.snapshot.status === 'succeeded' ? <p className="field-help" data-testid="ai-run-empty-response">The assistant completed without a message.</p> : null}
@@ -148,7 +148,7 @@ function terminalHeading(status: AiRunSnapshot['status'], reviewRequired: boolea
     return 'Run blocked by policy';
   }
   if (status === 'failed') {
-    return 'The assistant could not complete this run';
+    return 'Assistant run failed';
   }
   return 'Assistant run';
 }

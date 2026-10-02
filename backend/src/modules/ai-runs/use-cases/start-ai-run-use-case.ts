@@ -1,4 +1,5 @@
 import { AiRunProviderPermissionRevokedError, AiRunStateConflictError } from '@/modules/ai-runs/domain/ai-run-errors';
+import { safeProviderFailureMessage } from '@/modules/ai-runs/domain/model-provider-errors';
 import { ChangeSetDomainError, ChangeSetReviewRequiredError } from '@/modules/ai-runs/domain/change-errors';
 import { ASSISTANT_OUTPUT_LIMIT_MESSAGE, MAX_ASSISTANT_DELTA_BYTES, MAX_ASSISTANT_OUTPUT_BYTES, assistantTextExceedsLimit, sanitizeAssistantText, truncateAssistantDelta } from '@/modules/ai-runs/domain/assistant-output';
 import type { AiRun } from '@/modules/ai-runs/domain/ai-run-types';
@@ -370,7 +371,7 @@ export class StartAiRunUseCase {
       : event.type === 'completed'
       ? assistantText.length > 0 ? 'Assistant response complete.' : 'The assistant completed without a message.'
       : event.type === 'blocked' ? 'Run blocked by policy. This run was not completed.'
-        : 'The assistant could not complete this run.';
+        : event.type === 'failed' ? safeProviderFailureMessage(event.message) : 'The assistant could not complete this run.';
     if (current) {
       await this.finish(current, status, safeMessage, assistantText, event.type === 'completed' ? event.taskSuggestions ?? [] : []);
     }

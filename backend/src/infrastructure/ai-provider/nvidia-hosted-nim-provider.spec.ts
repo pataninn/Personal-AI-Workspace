@@ -28,6 +28,25 @@ const request: ModelProviderRequest = {
 };
 
 describe('NvidiaHostedNimProvider', () => {
+  it.each(['json', 'stream'])('rejects a truncated %s response before publishing changes', async (format) => {
+    const content = JSON.stringify({ message: 'Created notes.', changes: [{ operation: 'create', path: 'notes.md', content: 'Partial' }] });
+    const payload = format === 'json'
+      ? JSON.stringify({ choices: [{ message: { content }, finish_reason: 'length' }] })
+      : `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'length' }] })}\n\ndata: [DONE]\n\n`;
+    const fetchImplementation = jest.fn(async () => new Response(payload, { headers: { 'content-type': format === 'json' ? 'application/json' : 'text/event-stream' } }));
+    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const events = await collect(provider.stream(request));
+    expect(events.at(-1)).toMatchObject({ type: 'failed', message: expect.stringContaining('response length limit') });
+    expect(events.some((event) => event.type === 'changes.proposed' || event.type === 'completed')).toBe(false);
+  });
+
+  it('reports a rate limit without exposing the provider response body', async () => {
+    const fetchImplementation = jest.fn(async () => new Response('secret provider detail', { status: 429 }));
+    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const events = await collect(provider.stream(request));
+    expect(events.at(-1)).toMatchObject({ type: 'failed', message: expect.stringContaining('HTTP 429') });
+    expect(JSON.stringify(events)).not.toContain('secret provider detail');
+  });
   it.each(['stream', 'json'])('emits file changes from a prose-prefixed %s response without displaying raw JSON', async (mode) => {
     const changes = [{ operation: 'create', path: 'README.md', content: '# Project\n\n## Overview\n' }];
     const prefix = "I'll create a simple README.md file for you with some basic content.\n";
@@ -104,7 +123,7 @@ describe('NvidiaHostedNimProvider', () => {
       expect(body.messages.length).toBeGreaterThan(0);
       expect(body.temperature).toBe(1);
       expect(body.top_p).toBe(0.95);
-      expect(body.max_tokens).toBe(4096);
+      expect(body.max_tokens).toBe(16384);
       expect(body.reasoning_effort).toBe('none');
       expect(body.chat_template_kwargs.force_nonempty_content).toBe(true);
       expect(body).not.toHaveProperty('stream_options');

@@ -163,6 +163,16 @@ afterEach(() => {
 });
 
 describe('AiRunTimeline lifecycle', () => {
+  it('shows one actionable failure message without repeating the status text', async () => {
+    const message = 'NVIDIA rate or quota limit reached (HTTP 429). Wait before trying again.';
+    const failed: AiRunSnapshot = { ...ready, status: 'failed', phase: 'terminal', safeMessage: message };
+    getAiRunMock.mockResolvedValue(failed);
+    render(<AiRunTimeline compact snapshot={failed} projectId={PROJECT_ID} conversationId={CONVERSATION_ID} csrfToken="csrf-token" />);
+    expect(screen.getByRole('heading', { name: 'Assistant run failed' })).toBeInTheDocument();
+    expect(screen.getAllByText(message)).toHaveLength(1);
+    expect(screen.queryByTestId('run-connection-status')).not.toBeInTheDocument();
+    await waitFor(() => expect(getAiRunMock).toHaveBeenCalled());
+  });
   it('keeps a completed compact answer in conversation history without repeating the stream', async () => {
     getAiRunMock.mockResolvedValue(succeeded);
     const onHistory = vi.fn();

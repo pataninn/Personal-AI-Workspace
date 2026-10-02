@@ -381,7 +381,7 @@ describe('StartAiRunUseCase', () => {
         { type: 'started' },
         { type: 'provider.request_started' },
         { type: 'provider.response_received' },
-        { type: 'failed', message: 'safe provider failure' }
+        { type: 'failed', message: 'The NVIDIA provider returned an invalid response.' }
       ]
     };
     const events = new InMemoryRunEventPublisher();
@@ -392,6 +392,7 @@ describe('StartAiRunUseCase', () => {
     const failed = await waitForStatus(repository, run.id, 'failed');
 
     expect(failed.providerTransmission).toBe('transmitted_confirmed');
+    expect(failed.safeMessage).toContain('could not validate');
   });
 
   it('turns an oversized assistant delta into an explicit review outcome', async () => {
