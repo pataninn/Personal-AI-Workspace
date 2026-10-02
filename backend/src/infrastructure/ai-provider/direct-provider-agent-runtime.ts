@@ -76,6 +76,7 @@ export class DirectProviderAgentRuntime implements IAgentRuntime {
         messages: context.messages
       };
       for await (const event of this.provider.stream(request)) {
+        if (event.type === 'changes.proposed') await this.readApprovedContext(input);
         yield toRuntimeEvent(event);
       }
     } catch (error: unknown) {
@@ -118,9 +119,9 @@ export class DirectProviderAgentRuntime implements IAgentRuntime {
       conversationId: input.conversationId ?? '',
       limit: AI_RUN_LIMITS.maxMessages
     });
-    const messages = conversation && input.manifest.messageCount > 0
+    const messages = input.manifest.messages ?? (conversation && input.manifest.messageCount > 0
       ? toManifestMessages(conversation.messages.map((message) => ({ role: message.role, content: message.content })), Buffer.byteLength(input.request, 'utf8'))
-      : [];
+      : []);
     if (!conversation || messages.length !== input.manifest.messageCount || hashText(JSON.stringify(messages)) !== input.manifest.messageHash) {
       throw new AiRunSourceChangedError();
     }

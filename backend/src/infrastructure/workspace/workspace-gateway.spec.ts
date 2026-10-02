@@ -194,6 +194,16 @@ function makeGateway(boundary = new FixtureBoundary(), policy = BASE_POLICY) {
 }
 
 describe('WorkspaceGatewayAdapter', () => {
+  it('reads any UTF-8 file name under the broad access policy while retaining secret and binary guards', async () => {
+    const gateway = new WorkspaceGatewayAdapter({ containerRoot: '/workspace', workspaceBoundary: new FixtureBoundary(), fileSystem: new FixtureFileSystem({ extraFiles: ['New.svelte', '.gitignore', 'CUSTOM'] }), policy: { ...BASE_POLICY, allowedExtensions: ['*'] } });
+    for (const file of ['New.svelte', '.gitignore', 'CUSTOM']) {
+      await expect(gateway.readText(PROJECT, { path: file })).resolves.toMatchObject({ path: file, content: 'extra\n' });
+    }
+    await expect(gateway.readText(PROJECT, { path: '.env' })).rejects.toBeInstanceOf(WorkspacePathForbiddenError);
+    await expect(gateway.readText(PROJECT, { path: 'binary.txt' })).rejects.toBeInstanceOf(WorkspaceBinaryFileError);
+    await expect(gateway.readText(PROJECT, { path: '../outside.ts' })).rejects.toBeInstanceOf(WorkspacePathInvalidError);
+  });
+
   it('lists safe project-relative entries and never returns host paths', async () => {
     const { gateway } = makeGateway();
     const result = await gateway.list(PROJECT, { directory: '' });

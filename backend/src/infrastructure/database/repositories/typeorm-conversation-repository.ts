@@ -170,6 +170,17 @@ export class TypeOrmConversationRepository implements IConversationRepository {
     };
   }
 
+  public async findRecentMessagesByProjectForOwner(input: { readonly ownerId: string; readonly projectId: string; readonly conversationId: string; readonly limit: number }): Promise<readonly Message[]> {
+    const rows: readonly MessageRow[] = await this.dataSource.query(
+      `SELECT m."id", m."conversation_id", m."role", m."sequence", m."content", m."created_at"
+       FROM "messages" m INNER JOIN "conversations" c ON c."id" = m."conversation_id"
+       WHERE c."owner_id" = $1 AND c."project_id" = $2 AND m."role" IN ('user', 'assistant')
+       ORDER BY (c."id" = $3) DESC, m."created_at" DESC, m."sequence" DESC, m."id" DESC LIMIT $4`,
+      [input.ownerId, input.projectId, input.conversationId, input.limit]
+    );
+    return rows.map(toMessage).reverse();
+  }
+
   public async findMessageForOwner(input: { readonly ownerId: string; readonly projectId: string; readonly conversationId: string; readonly messageId: string }): Promise<Message | null> {
     const rows: readonly MessageRow[] = await this.dataSource.query(
       `SELECT m."id", m."conversation_id", m."role", m."sequence", m."content", m."created_at"

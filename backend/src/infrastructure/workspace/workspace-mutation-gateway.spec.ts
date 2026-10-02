@@ -64,6 +64,23 @@ describe('WorkspaceMutationGatewayAdapter', () => {
     await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, operations[4]!.operationId, 'delete.txt.bak'), 'utf8')).resolves.toBe('delete-before\n');
   });
 
+  it('writes extensionless files and renames/deletes binary files while retaining recovery bytes', async () => {
+    const adapter = makeAdapter(root, recoveryRoot);
+    const bytes = Buffer.from([0, 255, 128, 42]);
+    await fs.writeFile(path.join(projectRoot, 'asset.bin'), bytes);
+    const snapshot = await adapter.inspect(SCOPE, 'asset.bin');
+    expect(snapshot.content).toBeUndefined();
+    expect(snapshot.hash).toBe(createHash('sha256').update(bytes).digest('hex'));
+    if (!snapshot.hash) throw new Error('The binary snapshot must have a hash');
+    const first = await adapter.applyChangeSet(SCOPE, [operation('create', '.gitignore', { content: 'dist/\n' }), operation('rename', 'asset.bin', { destinationPath: 'moved.bin', expectedSourceHash: snapshot.hash })], RUN_ID, PROPOSAL_HASH);
+    expect(first.outcome).toBe('applied');
+    await expect(fs.readFile(path.join(projectRoot, 'moved.bin'))).resolves.toEqual(bytes);
+    const deletion = operation('delete', 'moved.bin', { expectedSourceHash: snapshot.hash });
+    const result = await adapter.applyChangeSet(SCOPE, [deletion], RUN_ID, PROPOSAL_HASH);
+    expect(result.outcome).toBe('applied');
+    await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, deletion.operationId, 'moved.bin.bak'))).resolves.toEqual(bytes);
+  });
+
   it('allows reviewed root-project changes but still rejects protected root paths', async () => {
     const rootScope = { projectId: 'project-1', relativeRoot: '.' } as const;
     const adapter = makeAdapter(root, recoveryRoot);

@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { CreateConversationDialog } from '@/features/conversation-management';
-import { AiRunEntry } from '@/features/ai-run';
+import { ChatComposer } from '@/features/ai-run';
 import { RunTaskSuggestions } from '@/features/project-tasks';
-import { MessageComposer } from '@/features/message-persistence';
 import { getConversation, listConversations } from '@/entities/conversation';
 import type { ConversationHistoryResponse, ConversationSnapshot } from '@/entities/conversation';
 import type { MessageSnapshot } from '@/entities/message';
@@ -151,14 +150,6 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
     navigate(`/projects/${projectId}/conversations/${conversation.id}`);
   }
 
-  function handleSaved(message: MessageSnapshot): void {
-    setHistory((current) => current ? {
-      ...current,
-      messages: mergeMessages(current.messages, [message])
-    } : current);
-    setConversations((current) => current.map((candidate) => candidate.id === conversationId ? { ...candidate, lastActivityAt: message.createdAt, updatedAt: message.createdAt } : candidate));
-  }
-
   function handleRunConversationReconciled(result: ConversationHistoryResponse): void {
     setHistory((current) => current ? mergeReconciledHistory(current, result) : result);
     const lastMessage = result.messages.at(-1);
@@ -170,7 +161,6 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
   return (
     <section className="conversation-workspace" data-testid="conversation-workspace">
       <div className="conversation-project-context" data-testid="conversation-project-context">
-        <p className="supporting-copy">Saved messages for this project. The composer only persists text; it does not start an AI run.</p>
         {isArchived ? <Alert id={ARCHIVED_DESCRIPTION_ID} tone="warning" data-testid="project-archived-message">This project is archived. Existing messages are read-only.</Alert> : null}
         <p data-testid="conversation-create-success-announcement" className="form-status" role="status" aria-live="polite">{createAnnouncement}</p>
       </div>
@@ -200,7 +190,6 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
           archivedDescriptionId={ARCHIVED_DESCRIPTION_ID}
           onRetry={retryHistory}
           onLoadOlder={loadOlderHistory}
-          onSaved={handleSaved}
           onRunConversationReconciled={handleRunConversationReconciled}
         />
       </div>
@@ -252,7 +241,6 @@ interface ConversationPaneProps {
   readonly archivedDescriptionId: string;
   readonly onRetry: () => void;
   readonly onLoadOlder: () => void;
-  readonly onSaved: (message: MessageSnapshot) => void;
   readonly onRunConversationReconciled: (history: ConversationHistoryResponse) => void;
 }
 
@@ -290,25 +278,12 @@ function ConversationPane(props: ConversationPaneProps): React.JSX.Element {
         {messages.length === 0 ? <div data-testid="conversation-history-empty"><EmptyState title="No messages yet" detail="Add a message below to start this conversation." /></div> : <ol className="message-history">{messages.map((message) => <li key={message.id} data-testid="message-item" className={`message-item message-${message.role}`}><span data-testid="message-role" className="message-role">{message.role === 'user' ? 'You' : 'Assistant'}</span><p data-testid="message-content" className="message-content">{message.content}</p><time data-testid="message-created-at" dateTime={message.createdAt}>{formatTimestamp(message.createdAt)}</time></li>)}</ol>}
         {props.history.nextBeforeSequence !== null ? <div className="history-pagination"><Button type="button" variant="secondary" data-testid="conversation-history-load-older" aria-busy={isOlderLoading} disabled={isOlderLoading} onClick={props.onLoadOlder}>Load older messages</Button>{isOlderLoading ? <p data-testid="conversation-history-load-older-status" role="status">Loading older messages...</p> : null}{props.olderError ? <div data-testid="conversation-history-load-older-error" role="alert"><p>{props.olderError.detail}</p><Button type="button" variant="secondary" data-testid="conversation-history-load-older-retry" onClick={props.onLoadOlder}>Try again</Button></div> : null}</div> : null}
       </div>
-      <MessageComposer
+      <ChatComposer
         projectId={props.projectId}
         conversationId={conversation.id}
         disabled={props.disabled}
         archivedDescriptionId={props.archivedDescriptionId}
-        inputLabel="Request for the assistant"
-        inputHelp="Ctrl+Enter or Cmd+Enter saves the message. Saving a message does not start an AI run."
-        renderAdditionalActions={(request) => (
-          <AiRunEntry
-            projectId={props.projectId}
-            conversationId={conversation.id}
-            request={request}
-            recentMessageCount={messages.length}
-            disabled={props.disabled}
-            archivedDescriptionId={props.archivedDescriptionId}
-            onConversationReconciled={props.onRunConversationReconciled}
-          />
-        )}
-        onSaved={props.onSaved}
+        onConversationReconciled={props.onRunConversationReconciled}
       />
       <RunTaskSuggestions projectId={props.projectId} conversationId={conversation.id} archivedProject={props.disabled} />
     </Card>

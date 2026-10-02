@@ -37,7 +37,15 @@ export function DashboardPage(): React.JSX.Element {
         </div>
         <Button type="button" data-testid="project-create-trigger" disabled={status !== 'success' || boundaryUnavailable} onClick={() => setCreateOpen(true)}>New project</Button>
       </header>
-      <Alert tone="info" data-testid="workspace-boundary-status-message">The server validates every project boundary beneath the configured local workspace. Active roots cannot overlap or change after creation.</Alert>
+      <Alert tone="info" data-testid="workspace-boundary-status-message">
+        <div className="workspace-boundary-note">
+          <span className="workspace-boundary-mark" aria-hidden="true" />
+          <div>
+            <strong>Project boundaries stay local</strong>
+            <p>The server checks each project before an operation. Roots stay inside your configured workspace, cannot overlap, and cannot change after creation.</p>
+          </div>
+        </div>
+      </Alert>
       {status === 'loading' || status === 'idle' ? <ProjectListLoading /> : null}
       {status === 'error' ? (
         boundaryUnavailable ? (

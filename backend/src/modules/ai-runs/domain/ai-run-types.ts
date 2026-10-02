@@ -63,6 +63,7 @@ export interface EgressManifest {
   readonly messageBytes: number;
   readonly messageCount: number;
   readonly messageHash: string;
+  readonly messages?: readonly EgressMessage[];
   readonly byteEstimate: number;
   readonly tokenEstimate: number;
   readonly excludedItemCount: number;

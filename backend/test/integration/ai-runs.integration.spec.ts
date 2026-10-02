@@ -17,6 +17,11 @@ import { GetReadinessUseCase } from '@/modules/health';
 import { CancelAiRunUseCase, CreateAiRunUseCase, DecideEgressUseCase, GetAiRunUseCase, StartAiRunUseCase } from '@/modules/ai-runs';
 import { InMemoryRunEventPublisher } from '@/infrastructure/ai-runs/in-memory-run-event-publisher';
 import { createLogger } from '@/shared/logging/logger';
+import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
+import { ProjectChatContextUseCases } from '@/modules/ai-runs/use-cases/project-chat-context-use-cases';
+import { SendChatMessageUseCase } from '@/modules/ai-runs/use-cases/send-chat-message-use-case';
+import type { ProjectChatContext } from '@/modules/ai-runs/repositories/project-chat-context-repository';
+import type { IProjectFactRepository } from '@/modules/memory/repositories/project-fact-repository';
 
 const APP_ORIGIN = 'https://127.0.0.1:8443';
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -83,12 +88,23 @@ function buildApp(): { readonly app: express.Express; readonly staging: FakeStag
   const runEvents = new InMemoryRunEventPublisher();
   const readiness = new InMemoryReadinessState();
   readiness.markReady();
-  const getSession = { execute: jest.fn().mockResolvedValue({ sessionId: 'session', principal: { id: OWNER_ID, displayName: 'Local user' }, csrfToken: 'csrf-token', expiresAt: new Date(Date.now() + 60_000) }) } as unknown as GetSessionUseCase;
+  const getSession = { execute: jest.fn(async (token: string | undefined) => {
+    if (!token) throw new UnauthenticatedError();
+    return { sessionId: 'session', principal: { id: OWNER_ID, displayName: 'Local user' }, csrfToken: 'csrf-token', expiresAt: new Date(Date.now() + 60_000) };
+  }) } as unknown as GetSessionUseCase;
+  let chatContext: ProjectChatContext = { relativePaths: [], factIds: [], includeProjectConversations: true };
+  const contexts = { get: jest.fn(async () => chatContext), update: jest.fn(async (_owner: string, _project: string, changes: Partial<ProjectChatContext>) => { chatContext = { ...chatContext, ...changes }; return chatContext; }) };
+  const facts: IProjectFactRepository = { findActiveByIds: jest.fn().mockResolvedValue([]), listActiveByProject: jest.fn(), findActiveById: jest.fn(), create: jest.fn(), update: jest.fn(), verify: jest.fn(), softDelete: jest.fn() };
+  const createRun = new CreateAiRunUseCase(projects, conversations, workspace, repository, 'nvidia-hosted-nim', 'test-model', facts);
+  const decide = new DecideEgressUseCase(repository, conversations, workspace, staging, runtime, '/workspace', facts);
+  const start = new StartAiRunUseCase(repository, conversations, runtime, runEvents, undefined, projects);
   const app = createApp({
     logger: createLogger('silent'),
     readiness: new GetReadinessUseCase(readiness),
     appVersion: 'test',
     aiRuns: {
+      projectChatContext: new ProjectChatContextUseCases(projects, contexts, facts, workspace),
+      sendChatMessage: new SendChatMessageUseCase(contexts, facts, createRun, decide, start),
       getSession,
       createAiRun: new CreateAiRunUseCase(projects, conversations, workspace, repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b'),
       getAiRun: new GetAiRunUseCase(repository),
@@ -110,6 +126,32 @@ function buildApp(): { readonly app: express.Express; readonly staging: FakeStag
 }
 
 describe('AI runs API (integration)', () => {
+  it('persists project context and sends directly with idempotent provider startup', async () => {
+    const context = buildApp();
+    const headers = { Origin: APP_ORIGIN, Cookie: '__Host-pa_session=test', 'X-CSRF-Token': 'csrf-token' };
+    const contextPath = `/api/v1/projects/${PROJECT_ID}/chat-context`;
+    await request(context.app).get(contextPath).set(headers).expect(200).expect(({ body }) => expect(body.data.includeProjectConversations).toBe(true));
+    await request(context.app).patch(contextPath).set(headers).send({ relativePaths: ['README.md'] }).expect(200);
+    await request(context.app).get(contextPath).set(headers).expect(200).expect(({ body }) => expect(body.data).toEqual({ relativePaths: ['README.md'], factIds: [], includeProjectConversations: true }));
+    const sent = await request(context.app).post(`/api/v1/projects/${PROJECT_ID}/chat-runs`).set(headers).set('Idempotency-Key', 'direct-chat-test')
+      .send({ conversationId: CONVERSATION_ID, request: 'Continue the earlier chat' }).expect(202);
+    expect(sent.body.data.run.decision).toBe('approved');
+    expect(sent.body.data.manifest.content.relativePaths).toEqual(['README.md']);
+    expect(sent.body.data.manifest.content.messageCount).toBe(1);
+    const replay = await request(context.app).post(`/api/v1/projects/${PROJECT_ID}/chat-runs`).set(headers).set('Idempotency-Key', 'direct-chat-test')
+      .send({ conversationId: CONVERSATION_ID, request: 'Continue the earlier chat' }).expect(200);
+    expect(replay.body.data.run.runId).toBe(sent.body.data.run.runId);
+    expect(context.runtime.startedRuns).toHaveLength(1);
+  });
+
+  it('protects direct send and context mutations with the normal session, origin, and CSRF checks', async () => {
+    const { app } = buildApp();
+    await request(app).get(`/api/v1/projects/${PROJECT_ID}/chat-context`).expect(401);
+    await request(app).patch(`/api/v1/projects/${PROJECT_ID}/chat-context`).set('Cookie', '__Host-pa_session=test')
+      .set('Origin', 'https://other.example').send({ relativePaths: [] }).expect(403);
+    await request(app).post(`/api/v1/projects/${PROJECT_ID}/chat-runs`).set('Origin', APP_ORIGIN).set('Cookie', '__Host-pa_session=test')
+      .send({ conversationId: CONVERSATION_ID, request: 'Hello' }).expect(403);
+  });
   it('creates a disclosure, keeps calls local before consent, and rejects without staging', async () => {
     const context = buildApp();
     const headers = { Origin: APP_ORIGIN, Cookie: '__Host-pa_session=test', 'X-CSRF-Token': 'csrf-token' };

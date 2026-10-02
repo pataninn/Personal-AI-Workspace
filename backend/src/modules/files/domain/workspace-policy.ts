@@ -49,6 +49,8 @@ export const DEFAULT_WORKSPACE_INSPECTION_POLICY: WorkspaceInspectionPolicy = {
 };
 
 export function isAllowedTextFile(filePath: string, policy: WorkspaceInspectionPolicy): boolean {
+  // The application's broad file-access policy still validates UTF-8 bytes when reading.
+  if (policy.allowedExtensions.includes('*')) return true;
   const fileName = filePath.split('/').at(-1)?.toLocaleLowerCase('en-US') ?? '';
   if (policy.allowedFileNames.includes(fileName)) {
     return true;

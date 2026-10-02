@@ -19,6 +19,47 @@ const ORIGINAL = 'const token = "secret-value";\n';
 const ORIGINAL_HASH = hash(ORIGINAL);
 
 describe('proposed change-set use cases', () => {
+  it('automatically applies changes to an authorized running run exactly once', async () => {
+    const runs = new RunRepository();
+    runs.run = { ...runs.run, status: 'running' };
+    const workspace = new WorkspaceFixture();
+    const repository = new InMemoryProposedChangeSetRepository();
+    const collect = new CollectProposedChangeSetUseCase(runs, new ProjectRepository(), workspace, repository);
+    await collect.execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation: 'edit', path: FILE_PATH, content: 'updated\n' }], fakeRuntime: false });
+    const decision = new DecideProposedChangeSetUseCase(runs, new ProjectRepository(), repository, workspace);
+    expect((await decision.executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID }))?.status).toBe('applied');
+    expect((await decision.executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID }))?.status).toBe('applied');
+    expect(workspace.applyCalls).toBe(1);
+  });
+
+  it('does not automatically apply files for a cancelled run', async () => {
+    const runs = new RunRepository();
+    const workspace = new WorkspaceFixture();
+    const repository = new InMemoryProposedChangeSetRepository();
+    await new CollectProposedChangeSetUseCase(runs, new ProjectRepository(), workspace, repository).execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation: 'delete', path: FILE_PATH }], fakeRuntime: false });
+    runs.run = { ...runs.run, status: 'cancelled' };
+    await expect(new DecideProposedChangeSetUseCase(runs, new ProjectRepository(), repository, workspace).executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID })).rejects.toMatchObject({ code: 'CHANGE_SET_BLOCKED' });
+    expect(workspace.applyCalls).toBe(0);
+  });
+
+  it('accepts ordinary file names without restricting their extensions', async () => {
+    const collect = new CollectProposedChangeSetUseCase(new RunRepository(), new ProjectRepository(), new WorkspaceFixture(), new InMemoryProposedChangeSetRepository());
+    const result = await collect.execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation: 'create', path: 'App.svelte', content: '<h1>Hello</h1>' }, { operation: 'create', path: '.gitignore', content: 'dist/\n' }], fakeRuntime: false });
+    expect(result.operations.map((operation) => operation.path)).toEqual(['App.svelte', '.gitignore']);
+  });
+
+  it.each(['rename', 'delete'] as const)('updates project context after an automatically applied $0 without overwriting facts', async (operation) => {
+    const runs = new RunRepository();
+    runs.run = { ...runs.run, status: 'running' };
+    const workspace = new WorkspaceFixture();
+    workspace.applyOutcome = { outcome: 'applied', operations: [{ operationId: 'test-operation', operation, path: FILE_PATH, ...(operation === 'rename' ? { destinationPath: 'src/new.svelte' } : {}), status: 'applied', backup: 'created', safeMessage: 'Applied.' }] };
+    const repository = new InMemoryProposedChangeSetRepository();
+    await new CollectProposedChangeSetUseCase(runs, new ProjectRepository(), workspace, repository).execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation, path: FILE_PATH, ...(operation === 'rename' ? { destinationPath: 'src/new.svelte' } : {}) }], fakeRuntime: false });
+    const contexts = { get: jest.fn().mockResolvedValue({ relativePaths: [FILE_PATH, 'notes.md'], factIds: ['selected-fact'], includeProjectConversations: true }), update: jest.fn() };
+    await new DecideProposedChangeSetUseCase(runs, new ProjectRepository(), repository, workspace, contexts).executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID });
+    expect(contexts.update).toHaveBeenCalledWith(OWNER_ID, PROJECT_ID, { relativePaths: operation === 'rename' ? ['src/new.svelte', 'notes.md'] : ['notes.md'] });
+  });
+
   it('collects immutable bounded operations with a redacted preview and exact source hash', async () => {
     const workspace = new WorkspaceFixture();
     const repository = new InMemoryProposedChangeSetRepository();
@@ -38,10 +79,19 @@ describe('proposed change-set use cases', () => {
   it('builds a line diff with unchanged context, additions, and removals', async () => {
     const workspace = new WorkspaceFixture();
     workspace.snapshotContent = 'first\nkeep\nold\n';
-    const useCase = new CollectProposedChangeSetUseCase(new RunRepository(), new ProjectRepository(), workspace, new InMemoryProposedChangeSetRepository());
+    const runs = new RunRepository();
+    runs.run = { ...runs.run, manifest: { ...runs.run.manifest, files: [{ relativePath: FILE_PATH, sourceHash: hash(workspace.snapshotContent), sizeBytes: Buffer.byteLength(workspace.snapshotContent) }] } };
+    const useCase = new CollectProposedChangeSetUseCase(runs, new ProjectRepository(), workspace, new InMemoryProposedChangeSetRepository());
     const result = await useCase.execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation: 'edit', path: FILE_PATH, content: 'first\nkeep\nnew\n' }], fakeRuntime: true });
     expect(result.operations[0]?.preview).toMatchObject({ kind: 'diff', limited: false });
     expect(result.operations[0]?.preview?.text).toBe('  first\n  keep\n- old\n+ new\n  ');
+  });
+
+  it('rejects files changed since the model received their context', async () => {
+    const workspace = new WorkspaceFixture();
+    workspace.snapshotContent = 'Edited locally while AI was working\n';
+    await expect(new CollectProposedChangeSetUseCase(new RunRepository(), new ProjectRepository(), workspace, new InMemoryProposedChangeSetRepository()).execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation: 'edit', path: FILE_PATH, content: 'AI edit\n' }], fakeRuntime: false })).rejects.toMatchObject({ code: 'CHANGE_SET_CONFLICT' });
+    expect(workspace.applyCalls).toBe(0);
   });
 
   it('persists the decision before applying and persists the authoritative applied result', async () => {

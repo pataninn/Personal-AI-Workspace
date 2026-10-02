@@ -32,7 +32,6 @@ export function ProjectFileHistoryPage(): React.JSX.Element {
   };
   return <div className="project-file-history-page" data-testid="project-file-history-page">
     <header className="project-activity-header"><div><p className="product-label">{project.name}</p><h1 ref={headingRef} tabIndex={-1}>File history</h1><p className="supporting-copy">Review proposals and operation outcomes recorded for one project path.</p></div><Link className="button button-secondary" to={`/projects/${encodeURIComponent(project.id)}/activity`}>Back to activity</Link></header>
-    <nav className="project-section-nav" aria-label="Project sections"><Link to={`/projects/${encodeURIComponent(project.id)}`}>Workspace</Link><Link to={`/projects/${encodeURIComponent(project.id)}/memory`}>Memory</Link><Link to={`/projects/${encodeURIComponent(project.id)}/tasks`}>Tasks</Link><Link to={`/projects/${encodeURIComponent(project.id)}/activity`}>Activity</Link></nav>
     {!path ? <Alert tone="info" data-testid="file-history-no-path">Open file history from a file operation or proposed change to choose a project path.</Alert> : <ProjectFileHistoryPanel projectId={project.id} path={path} outcome={outcome} archived={project.status === 'archived'} onOutcomeChange={setOutcome} />}
   </div>;
 }

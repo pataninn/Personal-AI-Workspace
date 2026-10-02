@@ -1,4 +1,4 @@
-export { aiRunEventsUrl, cancelAiRun, createAiRun, decideEgress, getAiRun, getEgressManifest, listProviderPermissions, normalizeAiRunIntent, normalizeAiRunSnapshot, normalizeEgressManifest, revokeProviderPermission, startAiRun } from '@/entities/ai-run/api/ai-run-api';
+export { aiRunEventsUrl, cancelAiRun, createAiRun, decideEgress, getAiRun, getEgressManifest, listProviderPermissions, normalizeAiRunIntent, normalizeAiRunSnapshot, normalizeEgressManifest, revokeProviderPermission, sendChatMessage, startAiRun } from '@/entities/ai-run/api/ai-run-api';
 export { parseAiRunEvent } from '@/entities/ai-run/api/run-event';
 export { cancelSandboxCommand, decideSandboxCommand, getSandboxCommand, getSandboxCommands, normalizeSandboxCommand, normalizeSandboxCommandList, normalizeSandboxCommandResponse } from '@/entities/ai-run/api/sandbox-command-api';
 export { decideProposedChangeSet, getProposedChangeSet, normalizeProposedChangeSet } from '@/entities/ai-run/api/change-set-api';

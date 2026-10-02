@@ -665,6 +665,8 @@ function parseManifest(value: unknown, manifestHash: string): EgressManifest {
     messageBytes: numberValue(candidate.messageBytes),
     messageCount: numberValue(candidate.messageCount),
     messageHash: typeof candidate.messageHash === 'string' ? candidate.messageHash : '',
+    ...(Array.isArray(candidate.messages) ? { messages: candidate.messages.filter((message) => typeof message?.role === 'string' && typeof message?.content === 'string') } : {}),
+    ...(Array.isArray(candidate.facts) ? { facts: candidate.facts } : {}),
     byteEstimate: numberValue(candidate.byteEstimate),
     tokenEstimate: numberValue(candidate.tokenEstimate),
     excludedItemCount: numberValue(candidate.excludedItemCount),

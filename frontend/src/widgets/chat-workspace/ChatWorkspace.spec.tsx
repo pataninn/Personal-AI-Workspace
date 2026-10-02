@@ -216,7 +216,7 @@ describe('ChatWorkspace', () => {
     expect(screen.getByTestId('conversation-create-trigger')).toHaveAttribute('aria-describedby', 'project-archived-message');
     expect(await screen.findByTestId('message-input')).toBeDisabled();
     expect(screen.getByTestId('message-input')).toHaveAttribute('aria-describedby', expect.stringContaining('project-archived-message'));
-    expect(screen.getByTestId('message-submit')).toHaveAttribute('aria-describedby', 'project-archived-message');
+    expect(screen.getByTestId('chat-send')).toHaveAttribute('aria-describedby', 'project-archived-message');
     expect(screen.getAllByTestId('project-archived-message').length).toBeGreaterThan(0);
   });
 

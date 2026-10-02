@@ -139,14 +139,16 @@ export class TypeOrmProjectRepository implements IProjectRepository {
           throw new ProjectRootOverlapError();
         }
       }
-      const rows: readonly ProjectRow[] = await queryRunner.query(
+      // PostgreSQL UPDATE queries return [rows, rowCount], unlike SELECT queries.
+      const [rows]: readonly [readonly ProjectRow[], number] = await queryRunner.query(
         `UPDATE "projects" SET "status" = $1, "version" = "version" + 1, "updated_at" = now()
          WHERE "owner_id" = $2 AND "id" = $3 AND "version" = $4
          RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "status", "version", "created_at", "updated_at"`,
         [input.status, input.ownerId, input.projectId, input.expectedVersion]
       );
+      const updated = rows[0] ? toProject(rows[0]) : null;
       await queryRunner.commitTransaction();
-      return rows[0] ? toProject(rows[0]) : null;
+      return updated;
     } catch (error: unknown) {
       await queryRunner.rollbackTransaction();
       throw error;

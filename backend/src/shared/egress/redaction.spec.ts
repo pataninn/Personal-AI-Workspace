@@ -1,6 +1,16 @@
 import { containsCredentialLikeValue, containsPotentialSecret, redactCommandOutputText, redactEgressText } from '@/shared/egress/redaction';
 
 describe('egress redaction', () => {
+  it('preserves HTML closing and self-closing tags without exposing real host paths', () => {
+    const markup = '<h1>Hello</h1><section /><img src="images/icon.svg" />';
+    expect(redactEgressText(markup)).toBe(markup);
+    expect(containsPotentialSecret(`Create App.svelte containing ${markup}`)).toBe(false);
+    const redacted = redactEgressText(`${markup} /workspace/private/notes.txt C:\\Users\\person\\notes.txt`);
+    expect(redacted).toContain(markup);
+    expect(redacted).not.toContain('/workspace/private');
+    expect(redacted).not.toContain('C:\\Users');
+  });
+
   it('redacts generic assignments, service-account credentials, and embedded paths', () => {
     const redacted = redactEgressText('FOO=bar GCP_SERVICE_ACCOUNT_KEY=leak prefix C:\\Users\\person\\workspace\\src path=/workspace/project/src');
 

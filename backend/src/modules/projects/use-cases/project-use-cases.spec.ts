@@ -34,6 +34,7 @@ function boundary(overrides: Partial<IWorkspaceBoundary> = {}): jest.Mocked<IWor
     getSnapshot: jest.fn().mockResolvedValue({ status: 'ready' }),
     assertReady: jest.fn().mockResolvedValue(undefined),
     validateProjectRoot: jest.fn().mockImplementation(async (value: string) => value),
+    createProjectRoot: jest.fn().mockImplementation(async (value: string) => value),
     ...overrides
   } as unknown as jest.Mocked<IWorkspaceBoundary>;
 }
@@ -46,16 +47,18 @@ describe('project use cases', () => {
 
     await expect(useCase.execute({ ownerId: 'owner-1', name: 'Website', relativeRoot: 'apps/website' })).resolves.toEqual(project);
     expect(workspace.assertReady).toHaveBeenCalledTimes(1);
-    expect(workspace.validateProjectRoot).toHaveBeenCalledWith('apps/website');
+    expect(workspace.createProjectRoot).toHaveBeenCalledWith('apps/website');
     expect(projects.create).toHaveBeenCalledWith(expect.objectContaining({ relativeRoot: 'apps/website' }));
   });
 
   it('blocks a parent or child active root before persistence', async () => {
     const projects = repository({ listActiveRoots: jest.fn().mockResolvedValue(['apps']) });
-    const useCase = new CreateProjectUseCase(projects, boundary());
+    const workspace = boundary();
+    const useCase = new CreateProjectUseCase(projects, workspace);
 
     await expect(useCase.execute({ ownerId: 'owner-1', name: 'Website', relativeRoot: 'apps/site' })).rejects.toMatchObject({ code: 'PROJECT_ROOT_OVERLAP' });
     expect(projects.create).not.toHaveBeenCalled();
+    expect(workspace.createProjectRoot).not.toHaveBeenCalled();
   });
 
   it('keeps reads owner-scoped and maps a missing guessed ID to not found', async () => {

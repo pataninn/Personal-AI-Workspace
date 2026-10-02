@@ -1,20 +1,15 @@
 import { useEffect } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 
 import { useAppDispatch, useAppSelector } from '@/app/store/hooks';
 import { loadProject, selectProjectDetail } from '@/entities/project';
-import { ArchiveProjectDialog } from '@/features/project-management';
-import { Alert, Button, Card, ErrorState, Skeleton, Spinner } from '@/shared/ui';
-import { useState } from 'react';
-import type { ProjectSnapshot } from '@/entities/project';
+import { Alert, Button, ErrorState, Skeleton, Spinner } from '@/shared/ui';
 import { ChatWorkspace } from '@/widgets/chat-workspace';
 
 export function ProjectWorkspacePage(): React.JSX.Element {
   const { projectId = '' } = useParams();
   const dispatch = useAppDispatch();
-  const navigate = useNavigate();
   const detail = useAppSelector(selectProjectDetail(projectId));
-  const [actionProject, setActionProject] = useState<ProjectSnapshot | null>(null);
 
   useEffect(() => {
     if (projectId) {
@@ -56,27 +51,8 @@ export function ProjectWorkspacePage(): React.JSX.Element {
           <h1>{project.name}</h1>
           <p className="project-status" data-testid={isArchived ? 'project-archived-status' : 'project-active-status'}>{isArchived ? 'Archived' : 'Active'}</p>
         </div>
-        <Button type="button" variant={isArchived ? 'primary' : 'destructive'} data-testid={isArchived ? 'project-restore-trigger' : 'project-archive-trigger'} onClick={() => setActionProject(project)}>{isArchived ? 'Restore project' : 'Archive project'}</Button>
       </header>
-      <nav className="project-section-nav" aria-label="Project sections">
-        <Link aria-current="page" to={`/projects/${encodeURIComponent(project.id)}`}>Workspace</Link>
-        <Link to={`/projects/${encodeURIComponent(project.id)}/memory`}>Memory</Link>
-        <Link to={`/projects/${encodeURIComponent(project.id)}/tasks`}>Tasks</Link>
-        <Link data-testid="project-activity-link" to={`/projects/${encodeURIComponent(project.id)}/activity`}>Activity</Link>
-      </nav>
-      <Card className="project-boundary-card" data-testid="project-boundary-card">
-        <h2>Authoritative workspace boundary</h2>
-        <p>The app can use only this project folder inside the configured local workspace. The server checks the boundary before each project operation. The root is fixed after creation; archive this project and create a new one to choose a different root.</p>
-        <p className="project-relative-root" data-testid="project-relative-root">Project root: <code>{project.relativeRoot}</code></p>
-      </Card>
       <ChatWorkspace project={project} />
-      <ArchiveProjectDialog
-        project={actionProject}
-        mode={isArchived ? 'restore' : 'archive'}
-        onOpenChange={(open) => { if (!open) setActionProject(null); }}
-        onCompleted={() => { setActionProject(null); if (!isArchived) navigate('/dashboard'); }}
-        onRetryBoundary={retryProjectLoad}
-      />
     </div>
   );
 }

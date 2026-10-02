@@ -101,6 +101,7 @@ export async function buildManifest(input: ManifestBuildInput): Promise<Manifest
     messageBytes,
     messageCount: input.messages.length,
     messageHash,
+    messages: input.messages,
     byteEstimate: requestBytes + messageBytes + factBytes + includedBytes,
     tokenEstimate: Math.ceil((requestBytes + messageBytes + factBytes + includedBytes) / 4),
     excludedItemCount: excludedPaths.length,

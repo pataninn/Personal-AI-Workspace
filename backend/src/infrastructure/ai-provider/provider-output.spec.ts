@@ -2,6 +2,43 @@ import { ModelProviderOutputError } from '@/modules/ai-runs/domain/model-provide
 import { parseProviderOutput } from '@/infrastructure/ai-provider/provider-output';
 
 describe('parseProviderOutput', () => {
+  it.each([
+    ['introductory prose', 'I will create a simple README.md file for you.\n', ''],
+    ['Markdown fence', '```json\n', '\n```'],
+    ['prose and a fence', 'Here are the changes.\n```json\n', '\n```\nReady.']
+  ])('recognizes executable changes wrapped in %s', (_label, prefix, suffix) => {
+    const content = '# Project\n\n## Overview\n\nBrief description of the project goes here.\n';
+    const result = parseProviderOutput(`${prefix}${JSON.stringify({
+      message: 'Created README.md.',
+      changes: [{ operation: 'create', path: 'README.md', content }]
+    })}${suffix}`);
+
+    expect(result).toEqual({ text: 'Created README.md.', changes: [{ operation: 'create', path: 'README.md', content }], taskSuggestions: [] });
+  });
+
+  it('preserves quoted braces, escapes, and nested JSON in file content', () => {
+    const content = '{"message":"a } brace, a \\\"quote\\\", and a \\\\slash"}\n';
+    const result = parseProviderOutput(`Creating the file.\n${JSON.stringify({
+      changes: [{ operation: 'create', path: 'example.json', content }]
+    })}`);
+    expect(result.changes[0]?.content).toBe(content);
+  });
+
+  it.each([
+    'Done. {"changes":[{"operation":"create","path":"README.md","content":"unfinished',
+    'Done. {"changes":[{"operation":"create"}]}',
+    'Done. {"changes":[]} {"changes":[]}',
+    'Done. {"changes":[],"unexpected":true}',
+    `Done. ${JSON.stringify({ changes: [{ operation: 'create', path: 'README.md', content: 'NVIDIA_API_KEY=secret-value' }] })}`
+  ])('rejects invalid wrapped contracts rather than claiming success: %s', (text) => {
+    expect(() => parseProviderOutput(text)).toThrow(ModelProviderOutputError);
+  });
+
+  it('keeps ordinary braces and unrelated JSON as chat text', () => {
+    const text = 'Use {name} in templates. The example data is {"name":"project"}.';
+    expect(parseProviderOutput(text)).toEqual({ text, changes: [], taskSuggestions: [] });
+  });
+
   it('accepts bounded assistant text and structured changes', () => {
     const result = parseProviderOutput(JSON.stringify({
       message: 'I updated the greeting.',

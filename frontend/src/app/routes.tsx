@@ -5,6 +5,7 @@ import { AppShell } from '@/widgets/app-shell';
 import { DashboardPage } from '@/pages/dashboard';
 import { ProjectWorkspacePage } from '@/pages/project-workspace';
 import { ProjectMemoryPage } from '@/pages/project-memory';
+import { ProjectContextPage } from '@/pages/project-context';
 import { ProjectTasksPage } from '@/pages/project-tasks';
 import { ProjectActivityPage } from '@/pages/project-activity';
 import { ProjectFileHistoryPage } from '@/pages/project-file-history';
@@ -54,6 +55,7 @@ export const router = createBrowserRouter([
               { path: 'dashboard', element: <DashboardPage /> },
               { path: 'projects/:projectId', element: <ProjectWorkspacePage /> },
               { path: 'projects/:projectId/memory', element: <ProjectMemoryPage /> },
+              { path: 'projects/:projectId/context', element: <ProjectContextPage /> },
               { path: 'projects/:projectId/tasks', element: <ProjectTasksPage /> },
               { path: 'projects/:projectId/activity', element: <ProjectActivityPage /> },
               { path: 'projects/:projectId/file-history', element: <ProjectFileHistoryPage /> },

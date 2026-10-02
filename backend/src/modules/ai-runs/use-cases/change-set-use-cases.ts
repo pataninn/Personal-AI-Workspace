@@ -22,11 +22,12 @@ import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-rep
 import type { IProposedChangeSetRepository } from '@/modules/ai-runs/repositories/change-set-repository';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { IWorkspaceMutationGateway, WorkspaceFileSnapshot, WorkspaceMutationScope, WorkspaceApplyResult } from '@/modules/ai-runs/repositories/workspace-mutation-gateway';
+import type { IProjectChatContextRepository } from '@/modules/ai-runs/repositories/project-chat-context-repository';
 import { assertActiveAiRunProject } from '@/modules/ai-runs/use-cases/assert-ai-run-project';
 import { hashText } from '@/modules/ai-runs/use-cases/manifest-builder';
 import { redactSensitiveText, truncateUtf8 } from '@/infrastructure/workspace/workspace-text';
 import { WorkspaceRelativePath } from '@/modules/files/domain/workspace-path';
-import { isAllowedTextFile } from '@/modules/files/domain/workspace-policy';
+import { isProtectedFileName } from '@/modules/files/domain/workspace-policy';
 import { containsCredentialLikeValue } from '@/shared/egress/redaction';
 
 export interface CollectChangeSetInput {
@@ -127,19 +128,19 @@ export class CollectProposedChangeSetUseCase {
     seen.add(key);
     const source = await this.workspace.inspect(scope, path);
     const destination = destinationPath ? await this.workspace.inspect(scope, destinationPath) : source;
-    const sourceHash = source.hash ?? manifestFiles.find((file) => file.relativePath === path)?.sourceHash;
+    const sourceHash = manifestFiles.find((file) => file.relativePath === path)?.sourceHash ?? source.hash;
     validateOperation(operation, path, destinationPath, change.content, source, destination, index);
     const expectedSourceHash = requiresSource(operation) ? change.expectedSourceHash ?? sourceHash : undefined;
     const expectedDestinationHash = operation === 'rename' && destination.exists ? change.expectedDestinationHash ?? destination.hash : undefined;
     if (requiresSource(operation) && !expectedSourceHash) {
       throw new ChangeSetBlockedError('The proposed source has no exact current hash.');
     }
-    if (change.expectedSourceHash && source.hash !== change.expectedSourceHash) {
+    if (expectedSourceHash && source.hash !== expectedSourceHash) {
       throw new ChangeSetConflictError('The project changed before the proposed change set was collected.');
     }
     const content = change.content;
     const preview = createPreview(operation, source, destination, content ?? '');
-    const sizeBytes = Buffer.byteLength(content ?? source.content ?? '', 'utf8');
+    const sizeBytes = content !== undefined ? Buffer.byteLength(content, 'utf8') : source.sizeBytes;
     return {
       operationId: randomUUID(),
       operation,
@@ -186,16 +187,42 @@ export class DecideProposedChangeSetUseCase {
     private readonly aiRunRepository: IAiRunRepository,
     private readonly projectRepository: IProjectRepository,
     private readonly changeSets: IProposedChangeSetRepository,
-    private readonly workspace: IWorkspaceMutationGateway
+    private readonly workspace: IWorkspaceMutationGateway,
+    private readonly contexts?: IProjectChatContextRepository
   ) {}
 
   public async execute(input: ChangeSetDecisionInput): Promise<ProposedChangeSet> {
+    return this.executeDecision(input, false);
+  }
+
+  /** Applies the user's standing file-edit authorization before a run completes. */
+  public async executeAutomatically(input: { readonly ownerId: string; readonly runId: string }): Promise<ProposedChangeSet | null> {
+    const changeSet = await this.changeSets.findByRunForOwner(input.ownerId, input.runId);
+    if (!changeSet) return null;
+    const applied = await this.executeDecision({ ...input, proposalHash: changeSet.proposalHash, decision: 'approve', idempotencyKey: `auto-apply-${changeSet.id}` }, true);
+    await this.refreshSelectedPaths(applied);
+    return applied;
+  }
+
+  private async refreshSelectedPaths(changeSet: ProposedChangeSet): Promise<void> {
+    if (!this.contexts || changeSet.status !== 'applied') return;
+    const context = await this.contexts.get(changeSet.ownerId, changeSet.projectId);
+    let relativePaths = [...context.relativePaths];
+    for (const operation of changeSet.result?.operations ?? []) {
+      if (operation.status !== 'applied') continue;
+      if (operation.operation === 'delete') relativePaths = relativePaths.filter((path) => path !== operation.path);
+      if (operation.operation === 'rename' && operation.destinationPath) relativePaths = relativePaths.map((path) => path === operation.path ? operation.destinationPath ?? path : path);
+    }
+    if (JSON.stringify(relativePaths) !== JSON.stringify(context.relativePaths)) await this.contexts.update(changeSet.ownerId, changeSet.projectId, { relativePaths: [...new Set(relativePaths)] });
+  }
+
+  private async executeDecision(input: ChangeSetDecisionInput, automatic: boolean): Promise<ProposedChangeSet> {
     const run = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
     if (!run) {
       throw new AiRunNotFoundError();
     }
     await assertActiveAiRunProject(this.aiRunRepository, this.projectRepository, input.ownerId, input.runId);
-    if (run.status !== 'succeeded') {
+    if (run.status !== 'succeeded' && !(automatic && run.status === 'running' && run.decision === 'approved')) {
       throw new ChangeSetBlockedError('Proposed changes can be applied only after the run completes successfully.');
     }
     const requestFingerprint = hashText(JSON.stringify({ proposalHash: input.proposalHash, decision: input.decision }));
@@ -302,17 +329,20 @@ function validateOperation(operation: RuntimeChangeProposal['operation'], path: 
   if (content !== undefined && Buffer.byteLength(content, 'utf8') > CHANGE_SET_LIMITS.maxContentBytes) {
     throw new ChangeSetValidationError([{ field: `changes.${index}.content`, message: 'The proposed file content is too large.' }]);
   }
-  if (!isAllowedTextFile(path, defaultChangePolicy())) {
-    throw new ChangeSetBlockedError('Only approved text/code file types can be changed.');
+  if (isProtectedFileName(path)) {
+    throw new ChangeSetBlockedError('Protected project files cannot be changed.');
   }
-  if (destinationPath && !isAllowedTextFile(destinationPath, defaultChangePolicy())) {
-    throw new ChangeSetBlockedError('Only approved text/code file types can be changed.');
+  if (destinationPath && isProtectedFileName(destinationPath)) {
+    throw new ChangeSetBlockedError('Protected project files cannot be changed.');
   }
   if (operation === 'create' && destination.exists) {
     throw new ChangeSetConflictError('The destination already exists.');
   }
   if (requiresSource(operation) && (!source.exists || source.isDirectory)) {
     throw new ChangeSetConflictError('The source file is missing or is not a regular file.');
+  }
+  if (operation === 'edit' && source.content === undefined) {
+    throw new ChangeSetBlockedError('Binary file content cannot be edited as UTF-8 text.');
   }
   if (operation === 'rename' && destination.isDirectory) {
     throw new ChangeSetConflictError('The destination is a directory.');
@@ -324,7 +354,7 @@ function requiresSource(operation: RuntimeChangeProposal['operation']): boolean 
 }
 
 function createPreview(operation: RuntimeChangeProposal['operation'], source: WorkspaceFileSnapshot, destination: WorkspaceFileSnapshot, content: string): ProposedChangeOperation['preview'] {
-  const before = redactSensitiveText(source.content ?? '');
+  const before = redactSensitiveText(source.content ?? (source.exists && !source.isDirectory ? `[Binary file: ${source.sizeBytes} bytes]` : ''));
   const after = redactSensitiveText(content);
   if (operation === 'create') {
     return boundPreview(after, 'after');
@@ -474,26 +504,4 @@ function withoutProposedPreviewBytes(preview: NonNullable<ProposedChangeOperatio
   }
   const beforeOnly = preview.text.split('\n').filter((line) => !line.startsWith('+ ')).join('\n');
   return { ...preview, text: beforeOnly, limited: true };
-}
-
-function defaultChangePolicy() {
-  return {
-    maxPathLength: CHANGE_SET_LIMITS.maxPathLength,
-    maxQueryLength: 256,
-    maxListEntries: 200,
-    maxTreeDepth: 6,
-    maxTreeEntries: 1000,
-    maxReadBytes: CHANGE_SET_LIMITS.maxContentBytes,
-    maxReadLines: CHANGE_SET_LIMITS.maxPreviewLines,
-    maxReadOutputBytes: CHANGE_SET_LIMITS.maxPreviewBytes,
-    maxSearchFiles: 200,
-    maxSearchLines: 20_000,
-    maxSearchMatches: 200,
-    maxSearchFileBytes: CHANGE_SET_LIMITS.maxContentBytes,
-    maxSearchOutputBytes: CHANGE_SET_LIMITS.maxPreviewBytes,
-    maxSearchLineBytes: CHANGE_SET_LIMITS.maxPreviewBytes,
-    operationTimeoutMs: 5000,
-    allowedExtensions: ['.c', '.cc', '.cpp', '.cs', '.css', '.csv', '.go', '.h', '.hpp', '.html', '.java', '.js', '.jsx', '.json', '.md', '.mjs', '.mts', '.py', '.rb', '.rs', '.scss', '.sh', '.sql', '.svg', '.toml', '.ts', '.tsx', '.txt', '.vue', '.xml', '.yaml', '.yml', '.zsh'],
-    allowedFileNames: ['dockerfile', 'license', 'makefile', 'readme', 'procfile']
-  } as const;
 }

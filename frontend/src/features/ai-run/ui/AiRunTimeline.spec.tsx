@@ -163,6 +163,16 @@ afterEach(() => {
 });
 
 describe('AiRunTimeline lifecycle', () => {
+  it('keeps a completed compact answer in conversation history without repeating the stream', async () => {
+    getAiRunMock.mockResolvedValue(succeeded);
+    const onHistory = vi.fn();
+    render(<AiRunTimeline compact snapshot={succeeded} projectId={PROJECT_ID} conversationId={CONVERSATION_ID} csrfToken="csrf-token" onConversationReconciled={onHistory} />);
+    await waitFor(() => expect(onHistory).toHaveBeenCalledWith(history));
+    await waitFor(() => expect(screen.queryByTestId('ai-run-timeline')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('assistant-stream')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Assistant response complete.');
+  });
+
   it('does not construct EventSource while ready and subscribes after start confirms queued', async () => {
     let resolveStart: (snapshot: AiRunSnapshot) => void = () => undefined;
     startAiRunMock.mockReturnValue(new Promise<AiRunSnapshot>((resolve) => { resolveStart = resolve; }));

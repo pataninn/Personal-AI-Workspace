@@ -60,9 +60,14 @@ function ProjectListItem({ project, onArchive, onRestore }: ProjectListItemProps
         data-testid={isSelected ? 'project-selected' : undefined}
         aria-current={isSelected ? 'page' : undefined}
       >
-        <span className="project-item-name">{project.name}</span>
-        <span className="project-item-root">Project root: <code>{project.relativeRoot}</code></span>
-        <span className={isArchived ? 'project-status project-status-archived' : 'project-status'} data-testid={isArchived ? 'project-archived-status' : 'project-active-status'}>{isArchived ? 'Archived' : 'Active'}</span>
+        <span className="project-item-mark" aria-hidden="true">{Array.from(project.name.trim())[0]?.toUpperCase() ?? 'P'}</span>
+        <span className="project-item-content">
+          <span className="project-item-name">{project.name}</span>
+          <span className="project-item-root"><span>Project root: </span><code>{project.relativeRoot}</code></span>
+        </span>
+        <span className="project-item-status">
+          <span className={isArchived ? 'project-status project-status-archived' : 'project-status'} data-testid={isArchived ? 'project-archived-status' : 'project-active-status'}>{isArchived ? 'Archived' : 'Active'}</span>
+        </span>
       </NavLink>
       <div className="project-item-actions">
         {isArchived ? <Button type="button" variant="secondary" data-testid="project-restore-trigger" onClick={() => onRestore(project)}>Restore project</Button> : <Button type="button" variant="ghost" data-testid="project-archive-trigger" onClick={() => onArchive(project)}>Archive project</Button>}

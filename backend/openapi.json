@@ -8,6 +8,312 @@
   "servers": [{ "url": "/" }],
   "tags": [{ "name": "Conversations" }, { "name": "Project memory" }, { "name": "Workspace files" }, { "name": "AI runs" }, { "name": "Project tasks" }],
   "paths": {
+    "/api/v1/projects/{projectId}/chat-context": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectIdPath"
+        }
+      ],
+      "get": {
+        "tags": [
+          "AI runs"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Project-wide chat context",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "relativePaths": {
+                          "type": "array",
+                          "maxItems": 100,
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "factIds": {
+                          "type": "array",
+                          "maxItems": 25,
+                          "items": {
+                            "type": "string",
+                            "format": "uuid"
+                          }
+                        },
+                        "includeProjectConversations": {
+                          "type": "boolean",
+                          "default": true
+                        }
+                      },
+                      "required": [
+                        "relativePaths",
+                        "factIds",
+                        "includeProjectConversations"
+                      ]
+                    },
+                    "error": {
+                      "nullable": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/MutationForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ProjectNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/MutationConflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/WorkspaceUnavailable"
+          }
+        },
+        "operationId": "getProjectChatContext",
+        "summary": "Read context used by every chat in this project"
+      },
+      "patch": {
+        "tags": [
+          "AI runs"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Project-wide chat context",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "relativePaths": {
+                          "type": "array",
+                          "maxItems": 100,
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "factIds": {
+                          "type": "array",
+                          "maxItems": 25,
+                          "items": {
+                            "type": "string",
+                            "format": "uuid"
+                          }
+                        },
+                        "includeProjectConversations": {
+                          "type": "boolean",
+                          "default": true
+                        }
+                      },
+                      "required": [
+                        "relativePaths",
+                        "factIds",
+                        "includeProjectConversations"
+                      ]
+                    },
+                    "error": {
+                      "nullable": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/MutationForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ProjectNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/MutationConflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/WorkspaceUnavailable"
+          }
+        },
+        "operationId": "updateProjectChatContext",
+        "summary": "Update selected files, memory facts, or history for every project chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/OriginHeader"
+          },
+          {
+            "$ref": "#/components/parameters/CsrfHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "relativePaths": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "factIds": {
+                    "type": "array",
+                    "maxItems": 25,
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  },
+                  "includeProjectConversations": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/chat-runs": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectIdPath"
+        }
+      ],
+      "post": {
+        "tags": [
+          "AI runs"
+        ],
+        "summary": "Save a chat message and start AI using the project context",
+        "operationId": "sendChatMessage",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/OriginHeader"
+          },
+          {
+            "$ref": "#/components/parameters/CsrfHeader"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "conversationId",
+                  "request"
+                ],
+                "properties": {
+                  "conversationId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "request": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Message saved and provider run queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiRunIntentEnvelope"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Identical idempotent request replayed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiRunIntentEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/MutationForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ProjectNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/MutationConflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/WorkspaceUnavailable"
+          }
+        },
+        "description": "Sending authorizes provider transmission for this request and saved project context. Recent conversation history from the same project is included by default. Validated workspace file changes are applied automatically before successful completion, without a per-change approval prompt. File history and recovery snapshots retain the results. Retries with the same idempotency key return the existing run."
+      }
+    },
     "/api/v1/projects/{projectId}/conversations": {
       "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
       "get": {

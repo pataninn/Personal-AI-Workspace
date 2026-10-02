@@ -14,9 +14,10 @@ import type {
   WorkspaceMutationScope
 } from '@/modules/ai-runs/repositories/workspace-mutation-gateway';
 import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspace-boundary';
-import { DEFAULT_WORKSPACE_INSPECTION_POLICY, isAllowedTextFile } from '@/modules/files/domain/workspace-policy';
+import { isProtectedFileName } from '@/modules/files/domain/workspace-policy';
 import { WorkspaceRelativePath } from '@/modules/files/domain/workspace-path';
 import { decodeUtf8 } from '@/infrastructure/workspace/workspace-text';
+import { WorkspaceBinaryFileError } from '@/modules/files/domain/workspace-errors';
 
 interface MutationStats {
   readonly size: number;
@@ -341,10 +342,10 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
   ): Promise<{ readonly status: 'created'; readonly reference?: string }> {
     const checkpoints: BackupCheckpoint[] = [];
     try {
-      if (source.exists && source.content !== undefined) {
+      if (source.exists) {
         checkpoints.push(await this.writeBackup(context, runId, proposalHash, operation.operationId, operation.path, source.content, source.hash));
       }
-      if (operation.operation === 'rename' && destination.exists && destination.content !== undefined) {
+      if (operation.operation === 'rename' && destination.exists) {
         checkpoints.push(await this.writeBackup(context, runId, proposalHash, operation.operationId, operation.destinationPath ?? operation.path, destination.content, destination.hash));
       }
       for (const checkpoint of checkpoints) {
@@ -378,11 +379,16 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     proposalHash: string,
     operationId: string,
     relativePath: string,
-    content: string,
+    content: string | undefined,
     expectedHash: string | undefined
   ): Promise<BackupCheckpoint> {
     const latest = await this.finalSnapshot(context, relativePath, expectedHash, false);
     if (!latest.exists || latest.content !== content) {
+      throw new MutationConflictError(relativePath, 'Source changed before the recovery snapshot was created.');
+    }
+    const sourcePath = await this.resolveTarget(context, relativePath, false);
+    const bytes = await this.fileSystem.readFile(sourcePath.absolutePath);
+    if (bytes.length !== latest.sizeBytes || createHash('sha256').update(bytes).digest('hex') !== latest.hash) {
       throw new MutationConflictError(relativePath, 'Source changed before the recovery snapshot was created.');
     }
     const backupDirectory = path.resolve(this.options.recoveryRoot, `run-${runId}`, proposalHash, operationId);
@@ -392,14 +398,14 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     await this.assertRecoveryPath(backupPath, true);
     const handle = await this.fileSystem.open(backupPath, 'wx');
     try {
-      await handle.writeFile(content, 'utf8');
+      await handle.writeFile(bytes);
       await handle.sync();
     } finally {
       await handle.close();
     }
     await this.assertRecoveryPath(backupPath, false);
     const written = await this.fileSystem.readFile(backupPath);
-    if (!written.equals(Buffer.from(content, 'utf8'))) {
+    if (!written.equals(bytes)) {
       throw new BackupMutationError('Recovery snapshot verification failed.', true);
     }
     return {
@@ -798,21 +804,19 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     if (bytes.length > CHANGE_SET_LIMITS.maxContentBytes) {
       throw new ChangeSetValidationError([{ field: 'path', message: 'The target file is too large.' }]);
     }
-    const content = decodeUtf8(bytes);
+    let content: string | undefined;
+    try { content = decodeUtf8(bytes); } catch (error: unknown) {
+      if (!(error instanceof WorkspaceBinaryFileError)) throw error;
+      // Hash and snapshot binary files so rename/delete can preserve their original bytes.
+    }
     const hash = createHash('sha256').update(bytes).digest('hex');
-    return { path: relativePath, exists: true, isDirectory: false, sizeBytes: bytes.length, content, hash };
+    return { path: relativePath, exists: true, isDirectory: false, sizeBytes: bytes.length, ...(content !== undefined ? { content } : {}), hash };
   }
 
   private parseFilePath(value: string): string {
     const parsed = WorkspaceRelativePath.parse(value, { maxLength: CHANGE_SET_LIMITS.maxPathLength });
-    if (!isAllowedTextFile(parsed.value, {
-      ...DEFAULT_WORKSPACE_INSPECTION_POLICY,
-      maxPathLength: CHANGE_SET_LIMITS.maxPathLength,
-      maxReadBytes: CHANGE_SET_LIMITS.maxContentBytes,
-      maxReadOutputBytes: CHANGE_SET_LIMITS.maxPreviewBytes,
-      maxReadLines: CHANGE_SET_LIMITS.maxPreviewLines,
-    })) {
-      throw new ChangeSetValidationError([{ field: 'path', message: 'Only approved text/code file types can be changed.' }]);
+    if (isProtectedFileName(parsed.value)) {
+      throw new ChangeSetValidationError([{ field: 'path', message: 'Protected project files cannot be changed.' }]);
     }
     return parsed.value;
   }

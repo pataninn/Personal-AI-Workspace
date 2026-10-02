@@ -1,5 +1,5 @@
 import { configureStore } from '@reduxjs/toolkit';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { MemoryRouter } from 'react-router-dom';
@@ -9,6 +9,8 @@ import { userSessionReducer } from '@/entities/user-session';
 import type { ProjectFact } from '@/entities/project-fact';
 import { ApiClientError } from '@/shared/api';
 import { ProjectMemoryManager } from '@/features/project-memory/ui/ProjectMemoryManager';
+const { getContextMock, updateContextMock } = vi.hoisted(() => ({ getContextMock: vi.fn(), updateContextMock: vi.fn() }));
+vi.mock('@/entities/project/api/project-chat-context-api', () => ({ getProjectChatContext: getContextMock, updateProjectChatContext: updateContextMock }));
 
 const { listFactsMock, createFactMock, updateFactMock, verifyFactMock, deleteFactMock } = vi.hoisted(() => ({
   listFactsMock: vi.fn(),
@@ -56,11 +58,40 @@ function renderManager(archived = false): void {
 
 describe('ProjectMemoryManager', () => {
   beforeEach(() => {
+    getContextMock.mockReset().mockResolvedValue({ relativePaths: ['README.md'], factIds: [], includeProjectConversations: true });
+    updateContextMock.mockReset().mockImplementation(async (_project, changes) => ({ relativePaths: ['README.md'], factIds: [], includeProjectConversations: true, ...changes }));
     listFactsMock.mockReset().mockResolvedValue([]);
     createFactMock.mockReset();
     updateFactMock.mockReset();
     verifyFactMock.mockReset();
     deleteFactMock.mockReset();
+  });
+
+  it('applies a checked memory fact to every chat without overwriting selected files', async () => {
+    listFactsMock.mockResolvedValue([baseFact]);
+    renderManager();
+    const user = userEvent.setup();
+    const checkbox = await screen.findByRole('checkbox', { name: `Use ${baseFact.title} in all chats` });
+    await waitFor(() => expect(checkbox).toBeEnabled());
+    await user.click(checkbox);
+    await waitFor(() => expect(updateContextMock).toHaveBeenCalledWith(PROJECT_ID, { factIds: [FACT_ID] }, 'csrf-token'));
+    expect(checkbox).toBeChecked();
+  });
+
+  it('shows a tick while saving and restores the saved selection if the request fails', async () => {
+    listFactsMock.mockResolvedValue([baseFact]);
+    let rejectSave: (error: Error) => void = () => { throw new Error('Save did not start'); };
+    updateContextMock.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSave = reject; }));
+    renderManager();
+    const checkbox = await screen.findByRole('checkbox', { name: `Use ${baseFact.title} in all chats` });
+    await waitFor(() => expect(checkbox).toBeEnabled());
+    await userEvent.setup().click(checkbox);
+    expect(checkbox).toBeChecked();
+    expect(checkbox).toBeDisabled();
+    await act(async () => { rejectSave(new Error('Unavailable')); });
+    await waitFor(() => expect(checkbox).not.toBeChecked());
+    expect(checkbox).toBeEnabled();
+    expect(screen.getByRole('alert')).toHaveTextContent('Your previous selection is still in use');
   });
 
   it('creates a fact through an explicitly submitted form and refreshes server state', async () => {

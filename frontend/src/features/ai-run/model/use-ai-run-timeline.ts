@@ -143,6 +143,11 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
   }, [conversationId, projectId, setSnapshot, snapshot.runId]);
 
   useEffect(() => {
+    // A completed run restored from its URL needs the same saved-history check as live completion.
+    if (enabled && TERMINAL_STATUSES.has(latestSnapshotRef.current.status)) void reconcile();
+  }, [enabled, reconcile, snapshot.runId]);
+
+  useEffect(() => {
     if (runIdRef.current === snapshot.runId) {
       return;
     }

@@ -13,6 +13,8 @@ import { DecideProposedChangeSetUseCase, GetProposedChangeSetUseCase } from '@/m
 import type { ProposedChangeSet } from '@/modules/ai-runs/domain/change-types';
 import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
+import type { SendChatMessageUseCase } from '@/modules/ai-runs/use-cases/send-chat-message-use-case';
+import type { ProjectChatContextUseCases } from '@/modules/ai-runs/use-cases/project-chat-context-use-cases';
 import type { ProjectTaskSuggestion } from '@/modules/tasks/domain/project-task';
 import type { IProjectTaskSuggestionQuery } from '@/modules/tasks/repositories/task-suggestion-query';
 import type { GetAiRunActivityUseCase, ListAiRunActivityUseCase } from '@/modules/ai-runs/use-cases/activity-use-cases';
@@ -40,8 +42,12 @@ const changeSetDecisionSchema = z.object({
 }).strict();
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const chatContextSchema = z.object({ relativePaths: z.array(z.string()).optional(), factIds: z.array(z.string().uuid()).optional(), includeProjectConversations: z.boolean().optional() }).strict();
+const chatMessageSchema = z.object({ conversationId: z.string().uuid(), request: z.string() }).strict();
 
 export interface AiRunRouterDependencies {
+  readonly sendChatMessage?: SendChatMessageUseCase;
+  readonly projectChatContext?: ProjectChatContextUseCases;
   readonly getSession: GetSessionUseCase;
   readonly createAiRun: CreateAiRunUseCase;
   readonly getAiRun: GetAiRunUseCase;
@@ -183,6 +189,39 @@ function revokeProviderPermissionHandler(dependencies: AiRunRouterDependencies):
 
 function requiredIdempotencyKey(request: Parameters<RequestHandler>[0]): string {
   return request.header('idempotency-key') ?? '';
+}
+
+function chatContextHandler(dependencies: AiRunRouterDependencies, update: boolean): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const ownerId = request.auth?.principal.id;
+      if (!ownerId || !dependencies.projectChatContext) throw new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.');
+      const projectId = parseUuid(routeParam(request.params.projectId), new AiRunNotFoundError());
+      const changes = update ? parseBody(chatContextSchema, request.body) : {};
+      const context = update ? await dependencies.projectChatContext.update(ownerId, projectId, {
+        ...(changes.relativePaths === undefined ? {} : { relativePaths: changes.relativePaths }),
+        ...(changes.factIds === undefined ? {} : { factIds: changes.factIds }),
+        ...(changes.includeProjectConversations === undefined ? {} : { includeProjectConversations: changes.includeProjectConversations })
+      })
+        : await dependencies.projectChatContext.get(ownerId, projectId);
+      sendData(response, context);
+    } catch (error: unknown) { next(error); }
+  };
+}
+
+function sendChatHandler(dependencies: AiRunRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const ownerId = request.auth?.principal.id;
+      if (!ownerId || !dependencies.sendChatMessage) throw new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.');
+      const body = parseBody(chatMessageSchema, request.body);
+      const result = await dependencies.sendChatMessage.execute({ ownerId,
+        projectId: parseUuid(routeParam(request.params.projectId), new AiRunNotFoundError()), ...body,
+        idempotencyKey: requiredIdempotencyKey(request) });
+      response.location(`/api/v1/ai-runs/${result.resource.id}`);
+      sendData(response, { run: serializeSnapshot(result.resource), manifest: serializeManifest(result.resource) }, result.replayed ? 200 : 202);
+    } catch (error: unknown) { next(error); }
+  };
 }
 
 function createHandler(dependencies: AiRunRouterDependencies): RequestHandler {
@@ -496,6 +535,13 @@ function serializeProposedChangeSet(changeSet: ProposedChangeSet): Record<string
 export function createAiRunRouter(dependencies: AiRunRouterDependencies): Router {
   const router = Router();
   const authenticate = authenticateRequest(dependencies.getSession, dependencies.clearSessionCookie);
+  if (dependencies.projectChatContext) {
+    router.get('/projects/:projectId/chat-context', authenticate, chatContextHandler(dependencies, false));
+    router.patch('/projects/:projectId/chat-context', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, chatContextHandler(dependencies, true));
+  }
+  if (dependencies.sendChatMessage) {
+    router.post('/projects/:projectId/chat-runs', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, sendChatHandler(dependencies));
+  }
   if (dependencies.listActivity) {
     router.get('/projects/:projectId/ai-runs', authenticate, listActivityHandler(dependencies));
   }

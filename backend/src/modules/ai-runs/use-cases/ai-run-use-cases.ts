@@ -34,6 +34,7 @@ export interface CreateAiRunInput {
   readonly relativePaths: unknown;
   readonly factIds?: unknown;
   readonly includeRecentMessages: boolean;
+  readonly includeProjectConversations?: boolean;
   readonly idempotencyKey: string;
 }
 
@@ -72,7 +73,12 @@ export class CreateAiRunUseCase {
     const relativePaths = validateContextPaths(input.relativePaths);
     const factIds = validateContextFactIds(input.factIds);
     const facts = await this.selectFacts(input.ownerId, input.projectId, factIds);
-    const messages = input.includeRecentMessages ? toManifestMessages(conversation.messages, Buffer.byteLength(request, 'utf8')) : [];
+    const history = input.includeProjectConversations && this.conversationRepository.findRecentMessagesByProjectForOwner
+      ? await this.conversationRepository.findRecentMessagesByProjectForOwner({ ownerId: input.ownerId, projectId: input.projectId, conversationId: input.conversationId, limit: AI_RUN_LIMITS.maxMessages })
+      : conversation.messages;
+    const factSnapshots = facts.map(toEgressProjectFact);
+    const reservedBytes = Buffer.byteLength(request, 'utf8') + factSnapshots.reduce((total, fact) => total + fact.sizeBytes, 0);
+    const messages = input.includeRecentMessages ? toManifestMessages(history, reservedBytes) : [];
     const built = await buildManifest({
       workspaceGateway: this.workspaceGateway,
       projectId: project.id,
@@ -80,11 +86,11 @@ export class CreateAiRunUseCase {
       request,
       requestedPaths: relativePaths,
       messages,
-      facts: facts.map(toEgressProjectFact),
+      facts: factSnapshots,
       providerProfile: this.providerProfile,
       model: this.model
     });
-    const requestFingerprint = hashText(JSON.stringify({ conversationId: input.conversationId, request, relativePaths, factIds, includeRecentMessages: input.includeRecentMessages }));
+    const requestFingerprint = hashText(JSON.stringify({ conversationId: input.conversationId, request, relativePaths, factIds, includeRecentMessages: input.includeRecentMessages, includeProjectConversations: input.includeProjectConversations ?? false }));
     const created = await this.aiRunRepository.create({
       ownerId: input.ownerId,
       projectId: input.projectId,
@@ -267,9 +273,9 @@ export class DecideEgressUseCase {
       limit: AI_RUN_LIMITS.maxMessages
     });
     const messages = conversation?.messages.map((message) => ({ role: message.role, content: message.content })) ?? [];
-    const messageSnapshot = run.manifest.messageCount > 0
+    const messageSnapshot = run.manifest.messages ?? (run.manifest.messageCount > 0
       ? toManifestMessages(messages.slice(-AI_RUN_LIMITS.maxMessages), Buffer.byteLength(run.request, 'utf8'))
-      : [];
+      : []);
     if (!conversation || hashMessages(messageSnapshot) !== run.manifest.messageHash) {
       await this.saveFailure(run, 'failed', 'not_started_confirmed', 'not_started', true);
       throw new AiRunSourceChangedError();

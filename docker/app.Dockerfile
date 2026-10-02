@@ -21,6 +21,8 @@ ENV NODE_ENV=production
 WORKDIR /app
 
 RUN groupadd --gid 10001 pai && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin pai
+# Fresh recovery volumes inherit a writable, private directory for the app user.
+RUN mkdir -p /var/lib/personal-ai/recovery && chown 10001:10001 /var/lib/personal-ai/recovery && chmod 700 /var/lib/personal-ai/recovery
 COPY --from=build --chown=10001:10001 /app/backend/dist backend/dist
 COPY --from=build --chown=10001:10001 /app/frontend/dist frontend/dist
 COPY --from=build --chown=10001:10001 /app/node_modules node_modules

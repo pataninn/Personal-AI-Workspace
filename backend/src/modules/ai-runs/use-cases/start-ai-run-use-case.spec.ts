@@ -6,6 +6,7 @@ import { InMemoryRunEventPublisher } from '@/infrastructure/ai-runs/in-memory-ru
 import { InMemoryProviderPermissionRepository } from '@/infrastructure/ai-runs/in-memory-provider-permission-repository';
 import { FakeAgentRuntime } from '@/infrastructure/sandbox/fake-agent-runtime';
 import { CancelAiRunUseCase } from '@/modules/ai-runs/use-cases/cancel-ai-run-use-case';
+import { ChangeSetReviewRequiredError } from '@/modules/ai-runs/domain/change-errors';
 import { StartAiRunUseCase, type RuntimeCommandProposalPort } from '@/modules/ai-runs/use-cases/start-ai-run-use-case';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -73,6 +74,35 @@ async function waitForStatus(repository: InMemoryAiRunRepository, runId: string,
 }
 
 describe('StartAiRunUseCase', () => {
+  it('keeps an uncertain file-apply outcome in review rather than claiming success', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const run = await readyRun(repository);
+    const apply = jest.fn().mockRejectedValue(new ChangeSetReviewRequiredError());
+    await new StartAiRunUseCase(repository, conversationRepository(), new FakeAgentRuntime(), new InMemoryRunEventPublisher(), undefined, undefined, undefined, undefined, { executeAutomatically: apply }).execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'automatic-files-unknown' });
+    const outcome = await waitForStatus(repository, run.id, 'review_required');
+    expect(outcome.assistantComplete).toBe(false);
+    expect(apply).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { applyStatus: 'applied', runStatus: 'succeeded' },
+    { applyStatus: 'failed', runStatus: 'failed' },
+    { applyStatus: 'needs_manual_review', runStatus: 'review_required' }
+  ] as const)('confirms file apply outcome $applyStatus before finishing the run as $runStatus', async ({ applyStatus, runStatus }) => {
+    const repository = new InMemoryAiRunRepository();
+    const conversations = conversationRepository();
+    const run = await readyRun(repository);
+    const apply = jest.fn(async () => {
+      expect((await repository.findByIdForOwner(OWNER_ID, run.id))?.status).toBe('running');
+      return { status: applyStatus, safeMessage: 'File apply outcome confirmed.', result: { persisted: true as const, operations: [], appliedCount: 3, skippedCount: 0, failedCount: 0, backupCount: 1 } };
+    });
+    const start = new StartAiRunUseCase(repository, conversations, new FakeAgentRuntime(), new InMemoryRunEventPublisher(), undefined, undefined, undefined, undefined, { executeAutomatically: apply });
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'automatic-files-test' });
+    await waitForStatus(repository, run.id, runStatus);
+    expect(apply).toHaveBeenCalledTimes(1);
+    if (runStatus === 'succeeded') expect(conversations.assistantMessages[0]?.content).toContain('Applied 3 file changes');
+  });
+
   it('starts one fake run per idempotency key and persists the bounded assistant result', async () => {
     const repository = new InMemoryAiRunRepository();
     const conversations = conversationRepository();

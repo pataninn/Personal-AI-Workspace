@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { ModelProviderOutputError } from '@/modules/ai-runs/domain/model-provider-errors';
+import { extractProviderEnvelope } from '@/infrastructure/ai-provider/provider-output-envelope';
 import type { RuntimeChangeProposal } from '@/modules/ai-runs/domain/change-types';
 import { containsCredentialLikeValue, redactEgressText } from '@/shared/egress/redaction';
 
@@ -62,16 +63,16 @@ export function parseProviderOutput(text: string): ParsedProviderOutput {
   if (Buffer.byteLength(text, 'utf8') > MAX_OUTPUT_BYTES) {
     throw new ModelProviderOutputError();
   }
-  const trimmed = text.trim();
-  if (!trimmed.startsWith('{')) {
+  const envelope = extractProviderEnvelope(text.trim());
+  if (envelope === null) {
     return { text: redactEgressText(text), changes: [], taskSuggestions: [] };
   }
-  if (Buffer.byteLength(trimmed, 'utf8') > MAX_STRUCTURED_BYTES) {
+  if (Buffer.byteLength(envelope, 'utf8') > MAX_STRUCTURED_BYTES) {
     throw new ModelProviderOutputError();
   }
   let candidate: unknown;
   try {
-    candidate = JSON.parse(trimmed) as unknown;
+    candidate = JSON.parse(envelope) as unknown;
   } catch {
     throw new ModelProviderOutputError();
   }

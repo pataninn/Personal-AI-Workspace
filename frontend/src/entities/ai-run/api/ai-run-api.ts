@@ -67,6 +67,11 @@ export function getAiRun(runId: string): Promise<AiRunSnapshot> {
   return getJson<unknown>(`${RUNS_PATH}/${encodeURIComponent(runId)}`).then((value) => normalizeAiRunSnapshot(value));
 }
 
+export function sendChatMessage(projectId: string, conversationId: string, request: string, csrfToken: string, idempotencyKey: string): Promise<AiRunIntent> {
+  return postJson<unknown>(`${PROJECTS_PATH}/${encodeURIComponent(projectId)}/chat-runs`, { conversationId, request },
+    { 'X-CSRF-Token': csrfToken, 'Idempotency-Key': idempotencyKey }).then(normalizeAiRunIntent);
+}
+
 export function startAiRun(
   runId: string,
   csrfToken: string,

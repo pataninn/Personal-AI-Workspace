@@ -2,6 +2,9 @@ import type { Express } from 'express';
 import type { DataSource } from 'typeorm';
 
 import { createApp } from '@/app';
+import { TypeOrmProjectChatContextRepository } from '@/infrastructure/database/repositories/typeorm-project-chat-context-repository';
+import { ProjectChatContextUseCases } from '@/modules/ai-runs/use-cases/project-chat-context-use-cases';
+import { SendChatMessageUseCase } from '@/modules/ai-runs/use-cases/send-chat-message-use-case';
 import { loadConfig, type AppConfig } from '@/infrastructure/config/app-config';
 import { createDataSource } from '@/infrastructure/database/data-source';
 import { BcryptPasswordHasher } from '@/infrastructure/auth/bcrypt-password-hasher';
@@ -30,6 +33,7 @@ import { TypeOrmProjectFactRepository } from '@/infrastructure/database/reposito
 import { TypeOrmProjectTaskRepository } from '@/infrastructure/database/repositories/typeorm-project-task-repository';
 import { TypeOrmTaskSuggestionRepository } from '@/infrastructure/database/repositories/task-suggestion-completion-writer';
 import { WorkspaceMutationGatewayAdapter } from '@/infrastructure/workspace/workspace-mutation-gateway';
+import { DEFAULT_WORKSPACE_INSPECTION_POLICY } from '@/modules/files/domain/workspace-policy';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { runStartupChecks } from '@/infrastructure/startup/startup-checks';
 import { GetReadinessUseCase } from '@/modules/health';
@@ -104,7 +108,8 @@ export async function createApplication(
     });
     const workspaceGateway = new WorkspaceGatewayAdapter({
       containerRoot: config.workspaceRoot,
-      workspaceBoundary
+      workspaceBoundary,
+      policy: { ...DEFAULT_WORKSPACE_INSPECTION_POLICY, allowedExtensions: ['*'] }
     });
     const workspaceMutationGateway = new WorkspaceMutationGatewayAdapter({
       containerRoot: config.workspaceRoot,
@@ -116,10 +121,15 @@ export async function createApplication(
       ? new LocalStagingGateway({ stagingRoot: config.stagingRoot })
       : undefined;
     const runEvents = new InMemoryRunEventPublisher();
+    const chatContextRepository = new TypeOrmProjectChatContextRepository(dataSource);
+    const projectChatContext = new ProjectChatContextUseCases(projectRepository, chatContextRepository, projectFactRepository, workspaceGateway);
     const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel, projectFactRepository);
     const proposeSandboxCommand = new ProposeSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger);
     const collectProposedChangeSet = new CollectProposedChangeSetUseCase(aiRunRepository, projectRepository, workspaceMutationGateway, changeSetRepository);
-    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, proposeSandboxCommand, projectRepository, collectProposedChangeSet, providerPermissionRepository);
+    const decideProposedChangeSet = new DecideProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository, workspaceMutationGateway, chatContextRepository);
+    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, proposeSandboxCommand, projectRepository, collectProposedChangeSet, providerPermissionRepository, decideProposedChangeSet);
+    const decideEgress = new DecideEgressUseCase(aiRunRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot, projectFactRepository, providerPermissionRepository);
+    const sendChatMessage = new SendChatMessageUseCase(chatContextRepository, projectFactRepository, createAiRun, decideEgress, startAiRun);
     const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository);
     const passwordHasher = new BcryptPasswordHasher();
     const tokenProvider = new OpaqueTokenProvider(config.sessionSecret);
@@ -182,12 +192,14 @@ export async function createApplication(
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },
         aiRuns: {
+          projectChatContext,
+          sendChatMessage,
           getSession,
           createAiRun,
           getAiRun: new GetAiRunUseCase(aiRunRepository),
-          decideEgress: new DecideEgressUseCase(aiRunRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot, projectFactRepository, providerPermissionRepository),
+          decideEgress,
           getProposedChangeSet: new GetProposedChangeSetUseCase(changeSetRepository),
-          decideProposedChangeSet: new DecideProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository, workspaceMutationGateway),
+          decideProposedChangeSet,
           taskSuggestionsForRun: taskSuggestionRepository,
           listActivity: new ListAiRunActivityUseCase(projectRepository, aiRunRepository),
           getActivity: new GetAiRunActivityUseCase(aiRunRepository, changeSetRepository, conversationRepository),

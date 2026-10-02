@@ -44,12 +44,6 @@ export function ProjectActivityPage(): React.JSX.Element {
         </div>
         <Link className="button button-secondary" to={`/projects/${encodeURIComponent(project.id)}`}>Back to project</Link>
       </header>
-      <nav className="project-section-nav" aria-label="Project sections">
-        <Link to={`/projects/${encodeURIComponent(project.id)}`}>Workspace</Link>
-        <Link to={`/projects/${encodeURIComponent(project.id)}/memory`}>Memory</Link>
-        <Link to={`/projects/${encodeURIComponent(project.id)}/tasks`}>Tasks</Link>
-        <Link aria-current="page" to={`/projects/${encodeURIComponent(project.id)}/activity`}>Activity</Link>
-      </nav>
       <ProjectActivityPanel projectId={project.id} archived={project.status === 'archived'} />
     </div>
   );

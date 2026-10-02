@@ -1,5 +1,5 @@
 import { AiRunProviderPermissionRevokedError, AiRunStateConflictError } from '@/modules/ai-runs/domain/ai-run-errors';
-import { ChangeSetDomainError } from '@/modules/ai-runs/domain/change-errors';
+import { ChangeSetDomainError, ChangeSetReviewRequiredError } from '@/modules/ai-runs/domain/change-errors';
 import { ASSISTANT_OUTPUT_LIMIT_MESSAGE, MAX_ASSISTANT_DELTA_BYTES, MAX_ASSISTANT_OUTPUT_BYTES, assistantTextExceedsLimit, sanitizeAssistantText, truncateAssistantDelta } from '@/modules/ai-runs/domain/assistant-output';
 import type { AiRun } from '@/modules/ai-runs/domain/ai-run-types';
 import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-repository';
@@ -10,7 +10,7 @@ import { validateIdempotencyKey } from '@/modules/ai-runs/domain/ai-run-validati
 import { hashText } from '@/modules/ai-runs/use-cases/manifest-builder';
 import { assertActiveAiRunProject } from '@/modules/ai-runs/use-cases/assert-ai-run-project';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
-import type { RuntimeChangeProposal } from '@/modules/ai-runs/domain/change-types';
+import type { RuntimeChangeProposal, ProposedChangeSet } from '@/modules/ai-runs/domain/change-types';
 import type { TaskSuggestionDraft } from '@/modules/ai-runs/domain/task-suggestion-draft';
 import type { IProviderPermissionRepository } from '@/modules/ai-runs/repositories/provider-permission-repository';
 
@@ -50,7 +50,8 @@ export class StartAiRunUseCase {
     private readonly commandProposals?: RuntimeCommandProposalPort,
     private readonly projectRepository?: IProjectRepository,
     private readonly changeSetProposals?: RuntimeChangeSetProposalPort,
-    private readonly providerPermissionRepository?: IProviderPermissionRepository
+    private readonly providerPermissionRepository?: IProviderPermissionRepository,
+    private readonly automaticChanges?: { executeAutomatically(input: { readonly ownerId: string; readonly runId: string }): Promise<Pick<ProposedChangeSet, 'status' | 'safeMessage' | 'result'> | null> }
   ) {}
 
   public async execute(input: StartAiRunInput): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> {
@@ -343,6 +344,20 @@ export class StartAiRunUseCase {
       return;
     }
     const current = await this.aiRunRepository.findByIdForOwner(ownerId, runId);
+    if (event.type === 'completed' && current?.status === 'running' && this.automaticChanges) {
+      try {
+        const changes = await this.automaticChanges.executeAutomatically({ ownerId, runId });
+        if (changes && changes.status !== 'applied') {
+          await this.finish(current, changes.status === 'needs_manual_review' ? 'review_required' : 'failed', changes.safeMessage, assistantText);
+          return;
+        }
+        if (changes?.result) assistantText = `${assistantText}${assistantText ? '\n\n' : ''}Applied ${changes.result.appliedCount} file change${changes.result.appliedCount === 1 ? '' : 's'} in the project workspace.`;
+      } catch (error: unknown) {
+        if (!(error instanceof ChangeSetDomainError)) throw error;
+        await this.finish(current, error instanceof ChangeSetReviewRequiredError ? 'review_required' : 'failed', error.message, assistantText);
+        return;
+      }
+    }
     const status = event.type === 'completed'
       ? 'succeeded'
       : event.type === 'blocked'

@@ -122,6 +122,34 @@ class StagingFixture implements IStagingGateway {
 }
 
 describe('AI run use cases', () => {
+  it('freezes previous-project messages before saving the new user message so preparing context remains stable', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const conversations = new ConversationFixture();
+    const original = makeConversation();
+    let messages = [...original.messages];
+    const previous = { ...original.messages[0], id: 'previous-message', conversationId: 'previous-conversation', content: 'Earlier project discussion' };
+    const findRecent = jest.fn().mockResolvedValue([previous, ...messages]);
+    const addMessage = jest.fn(async () => {
+      const message: Message = { id: 'new-request', conversationId: CONVERSATION_ID, role: 'user', sequence: 2, content: 'Continue the discussion', createdAt: new Date() };
+      messages = [...messages, message];
+      return { resource: message, replayed: false };
+    });
+    const history: IConversationRepository = { ...conversations,
+      listByProjectForOwner: jest.fn(), create: jest.fn(), addUserMessage: jest.fn(),
+      findWithMessagesForOwner: jest.fn(async () => ({ ...original, messages })),
+      findRecentMessagesByProjectForOwner: findRecent, addRunUserMessage: addMessage };
+    const workspace = new WorkspaceFixture();
+    const staging = new StagingFixture();
+    const create = new CreateAiRunUseCase(new ProjectFixture(), history, workspace, repository, 'nvidia-hosted-nim', 'test-model');
+    const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID,
+      request: 'Continue the discussion', relativePaths: [], includeRecentMessages: true, includeProjectConversations: true, idempotencyKey: 'previous-project-context' });
+    const decide = new DecideEgressUseCase(repository, history, workspace, staging, new RuntimeFixture(), '/workspace');
+    await expect(decide.execute({ ownerId: OWNER_ID, runId: created.resource.id, manifestHash: created.resource.manifest.manifestHash,
+      decision: 'approve', idempotencyKey: 'stable-context-approval' })).resolves.toMatchObject({ status: 'ready' });
+    expect(findRecent).toHaveBeenCalledWith({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, limit: 20 });
+    expect(addMessage).toHaveBeenCalledTimes(1);
+    expect(staging.staged[0]?.messages).toEqual([{ role: 'user', content: 'Earlier project discussion' }, { role: 'user', content: 'Earlier context' }]);
+  });
   it('builds a metadata-only manifest without staging or runtime calls', async () => {
     const workspace = new WorkspaceFixture();
     const staging = new StagingFixture();
