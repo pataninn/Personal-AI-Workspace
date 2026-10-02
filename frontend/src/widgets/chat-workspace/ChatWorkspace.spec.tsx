@@ -75,7 +75,7 @@ function renderWorkspace(project: ProjectSnapshot = activeProject, selectedId = 
   render(
     <Provider store={store}>
       <MemoryRouter initialEntries={[`/projects/${PROJECT_ID}/conversations/${selectedId}`]}>
-        <Routes><Route path="/projects/:projectId/conversations/:conversationId" element={<ChatWorkspace project={project} />} /></Routes>
+        <Routes><Route path="/projects/:projectId/conversations/:conversationId?" element={<ChatWorkspace project={project} />} /></Routes>
       </MemoryRouter>
     </Provider>
   );
@@ -189,8 +189,11 @@ describe('ChatWorkspace', () => {
     listConversationsMock.mockResolvedValue(listResponse([]));
     getConversationMock.mockResolvedValue(emptyHistory);
     createConversationMock.mockResolvedValue(firstConversation);
-    renderWorkspace();
+    renderWorkspace(activeProject, '');
     const user = userEvent.setup();
+    expect(await screen.findByRole('heading', { name: 'Start your first conversation' })).toBeInTheDocument();
+    expect(screen.queryByText('Choose a conversation')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('conversation-create-trigger')).toHaveLength(1);
     await user.click(await screen.findByTestId('conversation-create-trigger'));
     await user.type(screen.getByLabelText('Conversation name'), 'New saved thread');
     await user.click(screen.getByTestId('conversation-create-submit'));

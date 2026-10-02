@@ -3570,6 +3570,37 @@ h3 {
 
 .conversation-rail-header .button {
   width: 100%;
+  min-width: 0;
+  white-space: normal;
+}
+
+.conversation-welcome {
+  display: grid;
+  justify-items: start;
+  align-content: center;
+  gap: 1rem;
+  min-width: 0;
+  min-height: 20rem;
+  padding: clamp(1.25rem, 4vw, 3rem);
+}
+
+.conversation-welcome h2 {
+  margin: 0;
+  font-size: clamp(1.3rem, 2vw, 1.75rem);
+}
+
+.conversation-welcome p {
+  max-width: 36rem;
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.conversation-rail .empty-state,
+.conversation-rail .error-state {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 0.75rem;
 }
 
 .conversation-item {

@@ -158,12 +158,26 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
     }
   }
 
+  if (listStatus === 'success' && conversations.length === 0 && !conversationId) {
+    return (
+      <section className="conversation-workspace" data-testid="conversation-workspace">
+        {isArchived ? <Alert id={ARCHIVED_DESCRIPTION_ID} tone="warning" data-testid="project-archived-message">This project is archived. Existing messages are read-only.</Alert> : null}
+        <Card className="conversation-welcome" data-testid="conversation-list-empty">
+          <h2>Start your first conversation</h2>
+          <p>Ask a question or describe what you want to build. Your conversations and messages will stay with this project.</p>
+          <Button type="button" data-testid="conversation-create-trigger" disabled={isArchived} aria-describedby={isArchived ? ARCHIVED_DESCRIPTION_ID : undefined} onClick={() => setCreateOpen(true)}>New conversation</Button>
+        </Card>
+        <CreateConversationDialog projectId={projectId} open={createOpen} disabled={isArchived} archivedDescriptionId={ARCHIVED_DESCRIPTION_ID} onOpenChange={setCreateOpen} onCreated={handleCreated} />
+      </section>
+    );
+  }
+
   return (
     <section className="conversation-workspace" data-testid="conversation-workspace">
-      <div className="conversation-project-context" data-testid="conversation-project-context">
+      {isArchived || createAnnouncement ? <div className="conversation-project-context" data-testid="conversation-project-context">
         {isArchived ? <Alert id={ARCHIVED_DESCRIPTION_ID} tone="warning" data-testid="project-archived-message">This project is archived. Existing messages are read-only.</Alert> : null}
         <p data-testid="conversation-create-success-announcement" className="form-status" role="status" aria-live="polite">{createAnnouncement}</p>
-      </div>
+      </div> : null}
       <div className="conversation-layout">
         <ConversationRail
           projectId={projectId}
