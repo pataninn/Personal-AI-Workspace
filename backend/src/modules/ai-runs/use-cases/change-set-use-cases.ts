@@ -10,6 +10,7 @@ import {
   ChangeSetValidationError
 } from '@/modules/ai-runs/domain/change-errors';
 import { CHANGE_SET_LIMITS, isDestructiveOperation } from '@/modules/ai-runs/domain/change-policy';
+import { validateHtmlDocumentChange } from '@/modules/ai-runs/domain/html-document-validation';
 import type {
   ChangeOperationResult,
   ChangeSetDecisionResult,
@@ -138,6 +139,7 @@ export class CollectProposedChangeSetUseCase {
     if (expectedSourceHash && source.hash !== expectedSourceHash) {
       throw new ChangeSetConflictError('The project changed before the proposed change set was collected.');
     }
+    validateHtmlDocumentChange({ path, sourceContent: source.content, content: change.content });
     const content = change.content;
     const preview = createPreview(operation, source, destination, content ?? '');
     const sizeBytes = content !== undefined ? Buffer.byteLength(content, 'utf8') : source.sizeBytes;

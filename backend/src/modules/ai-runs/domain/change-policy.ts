@@ -9,7 +9,7 @@ export const CHANGE_SET_LIMITS = {
   maxSummaryLength: 240
 } as const;
 
-export const DESTRUCTIVE_OPERATIONS = new Set(['overwrite', 'delete']);
+export const DESTRUCTIVE_OPERATIONS = new Set(['edit', 'overwrite', 'delete']);
 
 export function isDestructiveOperation(operation: string, destinationPresent = false): boolean {
   return DESTRUCTIVE_OPERATIONS.has(operation) || (operation === 'rename' && destinationPresent);

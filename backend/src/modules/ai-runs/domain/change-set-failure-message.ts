@@ -13,6 +13,7 @@ const COLLECTION_FAILURE_REASONS: Readonly<Record<string, string>> = {
   'Only rename accepts a destination path.': 'A proposed operation included a destination path even though it was not a rename.',
   'The operation requires bounded UTF-8 file content.': 'A proposed create or edit was missing the complete file content.',
   'The proposed file content is too large.': 'A proposed file was too large. Ask for a smaller change.',
+  'The proposed HTML document is incomplete.': 'The proposed HTML was cut off or lost required document structure.',
   'The proposed change set is too large.': 'The combined proposed file content was too large. Ask for fewer files.',
   'The bounded change preview is too large.': 'The combined change previews were too large. Ask for fewer files.',
   'The proposed content contains a credential-like value.': 'Proposed file content triggered the credential check.',

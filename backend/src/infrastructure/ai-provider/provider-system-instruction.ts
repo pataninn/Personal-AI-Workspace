@@ -11,6 +11,7 @@ export function systemInstruction(): string {
     'Each changes item must use operation (create, edit, overwrite, rename, or delete), path (normalized relative path), a short summary, complete UTF-8 content for create/edit/overwrite, and destinationPath for rename.',
     'A supplied FILE entry is an existing file. Use edit or overwrite to change it. Use create only for a new file; create fails if the destination already exists.',
     'Edit and overwrite must contain the entire resulting file, including unchanged content. Do not return a patch, a diff, placeholders, or only the changed section.',
+    'For a complete HTML page, preserve its html, head, and body structure and closing tags. Do not stop at an attribute or quote. Return fully escaped JSON strings for file content.',
     'For each change, return only operation, path, summary, content when required, and destinationPath for rename. Omit unused fields instead of sending null.',
     'The application calculates file hashes and checks file versions. Do not invent or return expectedSourceHash or expectedDestinationHash.',
     'Ordinary file extensions and extensionless files are supported. Protected secrets and app-managed directories remain unavailable.',
