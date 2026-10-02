@@ -1,6 +1,7 @@
 import { AiRunProviderPermissionRevokedError, AiRunStateConflictError } from '@/modules/ai-runs/domain/ai-run-errors';
 import { safeProviderFailureMessage } from '@/modules/ai-runs/domain/model-provider-errors';
 import { ChangeSetDomainError, ChangeSetReviewRequiredError } from '@/modules/ai-runs/domain/change-errors';
+import { safeChangeSetCollectionFailureMessage } from '@/modules/ai-runs/domain/change-set-failure-message';
 import { ASSISTANT_OUTPUT_LIMIT_MESSAGE, MAX_ASSISTANT_DELTA_BYTES, MAX_ASSISTANT_OUTPUT_BYTES, assistantTextExceedsLimit, sanitizeAssistantText, truncateAssistantDelta } from '@/modules/ai-runs/domain/assistant-output';
 import type { AiRun } from '@/modules/ai-runs/domain/ai-run-types';
 import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-repository';
@@ -236,7 +237,7 @@ export class StartAiRunUseCase {
         await this.changeSetProposals.execute({ ownerId: run.ownerId, runId: run.id, changes: event.changes, fakeRuntime: run.runtimeKind === 'fake' });
       } catch (error: unknown) {
         if (error instanceof ChangeSetDomainError) {
-          await this.finish(run, 'failed', 'The assistant returned an invalid proposed change set.', assistantText);
+          await this.finish(run, 'failed', safeChangeSetCollectionFailureMessage(error), assistantText);
           return { assistantText, terminal: false, suppressed: true };
         }
         throw error;
