@@ -13,42 +13,19 @@ arbitrary command execution remain deferred runtime options.
 - Docker Desktop with WSL2/Ubuntu 22.04 or newer
 - An NVIDIA hosted NIM credential
 
-The direct-project setup mounts this application repository as <code>/workspace</code>.
-The server accepts project root <code>.</code> only after it verifies the workspace
-identity marker. Keep the repository's <code>.personal-ai-workspace-identity</code> marker
-in place; it is ignored by git and protected from project file tools.
+Keep the active <code>.env</code> in this application repository. Copy
+<code>.env.example</code> to <code>.env</code> if needed, then fill in the settings.
+Compose reads it automatically when run from this directory. Git and the Docker
+build context ignore <code>.env</code>.
 
-Before mounting the repository, move the current local environment, provider
-and login credentials, and TLS pair to the user-private Windows location
-<code>%LOCALAPPDATA%\Personal-AI-Workspace\private</code>. Stop Compose, then run the
-one-time helper from the application repository:
+<code>WORKSPACE_HOST_ROOT</code> selects the local folder mounted as
+<code>/workspace</code>. It may be this repository or a dedicated workspace folder.
+The identity marker inside that folder must match <code>WORKSPACE_IDENTITY</code>.
+The server accepts project root <code>.</code> only after it verifies that marker.
 
-```powershell
-$privateRoot = Join-Path $env:LOCALAPPDATA 'Personal-AI-Workspace\private'
-$privateEnv = Join-Path $privateRoot '.env'
-docker compose --project-name personal-ai-workspace --env-file .env down
-.\scripts\move-local-private-files.ps1 -Preflight
-.\scripts\move-local-private-files.ps1
-```
-
-The stop command targets the existing <code>personal-ai-workspace</code> stack and retains its volumes. Confirm it has stopped before running the relocation helper. The new direct-repository stack uses <code>personal-ai-workspace-mvp2</code> and separate PostgreSQL and recovery volumes.
-The Compose password-file default supports stopping the existing stack when its
-older <code>.env</code> omits <code>LOCAL_USER_PASSWORD_FILE</code>. The relocation helper always
-writes the direct-run setting as an absolute path under the external private
-directory and verifies it stays outside the repository. The preflight checks source
-and destination paths without reading file contents.
-The move helper copies each file, verifies the copies, restricts the private
-directory ACL to the current Windows user, updates path settings in the external
-<code>.env</code>, and only then removes the in-repository copies. It creates the ignored
-identity marker when needed. It retains the verified pre-move <code>.env</code>
-snapshot under
-<code>%LOCALAPPDATA%\Personal-AI-Workspace\private\rollback\before-direct-workspace</code>.
-The helper does not print credential values or Compose's resolved configuration.
-The live environment also selects <code>pai_mvp2_pg_data</code> and
-<code>pai_mvp2_recovery</code>, keeping the existing MVP1 PostgreSQL and recovery
-volumes untouched. The Compose project is named <code>personal-ai-workspace-mvp2</code>.
-
-The external <code>.env</code> must keep these host paths under the private directory:
+Keep the credential and TLS files at the paths named in <code>.env</code>. The
+default template places these files under
+<code>%LOCALAPPDATA%\Personal-AI-Workspace\private</code>:
 
 - <code>LOCAL_USER_PASSWORD_FILE</code> points to <code>secrets/local_user_password</code>
 - <code>NVIDIA_API_KEY_FILE</code> points to <code>secrets/nvidia_api_key</code>
@@ -88,13 +65,11 @@ openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 30 `
   -subj '/CN=localhost' -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1'
 ```
 
-Start Compose with the external environment file explicitly:
+Start Compose from the application repository:
 
 ```powershell
-$privateRoot = Join-Path $env:LOCALAPPDATA 'Personal-AI-Workspace\private'
-$privateEnv = Join-Path $privateRoot '.env'
 pnpm compose:config
-docker compose --project-name personal-ai-workspace-mvp2 --env-file $privateEnv up --build -d
+docker compose --project-name personal-ai-workspace-mvp2 up --build -d
 ```
 
 Open <code>https://127.0.0.1:8443/</code>. A temporary self-signed certificate needs local
@@ -102,12 +77,12 @@ browser trust or a one-time browser exception. Check service health and the
 backend readiness endpoint without printing the resolved Compose configuration:
 
 ```powershell
-docker compose --project-name personal-ai-workspace-mvp2 --env-file $privateEnv ps
+docker compose --project-name personal-ai-workspace-mvp2 ps
 curl.exe -k https://127.0.0.1:8443/ready
 ```
 
 Create the project in the UI with relative root <code>.</code> to use the complete
-application repository. Workspace inspection still blocks <code>.git</code>, <code>.env*</code>,
+folder configured by <code>WORKSPACE_HOST_ROOT</code>. Workspace inspection still blocks <code>.git</code>, <code>.env*</code>,
 <code>secrets</code>, backup/audit/internal paths, private keys, links, and other protected
 paths. File changes continue to require normal proposal review, current hashes,
 pre-destructive backups, and atomic promotion.
@@ -119,25 +94,17 @@ redacted locally; only files you select appear in the separate provider consent 
 
 ## Rollback
 
-Keep Compose stopped while changing the workspace root. To return to the
-previous fixture, open the active private <code>.env</code> and the saved
-<code>rollback\before-direct-workspace\.env</code> side by side. Restore only the original
-<code>WORKSPACE_HOST_ROOT</code> and <code>WORKSPACE_IDENTITY</code> entries in the active private
-file. Set <code>POSTGRES_VOLUME_NAME=pai_pg_data</code> and
+Keep Compose stopped while changing the workspace root. To return to a
+previous fixture, update <code>WORKSPACE_HOST_ROOT</code> and
+<code>WORKSPACE_IDENTITY</code> in the repository's <code>.env</code> to match that
+fixture and its marker. Set <code>POSTGRES_VOLUME_NAME=pai_pg_data</code> and
 <code>RECOVERY_VOLUME_NAME=pai_recovery</code> to use the original fixture data and
-recovery volume. Leave the three external credential/TLS paths pointing to the private
-directory. The saved values target the existing fixture and its marker; the
-helper does not rewrite that marker. Do not restore the saved <code>.env</code> into
-the application repository; keep using the private active file so secret paths
-remain external.
+recovery volume. Keep the credential and TLS paths pointing to their actual files.
 
-After changing these settings, start the fixture with the same explicit
-private environment path:
+After changing these settings, start the fixture:
 
 ```powershell
-$privateRoot = Join-Path $env:LOCALAPPDATA 'Personal-AI-Workspace\private'
-$privateEnv = Join-Path $privateRoot '.env'
-docker compose --project-name personal-ai-workspace --env-file $privateEnv up -d
+docker compose --project-name personal-ai-workspace up -d
 ```
 
 ## Backups and recovery
@@ -151,10 +118,9 @@ location, then export PostgreSQL:
 
 ```powershell
 $privateRoot = Join-Path $env:LOCALAPPDATA 'Personal-AI-Workspace\private'
-$privateEnv = Join-Path $privateRoot '.env'
 $databaseBackup = Join-Path $privateRoot 'database-backup.sql'
-docker compose --project-name personal-ai-workspace-mvp2 --env-file $privateEnv down
-docker compose --project-name personal-ai-workspace-mvp2 --env-file $privateEnv exec -T postgres pg_dump -U pai_app -d personal_ai > $databaseBackup
+docker compose --project-name personal-ai-workspace-mvp2 exec -T postgres pg_dump -U pai_app -d personal_ai > $databaseBackup
+docker compose --project-name personal-ai-workspace-mvp2 down
 ```
 
 Keep the SQL file private and retain the <code>pai_mvp2_recovery</code> volume with the backup.
@@ -172,12 +138,12 @@ pnpm test
 pnpm test:integration
 pnpm test:boundaries
 pnpm compose:config
-docker compose --project-name personal-ai-workspace-mvp2 --env-file $privateEnv up --build
+docker compose --project-name personal-ai-workspace-mvp2 up --build
 ```
 
-<code>pnpm compose:config</code> uses the private environment-file path and validates
+<code>pnpm compose:config</code> uses the repository's <code>.env</code> and validates
 Compose without printing resolved settings. The live Compose/NIM check needs
-Docker Desktop, operator-provisioned TLS files, the repository identity marker,
+Docker Desktop, operator-provisioned TLS files, the workspace identity marker,
 and a valid NVIDIA credential. Application startup fails closed until
 PostgreSQL, the workspace identity, the fixed endpoint, and the read-only
 provider secret are available.

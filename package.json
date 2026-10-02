@@ -13,6 +13,6 @@
     "test:integration": "pnpm --filter personal-ai-workspace-backend test:integration",
     "test:boundaries": "node --test scripts/compose-boundary-check.test.mjs",
     "test:relocation-paths": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/move-local-private-files.reparse.test.ps1",
-    "compose:config": "docker compose --project-name personal-ai-workspace-mvp2 --env-file \"%LOCALAPPDATA%\\Personal-AI-Workspace\\private\\.env\" config --quiet"
+    "compose:config": "docker compose --project-name personal-ai-workspace-mvp2 config --quiet"
   }
 }
