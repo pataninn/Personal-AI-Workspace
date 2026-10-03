@@ -81,6 +81,7 @@ def dispatch(name, args, **kwargs):
 
 
 def agent_init(self, *args, **kwargs):
+    kwargs['model'] = os.environ.get('PAI_MODEL', 'nvidia/nemotron-3-super-120b-a12b')
     kwargs['enabled_toolsets'] = ['file', 'terminal', 'skills', 'todo']
     kwargs['max_iterations'] = 24
     kwargs['ephemeral_system_prompt'] = (Path('/opt/pai/instructions.md').read_text() + '\nProject copy: ' + str(ROOT))
@@ -93,6 +94,7 @@ AIAgent.__init__ = agent_init
 
 from acp_adapter import events, permissions
 _complete = events.build_tool_complete
+_start = events.build_tool_start
 _approval = permissions.make_approval_callback
 
 
@@ -109,6 +111,14 @@ def approval(*args, **kwargs):
 
 
 events.build_tool_complete = complete
+def start(tool_call_id, tool_name, arguments, **kwargs):
+    event = _start(tool_call_id, tool_name, arguments, **kwargs)
+    if tool_name == 'terminal':
+        event.raw_input = arguments
+    return event
+
+
+events.build_tool_start = start
 permissions.make_approval_callback = approval
 
 from acp_adapter.entry import main

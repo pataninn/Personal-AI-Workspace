@@ -51,9 +51,9 @@ export function CommandProposalCard({ command, runtimeKind, actionState, onDecis
         <dl className="command-metadata">
           <div><dt>Requested action</dt><dd data-testid="command-summary"><code>{formatRequestedAction(command)}</code></dd></div>
           <div><dt>Safe summary</dt><dd>{command.summary}</dd></div>
-          <div><dt>Policy status</dt><dd data-testid="command-policy-status">{blocked ? 'Blocked by sandbox policy' : 'Approval required'}</dd></div>
+          <div><dt>Policy status</dt><dd data-testid="command-policy-status">{blocked ? 'Blocked by sandbox policy' : command.decision === 'approved' ? 'Approved for this command only' : command.decision === 'rejected' ? 'Permission withheld' : 'Approval required'}</dd></div>
           <div><dt>Working directory</dt><dd>{command.cwd}</dd></div>
-          <div><dt>Network</dt><dd>Network access is denied by default.</dd></div>
+          <div><dt>Network</dt><dd>{command.limits.network === 'approved_registries' ? 'Approval allows HTTPS reads from registry.npmjs.org, or pypi.org and files.pythonhosted.org for pip, for this command only.' : 'Network access is denied by default.'}</dd></div>
           <div><dt>Output limit</dt><dd>{formatBytes(command.limits.maxOutputBytes)}</dd></div>
         </dl>
 
@@ -61,7 +61,7 @@ export function CommandProposalCard({ command, runtimeKind, actionState, onDecis
           <p>{COMMAND_BOUNDARY_NOTICE}</p>
           <p>{COMMAND_PROMOTION_NOTICE}</p>
         </Alert>
-        {!canMutate ? <Alert tone="warning" data-testid="command-read-only">This project is archived or your session is read-only. Command actions are disabled.</Alert> : null}
+        {!canMutate && !terminal ? <Alert tone="info" data-testid="command-read-only">Command actions are disabled because this run has stopped or the project or session is read-only.</Alert> : null}
         {runtimeKind === 'fake' ? <Alert tone="warning" data-testid="command-fake-mode-notice">{FAKE_SANDBOX_NOTICE}</Alert> : null}
         <p className="command-mode-label" data-testid="command-mode-label">Execution mode: {runtimeKind === 'fake' ? 'Development preview - fake sandbox' : 'Private sandbox'}</p>
 
@@ -103,6 +103,7 @@ function headingFor(command: SandboxCommandSnapshot, starting: boolean, runtimeK
 }
 
 function formatRequestedAction(command: SandboxCommandSnapshot): string {
+  if (command.command === 'hermes-terminal') return command.argumentSummaries.join(' ');
   if (command.argumentSummaries.length === 0) {
     return command.command;
   }

@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from acp import AcpSession
+from network import registry_grant, set_registry_grant
 from common import BridgeError, CLI, GATEWAY, MAX_BODY, MAX_FILE, MAX_TOTAL, STATE, inventory, profile, run_cli, safe_path, sandbox_name, write_private
 
 
@@ -32,9 +33,14 @@ class Run:
         self.lock = threading.Lock()
         self.cleanup_lock = threading.Lock()
         self.finished = threading.Event()
+        self.network_grant = None
         self.payload = payload
 
     def push(self, event):
+        update = event.get('update', {})
+        if self.network_grant and update.get('toolCallId') == self.network_grant and update.get('status') in ('completed', 'failed'):
+            set_registry_grant(self, None)
+            self.network_grant = None
         size = len(json.dumps(event).encode())
         with self.lock:
             self.event_bytes += size
@@ -45,6 +51,7 @@ class Run:
 
     def poll(self, cursor):
         with self.lock:
+            status = self.status
             events = [e for e in self.events if e['sequence'] > cursor]
             selected = []
             size = 0
@@ -53,7 +60,7 @@ class Run:
                 if size > 256 * 1024:
                     break
                 selected.append(event)
-        return {'status': self.status, 'error': self.error, 'events': selected, 'stopReason': self.stop_reason}
+        return {'status': status, 'error': self.error, 'events': selected, 'hasMore': len(selected) < len(events), 'stopReason': self.stop_reason}
 
     def work(self):
         try:
@@ -61,7 +68,7 @@ class Run:
             if self.cancelled.is_set():
                 return
             self._upload()
-            self.acp = AcpSession(self.ssh_command('/usr/bin/env', 'PAI_PROJECT_ROOT=' + self.remote + '/project', '/opt/hermes/.venv/bin/python', '/opt/pai/acp_runner.py'), self)
+            self.acp = AcpSession(self.ssh_command('/usr/bin/env', 'PAI_PROJECT_ROOT=' + self.remote + '/project', 'PAI_MODEL=' + self.payload.get('model', 'nvidia/nemotron-3-super-120b-a12b'), '/opt/hermes/.venv/bin/python', '/opt/pai/acp_runner.py'), self)
             self.acp.open(self.remote + '/project')
             self.status = 'running'
             self.push({'type': 'started'})
@@ -150,7 +157,27 @@ class Run:
         self.assert_owned()
         if self.status != 'running' or not self.acp or self.cancelled.is_set():
             raise BridgeError('The run cannot accept a command decision')
+        request = self.acp.permissions.get(str(identity), {})
+        command = request.get('params', {}).get('toolCall', {}).get('rawInput', {}).get('command', '')
+        grant = registry_grant(command) if approved else None
+        if grant:
+            with self.lock:
+                tool = next((e.get('update', {}) for e in reversed(self.events) if e.get('update', {}).get('sessionUpdate') == 'tool_call' and e.get('update', {}).get('rawInput', {}).get('command') == command), None)
+            if not tool or self.network_grant:
+                raise BridgeError('A command network grant is already active or unscoped')
+            set_registry_grant(self, grant)
+            self.network_grant = tool['toolCallId']
+            threading.Thread(target=self._expire_network_grant, args=(self.network_grant,), daemon=True).start()
         self.acp.permission(identity, approved)
+
+    def _expire_network_grant(self, tool_id):
+        if self.cancelled.wait(timeout=75):
+            return
+        if self.network_grant == tool_id:
+            try:
+                self.close()
+            except Exception:
+                self.error = 'Command network cleanup needs manual review.'
 
     def close(self):
         self.cancelled.set()
@@ -175,6 +202,9 @@ class Run:
             if not self.sandbox_id or row.get('id') != self.sandbox_id:
                 raise BridgeError('Sandbox ownership could not be confirmed; manual cleanup required')
             run_cli(['sandbox', 'delete', self.name])
+        deadline = time.monotonic() + 30
+        while any(r.get('name') == self.name for r in inventory()) and time.monotonic() < deadline:
+            time.sleep(0.5)
         if any(r.get('name') == self.name for r in inventory()):
             raise BridgeError('Sandbox deletion could not be confirmed')
         if self.local.exists():

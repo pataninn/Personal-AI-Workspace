@@ -120,7 +120,7 @@ export async function createApplication(
       workspaceBoundary,
       recoveryRoot: config.recoveryRoot
     });
-    const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository);
+    const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository, logger);
     const stagingGateway = config.agentRuntimeMode === 'openshell'
       ? new LocalStagingGateway({ stagingRoot: config.stagingRoot })
       : undefined;
@@ -134,7 +134,7 @@ export async function createApplication(
     const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, proposeSandboxCommand, projectRepository, collectProposedChangeSet, providerPermissionRepository, decideProposedChangeSet);
     const decideEgress = new DecideEgressUseCase(aiRunRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot, projectFactRepository, providerPermissionRepository);
     const sendChatMessage = new SendChatMessageUseCase(chatContextRepository, projectFactRepository, createAiRun, decideEgress, startAiRun);
-    const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository);
+    const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository, commandRepository);
     const passwordHasher = new BcryptPasswordHasher();
     const tokenProvider = new OpaqueTokenProvider(config.sessionSecret);
     const clock = new SystemClock();
@@ -303,10 +303,11 @@ function createAgentRuntime(
   modelProvider: IModelProvider | undefined,
   workspaceGateway: WorkspaceGatewayAdapter,
   conversationRepository: TypeOrmConversationRepository,
-  projectFactRepository: TypeOrmProjectFactRepository
+  projectFactRepository: TypeOrmProjectFactRepository,
+  logger: AppLogger
 ): IAgentRuntime {
   if (config.agentRuntimeMode === 'hermes') {
-    return new HermesAgentRuntime(createHermesBridge(config), new ApprovedContextReader(workspaceGateway, projectFactRepository));
+    return new HermesAgentRuntime(createHermesBridge(config), new ApprovedContextReader(workspaceGateway, projectFactRepository), (detail) => logger.error(detail, 'Hermes runtime operation could not be confirmed.'));
   }
   if (config.agentRuntimeMode === 'fake') {
     return new FakeAgentRuntime();

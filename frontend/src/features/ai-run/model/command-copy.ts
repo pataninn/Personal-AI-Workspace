@@ -1,5 +1,5 @@
 export const COMMAND_BOUNDARY_NOTICE = 'Commands run only in a disposable staged sandbox. They never run on Windows or inside the app container.';
-export const COMMAND_PROMOTION_NOTICE = 'The sandbox cannot write the authoritative project workspace. Any proposed file changes need a separate review before they can be applied.';
+export const COMMAND_PROMOTION_NOTICE = 'The sandbox edits a project copy. After a successful run, validated file changes are applied and recorded in File history. Cancelling a command stops the whole Hermes run.';
 export const FAKE_SANDBOX_NOTICE = 'Development preview - fake sandbox. This command is simulated; no process ran on Windows or in the app container.';
 export const COMMAND_EMPTY_NOTICE = 'No sandbox command is waiting for review.';
 export const COMMAND_STATUS_LOAD_ERROR = 'We could not load the command status. Refresh the run status.';
@@ -11,6 +11,9 @@ export function decisionPendingLabel(decision: 'approve' | 'reject'): string {
 }
 
 export function statusLabel(status: string, runtimeKind: 'fake' | undefined): string {
+  if (status === 'rejected') {
+    return 'Command rejected. This command was not run.';
+  }
   if (status === 'awaiting_approval') {
     return 'Approval required';
   }

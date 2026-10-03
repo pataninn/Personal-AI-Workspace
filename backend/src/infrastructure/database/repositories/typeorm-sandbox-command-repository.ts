@@ -67,11 +67,11 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
         await runner.commitTransaction();
         return { resource: replay, replayed: true };
       }
-      const rows: readonly SandboxCommandRow[] = await runner.query(
+      const rows: readonly SandboxCommandRow[] = commandRows(await runner.query(
         `INSERT INTO "sandbox_commands" ("owner_id", "project_id", "run_id", "proposal_hash", "command", "args", "cwd", "summary", "classification", "blocked_reason", "decision", "status", "limits", "safe_message", "create_idempotency_key", "create_fingerprint")
          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16) RETURNING *`,
         [input.ownerId, input.projectId, input.runId, input.proposalHash, input.command, JSON.stringify(input.args), input.cwd, input.summary, input.classification, input.blockedReason ?? null, input.classification === 'blocked' ? 'not_applicable' : 'pending', input.classification === 'blocked' ? 'blocked' : 'awaiting_approval', JSON.stringify(input.limits), input.classification === 'blocked' ? 'The sandbox policy blocked this command before approval.' : 'Review this command before it runs.', input.createIdempotencyKey, input.createFingerprint]
-      );
+      ));
       const row = rows[0];
       if (!row) {
         throw new SandboxCommandNotFoundError();
@@ -79,7 +79,7 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
       await runner.commitTransaction();
       return { resource: toCommand(row), replayed: false };
     } catch (error: unknown) {
-      await runner.rollbackTransaction();
+      if (runner.isTransactionActive) await runner.rollbackTransaction();
       throw error;
     } finally {
       await runner.release();
@@ -87,18 +87,18 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
   }
 
   public async listForRun(ownerId: string, runId: string, limit = MAX_SANDBOX_COMMANDS_PER_LIST): Promise<readonly SandboxCommand[]> {
-    const rows: readonly SandboxCommandRow[] = await this.dataSource.query(
+    const rows: readonly SandboxCommandRow[] = commandRows(await this.dataSource.query(
       'SELECT * FROM "sandbox_commands" WHERE "owner_id" = $1 AND "run_id" = $2 ORDER BY "created_at" ASC, "id" ASC LIMIT $3',
       [ownerId, runId, Math.max(0, Math.min(Math.floor(limit), MAX_SANDBOX_COMMANDS_PER_LIST))]
-    );
+    ));
     return rows.map(toCommand);
   }
 
   public async findByIdForOwner(ownerId: string, runId: string, commandId: string): Promise<SandboxCommand | null> {
-    const rows: readonly SandboxCommandRow[] = await this.dataSource.query(
+    const rows: readonly SandboxCommandRow[] = commandRows(await this.dataSource.query(
       'SELECT * FROM "sandbox_commands" WHERE "owner_id" = $1 AND "run_id" = $2 AND "id" = $3 LIMIT 1',
       [ownerId, runId, commandId]
-    );
+    ));
     return rows[0] ? toCommand(rows[0]) : null;
   }
 
@@ -127,10 +127,10 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
         throw new SandboxCommandDecisionConflictError();
       }
       const rejected = input.decision === 'reject';
-      const rows: readonly SandboxCommandRow[] = await runner.query(
+      const rows: readonly SandboxCommandRow[] = commandRows(await runner.query(
         `UPDATE "sandbox_commands" SET "decision" = $1, "status" = $2, "decision_idempotency_key" = $3, "decision_fingerprint" = $4, "safe_message" = $5, "updated_at" = now() WHERE "id" = $6 RETURNING *`,
         [rejected ? 'rejected' : 'approved', rejected ? 'rejected' : 'awaiting_approval', input.idempotencyKey, input.requestFingerprint, rejected ? 'This command was rejected and was not started.' : 'Approval recorded. Starting the private sandbox command.', input.commandId]
-      );
+      ));
       const updated = rows[0];
       if (!updated) {
         throw new SandboxCommandNotFoundError();
@@ -138,7 +138,7 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
       await runner.commitTransaction();
       return { resource: toCommand(updated), replayed: false };
     } catch (error: unknown) {
-      await runner.rollbackTransaction();
+      if (runner.isTransactionActive) await runner.rollbackTransaction();
       throw error;
     } finally {
       await runner.release();
@@ -165,10 +165,10 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
         return { resource: toCommand(command), replayed: true };
       }
       const running = command.status === 'running' || command.status === 'cancel_requested';
-      const rows: readonly SandboxCommandRow[] = await runner.query(
+      const rows: readonly SandboxCommandRow[] = commandRows(await runner.query(
         `UPDATE "sandbox_commands" SET "status" = $1, "decision" = $2, "cancel_requested" = true, "cancel_idempotency_key" = $3, "cancel_fingerprint" = $4, "safe_message" = $5, "updated_at" = now() WHERE "id" = $6 RETURNING *`,
         [running ? 'cancel_requested' : 'cancelled', command.decision === 'pending' ? 'rejected' : command.decision, input.idempotencyKey, input.requestFingerprint, running ? 'Cancellation requested for the private sandbox command.' : 'This command was cancelled before it started.', input.commandId]
-      );
+      ));
       const updated = rows[0];
       if (!updated) {
         throw new SandboxCommandNotFoundError();
@@ -176,7 +176,7 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
       await runner.commitTransaction();
       return { resource: toCommand(updated), replayed: false };
     } catch (error: unknown) {
-      await runner.rollbackTransaction();
+      if (runner.isTransactionActive) await runner.rollbackTransaction();
       throw error;
     } finally {
       await runner.release();
@@ -187,10 +187,10 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
     const runner = await this.startTransaction();
     try {
       await lock(runner, stateLockKey(commandId));
-      const rows: readonly SandboxCommandRow[] = await runner.query(
+      const rows: readonly SandboxCommandRow[] = commandRows(await runner.query(
         `UPDATE "sandbox_commands" SET "status" = 'running', "safe_message" = $1, "updated_at" = now() WHERE "owner_id" = $2 AND "run_id" = $3 AND "id" = $4 AND "decision" = 'approved' AND "status" = 'awaiting_approval' AND "cancel_requested" = false RETURNING *`,
         ['Running the command in the private sandbox.', ownerId, runId, commandId]
-      );
+      ));
       if (rows[0]) {
         await runner.commitTransaction();
         return toCommand(rows[0]);
@@ -199,7 +199,7 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
       await runner.commitTransaction();
       return current ? toCommand(current) : null;
     } catch (error: unknown) {
-      await runner.rollbackTransaction();
+      if (runner.isTransactionActive) await runner.rollbackTransaction();
       throw error;
     } finally {
       await runner.release();
@@ -218,15 +218,15 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
         await runner.commitTransaction();
         return toCommand(current);
       }
-      const rows: readonly SandboxCommandRow[] = await runner.query(
+      const rows: readonly SandboxCommandRow[] = commandRows(await runner.query(
         `UPDATE "sandbox_commands" SET "status" = $1, "result" = $2::jsonb, "cancel_requested" = COALESCE($3, "cancel_requested"), "safe_message" = $4, "updated_at" = now()
          WHERE "owner_id" = $5 AND "run_id" = $6 AND "id" = $7 AND "status" = 'cancel_requested' RETURNING *`,
         [input.status, input.result ? JSON.stringify(sanitizeCommandResult(input.result, parseLimits(current.limits))) : null, input.cancelRequested ?? null, input.safeMessage, input.ownerId, input.runId, input.commandId]
-      );
+      ));
       await runner.commitTransaction();
       return toCommand(rows[0] ?? current);
     } catch (error: unknown) {
-      await runner.rollbackTransaction();
+      if (runner.isTransactionActive) await runner.rollbackTransaction();
       throw error;
     } finally {
       await runner.release();
@@ -242,15 +242,15 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
         await runner.commitTransaction();
         return null;
       }
-      const rows: readonly SandboxCommandRow[] = await runner.query(
+      const rows: readonly SandboxCommandRow[] = commandRows(await runner.query(
         `UPDATE "sandbox_commands" SET "status" = $1, "result" = $2::jsonb, "safe_message" = $3, "updated_at" = now()
          WHERE "owner_id" = $4 AND "run_id" = $5 AND "id" = $6 AND "status" = 'awaiting_approval' AND "cancel_requested" = false RETURNING *`,
         [input.status, input.result ? JSON.stringify(sanitizeCommandResult(input.result, parseLimits(current.limits))) : null, input.safeMessage, input.ownerId, input.runId, input.commandId]
-      );
+      ));
       await runner.commitTransaction();
       return rows[0] ? toCommand(rows[0]) : null;
     } catch (error: unknown) {
-      await runner.rollbackTransaction();
+      if (runner.isTransactionActive) await runner.rollbackTransaction();
       throw error;
     } finally {
       await runner.release();
@@ -266,15 +266,15 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
         await runner.commitTransaction();
         return null;
       }
-      const rows: readonly SandboxCommandRow[] = await runner.query(
+      const rows: readonly SandboxCommandRow[] = commandRows(await runner.query(
         `UPDATE "sandbox_commands" SET "status" = $1, "result" = $2::jsonb, "safe_message" = $3, "updated_at" = now()
          WHERE "owner_id" = $4 AND "run_id" = $5 AND "id" = $6 AND "status" = 'running' AND "cancel_requested" = false RETURNING *`,
         [input.status, input.result ? JSON.stringify(sanitizeCommandResult(input.result, parseLimits(current.limits))) : null, input.safeMessage, input.ownerId, input.runId, input.commandId]
-      );
+      ));
       await runner.commitTransaction();
       return rows[0] ? toCommand(rows[0]) : null;
     } catch (error: unknown) {
-      await runner.rollbackTransaction();
+      if (runner.isTransactionActive) await runner.rollbackTransaction();
       throw error;
     } finally {
       await runner.release();
@@ -397,4 +397,9 @@ function toDate(value: Date | string): Date {
 
 function isTerminal(status: SandboxCommand['status']): boolean {
   return status === 'completed' || status === 'failed' || status === 'timed_out' || status === 'output_truncated' || status === 'rejected' || status === 'blocked' || status === 'cancelled' || status === 'review_required';
+}
+
+/** Postgres UPDATE/DELETE raw results contain [records, affectedCount]. */
+function commandRows(value: readonly SandboxCommandRow[]): readonly SandboxCommandRow[] {
+  return (Array.isArray(value[0]) ? value[0] : value) as readonly SandboxCommandRow[];
 }

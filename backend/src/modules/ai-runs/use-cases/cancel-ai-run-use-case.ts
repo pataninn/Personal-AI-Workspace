@@ -7,6 +7,7 @@ import { validateIdempotencyKey } from '@/modules/ai-runs/domain/ai-run-validati
 import { hashText } from '@/modules/ai-runs/use-cases/manifest-builder';
 import { assertActiveAiRunProject } from '@/modules/ai-runs/use-cases/assert-ai-run-project';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
+import type { ISandboxCommandRepository } from '@/modules/ai-runs/repositories/sandbox-command-repository';
 
 export interface CancelAiRunInput {
   readonly ownerId: string;
@@ -19,7 +20,8 @@ export class CancelAiRunUseCase {
     private readonly aiRunRepository: IAiRunRepository,
     private readonly agentRuntime: IAgentRuntime,
     private readonly events: IRunEventPublisher,
-    private readonly projectRepository?: IProjectRepository
+    private readonly projectRepository?: IProjectRepository,
+    private readonly commandRepository?: ISandboxCommandRepository
   ) {}
 
   public async execute(input: CancelAiRunInput): Promise<AiRun> {
@@ -45,6 +47,7 @@ export class CancelAiRunUseCase {
         await this.markReview(input.ownerId, input.runId);
         throw new AiRunCancellationReviewRequiredError();
       }
+      await this.finishCommands(input.ownerId, input.runId, idempotencyKey);
       const cancelled = this.aiRunRepository.markCancelled
         ? await this.aiRunRepository.markCancelled(input.ownerId, input.runId)
         : await this.markCancelledLegacy(input.ownerId, input.runId);
@@ -59,6 +62,18 @@ export class CancelAiRunUseCase {
       }
       await this.markReview(input.ownerId, input.runId);
       throw new AiRunCancellationReviewRequiredError();
+    }
+  }
+
+  private async finishCommands(ownerId: string, runId: string, cancellationKey: string): Promise<void> {
+    if (!this.commandRepository) return;
+    const commands = await this.commandRepository.listForRun(ownerId, runId);
+    for (const command of commands) {
+      if (!['awaiting_approval', 'running', 'cancel_requested'].includes(command.status)) continue;
+      const result = await this.commandRepository.recordCancellation({ ownerId, runId, commandId: command.id, idempotencyKey: `run-stop-${hashText(`${cancellationKey}:${command.id}`).slice(0, 32)}`, requestFingerprint: hashText(`run-stop:${runId}:${command.id}`) });
+      if (result.resource.status === 'cancel_requested') {
+        await this.commandRepository.saveResult({ ownerId, runId, commandId: command.id, status: 'cancelled', cancelRequested: true, safeMessage: 'The run and its sandbox stopped. No further command output will be applied.' });
+      }
     }
   }
 

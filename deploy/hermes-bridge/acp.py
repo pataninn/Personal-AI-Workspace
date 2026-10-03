@@ -74,7 +74,10 @@ class AcpSession:
             self.send({'jsonrpc': '2.0', 'method': 'session/cancel', 'params': {'sessionId': self.session_id}})
 
     def close(self):
-        self.cancel()
+        try:
+            self.cancel()
+        except (BrokenPipeError, OSError):
+            pass
         if self.child.poll() is None:
             self.child.terminate()
             try:

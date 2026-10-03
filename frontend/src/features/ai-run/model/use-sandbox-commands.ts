@@ -24,6 +24,7 @@ export interface SandboxCommandActionState {
 
 interface UseSandboxCommandsOptions {
   readonly enabled: boolean;
+  readonly polling?: boolean;
   readonly runId: string;
   readonly csrfToken: string | null;
 }
@@ -41,7 +42,7 @@ interface UseSandboxCommandsResult {
 
 const GENERIC_ERROR = 'We could not load the command status. Refresh the run status.';
 
-export function useSandboxCommands({ enabled, runId, csrfToken }: UseSandboxCommandsOptions): UseSandboxCommandsResult {
+export function useSandboxCommands({ enabled, polling = false, runId, csrfToken }: UseSandboxCommandsOptions): UseSandboxCommandsResult {
   const [commands, setCommands] = useState<readonly SandboxCommandSnapshot[]>([]);
   const [status, setStatus] = useState<UseSandboxCommandsResult['status']>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +56,12 @@ export function useSandboxCommands({ enabled, runId, csrfToken }: UseSandboxComm
   const refresh = useCallback((): void => {
     setRefreshVersion((current) => current + 1);
   }, []);
+
+  useEffect(() => {
+    if (!enabled || !polling) return undefined;
+    const timer = window.setInterval(refresh, 1500);
+    return () => window.clearInterval(timer);
+  }, [enabled, polling, refresh]);
 
   useEffect(() => {
     if (previousRunId.current !== runId) {

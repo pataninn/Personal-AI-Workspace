@@ -51,6 +51,8 @@ def dispatch(body):
                 raise BridgeError('The local Hermes concurrency limit was reached')
             if not isinstance(payload.get('prompt'), str) or len(payload['prompt'].encode()) > 256 * 1024:
                 raise BridgeError('Invalid run prompt')
+            if not re.fullmatch(r'[a-zA-Z0-9_./:-]{1,200}', payload.get('model', 'nvidia/nemotron-3-super-120b-a12b')):
+                raise BridgeError('Invalid model identifier')
             run = Run(identity, capability, payload)
             RUNS[identity] = run
             threading.Thread(target=run.work, daemon=True).start()

@@ -145,7 +145,7 @@ function normalizeResult(value: unknown): SandboxCommandResult | undefined {
 
 function readLimits(value: unknown): SandboxCommandLimits | undefined {
   const record = asRecord(value);
-  if (!record || record.network !== 'denied') {
+  if (!record || (record.network !== 'denied' && record.network !== 'approved_registries')) {
     return undefined;
   }
   return {
@@ -155,7 +155,7 @@ function readLimits(value: unknown): SandboxCommandLimits | undefined {
     maxProcesses: readNumber(record.maxProcesses),
     memoryBytes: readNumber(record.memoryBytes),
     cpuTimeMs: readNumber(record.cpuTimeMs),
-    network: 'denied'
+    network: record.network
   };
 }
 

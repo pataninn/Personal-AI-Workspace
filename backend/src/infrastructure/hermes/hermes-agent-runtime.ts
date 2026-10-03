@@ -26,13 +26,15 @@ interface ActiveRun {
   cleaned?: boolean;
   responseReceived?: boolean;
   cancellation?: Promise<RuntimeRunCancellationResult>;
+  startup?: Promise<Record<string, unknown>>;
+  stage?: string;
   readonly tools: Map<string, { readonly command?: string; readonly title: string; result?: CommandResult }>;
 }
 
 /** Runs real Hermes on a disposable copy and exports validated proposals to Express. */
 export class HermesAgentRuntime implements IAgentRuntime {
   private readonly runs = new Map<string, ActiveRun>();
-  public constructor(private readonly bridge: HermesBridgeClient, private readonly context: ApprovedContextReader) {}
+  public constructor(private readonly bridge: HermesBridgeClient, private readonly context: ApprovedContextReader, private readonly diagnose?: (detail: { readonly runId: string; readonly category: string; readonly stage: string; readonly trace: string }) => void) {}
 
   public async checkAvailability(): Promise<void> {
     const receipt = await this.bridge.call('probe');
@@ -52,7 +54,9 @@ export class HermesAgentRuntime implements IAgentRuntime {
     try {
       const snapshot = await this.context.read(input);
       yield { type: 'started' };
-      await this.call(input.runId, 'create', { files: snapshot.files, prompt: snapshot.prompt, model: input.manifest.model });
+      if (active.cancelled) { yield { type: 'cancelled' }; return; }
+      active.startup = this.call(input.runId, 'create', { files: snapshot.files, prompt: snapshot.prompt, model: input.manifest.model });
+      await active.startup;
       yield* this.follow(input.runId);
       if (active.cancelled) {
         await active.cancellation;
@@ -63,9 +67,12 @@ export class HermesAgentRuntime implements IAgentRuntime {
       if (status.status !== 'completed') return;
       const exported = await this.call(input.runId, 'files');
       const changes = collectHermesChanges(exported.files, snapshot.files);
+      await this.call(input.runId, 'delete');
+      active.cleaned = true;
       if (changes.length > 0) yield { type: 'changes.proposed', changes };
       yield { type: 'completed', text: '' };
-    } catch {
+    } catch (error: unknown) {
+      this.diagnose?.({ runId: input.runId, category: error instanceof Error ? error.name : 'unknown', stage: active.stage ?? 'preparing', trace: error instanceof Error ? (error.stack ?? '').split('\n').filter((line) => /^\s+at /u.test(line)).slice(0, 4).join('\n') : '' });
       if (active.cancelled) {
         await active.cancellation;
         yield active.cleaned ? { type: 'cancelled' } : { type: 'needs_manual_review', message: 'Hermes shutdown could not be confirmed.' };
@@ -86,9 +93,11 @@ export class HermesAgentRuntime implements IAgentRuntime {
       for (const value of reply.events) {
         if (!isRecord(value) || typeof value.sequence !== 'number' || value.sequence <= active.cursor) throw new AiRunRuntimeUnavailableError();
         active.cursor = value.sequence;
+        active.stage = value.type === 'permission' ? 'command-permission' : 'event-stream';
         yield* this.projectBridgeEvent(runId, value);
       }
-      if (reply.status === 'completed') return;
+      // Completion can precede delivery of the last bounded event pages.
+      if (reply.status === 'completed' && reply.hasMore !== true) return;
       if (reply.status === 'failed' || reply.status === 'cancelled') throw new AiRunRuntimeUnavailableError();
       await new Promise<void>((resolve) => setTimeout(resolve, 300));
     }
@@ -121,7 +130,7 @@ export class HermesAgentRuntime implements IAgentRuntime {
       const toolId = String(update.toolCallId ?? '');
       const old = active.tools.get(toolId);
       const title = redactEgressText(String(update.title ?? old?.title ?? 'Hermes tool'));
-      const command = isRecord(update.rawInput) && typeof update.rawInput.command === 'string' ? update.rawInput.command : old?.command;
+      const command = isRecord(update.rawInput) && typeof update.rawInput.command === 'string' ? update.rawInput.command : old?.command ?? (title.startsWith('terminal: ') ? title.slice(10) : undefined);
       const item = { title, ...(command ? { command } : {}), ...(old?.result ? { result: old.result } : {}) };
       if (command && ['completed', 'failed'].includes(String(update.status))) {
         item.result = commandResult(update);
@@ -168,7 +177,8 @@ export class HermesAgentRuntime implements IAgentRuntime {
     if (!active) return { outcome: 'unknown' };
     if (active.cancellation) return active.cancellation;
     active.cancelled = true;
-    active.cancellation = this.call(input.runId, 'cancel').then(() => { active.cleaned = true; return { outcome: 'confirmed' as const }; }).catch(() => ({ outcome: 'unknown' as const }));
+    if (active.cleaned || !active.startup) { active.cleaned = true; return { outcome: 'confirmed' }; }
+    active.cancellation = active.startup.catch(() => undefined).then(() => this.call(input.runId, 'cancel')).then(() => { active.cleaned = true; return { outcome: 'confirmed' as const }; }).catch(() => ({ outcome: 'unknown' as const }));
     return active.cancellation;
   }
 
@@ -187,6 +197,7 @@ export class HermesAgentRuntime implements IAgentRuntime {
   }
 
   private call(runId: string, operation: string, payload: unknown = {}): Promise<Record<string, unknown>> {
+    this.requireRun(runId).stage = operation;
     return this.bridge.call(operation, runId, this.requireRun(runId).capability, payload);
   }
 }
