@@ -1,0 +1,103 @@
+{
+    "filesystem_policy":  {
+                              "include_workdir":  true,
+                              "read_only":  [
+                                                "/usr",
+                                                "/lib",
+                                                "/opt/hermes",
+                                                "/proc",
+                                                "/dev/urandom",
+                                                "/app",
+                                                "/run/nemoclaw/managed-startup-ca-bundle.pem",
+                                                "/run/nemoclaw/managed-startup-runtime.env",
+                                                "/run/nemoclaw/managed-gateway-expected-exit",
+                                                "/etc",
+                                                "/var/log",
+                                                "/var/lib/dpkg",
+                                                "/opt/pai"
+                                            ],
+                              "read_write":  [
+                                                 "/sandbox",
+                                                 "/tmp",
+                                                 "/dev/null",
+                                                 "/dev/pts",
+                                                 "/sandbox/.hermes"
+                                             ]
+                          },
+    "landlock":  {
+                     "compatibility":  "best_effort"
+                 },
+    "network_policies":  {
+                             "managed_inference":  {
+                                                       "binaries":  [
+                                                                        {
+                                                                            "path":  "/usr/local/bin/hermes"
+                                                                        },
+                                                                        {
+                                                                            "path":  "/usr/bin/python3.11"
+                                                                        },
+                                                                        {
+                                                                            "path":  "/opt/hermes/.venv/bin/python"
+                                                                        }
+                                                                    ],
+                                                       "endpoints":  [
+                                                                         {
+                                                                             "enforcement":  "enforce",
+                                                                             "host":  "inference.local",
+                                                                             "port":  443,
+                                                                             "protocol":  "rest",
+                                                                             "rules":  [
+                                                                                           {
+                                                                                               "allow":  {
+                                                                                                             "method":  "POST",
+                                                                                                             "path":  "/v1/chat/completions"
+                                                                                                         }
+                                                                                           },
+                                                                                           {
+                                                                                               "allow":  {
+                                                                                                             "method":  "POST",
+                                                                                                             "path":  "/v1/messages"
+                                                                                                         }
+                                                                                           },
+                                                                                           {
+                                                                                               "allow":  {
+                                                                                                             "method":  "POST",
+                                                                                                             "path":  "/v1/responses"
+                                                                                                         }
+                                                                                           },
+                                                                                           {
+                                                                                               "allow":  {
+                                                                                                             "method":  "POST",
+                                                                                                             "path":  "/v1/completions"
+                                                                                                         }
+                                                                                           },
+                                                                                           {
+                                                                                               "allow":  {
+                                                                                                             "method":  "POST",
+                                                                                                             "path":  "/v1/embeddings"
+                                                                                                         }
+                                                                                           },
+                                                                                           {
+                                                                                               "allow":  {
+                                                                                                             "method":  "GET",
+                                                                                                             "path":  "/v1/models"
+                                                                                                         }
+                                                                                           },
+                                                                                           {
+                                                                                               "allow":  {
+                                                                                                             "method":  "GET",
+                                                                                                             "path":  "/v1/models/**"
+                                                                                                         }
+                                                                                           }
+                                                                                       ]
+                                                                         }
+                                                                     ],
+                                                       "name":  "managed_inference"
+                                                   }
+                         },
+    "process":  {
+                    "run_as_group":  "sandbox",
+                    "run_as_user":  "sandbox"
+                },
+    "version":  1
+}

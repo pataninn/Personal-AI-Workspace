@@ -11,3 +11,4 @@ secrets/
 .personal-ai-workspace-identity
 *.log
 __pycache__/
+.local/

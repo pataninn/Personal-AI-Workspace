@@ -9,3 +9,4 @@ secrets
 docker/certs
 coverage
 *.log
+.local
