@@ -363,7 +363,7 @@ function parseLimits(value: unknown): CommandLimits {
     maxProcesses: numberValue(candidate.maxProcesses),
     memoryBytes: numberValue(candidate.memoryBytes),
     cpuTimeMs: numberValue(candidate.cpuTimeMs),
-    network: 'denied'
+    network: candidate.network === 'approved_registries' ? 'approved_registries' : 'denied'
   };
 }
 

@@ -10,7 +10,7 @@ export interface RuntimeCreateInput {
 }
 
 export interface RuntimeReadyResult {
-  readonly kind: 'fake' | 'direct';
+  readonly kind: 'fake' | 'direct' | 'hermes';
   readonly sandboxReady: true;
 }
 
@@ -42,6 +42,7 @@ export type RuntimeInferenceEvent =
   | { readonly type: 'tool.started'; readonly commandId: string }
   | { readonly type: 'tool.completed'; readonly commandId: string; readonly status: string }
   | { readonly type: 'tool.failed'; readonly commandId: string; readonly status: string }
+  | { readonly type: 'tool.progress'; readonly toolId: string; readonly title: string; readonly status: string }
   | { readonly type: 'changes.proposed'; readonly changes: readonly RuntimeChangeProposal[] }
   | { readonly type: 'completed'; readonly text: string; readonly taskSuggestions?: readonly TaskSuggestionDraft[] }
   | { readonly type: 'failed'; readonly message: string }
@@ -81,6 +82,7 @@ export interface IAgentRuntime {
   readonly prepareDirectRun?: (input: DirectRunPreparationInput) => Promise<RuntimeReadyResult>;
   readonly proposeCommand?: (input: RuntimeCommandProposalInput) => Promise<void>;
   readonly executeCommand?: (input: RuntimeCommandInput) => Promise<CommandResult>;
+  readonly decideCommand?: (input: { readonly runId: string; readonly commandId: string; readonly approved: boolean }) => Promise<void>;
   readonly cancelCommand?: (input: RuntimeCommandCancellationInput) => Promise<void>;
   readonly startRun?: (input: RuntimeRunInput) => AsyncIterable<RuntimeInferenceEvent>;
   readonly cancelRun?: (input: RuntimeRunCancellationInput) => Promise<RuntimeRunCancellationResult>;

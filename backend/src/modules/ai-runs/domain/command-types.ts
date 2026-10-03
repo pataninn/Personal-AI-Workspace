@@ -24,7 +24,7 @@ export interface CommandLimits {
   readonly maxProcesses: number;
   readonly memoryBytes: number;
   readonly cpuTimeMs: number;
-  readonly network: 'denied';
+  readonly network: 'denied' | 'approved_registries';
 }
 
 export const MAX_SANDBOX_COMMANDS_PER_LIST = 100;
@@ -124,7 +124,7 @@ export interface CommandSnapshot {
   readonly classification: CommandClassification;
   readonly decision: CommandDecision;
   readonly status: CommandStatus;
-  readonly runtimeKind: 'fake';
+  readonly runtimeKind: 'fake' | 'hermes';
   readonly limits: CommandLimits;
   readonly result?: CommandResult;
   readonly safeMessage: string;

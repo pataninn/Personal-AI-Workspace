@@ -66,12 +66,32 @@ export function normalizeCommandProposal(input: CommandProposalInput): Normalize
   };
 }
 
+/** ACP command text is never executed by Express; each permission is sensitive. */
+export function normalizeHermesPermission(input: CommandProposalInput): NormalizedCommandProposal {
+  const args = readArguments(input.args);
+  if (input.command !== 'hermes-terminal' || args.length !== 1) throw new SandboxCommandValidationError([{ field: 'command', message: 'Invalid Hermes permission request.' }]);
+  const command = 'hermes-terminal';
+  const cwd = '.';
+  const classification = 'sensitive' as const;
+  const registries = !/[\n;&|><`$]/u.test(args[0] ?? '') && /^\s*(?:(?:npm|pnpm)\s+(?:install|add|ci)|(?:pip|pip3)\s+install)\b/u.test(args[0] ?? '');
+  const summary = registries ? 'Approve one package command with access to its public package registry.' : 'Approve this command once in the isolated Hermes project copy.';
+  const limits: CommandLimits = { ...COMMAND_LIMITS, wallTimeMs: 60_000, idleTimeMs: 60_000, memoryBytes: 2048 * 1024 * 1024, network: registries ? 'approved_registries' : 'denied' };
+  const proposalHash = hash(JSON.stringify({ command, args, cwd, classification, limits }));
+  return { command, args, cwd, classification, summary, proposalHash, limits, createFingerprint: hash(JSON.stringify({ proposalHash, summary })) };
+}
+
 export function summarizeArgument(value: string): string {
   if (isUnsafePath(value) || ENV_ASSIGNMENT_PATTERN.test(value) || SECRET_ASSIGNMENT_PATTERN.test(value) || SECRET_IDENTIFIER_PATTERN.test(value)) {
     return '[redacted path]';
   }
   const bounded = value.length > 64 ? `${value.slice(0, 61)}...` : value;
   return CONTROL_PATTERN.test(bounded) ? '[redacted]' : bounded;
+}
+
+export function summarizeHermesCommand(value: string): string {
+  const relative = value.replace(/\/sandbox\/pai-runs\/pai-[0-9a-f]{15}\/project\/?/gu, './');
+  if (isUnsafePath(relative) || ENV_ASSIGNMENT_PATTERN.test(relative) || SECRET_ASSIGNMENT_PATTERN.test(relative)) return '[redacted command details]';
+  return relative;
 }
 
 export function hashCommandText(value: string): string {

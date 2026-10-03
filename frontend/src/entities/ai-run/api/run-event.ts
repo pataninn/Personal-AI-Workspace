@@ -1,6 +1,6 @@
 import type { AiRunPhase, AiRunStatus } from '@/entities/ai-run/model/types';
 
-export type AiRunEventType = 'run.snapshot' | 'run.started' | 'run.status_changed' | 'assistant.delta' | 'assistant.message.completed' | 'tool.proposed' | 'approval.required' | 'approval.decided' | 'tool.started' | 'tool.completed' | 'tool.failed' | 'run.completed' | 'run.failed' | 'run.blocked' | 'run.cancel_requested' | 'run.cancelled' | 'run.needs_manual_review';
+export type AiRunEventType = 'run.snapshot' | 'run.started' | 'run.status_changed' | 'assistant.delta' | 'assistant.message.completed' | 'tool.proposed' | 'approval.required' | 'approval.decided' | 'tool.started' | 'tool.completed' | 'tool.failed' | 'tool.progress' | 'run.completed' | 'run.failed' | 'run.blocked' | 'run.cancel_requested' | 'run.cancelled' | 'run.needs_manual_review';
 
 export interface AiRunEvent {
   readonly runId: string;
@@ -12,7 +12,7 @@ export interface AiRunEvent {
 const MAX_EVENT_BYTES = 32 * 1024;
 const MAX_DELTA_BYTES = 4 * 1024;
 const EVENT_TYPES = new Set<AiRunEventType>([
-  'run.snapshot', 'run.started', 'run.status_changed', 'assistant.delta', 'assistant.message.completed', 'tool.proposed', 'approval.required', 'approval.decided', 'tool.started', 'tool.completed', 'tool.failed', 'run.completed', 'run.failed', 'run.blocked', 'run.cancel_requested', 'run.cancelled', 'run.needs_manual_review'
+  'run.snapshot', 'run.started', 'run.status_changed', 'assistant.delta', 'assistant.message.completed', 'tool.proposed', 'approval.required', 'approval.decided', 'tool.started', 'tool.completed', 'tool.failed', 'tool.progress', 'run.completed', 'run.failed', 'run.blocked', 'run.cancel_requested', 'run.cancelled', 'run.needs_manual_review'
 ]);
 
 export function parseAiRunEvent(value: unknown): AiRunEvent | null {
@@ -38,6 +38,9 @@ export function parseAiRunEvent(value: unknown): AiRunEvent | null {
 }
 
 function normalizePayload(type: AiRunEventType, payload: Record<string, unknown>): Readonly<Record<string, unknown>> | null {
+  if (type === 'tool.progress') {
+    return { toolId: readString(payload.toolId) ?? '', title: readSafeMessage(payload.title) ?? 'Hermes tool', status: readString(payload.status) ?? 'running' };
+  }
   if (type === 'run.snapshot') {
     const runId = readString(payload.runId);
     const projectId = readString(payload.projectId);
@@ -63,7 +66,7 @@ function normalizePayload(type: AiRunEventType, payload: Record<string, unknown>
       stagingItemCount: nonNegativeNumber(payload.stagingItemCount)
     };
     const runtime = asRecord(payload.runtime);
-    if ((runtime?.kind === 'fake' || runtime?.kind === 'direct') && runtime.sandboxReady === true) {
+    if ((runtime?.kind === 'fake' || runtime?.kind === 'direct' || runtime?.kind === 'hermes') && runtime.sandboxReady === true) {
       result.runtime = { kind: runtime.kind, sandboxReady: true };
     }
     const assistant = asRecord(payload.assistant);

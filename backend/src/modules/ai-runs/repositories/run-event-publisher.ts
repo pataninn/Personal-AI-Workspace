@@ -10,6 +10,7 @@ export type RunEventType =
   | 'tool.started'
   | 'tool.completed'
   | 'tool.failed'
+  | 'tool.progress'
   | 'run.completed'
   | 'run.failed'
   | 'run.blocked'

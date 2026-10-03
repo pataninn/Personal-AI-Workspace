@@ -136,7 +136,7 @@ export class StartAiRunUseCase {
       })) {
         const current = await this.aiRunRepository.findByIdForOwner(running.ownerId, running.id);
         if (!current || isStopState(current.status)) {
-          if (current?.status === 'cancel_requested') {
+          if (current?.status === 'cancel_requested' && event.type === 'cancelled') {
             await this.finishCancellation(current);
           }
           return;
@@ -247,6 +247,10 @@ export class StartAiRunUseCase {
     if (event.type === 'tool.proposed') {
       const projected = await this.projectCommand(run, event);
       return projected ? { assistantText, terminal: false } : { assistantText, terminal: false, suppressed: true };
+    }
+    if (event.type === 'tool.progress') {
+      await this.publishProjected(run.ownerId, run.id, 'tool.progress', { toolId: event.toolId, title: sanitizeAssistantText(event.title, 240), status: event.status });
+      return { assistantText, terminal: false };
     }
     if (event.type === 'approval.required') {
       if (this.aiRunRepository.markWaitingApproval) {

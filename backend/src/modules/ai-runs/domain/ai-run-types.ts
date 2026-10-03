@@ -89,7 +89,7 @@ export interface AiRun {
   readonly cleanup: CleanupStatus;
   readonly providerTransmission: ProviderTransmissionStatus;
   readonly stagingItemCount: number;
-  readonly runtimeKind?: 'fake' | 'direct';
+  readonly runtimeKind?: 'fake' | 'direct' | 'hermes';
   readonly sandboxReady: boolean;
   readonly runtimeReference?: string;
   readonly requestMessageId?: string;
@@ -153,7 +153,7 @@ export interface AiRunSnapshot {
   readonly cleanup: CleanupStatus;
   readonly providerTransmission: ProviderTransmissionStatus;
   readonly stagingItemCount: number;
-  readonly runtime?: { readonly kind: 'fake' | 'direct'; readonly sandboxReady: true };
+  readonly runtime?: { readonly kind: 'fake' | 'direct' | 'hermes'; readonly sandboxReady: true };
   readonly assistant?: {
     readonly messageId?: string;
     readonly complete: boolean;

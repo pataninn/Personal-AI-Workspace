@@ -53,6 +53,7 @@ const EVENT_TYPES: readonly AiRunEvent['type'][] = [
   'assistant.delta',
   'assistant.message.completed',
   'tool.proposed',
+  'tool.progress',
   'approval.required',
   'approval.decided',
   'tool.started',
@@ -345,6 +346,7 @@ function applyEvent(
     setConnection('streaming');
     return;
   }
+  if (event.type === 'tool.progress') { setConnection('streaming'); return; }
   const status = readStatus(event.payload.status);
   if (status) {
     setSnapshotFromStatus(event.payload, status, setSnapshot);

@@ -58,7 +58,7 @@ export interface AiRunSnapshot {
   readonly cleanup: CleanupStatus;
   readonly providerTransmission: ProviderTransmissionStatus;
   readonly stagingItemCount: number;
-  readonly runtime?: { readonly kind: 'fake' | 'direct'; readonly sandboxReady: true };
+  readonly runtime?: { readonly kind: 'fake' | 'direct' | 'hermes'; readonly sandboxReady: true };
   readonly assistant?: {
     readonly messageId?: string;
     readonly complete: boolean;
@@ -124,7 +124,7 @@ export interface SandboxCommandLimits {
   readonly maxProcesses: number;
   readonly memoryBytes: number;
   readonly cpuTimeMs: number;
-  readonly network: 'denied';
+  readonly network: 'denied' | 'approved_registries';
 }
 
 export type SandboxCommandTermination = 'completed' | 'failed' | 'timed_out' | 'output_truncated' | 'cancelled';

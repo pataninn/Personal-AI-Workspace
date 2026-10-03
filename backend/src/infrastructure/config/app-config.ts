@@ -62,7 +62,11 @@ const appEnvironmentSchema = z.object({
   NIM_PROFILE: z.string().min(1).default('nvidia-hosted-nim'),
   NIM_ENDPOINT: z.string().url().default('https://integrate.api.nvidia.com/v1'),
   NIM_MODEL: z.string().default(EXPECTED_NIM_MODEL),
-  AGENT_RUNTIME_MODE: z.enum(['fake', 'direct', 'openshell']).default('direct'),
+  AGENT_RUNTIME_MODE: z.enum(['fake', 'direct', 'openshell', 'hermes']).default('direct'),
+  HERMES_BRIDGE_ENDPOINT: z.string().url().optional(),
+  HERMES_BRIDGE_CA_FILE: z.string().optional(),
+  HERMES_BRIDGE_CERT_FILE: z.string().optional(),
+  HERMES_BRIDGE_KEY_FILE: z.string().optional(),
   STAGING_ROOT: z.string().min(1).default('/var/lib/personal-ai/staging'),
   RECOVERY_ROOT: z.string().min(1).default('/var/lib/personal-ai/recovery'),
   STARTUP_CHECK_TIMEOUT_MS: z
@@ -107,7 +111,11 @@ export interface AppConfig {
   readonly nimProfile: string;
   readonly nimEndpoint: string;
   readonly nimModel: string;
-  readonly agentRuntimeMode: 'fake' | 'direct' | 'openshell';
+  readonly agentRuntimeMode: 'fake' | 'direct' | 'openshell' | 'hermes';
+  readonly hermesBridgeEndpoint?: string;
+  readonly hermesBridgeCaFile?: string;
+  readonly hermesBridgeCertFile?: string;
+  readonly hermesBridgeKeyFile?: string;
   readonly stagingRoot: string;
   readonly recoveryRoot: string;
   readonly startupCheckTimeoutMs: number;
@@ -161,6 +169,9 @@ function validateCrossFieldConfiguration(value: z.infer<typeof appEnvironmentSch
     validateOpenShellConfiguration(value, details);
   }
   validateBridgeConfiguration(value, details);
+  if (value.AGENT_RUNTIME_MODE === 'hermes' && (!value.HERMES_BRIDGE_ENDPOINT || new URL(value.HERMES_BRIDGE_ENDPOINT).protocol !== 'https:' || !value.HERMES_BRIDGE_CA_FILE || !value.HERMES_BRIDGE_CERT_FILE || !value.HERMES_BRIDGE_KEY_FILE)) {
+    details.push({ field: 'HERMES_BRIDGE_ENDPOINT', message: 'Hermes mode requires an HTTPS bridge and dedicated mTLS files.' });
+  }
   if (value.NODE_ENV === 'production' && value.AGENT_RUNTIME_MODE === 'fake') {
     details.push({ field: 'AGENT_RUNTIME_MODE', message: 'Production deployments must use the direct provider or a verified deferred runtime.' });
   }
@@ -258,6 +269,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     nimEndpoint: parsed.data.NIM_ENDPOINT,
     nimModel: parsed.data.NIM_MODEL,
     agentRuntimeMode: parsed.data.AGENT_RUNTIME_MODE,
+    ...(parsed.data.HERMES_BRIDGE_ENDPOINT ? { hermesBridgeEndpoint: parsed.data.HERMES_BRIDGE_ENDPOINT } : {}),
+    ...(parsed.data.HERMES_BRIDGE_CA_FILE ? { hermesBridgeCaFile: parsed.data.HERMES_BRIDGE_CA_FILE } : {}),
+    ...(parsed.data.HERMES_BRIDGE_CERT_FILE ? { hermesBridgeCertFile: parsed.data.HERMES_BRIDGE_CERT_FILE } : {}),
+    ...(parsed.data.HERMES_BRIDGE_KEY_FILE ? { hermesBridgeKeyFile: parsed.data.HERMES_BRIDGE_KEY_FILE } : {}),
     stagingRoot: parsed.data.STAGING_ROOT,
     recoveryRoot: parsed.data.RECOVERY_ROOT,
     startupCheckTimeoutMs: parsed.data.STARTUP_CHECK_TIMEOUT_MS,

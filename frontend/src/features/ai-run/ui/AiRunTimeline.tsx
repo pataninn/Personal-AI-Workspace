@@ -5,6 +5,8 @@ import type { ConversationHistoryResponse } from '@/entities/conversation';
 import { Alert, Button, Card, Spinner } from '@/shared/ui';
 
 import { useAiRunTimeline } from '@/features/ai-run/model/use-ai-run-timeline';
+import { CommandExecutionSurface } from '@/features/ai-run/ui/CommandExecutionSurface';
+import { HermesToolActivity } from '@/features/ai-run/ui/HermesToolActivity';
 
 interface AiRunTimelineProps {
   readonly compact?: boolean;
@@ -58,10 +60,12 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
       <Card className="ai-run-timeline-card">
         <h3 ref={headingRef} id="ai-run-timeline-heading" data-testid="ai-run-timeline-heading" tabIndex={-1}>{terminalHeading(timeline.snapshot.status, reviewRequired)}</h3>
         {!compact ? <Alert tone="info" data-testid="ai-run-provider-notice">
-          <p>{DIRECT_PROVIDER_NOTICE}</p>
+          <p>{timeline.snapshot.runtime?.kind === 'hermes' ? 'Hermes works in an isolated project copy using the selected context. Completed file changes are validated and recorded in File history.' : DIRECT_PROVIDER_NOTICE}</p>
           {timeline.snapshot.providerApprovalMode === 'remembered_permission' ? <p data-testid="ai-run-remembered-permission-notice">This run was approved by a saved project permission. Revoking it stops runs that have not started; a request already in progress or sent cannot be recalled.</p> : null}
           {manifest ? <p className="field-help">Provider: {manifest.provider}. Model: {formatModel(manifest.model)}. Selected files: {manifest.itemCount}. Recent messages: {manifest.messageCount}.</p> : null}
         </Alert> : null}
+        {timeline.snapshot.runtime?.kind === 'hermes' ? <HermesToolActivity events={timeline.events} /> : null}
+        {timeline.snapshot.runtime?.kind === 'hermes' ? <CommandExecutionSurface run={timeline.snapshot} readOnly={disabled} /> : null}
         {timeline.snapshot.status !== 'failed' ? <div
           className="ai-run-timeline-status"
           data-testid="ai-run-timeline-status"
@@ -108,7 +112,7 @@ function statusLabel(status: AiRunSnapshot['status'], connection: ReturnType<typ
     return 'Assistant is working...';
   }
   if (status === 'waiting_approval') {
-    return 'The assistant is waiting for a provider update.';
+    return 'The assistant is waiting for your command decision.';
   }
   if (status === 'cancel_requested') {
     return 'Stopping assistant run...';

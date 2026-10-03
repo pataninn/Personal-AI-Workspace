@@ -17,7 +17,7 @@ export interface StartupCheckOptions {
   readonly providerCheck?: () => Promise<void>;
   readonly nimProfile: string;
   readonly nimModel: string;
-  readonly agentRuntimeMode?: 'fake' | 'direct' | 'openshell';
+  readonly agentRuntimeMode?: 'fake' | 'direct' | 'openshell' | 'hermes';
 }
 
 async function checkDatabase(dataSource: DataSource): Promise<StartupCheckFailure | null> {
@@ -165,7 +165,7 @@ function externalStartupChecks(options: StartupCheckOptions): readonly Promise<S
   if (options.agentRuntimeMode === 'fake') {
     return [];
   }
-  if (options.agentRuntimeMode === 'direct') {
+  if (options.agentRuntimeMode === 'direct' || options.agentRuntimeMode === 'hermes') {
     return [options.providerCheck ? checkDirectProvider(options.providerCheck) : Promise.resolve({ check: 'nim', code: 'NIM_PROVIDER_UNAVAILABLE', message: 'The configured NVIDIA hosted provider is unavailable.' })];
   }
   if (options.agentRuntimeMode === 'openshell') {

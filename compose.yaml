@@ -22,6 +22,8 @@ services:
     restart: unless-stopped
 
   personal-ai-app:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     build:
       context: .
       dockerfile: docker/app.Dockerfile
@@ -49,6 +51,10 @@ services:
       NIM_ENDPOINT: ${NIM_ENDPOINT:-https://integrate.api.nvidia.com/v1}
       NIM_MODEL: ${NIM_MODEL:?NIM_MODEL must be set in .env}
       AGENT_RUNTIME_MODE: ${AGENT_RUNTIME_MODE:-direct}
+      HERMES_BRIDGE_ENDPOINT: ${HERMES_BRIDGE_ENDPOINT:-https://host.docker.internal:17871}
+      HERMES_BRIDGE_CA_FILE: /run/hermes/ca.crt
+      HERMES_BRIDGE_CERT_FILE: /run/hermes/client.crt
+      HERMES_BRIDGE_KEY_FILE: /run/hermes/client.key
       RECOVERY_ROOT: /var/lib/personal-ai/recovery
       LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
@@ -75,6 +81,10 @@ services:
       - type: volume
         source: pai_recovery
         target: /var/lib/personal-ai/recovery
+      - type: bind
+        source: ./secrets/hermes-bridge
+        target: /run/hermes
+        read_only: true
       - type: bind
         source: ${TLS_CERT_DIR:?TLS_CERT_DIR must contain operator-provisioned TLS files}
         target: /run/tls

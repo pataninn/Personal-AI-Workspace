@@ -6,7 +6,7 @@ import {
   SandboxCommandRunNotReadyError,
   SandboxCommandValidationError
 } from '@/modules/ai-runs/domain/command-errors';
-import { normalizeCommandProposal, summarizeArgument } from '@/modules/ai-runs/domain/command-policy';
+import { normalizeCommandProposal, normalizeHermesPermission, summarizeArgument, summarizeHermesCommand } from '@/modules/ai-runs/domain/command-policy';
 import type {
   CommandResult,
   CommandResultUpdate,
@@ -61,7 +61,9 @@ export class ProposeSandboxCommandUseCase {
     if (!this.agentRuntime.proposeCommand) {
       throw new AiRunRuntimeUnavailableError();
     }
-    const proposal = normalizeCommandProposal({ command: input.command, args: input.args, cwd: input.cwd, summary: input.summary });
+    const proposal = run.runtimeKind === 'hermes'
+      ? normalizeHermesPermission({ command: input.command, args: input.args, cwd: input.cwd, summary: input.summary })
+      : normalizeCommandProposal({ command: input.command, args: input.args, cwd: input.cwd, summary: input.summary });
     const idempotencyKey = validateIdempotencyKey(input.idempotencyKey);
     const record: CreateSandboxCommandRecord = {
       ownerId: input.ownerId,
@@ -165,6 +167,9 @@ export class DecideSandboxCommandUseCase {
     const requestFingerprint = hashText(JSON.stringify({ proposalHash, decision }));
     await assertActiveProject(this.projectRepository, input.ownerId, run.projectId);
     const result = await this.commandRepository.recordDecision({ ownerId: input.ownerId, runId: input.runId, commandId: command.id, proposalHash, decision, idempotencyKey, requestFingerprint });
+    if (!result.replayed && decision === 'reject' && this.agentRuntime.decideCommand) {
+      await this.agentRuntime.decideCommand({ runId: run.id, commandId: command.id, approved: false });
+    }
     if (result.replayed || decision === 'reject') {
       return result.resource;
     }
@@ -209,7 +214,7 @@ export class DecideSandboxCommandUseCase {
       return latest ?? command;
     } catch (error: unknown) {
       if (error instanceof AiRunRuntimeUnavailableError) {
-        return this.persistExecutionFailure(command, runId, 'failed', 'The private sandbox was unavailable. No command was run.');
+        return this.persistExecutionFailure(command, runId, 'review_required', 'The private sandbox result could not be confirmed. Refresh command status before retrying.');
       }
       return this.persistExecutionFailure(command, runId, 'review_required', 'Command status could not be confirmed. Refresh command status before retrying.');
     }
@@ -290,6 +295,9 @@ export class CancelSandboxCommandUseCase {
       throw new SandboxCommandReviewRequiredError();
     }
     try {
+      if (run.runtimeKind === 'hermes' && this.aiRunRepository.requestCancellation) {
+        await this.aiRunRepository.requestCancellation({ ownerId: input.ownerId, runId: input.runId, idempotencyKey: `command-cancel-${input.commandId}`, requestFingerprint: hashText(JSON.stringify({ action: 'cancel', commandId: input.commandId })) });
+      }
       await this.agentRuntime.cancelCommand({ runId: input.runId, commandId: input.commandId });
     } catch (error: unknown) {
       if (error instanceof AiRunRuntimeUnavailableError) {
@@ -299,6 +307,7 @@ export class CancelSandboxCommandUseCase {
       await this.persistCancellationReview(input.ownerId, input.runId, input.commandId);
       throw new SandboxCommandReviewRequiredError();
     }
+    if (run.runtimeKind === 'hermes') return this.commandRepository.saveResult({ ownerId: input.ownerId, runId: input.runId, commandId: input.commandId, status: 'cancelled', safeMessage: 'Hermes run and command cancelled. No generated changes were applied.' });
     return (await this.commandRepository.findByIdForOwner(input.ownerId, input.runId, input.commandId)) ?? result.resource;
   }
 
@@ -319,12 +328,12 @@ export function toCommandSnapshot(command: SandboxCommand): CommandSnapshot {
     command: command.command,
     summary: command.summary,
     argumentCount: command.args.length,
-    argumentSummaries: command.args.map(summarizeArgument),
+    argumentSummaries: command.args.map(command.command === 'hermes-terminal' ? summarizeHermesCommand : summarizeArgument),
     cwd: command.cwd,
     classification: command.classification,
     decision: command.decision,
     status: command.status,
-    runtimeKind: 'fake',
+    runtimeKind: command.command === 'hermes-terminal' ? 'hermes' : 'fake',
     limits: command.limits,
     ...(command.result ? { result: sanitizeCommandResult(command.result, command.limits) } : {}),
     safeMessage: command.safeMessage,

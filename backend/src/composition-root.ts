@@ -19,6 +19,9 @@ import { WorkspaceGatewayAdapter } from '@/infrastructure/workspace/workspace-ga
 import { readSecretFile } from '@/infrastructure/auth/read-secret-file';
 import { NvidiaHostedNimProvider } from '@/infrastructure/ai-provider/nvidia-hosted-nim-provider';
 import { DirectProviderAgentRuntime } from '@/infrastructure/ai-provider/direct-provider-agent-runtime';
+import { HermesAgentRuntime } from '@/infrastructure/hermes/hermes-agent-runtime';
+import { HermesBridgeClient } from '@/infrastructure/hermes/hermes-bridge-client';
+import { ApprovedContextReader } from '@/infrastructure/hermes/approved-context-reader';
 import type { IModelProvider } from '@/modules/ai-runs/repositories/model-provider';
 import type { IAgentRuntime } from '@/modules/ai-runs/repositories/agent-runtime';
 import { OpenShellGatewayClient } from '@/infrastructure/sandbox/openshell-gateway-client';
@@ -83,7 +86,8 @@ export async function createApplication(
       nimProfile: config.nimProfile,
       nimModel: config.nimModel,
       agentRuntimeMode: config.agentRuntimeMode,
-      ...(modelProvider ? { providerCheck: () => modelProvider.checkAvailability() } : {})
+      ...(modelProvider ? { providerCheck: () => modelProvider.checkAvailability() } : {}),
+      ...(config.agentRuntimeMode === 'hermes' ? { providerCheck: async () => { await createHermesBridge(config).call('probe'); } } : {})
     });
     const userRepository = new TypeOrmUserRepository(dataSource);
     const sessionRepository = new TypeOrmSessionRepository(dataSource);
@@ -301,6 +305,9 @@ function createAgentRuntime(
   conversationRepository: TypeOrmConversationRepository,
   projectFactRepository: TypeOrmProjectFactRepository
 ): IAgentRuntime {
+  if (config.agentRuntimeMode === 'hermes') {
+    return new HermesAgentRuntime(createHermesBridge(config), new ApprovedContextReader(workspaceGateway, projectFactRepository));
+  }
   if (config.agentRuntimeMode === 'fake') {
     return new FakeAgentRuntime();
   }
@@ -319,4 +326,8 @@ function createAgentRuntime(
 
 async function readProviderKey(environment: NodeJS.ProcessEnv): Promise<string> {
   return readSecretFile(environment.NVIDIA_API_KEY_FILE);
+}
+
+function createHermesBridge(config: AppConfig): HermesBridgeClient {
+  return new HermesBridgeClient({ endpoint: config.hermesBridgeEndpoint ?? '', caFile: config.hermesBridgeCaFile ?? '', certFile: config.hermesBridgeCertFile ?? '', keyFile: config.hermesBridgeKeyFile ?? '' });
 }

@@ -582,7 +582,7 @@ function toAiRun(row: AiRunRow): AiRun {
     cleanup: row.cleanup,
     providerTransmission: row.provider_transmission,
     stagingItemCount: row.staging_item_count,
-    ...(row.runtime_kind === 'fake' ? { runtimeKind: 'fake' as const } : row.runtime_kind === 'direct' ? { runtimeKind: 'direct' as const } : {}),
+    ...(row.runtime_kind === 'fake' ? { runtimeKind: 'fake' as const } : row.runtime_kind === 'direct' ? { runtimeKind: 'direct' as const } : row.runtime_kind === 'hermes' ? { runtimeKind: 'hermes' as const } : {}),
     sandboxReady: row.sandbox_ready,
     ...(row.runtime_reference ? { runtimeReference: row.runtime_reference } : {}),
     ...(row.request_message_id ? { requestMessageId: row.request_message_id } : {}),

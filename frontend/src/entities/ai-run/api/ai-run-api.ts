@@ -473,7 +473,7 @@ function normalizeRuntime(value: unknown, runtimeKind: unknown, sandboxReady: un
   const record = asRecord(value);
   const kind = record?.kind ?? runtimeKind;
   const ready = record?.sandboxReady ?? sandboxReady;
-  return (kind === 'fake' || kind === 'direct') && ready === true ? { kind, sandboxReady: true } : undefined;
+  return (kind === 'fake' || kind === 'direct' || kind === 'hermes') && ready === true ? { kind, sandboxReady: true } : undefined;
 }
 
 function normalizeAssistant(value: unknown): AiRunSnapshot['assistant'] | undefined {
