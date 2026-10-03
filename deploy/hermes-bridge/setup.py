@@ -73,6 +73,15 @@ def main():
     source = Path(__file__).resolve().parent
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     STATE.chmod(0o700)
+    source_hash = hashlib.sha256()
+    for file in sorted(source.rglob('*')):
+        if file.is_file() and '__pycache__' not in file.parts:
+            source_hash.update(str(file.relative_to(source)).encode())
+            source_hash.update(file.read_bytes())
+    previous = json.loads((STATE / 'profile.json').read_text()) if (STATE / 'profile.json').exists() else {}
+    changed = previous.get('bridgeSha256') != source_hash.hexdigest() or previous.get('image') != sys.argv[2]
+    if changed and any((STATE / 'runs').glob('pai-*/ledger.json')):
+        raise RuntimeError('Finish or cancel active Hermes runs before updating the bridge.')
     deployed = STATE / 'bridge'
     shutil.copytree(source, deployed, dirs_exist_ok=True, ignore=shutil.ignore_patterns('__pycache__'))
     destination = Path(sys.argv[1]).resolve()
@@ -80,11 +89,15 @@ def main():
     if '@sha256:' not in image and not image.startswith('sha256:'):
         raise RuntimeError('A digest-pinned application Hermes image is required')
     policy = source / 'policy.json'
-    receipt = {'gateway': GATEWAY, 'image': image, 'policySha256': hashlib.sha256(policy.read_bytes()).hexdigest(), 'openshellSha256': hashlib.sha256(Path(CLI).read_bytes()).hexdigest(), 'hermesVersion': '0.20.6'}
+    cli_hash = hashlib.sha256(Path(CLI).read_bytes()).hexdigest()
+    if cli_hash != '24e85062073d512d1951c76cd3890b7bce1ab01cc36a08f88b3b43c067a402da':
+        raise RuntimeError('The OpenShell binary differs from the pinned local release.')
+    receipt = {'gateway': GATEWAY, 'image': image, 'policySha256': hashlib.sha256(policy.read_bytes()).hexdigest(), 'openshellSha256': cli_hash, 'hermesVersion': '0.20.6', 'bridgeSha256': source_hash.hexdigest()}
     write_private(STATE / 'profile.json', json.dumps(receipt))
     certificates(destination)
     services(deployed)
-    subprocess.run(['systemctl', '--user', 'restart', 'personal-ai-hermes-bridge.service'], check=True)
+    if changed:
+        subprocess.run(['systemctl', '--user', 'restart', 'personal-ai-hermes-bridge.service'], check=True)
     print(json.dumps(receipt))
 
 

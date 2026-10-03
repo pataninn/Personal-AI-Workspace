@@ -1,10 +1,53 @@
 # Personal AI Workspace
 
-This repository contains the MVP1 local Personal AI Workspace. Projects,
-conversations, per-run provider consent, bounded inspection, live SSE, and
-reviewed change application are implemented. The MVP1 runtime is a direct
-server-side NVIDIA NIM adapter. OpenShell, Hermes, disposable sandboxes, and
-arbitrary command execution remain deferred runtime options.
+This repository contains the local Personal AI Workspace with projects,
+conversations, selected context, memory, tasks, live updates, and file history.
+Hermes now works in disposable OpenShell project copies using NVIDIA NIM.
+The direct server-side NIM adapter remains available as a fallback.
+
+## Start with Hermes
+
+This machine uses the installed WSL Ubuntu OpenShell 0.0.116 gateway
+`nemoclaw-18080` and digest-pinned Hermes 0.20.6 base image. The gateway's
+`compatible-endpoint` provider already holds the NVIDIA credential. This helper
+does not install Hermes or provision a fresh gateway on another machine.
+
+From this repository, with Docker Desktop running:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start-hermes.ps1
+```
+
+After a successful build, use `-SkipBuild` for a normal restart. Open
+`https://127.0.0.1:8443/` and refresh the browser after an update.
+
+The helper starts supervised WSL services, generates dedicated bridge TLS
+credentials under ignored `secrets/hermes-bridge`, sets `AGENT_RUNTIME_MODE=hermes`
+in root `.env`, and starts Compose with the existing volumes. Hermes never mounts
+the authoritative workspace or receives the NVIDIA key. It gets only approved,
+bounded, redacted selected files, facts, and chat references.
+
+Select the files needed for each request in **Context**. New generated files
+must also be selected before asking Hermes to edit them in a later run. Standard
+`SKILL.md` files guide frontend design, editing existing projects, and planning.
+Tool activity and command approvals appear in the chat. Routine checks run
+automatically; installs, destructive actions, and other commands ask first.
+Approved npm/pnpm package commands can read `registry.npmjs.org`; approved pip
+commands can read `pypi.org` and `files.pythonhosted.org`. Other extra destinations
+remain blocked. Registry grants are removed after the command finishes; cancelling
+a command stops the whole Hermes run. Installed packages and build artifacts stay
+in the disposable copy; only bounded source files are promoted.
+
+Successful generated edits pass the existing validation and source-hash checks
+before application, with backups and File history. Incomplete runs apply no
+generated changes. An interrupted bridge run remains failed and cannot export
+files; its saved ownership ledger permits scoped cleanup. Durable restart/resume,
+broader network approval, and production runtime hardening remain future work.
+
+To fall back, set `AGENT_RUNTIME_MODE=direct` in `.env`, then run
+`docker compose -p personal-ai-workspace up -d --no-build --wait`. Direct mode
+uses the key file configured by `NVIDIA_API_KEY_FILE`. Changing that file does not
+update the separately configured OpenShell provider credential.
 
 ## Local prerequisites
 
@@ -68,8 +111,8 @@ openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 30 `
 Start Compose from the application repository:
 
 ```powershell
-pnpm compose:config
-docker compose --project-name personal-ai-workspace-mvp2 up --build -d
+docker compose --project-name personal-ai-workspace config --quiet
+docker compose --project-name personal-ai-workspace up --build -d
 ```
 
 Open <code>https://127.0.0.1:8443/</code>. A temporary self-signed certificate needs local
@@ -77,15 +120,16 @@ browser trust or a one-time browser exception. Check service health and the
 backend readiness endpoint without printing the resolved Compose configuration:
 
 ```powershell
-docker compose --project-name personal-ai-workspace-mvp2 ps
+docker compose --project-name personal-ai-workspace ps
 curl.exe -k https://127.0.0.1:8443/ready
 ```
 
 Create the project in the UI with relative root <code>.</code> to use the complete
 folder configured by <code>WORKSPACE_HOST_ROOT</code>. Workspace inspection still blocks <code>.git</code>, <code>.env*</code>,
 <code>secrets</code>, backup/audit/internal paths, private keys, links, and other protected
-paths. File changes continue to require normal proposal review, current hashes,
-pre-destructive backups, and atomic promotion.
+paths. File changes require validation, current hashes, pre-destructive backups,
+and atomic promotion. The configured file approval mode controls review versus
+automatic application.
 
 When preparing an AI run, use <strong>Choose context</strong> to browse or search project
 files. Search ranks phrase and term matches deterministically, reports when its bounded
@@ -119,8 +163,8 @@ location, then export PostgreSQL:
 ```powershell
 $privateRoot = Join-Path $env:LOCALAPPDATA 'Personal-AI-Workspace\private'
 $databaseBackup = Join-Path $privateRoot 'database-backup.sql'
-docker compose --project-name personal-ai-workspace-mvp2 exec -T postgres pg_dump -U pai_app -d personal_ai > $databaseBackup
-docker compose --project-name personal-ai-workspace-mvp2 down
+docker compose --project-name personal-ai-workspace exec -T postgres pg_dump -U pai_app -d personal_ai > $databaseBackup
+docker compose --project-name personal-ai-workspace down
 ```
 
 Keep the SQL file private and retain the <code>pai_mvp2_recovery</code> volume with the backup.
@@ -137,11 +181,11 @@ pnpm typecheck
 pnpm test
 pnpm test:integration
 pnpm test:boundaries
-pnpm compose:config
+docker compose --project-name personal-ai-workspace config --quiet
 docker compose --project-name personal-ai-workspace-mvp2 up --build
 ```
 
-<code>pnpm compose:config</code> uses the repository's <code>.env</code> and validates
+<code>docker compose --project-name personal-ai-workspace config --quiet</code> uses the repository's <code>.env</code> and validates
 Compose without printing resolved settings. The live Compose/NIM check needs
 Docker Desktop, operator-provisioned TLS files, the workspace identity marker,
 and a valid NVIDIA credential. Application startup fails closed until
