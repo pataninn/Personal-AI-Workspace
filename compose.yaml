@@ -46,11 +46,10 @@ services:
       WORKSPACE_IDENTITY: ${WORKSPACE_IDENTITY:?WORKSPACE_IDENTITY must match the preflight marker}
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be a long random value}
       LOCAL_USER_PASSWORD_FILE: /run/secrets/local_user_password
-      NVIDIA_API_KEY_FILE: /run/secrets/nvidia_api_key
-      NIM_PROFILE: ${NIM_PROFILE:-nvidia-hosted-nim}
-      NIM_ENDPOINT: ${NIM_ENDPOINT:-https://integrate.api.nvidia.com/v1}
+      NIM_PROFILE: ${NIM_PROFILE:-nebius-token-factory}
+      NIM_ENDPOINT: ${NIM_ENDPOINT:-https://api.tokenfactory.nebius.com/v1}
       NIM_MODEL: ${NIM_MODEL:?NIM_MODEL must be set in .env}
-      AGENT_RUNTIME_MODE: ${AGENT_RUNTIME_MODE:-direct}
+      AGENT_RUNTIME_MODE: ${AGENT_RUNTIME_MODE:-hermes}
       HERMES_BRIDGE_ENDPOINT: ${HERMES_BRIDGE_ENDPOINT:-https://host.docker.internal:17871}
       HERMES_BRIDGE_CA_FILE: /run/hermes/ca.crt
       HERMES_BRIDGE_CERT_FILE: /run/hermes/client.crt
@@ -65,11 +64,6 @@ services:
     secrets:
       - source: local_user_password
         target: local_user_password
-        uid: "10001"
-        gid: "10001"
-        mode: 0440
-      - source: nvidia_api_key
-        target: nvidia_api_key
         uid: "10001"
         gid: "10001"
         mode: 0440
@@ -125,5 +119,3 @@ volumes:
 secrets:
   local_user_password:
     file: ${LOCAL_USER_PASSWORD_FILE:-./secrets/local_user_password}
-  nvidia_api_key:
-    file: ${NVIDIA_API_KEY_FILE:?NVIDIA_API_KEY_FILE must point to a private local secret file}

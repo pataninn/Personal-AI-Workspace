@@ -17,10 +17,12 @@ try {
     if (-not $SkipBuild) {
         docker build -f docker/hermes.Dockerfile -t personal-ai-hermes:0.20.6-pai1 .
         if ($LASTEXITCODE -ne 0) { throw 'The pinned Hermes image could not be built.' }
+        docker compose -p personal-ai-workspace build personal-ai-app
+        if ($LASTEXITCODE -ne 0) { throw 'The app image could not be built. The gateway configuration was not changed.' }
     }
     $imageDigest = (docker image inspect personal-ai-hermes:0.20.6-pai1 --format '{{.Id}}').Trim()
     if ($LASTEXITCODE -ne 0 -or $imageDigest -notmatch '^sha256:[0-9a-f]{64}$') { throw 'The pinned Hermes image is unavailable.' }
-    wsl -d $Distribution -- python3 "$wslRepository/deploy/hermes-bridge/setup.py" "$wslRepository/secrets/hermes-bridge" $imageDigest
+    wsl -d $Distribution -- python3 "$wslRepository/deploy/hermes-bridge/setup.py" "$wslRepository/secrets/hermes-bridge" $imageDigest "$wslRepository/.env"
     if ($LASTEXITCODE -ne 0) { throw 'Hermes bridge startup failed. Check the installed OpenShell gateway in WSL.' }
 
     $environmentText = [IO.File]::ReadAllText($environmentFile)
@@ -29,8 +31,7 @@ try {
     } else { $environmentText = $environmentText.TrimEnd() + "`nAGENT_RUNTIME_MODE=hermes`n" }
     [IO.File]::WriteAllText($environmentFile, $environmentText, [Text.UTF8Encoding]::new($false))
 
-    if ($SkipBuild) { docker compose -p personal-ai-workspace up -d --no-build --wait --wait-timeout 180 }
-    else { docker compose -p personal-ai-workspace up -d --build --wait --wait-timeout 180 }
+    docker compose -p personal-ai-workspace up -d --no-build --wait --wait-timeout 180
     if ($LASTEXITCODE -ne 0) { throw 'The app did not become healthy. Check Docker Compose status.' }
     Write-Host 'Hermes is ready: https://127.0.0.1:8443/'
 } finally { Pop-Location }

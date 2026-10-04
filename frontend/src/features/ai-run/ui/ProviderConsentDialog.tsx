@@ -1,5 +1,6 @@
 import { Alert, AlertDialogContent, AlertDialogDescription, AlertDialogRoot, AlertDialogTitle, Button, Spinner } from '@/shared/ui';
 import { DEFAULT_MODEL, REQUEST_ONLY_NOTICE, type EgressManifest } from '@/entities/ai-run';
+import { ProviderTerms } from '@/features/ai-run/ui/ProviderTerms';
 
 interface ProviderConsentDialogProps {
   readonly manifest: EgressManifest | null;
@@ -65,9 +66,9 @@ export function ProviderConsentDialog({
         }}
         onCloseAutoFocus={onCloseAutoFocus}
       >
-        <AlertDialogTitle data-testid="provider-consent-title">Send selected context to NVIDIA NIM?</AlertDialogTitle>
+        <AlertDialogTitle data-testid="provider-consent-title">Send selected context to {manifest.provider}?</AlertDialogTitle>
         <AlertDialogDescription data-testid="provider-consent-description">
-          To answer this request, the approved context below will be sent server-side to NVIDIA&apos;s hosted NIM service. Review the exact scope before deciding.
+          To answer this request, the approved context below will be sent server-side to {manifest.provider}. Review the exact scope before deciding.
         </AlertDialogDescription>
 
         <Alert tone="warning" data-testid="provider-consent-no-staging-notice">
@@ -75,12 +76,11 @@ export function ProviderConsentDialog({
         </Alert>
 
         <Alert tone="warning" data-testid="provider-consent-sensitive-classification">
-          <strong>Sensitive action:</strong> approving sends the request and selected context to NVIDIA&apos;s hosted service. Choosing files, messages, or facts is a safe local step; it does not send them by itself.
+          <strong>Sensitive action:</strong> approving sends the request and selected context to {manifest.provider}. Choosing files, messages, or facts is a safe local step; it does not send them by itself.
         </Alert>
 
         <div className="provider-consent-terms" data-testid="provider-consent-provider-terms">
-          <p>NVIDIA API Catalog trial terms require you to have rights to submit content, prohibit confidential or sensitive data, and allow submitted content to be reviewed and used to improve services. Do not send confidential, regulated, personal, or restricted information. Other NVIDIA subscriptions may have different terms.</p>
-          <a href="https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf" target="_blank" rel="noreferrer">Read NVIDIA API Trial Terms</a>
+          <ProviderTerms providerProfile={manifest.providerProfile} />
         </div>
 
         <div className="provider-consent-manifest" data-testid="provider-consent-manifest">

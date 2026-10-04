@@ -400,8 +400,8 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
     <>
       <section className="ai-run-entry" data-testid="ai-run-entry" aria-describedby={disabled ? archivedDescription : undefined}>
         <form data-testid="ai-run-form" onSubmit={(event) => { event.preventDefault(); void beginRun(); }}>
-          <p className="field-help" id="ai-run-help">Ask AI first shows what will be sent to NVIDIA NIM. Saving a message does not start a run.</p>
-          <p className="field-help" data-testid="ai-run-approval-classification"><strong>Safe:</strong> choosing project context only prepares a local disclosure. <strong>Sensitive:</strong> sending it to NVIDIA needs your one-time approval or a saved provider permission. File changes and commands always need separate approval.</p>
+          <p className="field-help" id="ai-run-help">Ask AI first shows what will be sent to your model provider. Saving a message does not start a run.</p>
+          <p className="field-help" data-testid="ai-run-approval-classification"><strong>Safe:</strong> choosing project context only prepares a local disclosure. <strong>Sensitive:</strong> sending it to your model provider needs your one-time approval or a saved provider permission. File changes and commands always need separate approval.</p>
           <ContextScopePicker
             projectId={projectId}
             selectedPaths={selectedPaths}
@@ -526,10 +526,10 @@ function mapIntentError(error: unknown): string {
       return 'This project is archived. AI runs are read-only.';
     }
     if (error.code === 'RUNTIME_UNAVAILABLE') {
-      return 'NVIDIA NIM is unavailable. No provider request was started. No file changes were made. Try again when provider setup is available.';
+      return 'The model provider is unavailable. No provider request was started. No file changes were made. Try again when provider setup is available.';
     }
     if (error.code === 'NIM_UNAVAILABLE') {
-      return 'NVIDIA NIM is unavailable. No provider request was started. No file changes were made. Try again when provider setup is available.';
+      return 'The model provider is unavailable. No provider request was started. No file changes were made. Try again when provider setup is available.';
     }
     if (error.code === 'VALIDATION_ERROR') {
       const requestDetail = error.details.find((detail) => detail.field === 'request');
@@ -546,13 +546,13 @@ function mapDecisionError(error: unknown): string {
     return 'The approved project context changed. Review a fresh provider disclosure before trying again.';
   }
   if (error instanceof ApiClientError && error.code === 'NIM_UNAVAILABLE') {
-    return 'NVIDIA NIM is unavailable. No provider request was started. No file changes were made. Try again when provider setup is available.';
+    return 'The model provider is unavailable. No provider request was started. No file changes were made. Try again when provider setup is available.';
   }
   if (error instanceof ApiClientError && error.code === 'RUNTIME_UNAVAILABLE') {
-    return 'NVIDIA NIM is unavailable. No provider request was started. No file changes were made. Try again when provider setup is available.';
+    return 'The model provider is unavailable. No provider request was started. No file changes were made. Try again when provider setup is available.';
   }
   if (error instanceof ApiClientError && error.code === 'STAGING_FAILED') {
-    return 'The approved context could not be prepared for NVIDIA NIM. No provider request was started.';
+    return 'The approved context could not be prepared for the model provider. No provider request was started.';
   }
   if (error instanceof ApiClientError && error.code === 'RUN_REVIEW_REQUIRED') {
     return AMBIGUOUS_DECISION_ERROR;

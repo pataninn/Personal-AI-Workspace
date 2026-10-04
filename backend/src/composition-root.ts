@@ -87,7 +87,7 @@ export async function createApplication(
       nimModel: config.nimModel,
       agentRuntimeMode: config.agentRuntimeMode,
       ...(modelProvider ? { providerCheck: () => modelProvider.checkAvailability() } : {}),
-      ...(config.agentRuntimeMode === 'hermes' ? { providerCheck: async () => { await createHermesBridge(config).call('probe'); } } : {})
+      ...(config.agentRuntimeMode === 'hermes' ? { providerCheck: async () => { await createHermesBridge(config).call('probe', undefined, undefined, { providerProfile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint }); } } : {})
     });
     const userRepository = new TypeOrmUserRepository(dataSource);
     const sessionRepository = new TypeOrmSessionRepository(dataSource);
@@ -307,7 +307,10 @@ function createAgentRuntime(
   logger: AppLogger
 ): IAgentRuntime {
   if (config.agentRuntimeMode === 'hermes') {
-    return new HermesAgentRuntime(createHermesBridge(config), new ApprovedContextReader(workspaceGateway, projectFactRepository), (detail) => logger.error(detail, 'Hermes runtime operation could not be confirmed.'));
+    return new HermesAgentRuntime(createHermesBridge(config), new ApprovedContextReader(workspaceGateway, projectFactRepository), {
+      providerProfile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint,
+      diagnose: (detail) => logger.error(detail, 'Hermes runtime operation could not be confirmed.')
+    });
   }
   if (config.agentRuntimeMode === 'fake') {
     return new FakeAgentRuntime();

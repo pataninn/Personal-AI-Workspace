@@ -90,7 +90,7 @@ export function ProviderPermissionManager({ projectId, csrfToken, onListStateCha
           })}
         </ul>
         <p className="field-help" data-testid="provider-permission-revocation-note">Revoking returns approved runs that have not started to the review step. A request already in progress or sent cannot be recalled.</p>
-        <p className="field-help">NVIDIA API Catalog trial terms prohibit confidential or sensitive content. <a href="https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf" target="_blank" rel="noreferrer">Read the terms</a>.</p>
+        <p className="field-help">Permissions apply only to the listed provider and model. Review that provider&apos;s terms in its approval dialog before granting permission.</p>
         <Button type="button" variant="secondary" disabled={loading} onClick={() => { void refresh(); }}>Refresh permissions</Button>
       </details>
     </section>
@@ -98,6 +98,7 @@ export function ProviderPermissionManager({ projectId, csrfToken, onListStateCha
 }
 
 function providerLabel(profile: string): string {
+  if (profile === 'nebius-token-factory') return 'Nebius Token Factory';
   return profile === 'nvidia-hosted-nim' ? 'NVIDIA hosted NIM' : profile;
 }
 

@@ -111,7 +111,7 @@ async function checkNim(options: StartupCheckOptions): Promise<StartupCheckFailu
     return {
       check: 'nim',
       code: 'NIM_PROVIDER_UNAVAILABLE',
-      message: 'The configured NVIDIA hosted provider is unavailable.'
+      message: 'The configured model provider or Hermes gateway route is unavailable.'
     };
   }
   try {
@@ -144,7 +144,7 @@ async function checkDirectProvider(check: () => Promise<void>): Promise<StartupC
     return {
       check: 'nim',
       code: 'NIM_PROVIDER_UNAVAILABLE',
-      message: 'The configured NVIDIA hosted provider is unavailable.'
+      message: 'The configured model provider or Hermes gateway route is unavailable.'
     };
   }
 }
@@ -166,7 +166,7 @@ function externalStartupChecks(options: StartupCheckOptions): readonly Promise<S
     return [];
   }
   if (options.agentRuntimeMode === 'direct' || options.agentRuntimeMode === 'hermes') {
-    return [options.providerCheck ? checkDirectProvider(options.providerCheck) : Promise.resolve({ check: 'nim', code: 'NIM_PROVIDER_UNAVAILABLE', message: 'The configured NVIDIA hosted provider is unavailable.' })];
+    return [options.providerCheck ? checkDirectProvider(options.providerCheck) : Promise.resolve({ check: 'nim', code: 'NIM_PROVIDER_UNAVAILABLE', message: 'The configured model provider or Hermes gateway route is unavailable.' })];
   }
   if (options.agentRuntimeMode === 'openshell') {
     return options.gatewayClient
@@ -175,5 +175,5 @@ function externalStartupChecks(options: StartupCheckOptions): readonly Promise<S
   }
   return options.gatewayClient
     ? [checkOpenShell(options.gatewayClient), checkNim(options)]
-    : [Promise.resolve({ check: 'nim', code: 'NIM_PROVIDER_UNAVAILABLE', message: 'The configured NVIDIA hosted provider is unavailable.' })];
+    : [Promise.resolve({ check: 'nim', code: 'NIM_PROVIDER_UNAVAILABLE', message: 'The configured model provider or Hermes gateway route is unavailable.' })];
 }

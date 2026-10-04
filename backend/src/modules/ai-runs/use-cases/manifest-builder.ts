@@ -10,6 +10,7 @@ import type { EgressProjectFact } from '@/modules/ai-runs/domain/ai-run-types';
 import type { ProjectFact } from '@/modules/memory/domain/project-fact';
 import { redactEgressText } from '@/shared/egress/redaction';
 import { AiRunValidationError } from '@/modules/ai-runs/domain/ai-run-errors';
+import { providerLabel } from '@/modules/ai-runs/domain/model-provider-profile';
 
 export type ManifestMessage = EgressMessage;
 
@@ -91,7 +92,7 @@ export async function buildManifest(input: ManifestBuildInput): Promise<Manifest
     categories.push('Project facts');
   }
   const manifestWithoutHash = {
-    provider: 'NVIDIA hosted NIM' as const,
+    provider: providerLabel(input.providerProfile),
     providerProfile: input.providerProfile,
     model: input.model,
     categories,

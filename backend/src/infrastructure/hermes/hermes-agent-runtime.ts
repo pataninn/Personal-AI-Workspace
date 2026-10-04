@@ -31,14 +31,24 @@ interface ActiveRun {
   readonly tools: Map<string, { readonly command?: string; readonly title: string; result?: CommandResult }>;
 }
 
+interface HermesRuntimeOptions {
+  readonly providerProfile: string;
+  readonly model: string;
+  readonly endpoint: string;
+  readonly diagnose?: (detail: { readonly runId: string; readonly category: string; readonly stage: string; readonly trace: string }) => void;
+}
+
 /** Runs real Hermes on a disposable copy and exports validated proposals to Express. */
 export class HermesAgentRuntime implements IAgentRuntime {
   private readonly runs = new Map<string, ActiveRun>();
-  public constructor(private readonly bridge: HermesBridgeClient, private readonly context: ApprovedContextReader, private readonly diagnose?: (detail: { readonly runId: string; readonly category: string; readonly stage: string; readonly trace: string }) => void) {}
+  public constructor(private readonly bridge: HermesBridgeClient, private readonly context: ApprovedContextReader, private readonly options: HermesRuntimeOptions) {}
 
   public async checkAvailability(): Promise<void> {
-    const receipt = await this.bridge.call('probe');
-    if (receipt.ready !== true || !isRecord(receipt.profile) || receipt.profile.hermesVersion !== '0.20.6') throw new AiRunRuntimeUnavailableError();
+    const { providerProfile, model, endpoint } = this.options;
+    const receipt = await this.bridge.call('probe', undefined, undefined, { providerProfile, model, endpoint });
+    if (receipt.ready !== true || !isRecord(receipt.profile) || receipt.profile.hermesVersion !== '0.20.6'
+      || receipt.profile.providerProfile !== this.options.providerProfile || receipt.profile.model !== this.options.model
+      || receipt.profile.endpoint !== this.options.endpoint) throw new AiRunRuntimeUnavailableError();
   }
 
   public async prepareDirectRun(): Promise<{ readonly kind: 'hermes'; readonly sandboxReady: true }> {
@@ -55,7 +65,7 @@ export class HermesAgentRuntime implements IAgentRuntime {
       const snapshot = await this.context.read(input);
       yield { type: 'started' };
       if (active.cancelled) { yield { type: 'cancelled' }; return; }
-      active.startup = this.call(input.runId, 'create', { files: snapshot.files, prompt: snapshot.prompt, model: input.manifest.model });
+      active.startup = this.call(input.runId, 'create', { files: snapshot.files, prompt: snapshot.prompt, model: input.manifest.model, providerProfile: input.manifest.providerProfile, endpoint: this.options.endpoint });
       await active.startup;
       yield* this.follow(input.runId);
       if (active.cancelled) {
@@ -72,7 +82,7 @@ export class HermesAgentRuntime implements IAgentRuntime {
       if (changes.length > 0) yield { type: 'changes.proposed', changes };
       yield { type: 'completed', text: '' };
     } catch (error: unknown) {
-      this.diagnose?.({ runId: input.runId, category: error instanceof Error ? error.name : 'unknown', stage: active.stage ?? 'preparing', trace: error instanceof Error ? (error.stack ?? '').split('\n').filter((line) => /^\s+at /u.test(line)).slice(0, 4).join('\n') : '' });
+      this.options.diagnose?.({ runId: input.runId, category: error instanceof Error ? error.name : 'unknown', stage: active.stage ?? 'preparing', trace: error instanceof Error ? (error.stack ?? '').split('\n').filter((line) => /^\s+at /u.test(line)).slice(0, 4).join('\n') : '' });
       if (active.cancelled) {
         await active.cancellation;
         yield active.cleaned ? { type: 'cancelled' } : { type: 'needs_manual_review', message: 'Hermes shutdown could not be confirmed.' };

@@ -58,7 +58,7 @@ export class AiRunAlreadyDecidedError extends AiRunDomainError {
 
 export class AiRunRuntimeUnavailableError extends AiRunDomainError {
   public constructor() {
-    super('RUNTIME_UNAVAILABLE', 503, 'The local sandbox gateway is unavailable. Nothing was staged or sent to NVIDIA. Check the local app services, then try again.');
+    super('RUNTIME_UNAVAILABLE', 503, 'The local sandbox gateway is unavailable. Nothing was staged or sent to the model provider. Check the local app services, then try again.');
   }
 }
 

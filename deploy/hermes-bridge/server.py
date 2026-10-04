@@ -10,6 +10,7 @@ from pathlib import Path
 
 from common import BridgeError, CLI, MAX_BODY, STATE, profile, run_cli, run_id, sandbox_name
 from lifecycle import Run
+from provider import assert_route
 
 RUNS = {}
 LOCK = threading.Lock()
@@ -36,6 +37,7 @@ def dispatch(body):
         if hashlib.sha256(Path(CLI).read_bytes()).hexdigest() != p['openshellSha256']:
             raise BridgeError('The OpenShell binary changed')
         run_cli(['whoami', '--output', 'json'])
+        assert_route(p, body.get('payload', {}))
         return {'ready': True, 'profile': p}
     identity = run_id(body.get('runId'))
     capability = body.get('capability', '')
@@ -49,6 +51,7 @@ def dispatch(body):
                 raise BridgeError('This run was already created')
             if len(RUNS) >= 4:
                 raise BridgeError('The local Hermes concurrency limit was reached')
+            assert_route(profile(), payload)
             if not isinstance(payload.get('prompt'), str) or len(payload['prompt'].encode()) > 256 * 1024:
                 raise BridgeError('Invalid run prompt')
             if not re.fullmatch(r'[a-zA-Z0-9_./:-]{1,200}', payload.get('model', 'nvidia/nemotron-3-super-120b-a12b')):

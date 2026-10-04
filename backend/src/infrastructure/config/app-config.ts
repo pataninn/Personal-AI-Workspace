@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { NEBIUS_PROVIDER_PROFILE, NVIDIA_PROVIDER_PROFILE } from '@/modules/ai-runs/domain/model-provider-profile';
 
 import {
   ConfigurationError,
@@ -59,7 +60,7 @@ const appEnvironmentSchema = z.object({
   OPEN_SHELL_BRIDGE_CLIENT_CERT_FILE: z.string().min(1).optional(),
   OPEN_SHELL_BRIDGE_CLIENT_KEY_FILE: z.string().min(1).optional(),
   OPEN_SHELL_BRIDGE_PROFILE_DIGEST: z.string().regex(/^sha256:[0-9a-f]{64}$/u).optional(),
-  NIM_PROFILE: z.string().min(1).default('nvidia-hosted-nim'),
+  NIM_PROFILE: z.enum([NVIDIA_PROVIDER_PROFILE, NEBIUS_PROVIDER_PROFILE]).default(NVIDIA_PROVIDER_PROFILE),
   NIM_ENDPOINT: z.string().url().default('https://integrate.api.nvidia.com/v1'),
   NIM_MODEL: z.string().default(EXPECTED_NIM_MODEL),
   AGENT_RUNTIME_MODE: z.enum(['fake', 'direct', 'openshell', 'hermes']).default('direct'),
@@ -164,6 +165,9 @@ function validateCrossFieldConfiguration(value: z.infer<typeof appEnvironmentSch
   }
   if (value.NIM_MODEL !== EXPECTED_NIM_MODEL) {
     details.push({ field: 'NIM_MODEL', message: `NIM_MODEL must be ${EXPECTED_NIM_MODEL}` });
+  }
+  if (value.NIM_PROFILE === NEBIUS_PROVIDER_PROFILE && (value.AGENT_RUNTIME_MODE !== 'hermes' || value.NIM_ENDPOINT !== 'https://api.tokenfactory.nebius.com/v1')) {
+    details.push({ field: 'NIM_PROFILE', message: 'Nebius Token Factory requires Hermes mode and https://api.tokenfactory.nebius.com/v1.' });
   }
   if (value.AGENT_RUNTIME_MODE === 'openshell') {
     validateOpenShellConfiguration(value, details);

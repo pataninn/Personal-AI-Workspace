@@ -53,7 +53,7 @@ export interface EgressProjectFact {
 
 export interface EgressManifest {
   readonly manifestHash: string;
-  readonly provider: 'NVIDIA hosted NIM';
+  readonly provider: 'NVIDIA hosted NIM' | 'Nebius Token Factory';
   readonly providerProfile: string;
   readonly model: string;
   readonly categories: readonly string[];

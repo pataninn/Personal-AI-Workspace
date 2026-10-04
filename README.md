@@ -2,17 +2,35 @@
 
 This repository contains the local Personal AI Workspace with projects,
 conversations, selected context, memory, tasks, live updates, and file history.
-Hermes now works in disposable OpenShell project copies using NVIDIA NIM.
+Hermes works in disposable OpenShell project copies using NVIDIA Nemotron on Nebius Token Factory.
 The direct server-side NIM adapter remains available as a fallback.
 
 ## Start with Hermes
 
 This machine uses the installed WSL Ubuntu OpenShell 0.0.116 gateway
 `nemoclaw-18080` and digest-pinned Hermes 0.20.6 base image. The gateway's
-`compatible-endpoint` provider already holds the NVIDIA credential. This helper
-does not install Hermes or provision a fresh gateway on another machine.
+named `pai-nebius-token-factory` provider is configured by the startup helper.
+This helper does not install Hermes or provision a fresh gateway on another machine.
 
 From this repository, with Docker Desktop running:
+
+Save just your Nebius API key in ignored `secrets/nebius_api_key`. Configure root
+`.env` with the following (the legacy `NIM_` setting names also select the Hermes provider):
+
+```dotenv
+NEBIUS_API_KEY_FILE=./secrets/nebius_api_key
+NIM_PROFILE=nebius-token-factory
+NIM_ENDPOINT=https://api.tokenfactory.nebius.com/v1
+NIM_MODEL=nvidia/nemotron-3-super-120b-a12b
+AGENT_RUNTIME_MODE=hermes
+```
+
+This model ID was confirmed in the authenticated Nebius catalog. The key is read
+locally and passed to OpenShell through the CLI's environment credential lookup;
+it is never included in command arguments or bridge payloads. Startup selects the
+route without generating a model response or spending inference tokens. Your next
+approved chat request uses Nebius. The approval dialog and Activity show Nebius as
+the recipient, and existing NVIDIA permissions do not authorize Nebius requests.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/start-hermes.ps1
@@ -24,7 +42,7 @@ After a successful build, use `-SkipBuild` for a normal restart. Open
 The helper starts supervised WSL services, generates dedicated bridge TLS
 credentials under ignored `secrets/hermes-bridge`, sets `AGENT_RUNTIME_MODE=hermes`
 in root `.env`, and starts Compose with the existing volumes. Hermes never mounts
-the authoritative workspace or receives the NVIDIA key. It gets only approved,
+the authoritative workspace or receives the Nebius key. It gets only approved,
 bounded, redacted selected files, facts, and chat references.
 
 Select the files needed for each request in **Context**. New generated files
@@ -44,17 +62,20 @@ generated changes. An interrupted bridge run remains failed and cannot export
 files; its saved ownership ledger permits scoped cleanup. Durable restart/resume,
 broader network approval, and production runtime hardening remain future work.
 
-To fall back, set `AGENT_RUNTIME_MODE=direct` in `.env`, then run
-`docker compose -p personal-ai-workspace up -d --no-build --wait`. Direct mode
-uses the key file configured by `NVIDIA_API_KEY_FILE`. Changing that file does not
-update the separately configured OpenShell provider credential.
+To use the NVIDIA direct fallback, configure `NVIDIA_API_KEY_FILE` and run
+`docker compose -p personal-ai-workspace -f compose.yaml -f compose.direct.yaml up -d --no-build --wait`.
+The override selects NVIDIA/direct mode and mounts only its NVIDIA secret.
+Normal Hermes Compose does not mount either provider key. Restart with the Hermes
+helper to return to Nebius. For Hermes on NVIDIA, set `NIM_PROFILE=nvidia-hosted-nim`
+and `NIM_ENDPOINT=https://integrate.api.nvidia.com/v1` in `.env`; the installed
+gateway's existing `compatible-endpoint` credential remains available.
 
 ## Local prerequisites
 
 - Node.js 22.20 or newer in the 22.x line
 - pnpm 11.8 or newer
 - Docker Desktop with WSL2/Ubuntu 22.04 or newer
-- An NVIDIA hosted NIM credential
+- A Nebius Token Factory credential (NVIDIA credentials are optional for fallback)
 
 Keep the active <code>.env</code> in this application repository. Copy
 <code>.env.example</code> to <code>.env</code> if needed, then fill in the settings.
@@ -71,12 +92,14 @@ default template places these files under
 <code>%LOCALAPPDATA%\Personal-AI-Workspace\private</code>:
 
 - <code>LOCAL_USER_PASSWORD_FILE</code> points to <code>secrets/local_user_password</code>
-- <code>NVIDIA_API_KEY_FILE</code> points to <code>secrets/nvidia_api_key</code>
+- <code>NEBIUS_API_KEY_FILE</code> points to ignored <code>./secrets/nebius_api_key</code>
+- Optional <code>NVIDIA_API_KEY_FILE</code> points to <code>secrets/nvidia_api_key</code> for direct fallback
 - <code>TLS_CERT_DIR</code> points to <code>tls</code>
 
-The NVIDIA key is mounted read-only at <code>/run/secrets/nvidia_api_key</code> for
-<code>personal-ai-app</code>. The browser, database, workspace, logs, and frontend bundle
-never receive the key. The login password is mounted read-only at
+The Nebius key is stored by the WSL OpenShell gateway and is not mounted in
+<code>personal-ai-app</code> or the disposable sandbox. The optional direct override
+mounts its NVIDIA key at <code>/run/secrets/nvidia_api_key</code>. The browser, database,
+logs, and frontend bundle never receive either key. The login password is mounted read-only at
 <code>/run/secrets/local_user_password</code>; on first boot with an empty users table, the
 app hashes this value to create its single local user. Use the same value at the
 login screen. Replacing the secret file later does not replace the existing
@@ -94,9 +117,10 @@ $randomBytes = [byte[]]::new(32)
 [System.IO.File]::WriteAllText($secretPath, [Convert]::ToBase64String($randomBytes), [System.Text.UTF8Encoding]::new($false))
 ```
 
-Keep the credential files outside the mounted repository. Put the provider key
-in the private <code>secrets/nvidia_api_key</code> file using a secure local editor or
-credential tool. Put a loopback TLS certificate and key in <code>tls/tls.crt</code> and
+The ignored local <code>secrets/</code> directory is protected from project context,
+file tools, and Docker builds. Put the Nebius provider key in
+<code>secrets/nebius_api_key</code> using a secure local editor or credential tool.
+Put a loopback TLS certificate and key in <code>tls/tls.crt</code> and
 <code>tls/tls.key</code>. For a temporary local certificate with OpenSSL:
 
 ```powershell
@@ -186,11 +210,12 @@ docker compose --project-name personal-ai-workspace-mvp2 up --build
 ```
 
 <code>docker compose --project-name personal-ai-workspace config --quiet</code> uses the repository's <code>.env</code> and validates
-Compose without printing resolved settings. The live Compose/NIM check needs
+Compose without printing resolved settings. The live Compose/Hermes startup needs
 Docker Desktop, operator-provisioned TLS files, the workspace identity marker,
-and a valid NVIDIA credential. Application startup fails closed until
-PostgreSQL, the workspace identity, the fixed endpoint, and the read-only
-provider secret are available.
+and the configured gateway provider credential. Application startup fails closed until
+PostgreSQL, the workspace identity, the authenticated bridge, and the selected
+gateway route are available. Startup checks route configuration; the first approved
+chat request establishes inference and tool execution with the provider.
 
 For deterministic local/CI consent tests without a credential, set
 <code>NODE_ENV=development</code> or <code>test</code> and <code>AGENT_RUNTIME_MODE=fake</code>. Production

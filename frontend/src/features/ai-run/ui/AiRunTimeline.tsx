@@ -20,7 +20,7 @@ interface AiRunTimelineProps {
   readonly onConversationReconciled?: (history: ConversationHistoryResponse) => void;
 }
 
-const DIRECT_PROVIDER_NOTICE = 'The direct NVIDIA NIM request is server-side. The authoritative project workspace is unchanged.';
+const DIRECT_PROVIDER_NOTICE = 'The direct model request is server-side. The authoritative project workspace is unchanged.';
 
 export function AiRunTimeline({ snapshot, manifest = null, projectId, conversationId, csrfToken, disabled = false, compact = false, onSnapshotChange, onConversationReconciled }: AiRunTimelineProps): React.JSX.Element {
   const timeline = useAiRunTimeline({
@@ -97,7 +97,7 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
 
 function statusLabel(status: AiRunSnapshot['status'], connection: ReturnType<typeof useAiRunTimeline>['connection']): string {
   if (connection === 'starting') {
-    return 'Sending approved context to NVIDIA NIM...';
+    return 'Sending approved context to the model provider...';
   }
   if (connection === 'connecting') {
     return 'Connecting to live run updates...';
@@ -133,7 +133,7 @@ function statusLabel(status: AiRunSnapshot['status'], connection: ReturnType<typ
     return 'The run needs manual review.';
   }
   if (status === 'ready') {
-    return 'Sending approved context to NVIDIA NIM...';
+    return 'Sending approved context to the model provider...';
   }
   return 'The assistant run is ready to start.';
 }

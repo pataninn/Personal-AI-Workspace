@@ -99,7 +99,7 @@ export function ProposedChangeReview({ runId, readOnly = false, conversationHref
   return (
     <section className="change-review-surface" data-testid="change-review-surface" aria-labelledby="change-review-heading" aria-busy={decisionLoading || state.refreshing ? 'true' : 'false'}>
       <div className="change-review-heading-row"><div><h2 id="change-review-heading" tabIndex={-1}>Proposed changes</h2><p className="field-help">Review this server-validated change set before anything is written to the project workspace.</p></div><Button type="button" variant="secondary" data-testid="change-refresh-status" onClick={() => { void refresh(); }} disabled={decisionLoading || state.refreshing || readOnly} aria-describedby={readOnlyDescription}>{refreshActionLabel}</Button></div>
-      {changeSet.fakeRuntime ? <Alert tone="info" data-testid="change-review-fake-mode-notice">Development preview - fake runtime. These proposed changes are simulated; live OpenShell, Hermes, and NVIDIA NIM provenance is not verified.</Alert> : null}
+      {changeSet.fakeRuntime ? <Alert tone="info" data-testid="change-review-fake-mode-notice">Development preview - fake runtime. These proposed changes are simulated; live OpenShell, Hermes, and model provider provenance is not verified.</Alert> : null}
       {readOnly ? <Alert tone="warning" id="change-review-read-only" data-testid="change-review-read-only">This project is archived. Proposed changes are read-only and cannot be applied.</Alert> : null}
       {state.refreshing ? <p data-testid="change-refreshing" role="status" aria-live="polite">Refreshing proposed changes...</p> : null}
       {state.refreshError ? <Alert tone="error" data-testid="change-refresh-error">{state.refreshError}</Alert> : null}

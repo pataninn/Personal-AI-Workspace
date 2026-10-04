@@ -38,7 +38,7 @@ export function safeChangeSetCollectionFailureMessage(error: ChangeSetDomainErro
   const candidates = [error.message, ...error.details.map((detail) => detail.message)];
   const reason = candidates.map((message) => Object.hasOwn(COLLECTION_FAILURE_REASONS, message)
     ? COLLECTION_FAILURE_REASONS[message] : undefined).find((message) => message !== undefined);
-  const message = reason ? `NVIDIA proposed file changes that the app rejected: ${reason}`
-    : 'NVIDIA proposed file changes that the app rejected.';
+  const message = reason ? `The assistant proposed file changes that the app rejected: ${reason}`
+    : 'The assistant proposed file changes that the app rejected.';
   return `${message} No changes from this response were applied.`;
 }

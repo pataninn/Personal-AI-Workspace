@@ -466,13 +466,13 @@ function serializeManifest(run: AiRun): Record<string, unknown> {
 
 function consentNotice(run: AiRun): string {
   if (run.decision === 'pending') {
-    return 'Nothing has been copied to the run staging area or sent to NVIDIA yet.';
+    return `Nothing has been copied to the run staging area or sent to ${run.manifest.provider} yet.`;
   }
   if (run.status === 'review_required' || run.providerTransmission === 'unknown') {
     return 'Provider transmission status is unknown. Refresh the run status before retrying.';
   }
   if (run.decision === 'rejected') {
-    return 'Nothing was copied to the run staging area or sent to NVIDIA.';
+    return `Nothing was copied to the run staging area or sent to ${run.manifest.provider}.`;
   }
   return 'This disclosure was approved for this run.';
 }

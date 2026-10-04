@@ -19,7 +19,7 @@ const RUNS_PATH = '/api/v1/ai-runs';
 const DEFAULT_PROVIDER = 'NVIDIA hosted NIM';
 const DEFAULT_PROVIDER_PROFILE = 'nvidia-hosted-nim';
 const DEFAULT_MODEL = 'nvidia/nemotron-3-super-120b-a12b';
-const PRE_CONSENT_NOTICE = 'Nothing has been sent to NVIDIA yet.';
+const PRE_CONSENT_NOTICE = 'Nothing has been sent to the model provider yet.';
 const REQUEST_ONLY_NOTICE = 'No project files or facts are selected. Only your request will be sent if you approve.';
 const SAFE_CATEGORIES = new Set(['Request', 'Recent conversation', 'Project files', 'Project facts', 'Selected relative paths']);
 
@@ -257,8 +257,8 @@ export function normalizeEgressManifest(value: unknown, runId: string, fallbackM
   const itemCount = Math.max(readNonNegativeNumber(content?.itemCount ?? source.itemCount, relativePaths.length), relativePaths.length);
   const byteEstimate = readNonNegativeNumber(content?.byteEstimate ?? source.byteEstimate);
   const tokenEstimate = readNonNegativeNumber(content?.tokenEstimate ?? source.tokenEstimate);
-  const provider = readSafeLabel(source.provider, DEFAULT_PROVIDER);
   const providerProfile = readSafeLabel(source.providerProfile, DEFAULT_PROVIDER_PROFILE);
+  const provider = readSafeLabel(source.provider, providerProfile === 'nebius-token-factory' ? 'Nebius Token Factory' : DEFAULT_PROVIDER);
   const model = readSafeModel(source.model);
   const omissionSummary = readOmissionSummary(
     redaction?.summary ?? source.omissionSummary,
@@ -283,7 +283,7 @@ export function normalizeEgressManifest(value: unknown, runId: string, fallbackM
     omittedItemCount,
     omissionSummary,
     bestEffortSecretDetection: readBoolean(source.bestEffortSecretDetection, true),
-    preConsentNotice: PRE_CONSENT_NOTICE
+    preConsentNotice: `Nothing has been sent to ${provider} yet.`
   };
 }
 

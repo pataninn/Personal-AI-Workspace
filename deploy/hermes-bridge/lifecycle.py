@@ -11,6 +11,7 @@ from pathlib import Path
 
 from acp import AcpSession
 from network import registry_grant, set_registry_grant
+from provider import assert_route
 from common import BridgeError, CLI, GATEWAY, MAX_BODY, MAX_FILE, MAX_TOTAL, STATE, inventory, profile, run_cli, safe_path, sandbox_name, write_private
 
 
@@ -90,10 +91,11 @@ class Run:
             raise BridgeError('A sandbox already exists for this run; manual review is required')
         self.local.mkdir(parents=True, mode=0o700)
         p = profile()
+        assert_route(p, self.payload)
         policy = Path(__file__).resolve().parent / 'policy.json'
         if hashlib.sha256(policy.read_bytes()).hexdigest() != p['policySha256']:
             raise BridgeError('The pinned sandbox policy changed')
-        run_cli(['sandbox', 'create', '--name', self.name, '--from', p['image'], '--provider', 'compatible-endpoint', '--no-auto-providers', '--policy', str(policy), '--cpu', '1', '--memory', '2048Mi', '--detach', '--output', 'json'], timeout=120)
+        run_cli(['sandbox', 'create', '--name', self.name, '--from', p['image'], '--provider', p['providerName'], '--no-auto-providers', '--policy', str(policy), '--cpu', '1', '--memory', '2048Mi', '--detach', '--output', 'json'], timeout=120)
         for _ in range(60):
             row = next((r for r in inventory() if r.get('name') == self.name), None)
             if row:
