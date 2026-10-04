@@ -45,7 +45,7 @@ describe('egress redaction', () => {
 
   it('detects credential-like model proposal values while allowing ordinary assignments', () => {
     expect(containsCredentialLikeValue('NVIDIA_API_KEY=secret-value')).toBe(true);
-    expect(containsCredentialLikeValue('token: leaked-value')).toBe(true);
+    expect(containsCredentialLikeValue('token: leaked-value')).toBe(false);
     expect(containsCredentialLikeValue('const replacement = "updated";')).toBe(false);
   });
 });

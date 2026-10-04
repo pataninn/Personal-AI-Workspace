@@ -62,6 +62,14 @@ generated changes. An interrupted bridge run remains failed and cannot export
 files; its saved ownership ledger permits scoped cleanup. Durable restart/resume,
 broader network approval, and production runtime hardening remain future work.
 
+Generated file proposals use a limited credential check: private-key headers,
+recognizable access-key formats, and literal values of at least 12 characters
+assigned to explicit credential names (such as `api_key` or `password`) are blocked.
+Ordinary uppercase assignments, generic `token`/`secret`/`credential` fields,
+placeholders, and code references are allowed. This intentionally favors fewer
+false alarms and does not detect every secret. Context sent to the provider still
+uses the separate egress redaction policy.
+
 To use the NVIDIA direct fallback, configure `NVIDIA_API_KEY_FILE` and run
 `docker compose -p personal-ai-workspace -f compose.yaml -f compose.direct.yaml up -d --no-build --wait`.
 The override selects NVIDIA/direct mode and mounts only its NVIDIA secret.
