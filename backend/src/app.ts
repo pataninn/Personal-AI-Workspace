@@ -121,6 +121,7 @@ function toAppError(error: unknown): AppError | null {
   if (isMalformedJsonError(error)) {
     return new AppError('VALIDATION_ERROR', 400, 'The request body is not valid JSON.');
   }
+  if (error && typeof error === 'object' && 'type' in error && error.type === 'entity.too.large') return new AppError('FILE_TOO_LARGE', 413, 'The request exceeds the allowed size.');
   return null;
 }
 
@@ -147,11 +148,13 @@ export function createApp(options: CreateAppOptions): Express {
         fontSrc: ["'self'", 'data:'],
         formAction: ["'self'"],
         frameAncestors: ["'none'"],
-        imgSrc: ["'self'", 'data:'],
+        imgSrc: ["'self'", 'data:', 'blob:'],
+        frameSrc: ["'self'", 'blob:'],
         objectSrc: ["'none'"],
         scriptSrc: ["'self'"],
         scriptSrcAttr: ["'none'"],
-        styleSrc: ["'self'"]
+        styleSrc: ["'self'"],
+        styleSrcAttr: ["'unsafe-inline'"]
       }
     }
   }));

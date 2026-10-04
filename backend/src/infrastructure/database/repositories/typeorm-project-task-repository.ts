@@ -12,6 +12,8 @@ import {
   ProjectTaskVersionConflictError
 } from '@/modules/tasks/domain/project-task-errors';
 import { canTransitionProjectTask } from '@/modules/tasks/domain/project-task-validation';
+import { normalizeTaskSubtasks } from '@/modules/tasks/domain/task-planning-validation';
+import { isTaskChecklistComplete, resolveTaskChecklistState } from '@/modules/tasks/domain/task-checklist-status';
 import type {
   ProjectTask,
   ProjectTaskFilter,
@@ -35,6 +37,9 @@ interface TaskRow {
   readonly project_id: string;
   readonly title: string;
   readonly details: string | null;
+  readonly importance: ProjectTask['importance'];
+  readonly deadline: string | null;
+  readonly subtasks: ProjectTask['subtasks'];
   readonly status: ProjectTaskStatus;
   readonly position: number;
   readonly version: number;
@@ -59,6 +64,7 @@ interface SuggestionRow {
   readonly ordinal?: number;
   readonly title: string;
   readonly details: string | null;
+  readonly subtasks: ProjectTaskSuggestion['subtasks'];
   readonly status: ProjectTaskSuggestion['status'];
   readonly version: number;
   readonly created_at: Date | string;
@@ -82,7 +88,7 @@ interface PositionRow {
   readonly max_position: number | null;
 }
 
-const TASK_COLUMNS = `t."id", t."owner_id", t."project_id", t."title", t."details", t."status", t."position", t."version", t."source_kind", t."source_suggestion_id",
+const TASK_COLUMNS = `t."id", t."owner_id", t."project_id", t."title", t."details", t."importance", t."deadline"::text AS "deadline", t."subtasks", t."status", t."position", t."version", t."source_kind", t."source_suggestion_id",
   s."run_id" AS "source_run_id", s."conversation_id" AS "source_conversation_id", s."resolved_at" AS "source_accepted_at",
   t."created_at", t."updated_at", t."completed_at", t."archived_at"`;
 
@@ -115,6 +121,9 @@ function toTask(row: TaskRow): ProjectTask {
     projectId: row.project_id,
     title: row.title,
     details: row.details,
+    importance: row.importance ?? 'medium',
+    deadline: row.deadline ?? null,
+    subtasks: row.subtasks ?? [],
     status: row.status,
     position: row.position,
     version: row.version,
@@ -148,6 +157,7 @@ function toSuggestion(row: SuggestionRow): ProjectTaskSuggestion {
     conversationId: row.conversation_id,
     title: row.title,
     details: row.details,
+    subtasks: row.subtasks ?? [],
     status: row.status,
     version: row.version,
     taskId: row.task_id,
@@ -164,6 +174,9 @@ function snapshotToTask(value: unknown): ProjectTask {
   }
   return {
     ...parsed,
+    importance: parsed.importance ?? 'medium',
+    deadline: parsed.deadline ?? null,
+    subtasks: parsed.subtasks ?? [],
     createdAt: toDate(parsed.createdAt as unknown as string),
     updatedAt: toDate(parsed.updatedAt as unknown as string),
     completedAt: parsed.completedAt === null ? null : toDate(parsed.completedAt as unknown as string),
@@ -335,7 +348,7 @@ async function insertTaskEvent(
 
 async function loadSuggestion(queryRunner: QueryRunner, ownerId: string, projectId: string, suggestionId: string, forUpdate = false): Promise<ProjectTaskSuggestion | null> {
   const rows = asRows<SuggestionRow>(await queryRunner.query(
-    `SELECT s."id", s."owner_id", s."project_id", s."run_id", s."conversation_id", s."title", s."details", s."status", s."version", s."created_at", s."resolved_at",
+    `SELECT s."id", s."owner_id", s."project_id", s."run_id", s."conversation_id", s."title", s."details", s."subtasks", s."status", s."version", s."created_at", s."resolved_at",
             t."id" AS "task_id"
      FROM "project_task_suggestions" s
      LEFT JOIN "project_tasks" t ON t."source_suggestion_id" = s."id"
@@ -362,13 +375,13 @@ async function taskRowsForFilter(dataSource: DataSource, ownerId: string, projec
 
 async function appendTask(
   queryRunner: QueryRunner,
-  input: { readonly ownerId: string; readonly projectId: string; readonly title: string; readonly details: string | null; readonly sourceSuggestionId?: string }
+  input: { readonly ownerId: string; readonly projectId: string; readonly title: string; readonly details: string | null; readonly sourceSuggestionId?: string; readonly importance: ProjectTask['importance']; readonly deadline: string | null; readonly subtasks: ProjectTask['subtasks'] }
 ): Promise<ProjectTask> {
   const position = await countActiveTasks(queryRunner, input.ownerId, input.projectId);
   const rows = asRows<{ readonly id: string }>(await queryRunner.query(
-    `INSERT INTO "project_tasks" ("owner_id", "project_id", "title", "details", "position", "source_kind", "source_suggestion_id")
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING "id"`,
-    [input.ownerId, input.projectId, input.title, input.details, position, input.sourceSuggestionId ? 'assistant_suggestion' : 'user', input.sourceSuggestionId ?? null]
+    `INSERT INTO "project_tasks" ("owner_id", "project_id", "title", "details", "position", "source_kind", "source_suggestion_id", "importance", "deadline", "subtasks", "status", "completed_at")
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::"project_task_status", CASE WHEN $11::"project_task_status" = 'done' THEN now() ELSE NULL END) RETURNING "id"`,
+    [input.ownerId, input.projectId, input.title, input.details, position, input.sourceSuggestionId ? 'assistant_suggestion' : 'user', input.sourceSuggestionId ?? null, input.importance, input.deadline, JSON.stringify(input.subtasks), isTaskChecklistComplete(input.subtasks) ? 'done' : 'todo']
   ));
   const taskId = rows[0]?.id;
   if (!taskId) {
@@ -439,9 +452,6 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository {
   public async updateTask(input: UpdateProjectTaskRecord): Promise<{ readonly task: ProjectTask; readonly orderVersion: number }> {
     return withTransaction(this.dataSource, async (queryRunner) => {
       await lockActiveProject(queryRunner, input.ownerId, input.projectId);
-      if (input.status === 'archived') {
-        await lockOrderState(queryRunner, input.ownerId, input.projectId);
-      }
       const current = await loadTask(queryRunner, input.ownerId, input.projectId, input.taskId, true);
       if (!current) {
         throw new ProjectTaskNotFoundError();
@@ -461,16 +471,20 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository {
 
       const setClauses: string[] = ['"version" = "version" + 1', '"updated_at" = now()'];
       const values: unknown[] = [];
-      if (input.status) {
-        values.push(input.status);
+      const completion = resolveTaskChecklistState({
+        current, ...(input.status ? { status: input.status } : {}),
+        ...(input.text?.subtasks === undefined ? {} : { subtasks: input.text.subtasks })
+      });
+      if (input.status || completion.status !== current.status) {
+        values.push(completion.status);
         setClauses.push(`"status" = $${values.length}`);
-        if (input.status === 'done') {
-          setClauses.push('"completed_at" = COALESCE("completed_at", now())');
-        }
-        if (input.status === 'archived') {
-          setClauses.push('"archived_at" = now()');
-        }
-      } else if (input.text) {
+        setClauses.push(completion.status === 'done' ? '"completed_at" = COALESCE("completed_at", now())' : '"completed_at" = NULL');
+      }
+      if (input.status === 'done') {
+        values.push(JSON.stringify(completion.subtasks));
+        setClauses.push(`"subtasks" = $${values.length}::jsonb`);
+      }
+      if (input.text) {
         if (input.text.title !== undefined) {
           values.push(input.text.title);
           setClauses.push(`"title" = $${values.length}`);
@@ -478,6 +492,12 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository {
         if ('details' in input.text) {
           values.push(input.text.details ?? null);
           setClauses.push(`"details" = $${values.length}`);
+        }
+        for (const field of ['importance', 'deadline', 'subtasks'] as const) {
+          if (field in input.text) {
+            values.push(field === 'subtasks' ? JSON.stringify(completion.subtasks) : input.text[field]);
+            setClauses.push(`"${field}" = $${values.length}${field === 'subtasks' ? '::jsonb' : ''}`);
+          }
         }
       }
       values.push(input.ownerId, input.projectId, input.taskId, input.expectedVersion);
@@ -495,29 +515,41 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository {
       if (!task) {
         throw new ProjectTaskNotFoundError();
       }
-      if (input.status) {
+      if (completion.status !== current.status) {
         await insertTaskEvent(queryRunner, {
           ownerId: input.ownerId,
           projectId: input.projectId,
           taskId: task.id,
           eventType: 'task.status_changed',
-          details: { from: current.status, to: input.status }
+          details: { from: current.status, to: completion.status }
         });
-        if (input.status === 'archived') {
-          await compactTaskPositions(queryRunner, input.ownerId, input.projectId, current.position);
-          const orderVersion = await bumpOrderVersion(queryRunner, input.ownerId, input.projectId);
-          return { task, orderVersion };
-        }
-      } else {
+      }
+      if (input.text) {
         await insertTaskEvent(queryRunner, {
           ownerId: input.ownerId,
           projectId: input.projectId,
           taskId: task.id,
           eventType: 'task.updated',
-          details: { fields: [ ...(input.text?.title !== undefined ? ['title'] : []), ...(input.text && 'details' in input.text ? ['details'] : []) ] }
+          details: { fields: Object.keys(input.text ?? {}) }
         });
       }
       return { task, orderVersion: await readOrderVersion(queryRunner, input.ownerId, input.projectId) };
+    });
+  }
+
+  public async deleteTask(input: { readonly ownerId: string; readonly projectId: string; readonly taskId: string; readonly expectedVersion: number }): Promise<{ readonly orderVersion: number }> {
+    return withTransaction(this.dataSource, async (queryRunner) => {
+      await lockActiveProject(queryRunner, input.ownerId, input.projectId);
+      await lockOrderState(queryRunner, input.ownerId, input.projectId);
+      const current = await loadTask(queryRunner, input.ownerId, input.projectId, input.taskId, true);
+      if (!current) throw new ProjectTaskNotFoundError();
+      if (current.version !== input.expectedVersion) throw new ProjectTaskVersionConflictError();
+      await queryRunner.query('DELETE FROM "project_tasks" WHERE "owner_id" = $1 AND "project_id" = $2 AND "id" = $3', [input.ownerId, input.projectId, input.taskId]);
+      if (current.source.suggestionId) {
+        await queryRunner.query('DELETE FROM "project_task_suggestions" WHERE "owner_id" = $1 AND "project_id" = $2 AND "id" = $3', [input.ownerId, input.projectId, current.source.suggestionId]);
+      }
+      if (current.status !== 'archived') await compactTaskPositions(queryRunner, input.ownerId, input.projectId, current.position);
+      return { orderVersion: await bumpOrderVersion(queryRunner, input.ownerId, input.projectId) };
     });
   }
 
@@ -565,7 +597,7 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository {
 
   public async listSuggestions(ownerId: string, projectId: string, filter: { readonly status: 'all' | 'pending'; readonly conversationId?: string }): Promise<readonly ProjectTaskSuggestion[]> {
     const rows = asRows<SuggestionRow>(await this.dataSource.query(
-      `SELECT s."id", s."owner_id", s."project_id", s."run_id", s."conversation_id", s."title", s."details", s."status", s."version", s."created_at", s."resolved_at",
+      `SELECT s."id", s."owner_id", s."project_id", s."run_id", s."conversation_id", s."title", s."details", s."subtasks", s."status", s."version", s."created_at", s."resolved_at",
               (SELECT t."id" FROM "project_tasks" t WHERE t."source_suggestion_id" = s."id" LIMIT 1) AS "task_id"
        FROM "project_task_suggestions" s
        JOIN "projects" p ON p."id" = s."project_id" AND p."owner_id" = s."owner_id"
@@ -634,6 +666,9 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository {
         projectId: input.projectId,
         title: input.title ?? current.title,
         details: input.details === undefined ? current.details : input.details,
+        importance: input.importance ?? 'medium',
+        deadline: input.deadline ?? null,
+        subtasks: input.subtasks ?? normalizeTaskSubtasks(current.subtasks),
         sourceSuggestionId: current.id
       });
       await queryRunner.query(

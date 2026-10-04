@@ -2,6 +2,18 @@ export const PROJECT_TASK_STATUSES = ['todo', 'in_progress', 'blocked', 'done', 
 export type ProjectTaskStatus = typeof PROJECT_TASK_STATUSES[number];
 export type ProjectTaskFilter = 'all' | 'open' | 'completed' | 'archived';
 export type ProjectTaskSuggestionStatus = 'pending' | 'accepted' | 'dismissed';
+export const PROJECT_TASK_IMPORTANCES = ['low', 'medium', 'high', 'urgent'] as const;
+export type ProjectTaskImportance = typeof PROJECT_TASK_IMPORTANCES[number];
+
+export interface ProjectTaskSubtask {
+  readonly id: string;
+  readonly title: string;
+  readonly completed: boolean;
+}
+
+export interface TaskSuggestionSubtask {
+  readonly title: string;
+}
 
 export interface ProjectTaskSource {
   readonly kind: 'user' | 'assistant_suggestion';
@@ -18,6 +30,9 @@ export interface ProjectTask {
   readonly title: string;
   readonly details: string | null;
   readonly status: ProjectTaskStatus;
+  readonly importance: ProjectTaskImportance;
+  readonly deadline: string | null;
+  readonly subtasks: readonly ProjectTaskSubtask[];
   readonly position: number;
   readonly version: number;
   readonly source: ProjectTaskSource;
@@ -34,6 +49,7 @@ export interface ProjectTaskSuggestion {
   readonly conversationId: string;
   readonly title: string;
   readonly details: string | null;
+  readonly subtasks: readonly TaskSuggestionSubtask[];
   readonly status: ProjectTaskSuggestionStatus;
   readonly version: number;
   readonly taskId: string | null;
@@ -45,6 +61,7 @@ export interface ProjectTaskSuggestion {
 export interface TaskSuggestionDraft {
   readonly title: string;
   readonly details?: string | null;
+  readonly subtasks?: readonly TaskSuggestionSubtask[];
 }
 
 export interface ProjectTaskListSnapshot {

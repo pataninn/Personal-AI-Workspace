@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 
 import {
   createProjectTask,
+  deleteProjectTask,
   decideProjectTaskSuggestion,
   reorderProjectTask,
   updateProjectTask
@@ -21,6 +22,7 @@ export function useProjectTaskActions(projectId: string, csrfToken: string | nul
   readonly create: (draft: ProjectTaskDraft, idempotencyKey: string) => Promise<ProjectTaskUpdateResult>;
   readonly update: (task: ProjectTask, draft: ProjectTaskDraft, version: number) => Promise<ProjectTaskUpdateResult>;
   readonly transition: (task: ProjectTask, status: ProjectTaskStatus) => Promise<ProjectTaskUpdateResult>;
+  readonly remove: (task: ProjectTask) => Promise<number>;
   readonly reorder: (taskId: string, direction: 'up' | 'down', orderVersion: number) => Promise<import('@/entities/project-task').ProjectTaskList>;
   readonly decideSuggestion: (suggestion: ProjectTaskSuggestion, decision: 'accepted' | 'dismissed', draft?: ProjectTaskDraft) => Promise<ProjectTaskSuggestionDecision>;
 } {
@@ -50,10 +52,12 @@ export function useProjectTaskActions(projectId: string, csrfToken: string | nul
     run(`task:${task.id}`, (token) => updateProjectTask(projectId, task.id, draft, version, token)), [projectId, run]);
   const transition = useCallback((task: ProjectTask, status: ProjectTaskStatus): Promise<ProjectTaskUpdateResult> =>
     run(`task:${task.id}`, (token) => updateProjectTask(projectId, task.id, { status }, task.version, token)), [projectId, run]);
+  const remove = useCallback((task: ProjectTask): Promise<number> =>
+    run(`task:${task.id}`, (token) => deleteProjectTask(projectId, task.id, task.version, token)), [projectId, run]);
   const reorder = useCallback((taskId: string, direction: 'up' | 'down', orderVersion: number) =>
     run(`task:${taskId}`, (token) => reorderProjectTask(projectId, taskId, direction, orderVersion, token)), [projectId, run]);
   const decideSuggestion = useCallback((suggestion: ProjectTaskSuggestion, decision: 'accepted' | 'dismissed', draft?: ProjectTaskDraft) =>
     run(`suggestion:${suggestion.id}`, (token) => decideProjectTaskSuggestion(projectId, suggestion, decision, token, draft)), [projectId, run]);
 
-  return { pendingKeys, create, update, transition, reorder, decideSuggestion };
+  return { pendingKeys, create, update, transition, remove, reorder, decideSuggestion };
 }

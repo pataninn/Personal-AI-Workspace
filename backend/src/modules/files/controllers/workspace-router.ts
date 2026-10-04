@@ -13,6 +13,8 @@ import type {
 } from '@/modules/files/use-cases';
 import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
+import { addProjectFileActionRoutes } from '@/modules/files/controllers/project-file-action-routes';
+import type { ProjectFileActions } from '@/modules/files/use-cases/project-file-actions';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const directorySchema = z.string().max(2048).default('');
@@ -20,6 +22,8 @@ const pathSchema = z.string().min(1).max(2048);
 const querySchema = z.string().trim().min(1).max(256);
 
 export interface WorkspaceRouterDependencies {
+  readonly fileActions?: ProjectFileActions;
+  readonly appOrigin?: string;
   readonly getSession: GetSessionUseCase;
   readonly listWorkspaceFiles: ListWorkspaceFilesUseCase;
   readonly treeWorkspaceFiles: TreeWorkspaceFilesUseCase;
@@ -193,5 +197,6 @@ export function createWorkspaceRouter(dependencies: WorkspaceRouterDependencies)
   router.get('/search', authenticate, searchHandler(dependencies));
   router.get('/content', authenticate, readHandler(dependencies));
   router.get('/', authenticate, listHandler(dependencies));
+  if (dependencies.fileActions && dependencies.appOrigin) addProjectFileActionRoutes({ router, authenticate, appOrigin: dependencies.appOrigin, actions: dependencies.fileActions });
   return router;
 }

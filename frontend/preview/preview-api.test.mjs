@@ -38,6 +38,89 @@ function headers(cookie, extra = {}) {
 const PROJECT_ID = '873c096a-bc57-4a0c-85da-10d4febde96b';
 const CONVERSATION_ID = '489541da-57a5-416d-afb6-45b19ad7bc98';
 
+test('Home overview ranks dated tasks before undated importance and updates activity', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const response = await fetch(`${origin}/api/v1/projects/overview`, { headers: headers(cookie) });
+  const overview = (await response.json()).data;
+  assert.equal(response.status, 200);
+  assert.equal(overview.projects[0].id, PROJECT_ID);
+  assert.equal(overview.tasks[0].deadline, '2026-10-10');
+  assert.equal(overview.tasks[1].importance, 'urgent');
+  assert.equal(overview.tasks[1].deadline, null);
+});
+
+test('task metadata, checklists, completion/reopening and permanent removal use current versions', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const endpoint = `${origin}/api/v1/projects/${PROJECT_ID}/tasks`;
+  const created = await fetch(endpoint, { method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'task-checklist-create' }),
+    body: JSON.stringify({ title: 'Test checklist', importance: 'low', deadline: '2027-01-01', subtasks: [{ title: 'First item' }] }) });
+  const task = (await created.json()).data.task;
+  assert.equal(created.status, 201); assert.equal(task.importance, 'low'); assert.equal(task.subtasks[0].completed, false);
+  const completed = await fetch(`${endpoint}/${task.id}`, { method: 'PATCH', headers: headers(cookie, { 'If-Match': '"1"' }),
+    body: JSON.stringify({ subtasks: task.subtasks.map((item) => ({ ...item, completed: true })) }) });
+  const done = (await completed.json()).data.task; assert.equal(done.status, 'done');
+  const reopened = await fetch(`${endpoint}/${task.id}`, { method: 'PATCH', headers: headers(cookie, { 'If-Match': '"2"' }),
+    body: JSON.stringify({ subtasks: done.subtasks.map((item) => ({ ...item, completed: false })) }) });
+  assert.equal((await reopened.json()).data.task.status, 'todo');
+  assert.equal((await fetch(`${endpoint}/${task.id}`, { method: 'DELETE', headers: headers(cookie, { 'If-Match': '"2"' }) })).status, 409);
+  assert.equal((await fetch(`${endpoint}/${task.id}`, { method: 'DELETE', headers: headers(cookie, { 'If-Match': '"3"' }) })).status, 200);
+  const listing = await fetch(endpoint, { headers: headers(cookie) });
+  assert.equal((await listing.json()).data.tasks.some((item) => item.id === task.id), false);
+});
+
+test('suggestions stay scoped to the current chat and accepted titles become checklist items', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const endpoint = `${origin}/api/v1/projects/${PROJECT_ID}/task-suggestions`;
+  const listing = await fetch(`${endpoint}?conversationId=${CONVERSATION_ID}&status=all`, { headers: headers(cookie) });
+  const suggestion = (await listing.json()).data.taskSuggestions[0];
+  const decision = await fetch(`${endpoint}/${suggestion.id}`, { method: 'PATCH', headers: headers(cookie, { 'If-Match': '"1"' }), body: JSON.stringify({ status: 'accepted' }) });
+  const result = (await decision.json()).data;
+  assert.equal(decision.status, 200); assert.equal(result.task.importance, 'medium');
+  assert.equal(result.task.subtasks.length, 2); assert.equal(result.task.subtasks[0].completed, false);
+  const unrelated = await fetch(`${endpoint}?conversationId=11111111-1111-4111-8111-111111111111&status=all`, { headers: headers(cookie) });
+  assert.deepEqual((await unrelated.json()).data.taskSuggestions, []);
+});
+
+test('files support upload, raw download, stale-safe edits and deletion without affecting other files', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const endpoint = `${origin}/api/v1/projects/${PROJECT_ID}/files`;
+  const upload = await fetch(`${endpoint}/upload?path=preview.txt`, { method: 'POST', headers: headers(cookie, { 'Content-Type': 'application/octet-stream' }), body: 'Uploaded preview' });
+  assert.equal(upload.status, 201);
+  const first = (await (await fetch(`${endpoint}/content?path=preview.txt`, { headers: headers(cookie) })).json()).data;
+  const edit = await fetch(`${endpoint}/content`, { method: 'PUT', headers: headers(cookie), body: JSON.stringify({ path: 'preview.txt', content: 'Edited preview', expectedHash: first.sourceHash }) });
+  const changed = (await edit.json()).data; assert.equal(edit.status, 200);
+  const stale = await fetch(`${endpoint}/content`, { method: 'PUT', headers: headers(cookie), body: JSON.stringify({ path: 'preview.txt', content: 'Stale preview', expectedHash: first.sourceHash }) });
+  assert.equal(stale.status, 409);
+  const download = await fetch(`${endpoint}/download?path=preview.txt`, { headers: headers(cookie) });
+  assert.equal(await download.text(), 'Edited preview'); assert.equal(download.headers.get('etag'), `"${changed.hash}"`);
+  const removed = await fetch(`${endpoint}/content?path=preview.txt`, { method: 'DELETE', headers: headers(cookie, { 'If-Match': `"${changed.hash}"` }) });
+  assert.equal(removed.status, 204);
+  assert.equal((await fetch(`${endpoint}/content?path=README.md`, { headers: headers(cookie) })).status, 200);
+});
+
+test('project removal clears app records and retains files for the same root after reattachment', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const before = (await (await fetch(`${origin}/api/v1/projects/${PROJECT_ID}/files/content?path=README.md`, { headers: headers(cookie) })).json()).data;
+  const removed = await fetch(`${origin}/api/v1/projects/${PROJECT_ID}`, { method: 'DELETE', headers: headers(cookie, { 'If-Match': '1' }) });
+  assert.equal(removed.status, 204);
+  assert.equal((await fetch(`${origin}/api/v1/projects/${PROJECT_ID}/tasks`, { headers: headers(cookie) })).status, 404);
+  assert.equal((await fetch(`${origin}/api/v1/conversations/${CONVERSATION_ID}?projectId=${PROJECT_ID}`, { headers: headers(cookie) })).status, 404);
+  const attached = await fetch(`${origin}/api/v1/projects`, { method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Reattached', relativeRoot: 'apps/website' }) });
+  const id = (await attached.json()).data.id;
+  const after = (await (await fetch(`${origin}/api/v1/projects/${id}/files/content?path=README.md`, { headers: headers(cookie) })).json()).data;
+  assert.equal(after.content, before.content);
+});
+
+test('new destructive/file methods require CSRF and direct preview chat stays local with Markdown', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  assert.equal((await fetch(`${origin}/api/v1/projects/${PROJECT_ID}`, { method: 'DELETE', headers: { Cookie: cookie, 'If-Match': '1' } })).status, 403);
+  const chat = await fetch(`${origin}/api/v1/projects/${PROJECT_ID}/chat-runs`, { method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'direct-chat-local-preview' }), body: JSON.stringify({ conversationId: CONVERSATION_ID, request: 'Suggest a homepage plan.' }) });
+  assert.equal(chat.status, 200); const run = (await chat.json()).data;
+  assert.equal(run.status, 'succeeded'); assert.equal(run.providerTransmission, 'not_started_confirmed');
+  const history = await fetch(`${origin}/api/v1/conversations/${CONVERSATION_ID}?projectId=${PROJECT_ID}`, { headers: headers(cookie) });
+  const latest = (await history.json()).data.messages.at(-1); assert.equal(latest.role, 'assistant'); assert.match(latest.content, /```ts/u);
+});
+
 async function createAiRun(origin, cookie, key, request, context = {}) {
   const response = await fetch(`${origin}/api/v1/projects/${PROJECT_ID}/ai-runs`, {
     method: 'POST',
@@ -287,6 +370,6 @@ test('reset clears fake runs and idempotency while restoring the seeded state', 
 test('keeps the preview API out of normal production builds', () => {
   const production = viteConfig({ mode: 'production', command: 'build' });
   const preview = viteConfig({ mode: 'preview', command: 'serve' });
-  assert.deepEqual(production.plugins, []);
-  assert.equal(preview.plugins.some((plugin) => plugin.name === 'personal-ai-workspace-preview-api'), true);
+  assert.equal(production.plugins.flat(Infinity).some((plugin) => plugin?.name === 'personal-ai-workspace-preview-api'), false);
+  assert.equal(preview.plugins.flat(Infinity).some((plugin) => plugin?.name === 'personal-ai-workspace-preview-api'), true);
 });

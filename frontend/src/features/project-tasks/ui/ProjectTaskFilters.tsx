@@ -4,8 +4,7 @@ import { Button } from '@/shared/ui';
 const FILTERS: readonly { readonly value: ProjectTaskFilter; readonly label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'open', label: 'Open' },
-  { value: 'completed', label: 'Completed' },
-  { value: 'archived', label: 'Archived' }
+  { value: 'completed', label: 'Completed' }
 ];
 
 interface ProjectTaskFiltersProps {

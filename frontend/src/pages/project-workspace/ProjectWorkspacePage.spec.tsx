@@ -5,19 +5,29 @@ import { Provider } from 'react-redux';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { projectReducer, type ProjectState } from '@/entities/project';
+import { projectReducer, type ProjectSnapshot, type ProjectState } from '@/entities/project';
+import type { ReactNode } from 'react';
 import { sessionCleared, userSessionReducer } from '@/entities/user-session';
 import { ApiClientError } from '@/shared/api';
 import { registerSessionExpiryHandler } from '@/shared/api';
 import { ProjectWorkspacePage } from '@/pages/project-workspace/ProjectWorkspacePage';
 
-const { getProjectMock } = vi.hoisted(() => ({ getProjectMock: vi.fn() }));
+const { getProjectMock, useProjectFilesMock } = vi.hoisted(() => ({ getProjectMock: vi.fn(), useProjectFilesMock: vi.fn() }));
 
 vi.mock('@/entities/project/api/project-api', () => ({
   getProject: getProjectMock,
   listProjects: vi.fn(),
   createProject: vi.fn(),
   updateProjectStatus: vi.fn()
+}));
+
+vi.mock('@/features/project-files', () => ({
+  useProjectFiles: useProjectFilesMock,
+  ProjectFilesPanel: ({ paths }: { readonly paths: readonly string[] }) => <section aria-label="Project files">{paths.join(', ')}</section>
+}));
+
+vi.mock('@/widgets/project-workspace', () => ({
+  ProjectWorkspaceLayout: ({ project, filePanel }: { readonly project: ProjectSnapshot; readonly filePanel: ReactNode }) => <section aria-label="Project workspace layout"><p>Workspace for {project.name}</p>{filePanel}</section>
 }));
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
@@ -57,6 +67,21 @@ function renderWorkspace(detail: ProjectState['detailById'][string]) {
 describe('ProjectWorkspacePage boundary errors', () => {
   beforeEach(() => {
     getProjectMock.mockReset();
+    useProjectFilesMock.mockReset();
+    useProjectFilesMock.mockReturnValue({ paths: ['README.md'], loading: false, error: null, limited: false, refresh: vi.fn() });
+  });
+
+  it('loads the project before composing the workspace and its independent file panel', async () => {
+    const project: ProjectSnapshot = { id: PROJECT_ID, name: 'Website', slug: 'website', relativeRoot: 'apps/website', status: 'active', version: 1, createdAt: '2026-10-05', updatedAt: '2026-10-05' };
+    getProjectMock.mockResolvedValue(project);
+    renderWorkspace({ status: 'idle', project: null, errorCode: null });
+    expect(screen.getByRole('region', { name: 'Loading project' })).toHaveAttribute('aria-busy', 'true');
+    expect(screen.queryByRole('region', { name: 'Project workspace layout' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('region', { name: 'Project workspace layout' })).toHaveTextContent('Workspace for Website');
+    expect(screen.getByRole('heading', { name: 'Website' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Project files' })).toHaveTextContent('README.md');
+    expect(getProjectMock).toHaveBeenCalledWith(PROJECT_ID);
+    expect(useProjectFilesMock).toHaveBeenCalledWith(PROJECT_ID);
   });
 
   it('shows a safe retryable boundary error instead of a false not-found state', async () => {

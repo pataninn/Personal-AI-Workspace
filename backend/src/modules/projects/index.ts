@@ -8,4 +8,5 @@ export {
 export type { Project, ProjectStatus } from '@/modules/projects/domain/project-types';
 export type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 export type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspace-boundary';
-
+export { DeleteProjectUseCase } from '@/modules/projects/use-cases/delete-project';
+export { GetProjectOverviewUseCase } from '@/modules/projects/use-cases/get-project-overview';

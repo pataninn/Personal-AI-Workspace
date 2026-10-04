@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vite';
+import tailwindcss from '@tailwindcss/vite';
 import { previewPlugin } from './preview/preview-plugin.mjs';
 
 const sourceDirectory = fileURLToPath(new URL('./src', import.meta.url));
@@ -20,9 +21,7 @@ export default defineConfig(({ mode }) => ({
     host: '127.0.0.1',
     port: 5173
   },
-  plugins: mode === 'preview'
-    ? [previewPlugin()]
-    : [],
+  plugins: [tailwindcss(), ...(mode === 'preview' ? [previewPlugin()] : [])],
   build: {
     outDir: 'dist',
     emptyOutDir: true

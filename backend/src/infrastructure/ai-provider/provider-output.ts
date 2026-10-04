@@ -37,7 +37,8 @@ const changeSchema = z.object({
 
 const taskSuggestionSchema = z.object({
   title: z.string(),
-  details: z.string().nullable().optional()
+  details: z.string().nullable().optional(),
+  subtasks: z.array(z.object({ title: z.string() }).strict()).max(50).optional()
 }).strict();
 
 const envelopeSchema = z.object({
@@ -51,6 +52,7 @@ const envelopeSchema = z.object({
 export interface ParsedTaskSuggestion {
   readonly title: string;
   readonly details: string | null;
+  readonly subtasks?: readonly { readonly title: string }[];
 }
 
 export interface ParsedProviderOutput {
@@ -97,7 +99,14 @@ export function parseProviderOutput(text: string): ParsedProviderOutput {
       || containsCredentialLikeValue(title) || (details !== null && containsCredentialLikeValue(details))) {
       throw new ModelProviderOutputError('task_suggestions');
     }
-    return { title, details };
+    const subtasks = suggestion.subtasks?.map((item) => {
+      const subtaskTitle = item.title.trim();
+      if (!subtaskTitle || Array.from(subtaskTitle).length > 120 || FORBIDDEN_TITLE_CONTROL.test(subtaskTitle) || containsCredentialLikeValue(subtaskTitle)) {
+        throw new ModelProviderOutputError('task_suggestions');
+      }
+      return { title: subtaskTitle };
+    });
+    return { title, details, ...(subtasks ? { subtasks } : {}) };
   });
   const responseText = redactEgressText(parsed.data.message ?? parsed.data.text ?? '');
   return { text: responseText, changes: changes.map(toRuntimeChangeProposal), taskSuggestions };

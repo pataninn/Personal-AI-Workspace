@@ -10,6 +10,7 @@ import {
 import type { IProjectTaskRepository } from '@/modules/tasks/repositories/project-task-repository';
 import {
   CreateProjectTaskUseCase,
+  DeleteProjectTaskUseCase,
   ListProjectTaskSuggestionsUseCase,
   ListProjectTasksUseCase,
   ReorderProjectTaskUseCase,
@@ -35,6 +36,7 @@ function dependencies(projectStatus: 'active' | 'archived' | null = 'active') {
     listTasks: jest.fn().mockResolvedValue({ tasks: [], orderVersion: 1 }),
     createTask: jest.fn().mockResolvedValue({}),
     updateTask: jest.fn().mockResolvedValue({}),
+    deleteTask: jest.fn().mockResolvedValue({ orderVersion: 2 }),
     reorderTask: jest.fn().mockResolvedValue({ tasks: [], orderVersion: 1 }),
     listSuggestions: jest.fn().mockResolvedValue([]),
     resolveSuggestion: jest.fn().mockResolvedValue({})
@@ -50,6 +52,33 @@ function dependencies(projectStatus: 'active' | 'archived' | null = 'active') {
 
 describe('project task use cases', () => {
   describe('CreateProjectTaskUseCase', () => {
+    it('defaults to Medium importance with no deadline or checklist', async () => {
+      const deps = dependencies();
+      const useCase = new CreateProjectTaskUseCase(deps.projectRepository, deps.taskRepositoryContract);
+      await useCase.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, title: 'Task', idempotencyKey: 'default' });
+      expect(deps.taskRepository.createTask).toHaveBeenCalledWith(expect.objectContaining({ importance: 'medium', deadline: null, subtasks: [] }));
+    });
+    it('keeps create fingerprints stable when retries generate new checklist ids', async () => {
+      const deps = dependencies();
+      const useCase = new CreateProjectTaskUseCase(deps.projectRepository, deps.taskRepositoryContract);
+      const input = { ownerId: OWNER_ID, projectId: PROJECT_ID, title: 'Task', idempotencyKey: 'retry', importance: 'urgent', deadline: '2026-10-05', subtasks: [{ title: 'First' }] };
+      await useCase.execute(input);
+      await useCase.execute(input);
+      const first = deps.taskRepository.createTask.mock.calls[0]?.[0];
+      const second = deps.taskRepository.createTask.mock.calls[1]?.[0];
+      expect(first.requestFingerprint).toBe(second.requestFingerprint);
+      expect(first.subtasks[0].id).not.toBe(second.subtasks[0].id);
+      expect(first).toMatchObject({ importance: 'urgent', deadline: '2026-10-05' });
+    });
+
+    it('includes scheduling and checklist changes in the idempotency fingerprint', async () => {
+      const deps = dependencies();
+      const useCase = new CreateProjectTaskUseCase(deps.projectRepository, deps.taskRepositoryContract);
+      const input = { ownerId: OWNER_ID, projectId: PROJECT_ID, title: 'Task', idempotencyKey: 'retry', importance: 'medium' };
+      await useCase.execute(input);
+      await useCase.execute({ ...input, importance: 'urgent' });
+      expect(deps.taskRepository.createTask.mock.calls[0]?.[0].requestFingerprint).not.toBe(deps.taskRepository.createTask.mock.calls[1]?.[0].requestFingerprint);
+    });
     it('should normalize task text and keep the owner and project scope on creation', async () => {
       const deps = dependencies();
       const useCase = new CreateProjectTaskUseCase(deps.projectRepository, deps.taskRepositoryContract);
@@ -102,6 +131,16 @@ describe('project task use cases', () => {
   });
 
   describe('UpdateProjectTaskUseCase', () => {
+    it('rejects archive mutations while supporting checklist planning updates', async () => {
+      const deps = dependencies();
+      const useCase = new UpdateProjectTaskUseCase(deps.projectRepository, deps.taskRepositoryContract);
+      const input = { ownerId: OWNER_ID, projectId: PROJECT_ID, taskId: TASK_ID, expectedVersion: 1 };
+      await expect(useCase.execute({ ...input, status: 'archived' })).rejects.toBeInstanceOf(ProjectTaskStatusConflictError);
+      await useCase.execute({ ...input, deadline: null, importance: 'high', subtasks: [{ title: ' Review ', completed: true }] });
+      expect(deps.taskRepository.updateTask).toHaveBeenCalledWith(expect.objectContaining({
+        ...input, text: { deadline: null, importance: 'high', subtasks: [{ id: expect.any(String), title: 'Review', completed: true }] }
+      }));
+    });
     it('should pass owner, project, task, and version together to the repository', async () => {
       const deps = dependencies();
       const useCase = new UpdateProjectTaskUseCase(deps.projectRepository, deps.taskRepositoryContract);
@@ -151,6 +190,16 @@ describe('project task use cases', () => {
         status: 'deleted'
       })).rejects.toBeInstanceOf(ProjectTaskStatusConflictError);
       expect(deps.taskRepository.updateTask).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('DeleteProjectTaskUseCase', () => {
+    it('preserves owner/project/task scope and expected version on deletion', async () => {
+      const deps = dependencies();
+      const useCase = new DeleteProjectTaskUseCase(deps.projectRepository, deps.taskRepositoryContract);
+      const input = { ownerId: OWNER_ID, projectId: PROJECT_ID, taskId: TASK_ID, expectedVersion: 4 };
+      await expect(useCase.execute(input)).resolves.toEqual({ orderVersion: 2 });
+      expect(deps.taskRepository.deleteTask).toHaveBeenCalledWith(input);
     });
   });
 

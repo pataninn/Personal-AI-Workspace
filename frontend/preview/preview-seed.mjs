@@ -1,3 +1,4 @@
+import { buildTask } from './preview-tasks.mjs';
 const CREATED_AT = '2026-09-12T09:00:00.000Z';
 
 export function createPreviewSeed() {
@@ -43,5 +44,12 @@ export function createPreviewSeed() {
     content: 'We want a clearer homepage for the new site.',
     createdAt: CREATED_AT
   }];
-  return { projects, conversations, messages };
+  const tasks = [buildTask(projectId, { title: 'Review the homepage layout', importance: 'high', deadline: '2026-10-10', details: 'Check the desktop and mobile layout.', subtasks: [{ title: 'Review desktop' }, { title: 'Review mobile' }] }, 0),
+    buildTask(projectId, { title: 'Collect launch feedback', importance: 'urgent', deadline: null }, 1)];
+  tasks.forEach((task) => { task.createdAt = CREATED_AT; task.updatedAt = CREATED_AT; });
+  const taskSuggestions = [{ id: '51295692-4bc0-4dd7-844a-5a6cd6c3858b', projectId, runId: '8c57f5a6-a01f-4e78-89cc-617b21d79b19', conversationId,
+    title: 'Prepare the launch checklist', details: 'Confirm the final homepage content.', subtasks: [{ title: 'Proofread the headline' }, { title: 'Check the primary link' }],
+    status: 'pending', version: 1, taskId: null, source: { kind: 'assistant', label: 'Suggested by the assistant' }, createdAt: CREATED_AT, resolvedAt: null }];
+  const files = { 'apps/website': { 'README.md': Buffer.from('# Website redesign\n\nProject notes for the homepage.\n'), 'src/index.ts': Buffer.from('export const title = "Website redesign";\n'), 'brief.pdf': Buffer.from('%PDF-1.4 preview document') } };
+  return { projects, conversations, messages, tasks, taskSuggestions, taskOrders: { [projectId]: 1 }, contexts: {}, files };
 }

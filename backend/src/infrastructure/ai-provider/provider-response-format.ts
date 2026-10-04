@@ -56,9 +56,13 @@ export const NVIDIA_RESPONSE_FORMAT = {
             type: 'object',
             properties: {
               title: { type: 'string', minLength: 1, maxLength: 120 },
-              details: { type: 'string', maxLength: 4096 }
+              details: { type: 'string', maxLength: 4096 },
+              subtasks: {
+                type: 'array', maxItems: 50,
+                items: { type: 'object', properties: { title: { type: 'string', minLength: 1, maxLength: 120 } }, required: ['title'], additionalProperties: false }
+              }
             },
-            required: ['title', 'details'],
+            required: ['title', 'details', 'subtasks'],
             additionalProperties: false
           }
         }

@@ -8,6 +8,9 @@ import { authenticateRequest, requireCsrf, sameOrigin } from '@/modules/auth/con
 import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
 import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
+import { deleteProjectHandler, overviewHandler } from '@/modules/projects/controllers/project-overview-handlers';
+import type { DeleteProjectUseCase } from '@/modules/projects/use-cases/delete-project';
+import type { GetProjectOverviewUseCase } from '@/modules/projects/use-cases/get-project-overview';
 import type {
   CreateProjectUseCase,
   GetProjectUseCase,
@@ -30,6 +33,8 @@ export interface ProjectRouterDependencies {
   readonly listProjects: ListProjectsUseCase;
   readonly getProject: GetProjectUseCase;
   readonly updateProjectStatus: UpdateProjectStatusUseCase;
+  readonly deleteProject?: DeleteProjectUseCase;
+  readonly getOverview?: GetProjectOverviewUseCase;
   readonly appOrigin: string;
   readonly clearSessionCookie: (response: Response) => void;
 }
@@ -173,7 +178,9 @@ export function createProjectRouter(dependencies: ProjectRouterDependencies): Ro
   const authenticate = authenticateRequest(dependencies.getSession, dependencies.clearSessionCookie);
   router.get('/', authenticate, listHandler(dependencies));
   router.post('/', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, createHandler(dependencies));
+  router.get('/overview', authenticate, overviewHandler(dependencies));
   router.get('/:projectId', authenticate, getHandler(dependencies));
   router.patch('/:projectId', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, updateStatusHandler(dependencies));
+  router.delete('/:projectId', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, deleteProjectHandler(dependencies));
   return router;
 }

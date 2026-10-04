@@ -6,6 +6,22 @@ import { ProjectTaskArchivedProjectError, ProjectTaskIdempotencyKeyError, Projec
 import type { ProjectTaskFilter, ProjectTaskStatus } from '@/modules/tasks/domain/project-task';
 import { canTransitionProjectTask, isProjectTaskStatus, normalizeTaskDetails, normalizeTaskTitle } from '@/modules/tasks/domain/project-task-validation';
 import type { IProjectTaskRepository } from '@/modules/tasks/repositories/project-task-repository';
+import type { UpdateProjectTaskTextRecord } from '@/modules/tasks/repositories/project-task-repository';
+import { normalizeTaskDeadline, normalizeTaskImportance, normalizeTaskSubtasks } from '@/modules/tasks/domain/task-planning-validation';
+
+interface TaskPlanningInput {
+  readonly importance?: unknown;
+  readonly deadline?: unknown;
+  readonly subtasks?: unknown;
+}
+
+function normalizePlanning(input: TaskPlanningInput): UpdateProjectTaskTextRecord {
+  return {
+    ...(input.importance === undefined ? {} : { importance: normalizeTaskImportance(input.importance) }),
+    ...(input.deadline === undefined ? {} : { deadline: normalizeTaskDeadline(input.deadline) }),
+    ...(input.subtasks === undefined ? {} : { subtasks: normalizeTaskSubtasks(input.subtasks) })
+  };
+}
 
 async function findProject(projectRepository: IProjectRepository, ownerId: string, projectId: string, writable: boolean): Promise<void> {
   const project = await projectRepository.findByIdForOwner(ownerId, projectId);
@@ -29,6 +45,18 @@ function fingerprint(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
+function planningFingerprint(input: TaskPlanningInput, normalized: UpdateProjectTaskTextRecord): Record<string, unknown> {
+  const rawItems: readonly unknown[] = Array.isArray(input.subtasks) ? input.subtasks : [];
+  return {
+    importance: normalized.importance ?? 'medium', deadline: normalized.deadline ?? null,
+    subtasks: (normalized.subtasks ?? []).map((item, index) => {
+      const raw = rawItems[index];
+      const id = raw && typeof raw === 'object' && 'id' in raw ? raw.id : null;
+      return { ...item, id: id ?? null };
+    })
+  };
+}
+
 export class ListProjectTasksUseCase {
   public constructor(
     private readonly projectRepository: IProjectRepository,
@@ -47,18 +75,25 @@ export class CreateProjectTaskUseCase {
     private readonly taskRepository: IProjectTaskRepository
   ) {}
 
-  public async execute(input: { readonly ownerId: string; readonly projectId: string; readonly title: unknown; readonly details?: unknown; readonly idempotencyKey: string }) {
+  public async execute(input: TaskPlanningInput & { readonly ownerId: string; readonly projectId: string; readonly title: unknown; readonly details?: unknown; readonly idempotencyKey: string }) {
     await findProject(this.projectRepository, input.ownerId, input.projectId, true);
     const title = normalizeTaskTitle(input.title);
     const details = normalizeTaskDetails(input.details);
     const idempotencyKey = validateIdempotencyKey(input.idempotencyKey);
+    const planning = normalizePlanning(input);
+    const importance = planning.importance ?? 'medium';
+    const deadline = planning.deadline ?? null;
+    const subtasks = planning.subtasks ?? [];
     return this.taskRepository.createTask({
       ownerId: input.ownerId,
       projectId: input.projectId,
       title,
       details,
+      importance,
+      deadline,
+      subtasks,
       idempotencyKey,
-      requestFingerprint: fingerprint({ title, details })
+      requestFingerprint: fingerprint({ title, details, ...(Object.keys(planning).length ? planningFingerprint(input, planning) : {}) })
     });
   }
 }
@@ -69,7 +104,7 @@ export class UpdateProjectTaskUseCase {
     private readonly taskRepository: IProjectTaskRepository
   ) {}
 
-  public async execute(input: {
+  public async execute(input: TaskPlanningInput & {
     readonly ownerId: string;
     readonly projectId: string;
     readonly taskId: string;
@@ -79,12 +114,12 @@ export class UpdateProjectTaskUseCase {
     readonly status?: unknown;
   }) {
     await findProject(this.projectRepository, input.ownerId, input.projectId, true);
-    const hasText = input.title !== undefined || input.details !== undefined;
+    const hasText = input.title !== undefined || input.details !== undefined || input.importance !== undefined || input.deadline !== undefined || input.subtasks !== undefined;
     if (input.status !== undefined && hasText) {
       throw new ProjectTaskStatusConflictError();
     }
     if (input.status !== undefined) {
-      if (!isProjectTaskStatus(input.status)) {
+      if (!isProjectTaskStatus(input.status) || input.status === 'archived') {
         throw new ProjectTaskStatusConflictError();
       }
       return this.taskRepository.updateTask({
@@ -95,7 +130,7 @@ export class UpdateProjectTaskUseCase {
         status: input.status
       });
     }
-    const text: { title?: string; details?: string | null } = {};
+    const text: { -readonly [K in keyof UpdateProjectTaskTextRecord]: UpdateProjectTaskTextRecord[K] } = { ...normalizePlanning(input) };
     if (input.title !== undefined) {
       text.title = normalizeTaskTitle(input.title);
     }
@@ -127,6 +162,16 @@ export class ReorderProjectTaskUseCase {
   }
 }
 
+/** Permanently removes an owned task with optimistic concurrency. */
+export class DeleteProjectTaskUseCase {
+  public constructor(private readonly projectRepository: IProjectRepository, private readonly taskRepository: IProjectTaskRepository) {}
+
+  public async execute(input: { readonly ownerId: string; readonly projectId: string; readonly taskId: string; readonly expectedVersion: number }): Promise<{ readonly orderVersion: number }> {
+    await findProject(this.projectRepository, input.ownerId, input.projectId, true);
+    return this.taskRepository.deleteTask(input);
+  }
+}
+
 export class ListProjectTaskSuggestionsUseCase {
   public constructor(
     private readonly projectRepository: IProjectRepository,
@@ -148,7 +193,7 @@ export class ResolveProjectTaskSuggestionUseCase {
     private readonly taskRepository: IProjectTaskRepository
   ) {}
 
-  public async execute(input: {
+  public async execute(input: TaskPlanningInput & {
     readonly ownerId: string;
     readonly projectId: string;
     readonly suggestionId: string;
@@ -175,6 +220,7 @@ export class ResolveProjectTaskSuggestionUseCase {
       suggestionId: input.suggestionId,
       expectedVersion: input.expectedVersion,
       decision: 'accepted',
+      ...normalizePlanning(input),
       ...(title === undefined ? {} : { title }),
       ...(details === undefined ? {} : { details })
     });

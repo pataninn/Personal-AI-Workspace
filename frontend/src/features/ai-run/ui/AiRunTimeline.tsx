@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 
 import type { AiRunSnapshot, EgressManifest } from '@/entities/ai-run';
 import type { ConversationHistoryResponse } from '@/entities/conversation';
-import { Alert, Button, Card, Spinner } from '@/shared/ui';
+import { Alert, Button, Card, MarkdownContent, Spinner } from '@/shared/ui';
 
 import { useAiRunTimeline } from '@/features/ai-run/model/use-ai-run-timeline';
 import { CommandExecutionSurface } from '@/features/ai-run/ui/CommandExecutionSurface';
@@ -45,7 +45,7 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
     const enteredActive = previous.status === 'ready' && ['queued', 'running', 'waiting_approval', 'cancel_requested'].includes(timeline.snapshot.status);
     const reachedTerminal = terminal && (!previous.terminal || timeline.connection === 'complete' && previous.connection !== 'complete');
     if (enteredActive || reachedTerminal) {
-      headingRef.current?.focus();
+      headingRef.current?.focus({ preventScroll: true });
     }
     previousRef.current = { status: timeline.snapshot.status, connection: timeline.connection, terminal };
   }, [terminal, timeline.connection, timeline.snapshot.status]);
@@ -77,7 +77,7 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
           {!terminal && timeline.connection !== 'disconnected' && timeline.connection !== 'error' ? <Spinner label={statusText} /> : null}
           {timeline.connection !== 'disconnected' ? <span data-testid="run-connection-status">{statusText}</span> : null}
         </div> : null}
-        {timeline.assistantText ? <article className="ai-run-assistant-output" data-testid="ai-run-assistant-output" aria-labelledby="ai-run-assistant-heading"><h4 id="ai-run-assistant-heading">Assistant response</h4>{partialResponse ? <p className="field-help" data-testid="assistant-stream-partial">Incomplete response</p> : null}<p data-testid="assistant-stream">{timeline.assistantText}</p></article> : null}
+        {timeline.assistantText ? <article className="ai-run-assistant-output" data-testid="ai-run-assistant-output" aria-labelledby="ai-run-assistant-heading"><h4 id="ai-run-assistant-heading">Assistant response</h4>{partialResponse ? <p className="field-help" data-testid="assistant-stream-partial">Incomplete response</p> : null}<div data-testid="assistant-stream"><MarkdownContent content={timeline.assistantText} /></div></article> : null}
         {!timeline.assistantText && ['ready', 'queued', 'running', 'waiting_approval'].includes(timeline.snapshot.status) ? <p className="field-help" data-testid="assistant-stream-empty">Waiting for the assistant...</p> : null}
         {!timeline.assistantText && timeline.snapshot.status === 'succeeded' ? <p className="field-help" data-testid="ai-run-empty-response">The assistant completed without a message.</p> : null}
         {!compact && timeline.snapshot.status === 'succeeded' ? <p className="field-help" data-testid="run-completed">Run complete. Workspace file changes are applied automatically and recorded in File history.</p> : null}

@@ -320,6 +320,7 @@ export class InMemoryAiRunRepository implements IAiRunRepository, IProjectTaskSu
         conversationId: run.conversationId,
         title: draft.title,
         details: draft.details ?? null,
+        subtasks: draft.subtasks ?? [],
         status: 'pending',
         version: 1,
         taskId: null,

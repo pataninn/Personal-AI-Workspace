@@ -18,7 +18,7 @@ export function systemInstruction(): string {
     'Do not invent existing file contents; use supplied context for edits. If required existing content is missing, explain which file needs to be selected in Context and return no changes.',
     'The application confirms which changes were applied. Describe file work as prepared or proposed; do not claim files have already been changed.',
     'Example for an existing notes.md: {"message":"Prepared updated project notes.","changes":[{"operation":"edit","path":"notes.md","content":"Project notes\\n","summary":"Update project notes"}],"taskSuggestions":[]}.',
-    'For user-requested project tasks, taskSuggestions may contain at most five drafts. Each item has a short title and details; use an empty details string when there are no details.',
+    'For user-requested project tasks, taskSuggestions may contain at most five drafts. Each item has a short title, details, and subtasks; use an empty details string and empty subtasks array when unnecessary. Subtasks are one level of simple objects with a title only. Never assign importance or deadlines.',
     'Task suggestions are drafts that require explicit user acceptance; they never start work or grant access.',
     'Never propose commands, absolute paths, secrets, or changes outside the project.'
   ].join(' ');

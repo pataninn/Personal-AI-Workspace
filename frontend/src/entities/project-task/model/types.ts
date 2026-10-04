@@ -2,6 +2,20 @@ export type ProjectTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'a
 
 export type ProjectTaskFilter = 'all' | 'open' | 'completed' | 'archived';
 
+export type ProjectTaskImportance = 'low' | 'medium' | 'high' | 'urgent';
+
+export interface ProjectTaskSubtask {
+  readonly id: string;
+  readonly title: string;
+  readonly completed: boolean;
+}
+
+export interface ProjectTaskSubtaskDraft {
+  readonly id?: string;
+  readonly title: string;
+  readonly completed?: boolean;
+}
+
 export interface UserProjectTaskSource {
   readonly kind: 'user';
   readonly label: string;
@@ -27,6 +41,9 @@ export interface ProjectTask {
   readonly projectId: string;
   readonly title: string;
   readonly details: string | null;
+  readonly importance: ProjectTaskImportance;
+  readonly deadline: string | null;
+  readonly subtasks: readonly ProjectTaskSubtask[];
   readonly status: ProjectTaskStatus;
   readonly position: number;
   readonly version: number;
@@ -40,6 +57,9 @@ export interface ProjectTask {
 export interface ProjectTaskDraft {
   readonly title: string;
   readonly details: string | null;
+  readonly importance?: ProjectTaskImportance;
+  readonly deadline?: string | null;
+  readonly subtasks?: readonly ProjectTaskSubtaskDraft[];
 }
 
 export type ProjectTaskSuggestionStatus = 'pending' | 'accepted' | 'dismissed';
@@ -51,6 +71,7 @@ export interface ProjectTaskSuggestion {
   readonly conversationId: string;
   readonly title: string;
   readonly details: string | null;
+  readonly subtasks: readonly { readonly title: string }[];
   readonly status: ProjectTaskSuggestionStatus;
   readonly version: number;
   readonly taskId: string | null;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { listProjectTasks } from '@/entities/project-task/api/project-task-api';
 import type { ProjectTask, ProjectTaskFilter, ProjectTaskList } from '@/entities/project-task/model/types';
+import { compareTaskPriority } from '@/entities/project-task/model/task-priority';
 
 export type ProjectTaskLoadStatus = 'idle' | 'loading' | 'success' | 'error';
 
@@ -33,7 +34,9 @@ export function useProjectTasks(projectId: string, filter: ProjectTaskFilter): {
   const reload = useCallback(async (): Promise<ProjectTaskList | null> => {
     const generation = generationRef.current + 1;
     generationRef.current = generation;
-    setState({ projectId, filter, status: 'loading', tasks: [], orderVersion: null, error: null });
+    setState((current) => isCurrentScope(current.projectId, current.filter, projectId, filter)
+      ? { ...current, status: 'loading', error: null }
+      : { projectId, filter, status: 'loading', tasks: [], orderVersion: null, error: null });
     try {
       const list = await listProjectTasks(projectId, filter);
       if (generation === generationRef.current && isCurrentScope(currentProjectIdRef.current, currentFilterRef.current, projectId, filter)) {
@@ -70,7 +73,7 @@ export function useProjectTasks(projectId: string, filter: ProjectTaskFilter): {
       if (!isCurrentScope(current.projectId, current.filter, projectId, filter) || current.status !== 'success') {
         return current;
       }
-      const tasks = [...current.tasks.filter((candidate) => candidate.id !== task.id), task].sort(compareTaskOrder);
+      const tasks = [...current.tasks.filter((candidate) => candidate.id !== task.id), task].sort(compareTaskPriority);
       return { ...current, tasks, orderVersion: orderVersion ?? current.orderVersion };
     });
   }, [filter, projectId]);
@@ -89,8 +92,4 @@ export function useProjectTasks(projectId: string, filter: ProjectTaskFilter): {
 
 function isCurrentScope(currentProjectId: string, currentFilter: ProjectTaskFilter, projectId: string, filter: ProjectTaskFilter): boolean {
   return currentProjectId === projectId && currentFilter === filter;
-}
-
-function compareTaskOrder(left: ProjectTask, right: ProjectTask): number {
-  return left.position - right.position || left.id.localeCompare(right.id);
 }

@@ -12,3 +12,4 @@ export { Label } from '@/shared/ui/Label';
 export { Skeleton } from '@/shared/ui/Skeleton';
 export { Spinner } from '@/shared/ui/Spinner';
 export { Textarea } from '@/shared/ui/Textarea';
+export { MarkdownContent } from '@/shared/ui/MarkdownContent';

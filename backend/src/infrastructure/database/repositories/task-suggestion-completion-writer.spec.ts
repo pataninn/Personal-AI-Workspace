@@ -49,7 +49,8 @@ describe('TypeOrmTaskSuggestionRepository', () => {
         RUN_CONTEXT.conversationId,
         0,
         'Review setup notes',
-        'Document the local startup steps.'
+        'Document the local startup steps.',
+        '[]'
       ]);
       expect(query.mock.calls[1]?.[0]).toContain("'task.suggestion_proposed'");
       expect(query.mock.calls[1]?.[0]).toContain('ON CONFLICT');

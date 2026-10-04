@@ -1,91 +1,42 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-
-import { useAppSelector } from '@/app/store/hooks';
-import { selectProjectErrorCode, selectProjectListStatus, selectProjects } from '@/entities/project';
-import { ArchiveProjectDialog, CreateProjectDialog, useProjectListLoader } from '@/features/project-management';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useProjectOverview } from '@/entities/project';
 import type { ProjectSnapshot } from '@/entities/project';
-import { Alert, Button, Card, ErrorState, Skeleton, Spinner } from '@/shared/ui';
+import { formatTaskDeadline, isTaskOverdue, TASK_IMPORTANCE_LABELS } from '@/entities/project-task';
+import { CreateProjectDialog, RemoveProjectDialog, useProjectListLoader } from '@/features/project-management';
+import { Alert, Button, Card, ErrorState, Skeleton } from '@/shared/ui';
 import { ProjectList } from '@/widgets/project-list';
 
+/** Home focuses on recent project activity and six upcoming tasks across projects. */
 export function DashboardPage(): React.JSX.Element {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const home = useProjectOverview();
   const { retry } = useProjectListLoader();
-  const status = useAppSelector(selectProjectListStatus);
-  const errorCode = useAppSelector(selectProjectErrorCode);
-  const projects = useAppSelector(selectProjects);
   const [createOpen, setCreateOpen] = useState(false);
-  const [action, setAction] = useState<{ project: ProjectSnapshot; mode: 'archive' | 'restore' } | null>(null);
-  const boundaryUnavailable = errorCode === 'WORKSPACE_BOUNDARY_UNAVAILABLE';
+  const [removeTarget, setRemoveTarget] = useState<ProjectSnapshot | null>(null);
+  const projects = home.overview?.projects ?? [];
+  const tasks = home.overview?.tasks ?? [];
+  const boundaryUnavailable = home.errorCode === 'WORKSPACE_BOUNDARY_UNAVAILABLE';
 
   useEffect(() => {
-    if (searchParams.get('create') === '1') {
-      setCreateOpen(true);
-      searchParams.delete('create');
-      setSearchParams(searchParams, { replace: true });
-    }
+    if (searchParams.get('create') === '1') { setCreateOpen(true); searchParams.delete('create'); setSearchParams(searchParams, { replace: true }); }
   }, [searchParams, setSearchParams]);
 
-  return (
-    <div className="projects-page">
-      <header className="projects-page-header">
-        <div>
-          <p className="product-label">Workspace</p>
-          <h1>Projects</h1>
-          <p className="supporting-copy">Choose a project to work in, or create one inside the configured local workspace.</p>
-        </div>
-        <Button type="button" data-testid="project-create-trigger" disabled={status !== 'success' || boundaryUnavailable} onClick={() => setCreateOpen(true)}>New project</Button>
-      </header>
-      <Alert tone="info" data-testid="workspace-boundary-status-message">
-        <div className="workspace-boundary-note">
-          <span className="workspace-boundary-mark" aria-hidden="true" />
-          <div>
-            <strong>Project boundaries stay local</strong>
-            <p>The server checks each project before an operation. Roots stay inside your configured workspace, cannot overlap, and cannot change after creation.</p>
-          </div>
-        </div>
-      </Alert>
-      {status === 'loading' || status === 'idle' ? <ProjectListLoading /> : null}
-      {status === 'error' ? (
-        boundaryUnavailable ? (
-          <Alert tone="error" data-testid="workspace-boundary-error" role="alert">
-            <strong>The authoritative workspace is unavailable.</strong>
-            <p>Project actions are disabled until the local workspace setup is safe again.</p>
-            <Button type="button" variant="secondary" data-testid="workspace-boundary-retry-button" onClick={retry}>Try again</Button>
-          </Alert>
-        ) : (
-          <ErrorState title="Projects could not be loaded" detail="Try again to reload your projects." testId="project-list-error" action={<Button type="button" variant="secondary" data-testid="project-retry-button" onClick={retry}>Try again</Button>} />
-        )
-      ) : null}
-      {status === 'success' ? (
-        <div aria-busy="false">
-          <ProjectList projects={projects} onCreate={() => setCreateOpen(true)} onArchive={(project) => setAction({ project, mode: 'archive' })} onRestore={(project) => setAction({ project, mode: 'restore' })} />
-        </div>
-      ) : null}
-      <CreateProjectDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        onRetryBoundary={retry}
-        onCreated={(projectId) => navigate(`/projects/${projectId}`)}
-      />
-      <ArchiveProjectDialog
-        project={action?.project ?? null}
-        mode={action?.mode}
-        onOpenChange={(open) => { if (!open) setAction(null); }}
-        onCompleted={() => setAction(null)}
-        onRetryBoundary={retry}
-      />
-    </div>
-  );
-}
+  function refresh(): void { home.refresh(); retry(); }
 
-function ProjectListLoading(): React.JSX.Element {
-  return (
-    <section className="project-list-loading" data-testid="project-list-loading" aria-busy="true" aria-label="Loading projects">
-      <div className="loading-status"><Spinner label="Loading projects" /><span role="status">Loading projects…</span></div>
-      <Skeleton className="project-card-skeleton" />
-      <Skeleton className="project-card-skeleton" />
-    </section>
-  );
+  return <div className="projects-page home-page">
+    <header className="projects-page-header"><div><p className="product-label">Workspace</p><h1>Home</h1><p className="supporting-copy">Pick up a project or choose your next task.</p></div><Button type="button" data-testid="project-create-trigger" disabled={home.status !== 'success' || boundaryUnavailable} onClick={() => { setCreateOpen(true); }}>New project</Button></header>
+    {home.status === 'loading' ? <div aria-busy="true" data-testid="project-list-loading"><p role="status">Loading your workspace...</p><Skeleton className="project-card-skeleton" /></div> : null}
+    {home.status === 'error' ? boundaryUnavailable ? <Alert tone="error" data-testid="workspace-boundary-error" role="alert"><strong>The authoritative workspace is unavailable.</strong><p>Project actions are disabled until the local workspace setup is available.</p><Button type="button" variant="secondary" data-testid="workspace-boundary-retry-button" onClick={refresh}>Try again</Button></Alert> : <ErrorState title="Workspace could not be loaded" detail="Try again to reload your projects and tasks." testId="project-list-error" action={<Button type="button" variant="secondary" data-testid="project-retry-button" onClick={refresh}>Try again</Button>} /> : null}
+    {home.status === 'success' ? <>
+      <section aria-labelledby="recent-projects-heading"><header className="home-section-heading"><h2 id="recent-projects-heading">Recent projects</h2><span className="supporting-copy">Recently active</span></header><ProjectList projects={projects.slice(0, 4)} onCreate={() => { setCreateOpen(true); }} onRemove={setRemoveTarget} /></section>
+      {projects.length > 4 ? <details className="more-projects" data-testid="home-more-projects"><summary>Other projects ({projects.length - 4})</summary><ProjectList projects={projects.slice(4)} onCreate={() => { setCreateOpen(true); }} onRemove={setRemoveTarget} /></details> : null}
+      <Card className="home-task-card"><header className="home-section-heading"><div><h2>Up next</h2><p className="supporting-copy">Nearest deadline, then importance. Across all projects.</p></div></header>
+        {!tasks.length ? <p className="supporting-copy" data-testid="home-tasks-empty">No open tasks. Add one in a project to plan your next step.</p> : <ul className="home-task-list" data-testid="home-task-list">{tasks.map((task) => <li key={task.id}><Link to={`/projects/${task.projectId}/tasks?task=${encodeURIComponent(task.id)}`} className="home-task-link"><div><strong>{task.title}</strong><span className="supporting-copy">{task.projectName}</span></div><div className="home-task-meta"><span className={`importance-label importance-${task.importance}`}>{TASK_IMPORTANCE_LABELS[task.importance]}</span><span className={isTaskOverdue(task) ? 'task-overdue' : 'supporting-copy'}>{task.deadline ? `${isTaskOverdue(task) ? 'Overdue · ' : ''}${formatTaskDeadline(task.deadline)}` : 'No deadline'}</span></div></Link></li>)}</ul>}
+      </Card>
+    </> : null}
+    <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} onRetryBoundary={refresh} onCreated={(projectId) => { navigate(`/projects/${projectId}`); }} />
+    <RemoveProjectDialog project={removeTarget} onOpenChange={(open) => { if (!open) setRemoveTarget(null); }} onRemoved={() => { setRemoveTarget(null); refresh(); }} />
+  </div>;
 }

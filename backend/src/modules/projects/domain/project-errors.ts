@@ -105,7 +105,25 @@ export class ProjectStatusInvalidError extends ProjectDomainError {
 
 export class ProjectVersionRequiredError extends ProjectDomainError {
   public constructor() {
-    super('PROJECT_VERSION_REQUIRED', 400, 'If-Match is required for project status changes.');
+    super('PROJECT_VERSION_REQUIRED', 400, 'If-Match is required for project changes and removal.');
+  }
+}
+
+export class ProjectRemovalBusyError extends ProjectDomainError {
+  public constructor() {
+    super('PROJECT_REMOVAL_BUSY', 409, 'Finish or resolve assistant runs, file changes, and commands before removing this project.');
+  }
+}
+
+export class ProjectRecoveryCleanupError extends ProjectDomainError {
+  public constructor() {
+    super('PROJECT_RECOVERY_CLEANUP_FAILED', 503, 'Private project history could not be safely removed.');
+  }
+}
+
+export class ProjectRemovalCleanupPendingError extends ProjectDomainError {
+  public constructor() {
+    super('PROJECT_REMOVAL_CLEANUP_PENDING', 503, 'The project record was removed, but private history cleanup is pending. Restart the app to retry cleanup.');
   }
 }
 
@@ -114,4 +132,3 @@ export class WorkspaceBoundaryUnavailableError extends ProjectDomainError {
     super('WORKSPACE_BOUNDARY_UNAVAILABLE', 503, 'The authoritative workspace is unavailable, so this project operation cannot proceed safely.');
   }
 }
-

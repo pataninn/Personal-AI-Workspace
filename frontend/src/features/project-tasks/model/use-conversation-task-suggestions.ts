@@ -28,6 +28,10 @@ export function useConversationTaskSuggestions(projectId: string, conversationId
   const reload = useCallback(async (): Promise<void> => {
     const generation = generationRef.current + 1;
     generationRef.current = generation;
+    if (!conversationId) {
+      setState({ projectId, conversationId, status: 'success', suggestions: [], acceptedTasks: {} });
+      return;
+    }
     setState({ projectId, conversationId, status: 'loading', suggestions: [], acceptedTasks: {} });
     try {
       const suggestions = await listConversationProjectTaskSuggestions(projectId, conversationId);
@@ -100,8 +104,8 @@ async function loadAcceptedTasks(projectId: string, suggestions: readonly Projec
     return {};
   }
   try {
-    const [active, archived] = await Promise.all([listProjectTasks(projectId, 'all'), listProjectTasks(projectId, 'archived')]);
-    const tasks = [...active.tasks, ...archived.tasks];
+    const active = await listProjectTasks(projectId, 'all');
+    const tasks = active.tasks;
     return Object.fromEntries(accepted.flatMap((suggestion) => {
       const task = tasks.find((candidate) => candidate.id === suggestion.taskId);
       return task ? [[suggestion.id, task]] : [];

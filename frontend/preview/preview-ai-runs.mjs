@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { handlePreviewDirectChat } from './preview-direct-chat.mjs';
 
 import {
   buildManifest,
@@ -32,6 +33,7 @@ export function createPreviewAiRuns() {
   }
 
   async function handle(request, response, seed, parts, method) {
+    if (await handlePreviewDirectChat({ request, response, seed, parts, method, runs, idempotency })) return true;
     if (isCreateRoute(parts)) {
       if (method !== 'POST') {
         sendError(response, 404, 'PREVIEW_NOT_FOUND', 'This AI run route is not part of the mock preview.');
@@ -167,7 +169,16 @@ export function createPreviewAiRuns() {
     sendData(response, { run: serializeSnapshot(run), manifest: serializeManifest(run) });
   }
 
-  return { handle, reset };
+  function isBusy(projectId) {
+    return [...runs.values()].some((run) => run.projectId === projectId && (!['succeeded', 'failed', 'blocked', 'cancelled', 'rejected'].includes(run.status) ||
+      ['awaiting_approval', 'applying', 'needs_manual_review'].includes(run.proposedChangeSet?.status) ||
+      (run.commands ?? []).some((command) => ['awaiting_approval', 'running', 'cancel_requested', 'review_required'].includes(command.status))));
+  }
+  function removeProject(projectId) {
+    for (const [id, run] of runs) if (run.projectId === projectId) runs.delete(id);
+    for (const [key, value] of idempotency) if (key.includes(projectId) || !runs.has(value.runId)) idempotency.delete(key);
+  }
+  return { handle, reset, isBusy, removeProject };
 }
 
 function createFakeChangeSet(runId, projectId) {

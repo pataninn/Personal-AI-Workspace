@@ -5,6 +5,8 @@ export type {
   ProjectTaskListSnapshot,
   ProjectTaskSource,
   ProjectTaskStatus,
+  ProjectTaskImportance,
+  ProjectTaskSubtask,
   ProjectTaskSuggestion,
   ProjectTaskSuggestionStatus,
   TaskSuggestionDraft
@@ -14,6 +16,7 @@ export type { IProjectTaskRepository } from '@/modules/tasks/repositories/projec
 export type { IProjectTaskSuggestionQuery } from '@/modules/tasks/repositories/task-suggestion-query';
 export {
   CreateProjectTaskUseCase,
+  DeleteProjectTaskUseCase,
   ListProjectTaskSuggestionsUseCase,
   ListProjectTasksUseCase,
   ReorderProjectTaskUseCase,

@@ -10,11 +10,12 @@ import { LogoutUseCase } from '@/modules/auth/use-cases/logout';
 import type { IClock, ILoginRateLimiter, IOpaqueTokenProvider, IPasswordHasher } from '@/modules/auth/repositories/security-providers';
 import type { CreateSessionInput, ISessionRepository } from '@/modules/auth/repositories/session-repository';
 import type { CreateLocalUserInput, IUserRepository } from '@/modules/auth/repositories/user-repository';
-import { ProjectRootReparsePointError, WorkspaceBoundaryUnavailableError } from '@/modules/projects/domain/project-errors';
+import { ProjectNotFoundError, ProjectRemovalBusyError, ProjectRootReparsePointError, ProjectVersionConflictError, WorkspaceBoundaryUnavailableError } from '@/modules/projects/domain/project-errors';
 import type { Project } from '@/modules/projects/domain/project-types';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspace-boundary';
-import { CreateProjectUseCase, GetProjectUseCase, ListProjectsUseCase, UpdateProjectStatusUseCase } from '@/modules/projects';
+import { CreateProjectUseCase, DeleteProjectUseCase, GetProjectOverviewUseCase, GetProjectUseCase, ListProjectsUseCase, UpdateProjectStatusUseCase } from '@/modules/projects';
+import type { RemoveProjectRecord } from '@/modules/projects/repositories/project-removal-repository';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { GetReadinessUseCase } from '@/modules/health';
 import { createLogger } from '@/shared/logging/logger';
@@ -38,6 +39,15 @@ const activeProject: Project = {
 
 class FixtureProjectRepository implements IProjectRepository {
   private readonly records = new Map<string, Project>([[activeProject.id, activeProject]]);
+  public busy = false;
+
+  public async remove(input: RemoveProjectRecord): Promise<void> {
+    const project = await this.findByIdForOwner(input.ownerId, input.projectId);
+    if (!project) throw new ProjectNotFoundError();
+    if (project.version !== input.expectedVersion) throw new ProjectVersionConflictError();
+    if (this.busy) throw new ProjectRemovalBusyError();
+    this.records.delete(input.projectId);
+  }
 
   public async listByOwner(ownerId: string, includeArchived: boolean): Promise<readonly Project[]> {
     return [...this.records.values()].filter((project) => project.ownerId === ownerId && (includeArchived || project.status === 'active'));
@@ -138,12 +148,11 @@ class FixturePasswordHasher implements IPasswordHasher {
 }
 class FixtureRateLimiter implements ILoginRateLimiter { public consume(): boolean { return true; } }
 
-function buildApp(boundary: FixtureWorkspaceBoundary): express.Express {
+function buildApp(boundary: FixtureWorkspaceBoundary, projectRepository = new FixtureProjectRepository()): express.Express {
   const users = new FixtureUserRepository();
   const sessions = new FixtureSessionRepository();
   const tokenProvider = new FixtureTokenProvider();
   const clock = new FixtureClock();
-  const projectRepository = new FixtureProjectRepository();
   const readiness = new InMemoryReadinessState();
   readiness.markReady();
   const getSession = new GetSessionUseCase(sessions, tokenProvider, clock);
@@ -166,6 +175,11 @@ function buildApp(boundary: FixtureWorkspaceBoundary): express.Express {
       listProjects: new ListProjectsUseCase(projectRepository, boundary),
       getProject: new GetProjectUseCase(projectRepository, boundary),
       updateProjectStatus: new UpdateProjectStatusUseCase(projectRepository, boundary),
+      deleteProject: new DeleteProjectUseCase(projectRepository),
+      getOverview: new GetProjectOverviewUseCase({ getOverview: async (ownerId) => ({
+        projects: (await projectRepository.listByOwner(ownerId, false)).map((project) => ({ ...project, lastActivityAt: NOW })),
+        tasks: []
+      }) }),
       appOrigin: APP_ORIGIN,
       clearSessionCookie: (response) => clearSessionCookie(response, true)
     }
@@ -188,6 +202,42 @@ async function login(app: express.Express): Promise<{ cookie: string; csrf: stri
 }
 
 describe('projects API (integration)', () => {
+  it('returns the Home overview before the dynamic project route, without owner IDs', async () => {
+    const app = buildApp(new FixtureWorkspaceBoundary());
+    await request(app).get('/api/v1/projects/overview').expect(401);
+    const session = await login(app);
+    const overview = await request(app).get('/api/v1/projects/overview?taskLimit=6').set('Cookie', session.cookie).expect(200);
+    expect(overview.body.data.projects[0]).toMatchObject({ id: PROJECT_ID, lastActivityAt: NOW.toISOString() });
+    expect(overview.body.data.projects[0]).not.toHaveProperty('ownerId');
+    expect(overview.body.data.tasks).toEqual([]);
+    await request(app).get('/api/v1/projects/overview?taskLimit=101').set('Cookie', session.cookie).expect(400);
+    await request(app).get('/api/v1/projects/overview?taskLimit=6&taskLimit=7').set('Cookie', session.cookie).expect(400);
+  });
+
+  it('requires origin, CSRF, authentication and current version for permanent project removal', async () => {
+    const app = buildApp(new FixtureWorkspaceBoundary());
+    const endpoint = `/api/v1/projects/${PROJECT_ID}`;
+    const session = await login(app);
+    await request(app).delete(endpoint).set('Origin', APP_ORIGIN).expect(401);
+    await request(app).delete(endpoint).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf).expect(403);
+    await request(app).delete(endpoint).set('Origin', APP_ORIGIN).set('Cookie', session.cookie).expect(403);
+    await request(app).delete(endpoint).set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf).expect(400);
+    await request(app).delete(endpoint).set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf).set('If-Match', '2').expect(409);
+    await request(app).delete(endpoint).set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf).set('If-Match', '1').expect(204);
+    await request(app).get(endpoint).set('Cookie', session.cookie).expect(404);
+  });
+
+  it('blocks busy projects and hides guessed removal IDs', async () => {
+    const projects = new FixtureProjectRepository();
+    projects.busy = true;
+    const app = buildApp(new FixtureWorkspaceBoundary(), projects);
+    const session = await login(app);
+    await request(app).delete(`/api/v1/projects/${PROJECT_ID}`).set('Origin', APP_ORIGIN).set('Cookie', session.cookie)
+      .set('X-CSRF-Token', session.csrf).set('If-Match', '1').expect(409).expect(({ body }) => expect(body.error.code).toBe('PROJECT_REMOVAL_BUSY'));
+    await request(app).delete('/api/v1/projects/99999999-9999-4999-8999-999999999999').set('Origin', APP_ORIGIN).set('Cookie', session.cookie)
+      .set('X-CSRF-Token', session.csrf).set('If-Match', '1').expect(404);
+  });
+
   it('lists safely, rejects traversal and overlap, and hides guessed IDs', async () => {
     const boundary = new FixtureWorkspaceBoundary();
     const app = buildApp(boundary);
@@ -220,4 +270,3 @@ describe('projects API (integration)', () => {
     await request(app).get('/api/v1/projects').set('Cookie', session.cookie).expect(503).expect(({ body }) => expect(body.error.code).toBe('WORKSPACE_BOUNDARY_UNAVAILABLE'));
   });
 });
-

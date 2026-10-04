@@ -86,10 +86,10 @@ describe('project task validation', () => {
 
   describe('task status lifecycle', () => {
     const allowedNextStatuses: Readonly<Record<ProjectTaskStatus, readonly ProjectTaskStatus[]>> = {
-      todo: ['in_progress', 'done', 'archived'],
-      in_progress: ['blocked', 'done', 'archived'],
-      blocked: ['in_progress', 'archived'],
-      done: ['archived'],
+      todo: ['in_progress', 'done'],
+      in_progress: ['blocked', 'done'],
+      blocked: ['in_progress', 'done'],
+      done: [],
       archived: []
     };
 

@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 
 import { createPreviewAiRuns } from './preview-ai-runs.mjs';
 import { createPreviewSeed } from './preview-seed.mjs';
+import { handlePreviewTasks } from './preview-tasks.mjs';
+import { handlePreviewFiles } from './preview-files.mjs';
+import { previewOverview, removePreviewProject } from './preview-overview.mjs';
 
 const COOKIE_NAME = 'pai_preview_session';
 const CSRF_TOKEN = 'preview-only-csrf-token';
@@ -110,7 +113,7 @@ export function createPreviewApi() {
       response.end();
       return;
     }
-    if (['POST', 'PATCH'].includes(method) && !isMutationAllowed(request)) {
+    if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(method) && !isMutationAllowed(request)) {
       sendError(response, 403, 'CSRF_INVALID', 'The mock preview request is missing its CSRF token.');
       return;
     }
@@ -118,6 +121,11 @@ export function createPreviewApi() {
       return;
     }
     if (parts[2] === 'projects') {
+      if (parts[3] === 'overview' && method === 'GET') { previewOverview(response, seed, url); return; }
+      if (await handlePreviewTasks(request, response, seed, idempotency, parts, method, url)) return;
+      if (await handlePreviewFiles(request, response, seed, parts, method, url)) return;
+      const project = findProject(seed, parts[3]);
+      if (project && !parts[4] && method === 'DELETE') { removePreviewProject(request, response, seed, idempotency, project, aiRuns); return; }
       await handleProjects(request, response, seed, idempotency, parts, method);
       return;
     }

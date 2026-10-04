@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiClientError } from '@/shared/api';
 import {
   createProjectTask,
+  deleteProjectTask,
   decideProjectTaskSuggestion,
   listProjectTaskSuggestions,
   listProjectTasks,
@@ -18,6 +19,9 @@ const task = {
   projectId: PROJECT_ID,
   title: 'Update setup notes',
   details: null,
+  importance: 'medium',
+  deadline: null,
+  subtasks: [],
   status: 'todo',
   position: 0,
   version: 1,
@@ -34,6 +38,7 @@ const suggestion = {
   conversationId: '55555555-5555-4555-8555-555555555555',
   title: 'Review the setup guide',
   details: 'Check local startup instructions.',
+  subtasks: [],
   status: 'pending',
   version: 1,
   taskId: null,
@@ -85,6 +90,27 @@ describe('project task API', () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe(`/api/v1/projects/${PROJECT_ID}/task-order`);
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ taskId: TASK_ID, direction: 'down' });
     expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('If-Match')).toBe('"4"');
+  });
+
+  it('preserves task metadata and sends delete with CSRF and current task version', async () => {
+    fetchMock.mockResolvedValueOnce(envelope({ task, orderVersion: 4 }));
+    const draft = { title: task.title, details: null, importance: 'urgent' as const, deadline: '2026-10-05', subtasks: [{ title: 'Review', completed: false }] };
+    await createProjectTask(PROJECT_ID, draft, 'csrf', 'intent');
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ title: task.title, importance: 'urgent', deadline: '2026-10-05', subtasks: [{ title: 'Review', completed: false }] });
+
+    fetchMock.mockResolvedValueOnce(envelope({ orderVersion: 5 }));
+    await expect(deleteProjectTask(PROJECT_ID, TASK_ID, 4, 'csrf')).resolves.toBe(5);
+    const request = fetchMock.mock.calls[1]?.[1];
+    expect(request?.method).toBe('DELETE');
+    expect(new Headers(request?.headers).get('If-Match')).toBe('"4"');
+    expect(new Headers(request?.headers).get('X-CSRF-Token')).toBe('csrf');
+  });
+
+  it('rejects malformed metadata and nested subtask responses', async () => {
+    for (const invalid of [{ importance: 'unknown' }, { deadline: '2026-02-30' }, { subtasks: [{ id: 'item', title: 'Nested', completed: false, subtasks: [] }] }]) {
+      fetchMock.mockResolvedValueOnce(envelope({ tasks: [{ ...task, ...invalid }], orderVersion: 1 }));
+      await expect(listProjectTasks(PROJECT_ID)).rejects.toBeInstanceOf(ApiClientError);
+    }
   });
 
   it('lists and explicitly accepts or dismisses versioned suggestions', async () => {

@@ -26,6 +26,7 @@ export function TaskSuggestionCard({ projectId, suggestion, pending, pendingLabe
         </div>
         <h3>{suggestion.title}</h3>
         {suggestion.details ? <p className="project-task-details">{suggestion.details}</p> : null}
+        {suggestion.subtasks.length ? <ul className="list-disc pl-5 text-sm" aria-label="Suggested subtasks">{suggestion.subtasks.map((subtask, index) => <li key={`${index}-${subtask.title}`}>{subtask.title}</li>)}</ul> : null}
         <Link className="project-task-conversation-link" data-testid={`project-task-suggestion-conversation-${suggestion.id}`} to={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(suggestion.conversationId)}`}>
           View originating conversation
         </Link>

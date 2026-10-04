@@ -36,6 +36,14 @@ import { TypeOrmProjectFactRepository } from '@/infrastructure/database/reposito
 import { TypeOrmProjectTaskRepository } from '@/infrastructure/database/repositories/typeorm-project-task-repository';
 import { TypeOrmTaskSuggestionRepository } from '@/infrastructure/database/repositories/task-suggestion-completion-writer';
 import { WorkspaceMutationGatewayAdapter } from '@/infrastructure/workspace/workspace-mutation-gateway';
+import { ProjectFileGateway } from '@/infrastructure/workspace/project-file-gateway';
+import { TypeOrmProjectFileAccess } from '@/infrastructure/database/repositories/typeorm-project-file-access';
+import { TypeOrmProjectRemovalRepository } from '@/infrastructure/database/repositories/typeorm-project-removal-repository';
+import { TypeOrmProjectOverviewRepository } from '@/infrastructure/database/repositories/typeorm-project-overview-repository';
+import { ProjectRecoveryCleaner } from '@/infrastructure/workspace/project-recovery-cleaner';
+import { DeleteProjectUseCase } from '@/modules/projects/use-cases/delete-project';
+import { GetProjectOverviewUseCase } from '@/modules/projects/use-cases/get-project-overview';
+import { ProjectFileActions } from '@/modules/files/use-cases/project-file-actions';
 import { DEFAULT_WORKSPACE_INSPECTION_POLICY } from '@/modules/files/domain/workspace-policy';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { runStartupChecks } from '@/infrastructure/startup/startup-checks';
@@ -49,7 +57,7 @@ import { ListWorkspaceFilesUseCase, ReadWorkspaceTextUseCase, SearchWorkspaceTex
 import { StartupChecksError } from '@/shared/errors/app-error';
 import { createLogger, type AppLogger } from '@/shared/logging/logger';
 import { CreateProjectFactUseCase, DeleteProjectFactUseCase, ListProjectFactsUseCase, ReviewProjectFactUseCase, UpdateProjectFactUseCase } from '@/modules/memory';
-import { CreateProjectTaskUseCase, ListProjectTaskSuggestionsUseCase, ListProjectTasksUseCase, ReorderProjectTaskUseCase, ResolveProjectTaskSuggestionUseCase, UpdateProjectTaskUseCase } from '@/modules/tasks';
+import { CreateProjectTaskUseCase, DeleteProjectTaskUseCase, ListProjectTaskSuggestionsUseCase, ListProjectTasksUseCase, ReorderProjectTaskUseCase, ResolveProjectTaskSuggestionUseCase, UpdateProjectTaskUseCase } from '@/modules/tasks';
 import { GetAiRunActivityUseCase, ListAiRunActivityUseCase } from '@/modules/ai-runs/use-cases/activity-use-cases';
 import { ListProjectFileHistoryUseCase } from '@/modules/ai-runs/use-cases/file-history-use-cases';
 
@@ -101,6 +109,8 @@ export async function createApplication(
     if (recoveredRunCount > 0) {
       logger.warn({ recoveredRunCount }, 'Interrupted AI runs require manual review after startup.');
     }
+    const projectRemovalRepository = new TypeOrmProjectRemovalRepository(dataSource, new ProjectRecoveryCleaner(config.recoveryRoot));
+    await projectRemovalRepository.cleanupPending();
     readiness.markReady();
     const providerPermissionRepository = new TypeOrmProviderPermissionRepository(dataSource);
     const commandRepository = new TypeOrmSandboxCommandRepository(dataSource);
@@ -170,6 +180,8 @@ export async function createApplication(
           rateLimiter: new InMemoryLoginRateLimiter()
         },
         projects: {
+          deleteProject: new DeleteProjectUseCase(projectRemovalRepository),
+          getOverview: new GetProjectOverviewUseCase(new TypeOrmProjectOverviewRepository(dataSource)),
           getSession,
           createProject: new CreateProjectUseCase(projectRepository, workspaceBoundary),
           listProjects: new ListProjectsUseCase(projectRepository, workspaceBoundary),
@@ -188,6 +200,8 @@ export async function createApplication(
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },
         workspace: {
+          appOrigin: config.appOrigin,
+          fileActions: new ProjectFileActions(new TypeOrmProjectFileAccess(dataSource), new ProjectFileGateway({ containerRoot: config.workspaceRoot, workspaceBoundary })),
           getSession,
           listWorkspaceFiles: new ListWorkspaceFilesUseCase(projectRepository, workspaceGateway),
           treeWorkspaceFiles: new TreeWorkspaceFilesUseCase(projectRepository, workspaceGateway),
@@ -242,6 +256,7 @@ export async function createApplication(
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },
         projectTasks: {
+          deleteTask: new DeleteProjectTaskUseCase(projectRepository, projectTaskRepository),
           getSession,
           listTasks: new ListProjectTasksUseCase(projectRepository, projectTaskRepository),
           createTask: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository),

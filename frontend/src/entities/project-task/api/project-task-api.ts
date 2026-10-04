@@ -1,4 +1,5 @@
-import { ApiClientError, getJson, patchJson, postJson } from '@/shared/api';
+import { ApiClientError, getJson, patchJson, postJson, requestJson } from '@/shared/api';
+import { readTaskImportance, readTaskDeadline, readTaskSubtasks, readSuggestedSubtasks } from '@/entities/project-task/api/task-metadata';
 import type {
   ProjectTask,
   ProjectTaskDraft,
@@ -23,7 +24,7 @@ export async function createProjectTask(
   csrfToken: string,
   idempotencyKey: string
 ): Promise<ProjectTaskUpdateResult> {
-  const body = draft.details === null ? { title: draft.title } : draft;
+  const body = draft.details === null ? { ...draft, details: undefined } : draft;
   const response = await postJson<unknown>(projectTasksPath(projectId), body, {
     'X-CSRF-Token': csrfToken,
     'Idempotency-Key': idempotencyKey
@@ -59,6 +60,13 @@ export async function reorderProjectTask(
     versionHeaders(orderVersion, csrfToken)
   );
   return normalizeProjectTaskList(response, projectId);
+}
+
+export async function deleteProjectTask(projectId: string, taskId: string, expectedVersion: number, csrfToken: string): Promise<number> {
+  const response = await requestJson<unknown>(`${projectTasksPath(projectId)}/${encodeURIComponent(taskId)}`, {
+    method: 'DELETE', headers: versionHeaders(expectedVersion, csrfToken)
+  });
+  return readPositiveInteger(asRecord(response)?.orderVersion);
 }
 
 export async function listProjectTaskSuggestions(projectId: string, status: 'all' | 'pending' = 'pending'): Promise<readonly ProjectTaskSuggestion[]> {
@@ -110,6 +118,9 @@ export function normalizeProjectTask(value: unknown, expectedProjectId?: string)
     projectId: readNonEmptyString(record?.projectId),
     title: readNonEmptyString(record?.title),
     details: readNullableString(record?.details),
+    importance: readTaskImportance(record?.importance),
+    deadline: readTaskDeadline(record?.deadline),
+    subtasks: readTaskSubtasks(record?.subtasks),
     status: readTaskStatus(record?.status),
     position: readNonNegativeInteger(record?.position),
     version: readPositiveInteger(record?.version),
@@ -135,6 +146,7 @@ export function normalizeProjectTaskSuggestion(value: unknown, expectedProjectId
     conversationId: readNonEmptyString(record?.conversationId),
     title: readNonEmptyString(record?.title),
     details: readNullableString(record?.details),
+    subtasks: readSuggestedSubtasks(record?.subtasks),
     status: readSuggestionStatus(record?.status),
     version: readPositiveInteger(record?.version),
     taskId: readNullableString(record?.taskId),

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 
 import { useAppDispatch, useAppSelector } from '@/app/store/hooks';
 import { loadProject, selectProjectDetail } from '@/entities/project';
@@ -9,6 +9,8 @@ import { Alert, Button, ErrorState, Skeleton, Spinner } from '@/shared/ui';
 /** Usage: Route for /projects/:projectId/tasks; loads the selected project before showing its task manager. */
 export function ProjectTasksPage(): React.JSX.Element {
   const { projectId = '' } = useParams();
+  const [searchParams] = useSearchParams();
+  const targetTaskId = searchParams.get('task');
   const dispatch = useAppDispatch();
   const detail = useAppSelector(selectProjectDetail(projectId));
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -49,7 +51,7 @@ export function ProjectTasksPage(): React.JSX.Element {
         </div>
         <Link data-testid="project-tasks-back-to-project" className="button button-secondary" to={`/projects/${encodeURIComponent(project.id)}`}>Back to project</Link>
       </header>
-      <ProjectTasksManager key={project.id} projectId={project.id} projectName={project.name} archived={project.status === 'archived'} />
+      <ProjectTasksManager key={project.id} projectId={project.id} projectName={project.name} targetTaskId={targetTaskId} archived={project.status === 'archived'} />
     </div>
   );
 }

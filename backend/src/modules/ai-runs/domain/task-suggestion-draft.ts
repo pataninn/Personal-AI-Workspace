@@ -2,4 +2,5 @@
 export interface TaskSuggestionDraft {
   readonly title: string;
   readonly details: string | null;
+  readonly subtasks?: readonly { readonly title: string }[];
 }

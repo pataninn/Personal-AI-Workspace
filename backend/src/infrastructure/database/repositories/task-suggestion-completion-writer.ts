@@ -40,16 +40,16 @@ export class TypeOrmTaskSuggestionRepository implements TaskSuggestionCompletion
     const normalizedDrafts = normalizeTaskSuggestionDrafts(drafts);
     for (const [ordinal, draft] of normalizedDrafts.entries()) {
       const rows = asRows<SuggestionWriteRow>(await queryRunner.query(
-        `INSERT INTO "project_task_suggestions" ("owner_id", "project_id", "run_id", "conversation_id", "ordinal", "title", "details")
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO "project_task_suggestions" ("owner_id", "project_id", "run_id", "conversation_id", "ordinal", "title", "details", "subtasks")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
          ON CONFLICT ("run_id", "ordinal") DO NOTHING
-         RETURNING "id", "owner_id", "project_id", "conversation_id", "title", "details", "status"`,
-        [runContext.ownerId, runContext.projectId, runContext.runId, runContext.conversationId, ordinal, draft.title, draft.details ?? null]
+         RETURNING "id", "owner_id", "project_id", "conversation_id", "title", "details", "subtasks", "status"`,
+        [runContext.ownerId, runContext.projectId, runContext.runId, runContext.conversationId, ordinal, draft.title, draft.details ?? null, JSON.stringify(draft.subtasks ?? [])]
       ));
       let suggestion = rows[0];
       if (!suggestion) {
         const existing = asRows<SuggestionWriteRow>(await queryRunner.query(
-          `SELECT "id", "owner_id", "project_id", "conversation_id", "title", "details", "status"
+          `SELECT "id", "owner_id", "project_id", "conversation_id", "title", "details", "subtasks", "status"
            FROM "project_task_suggestions" WHERE "run_id" = $1 AND "ordinal" = $2 LIMIT 1`,
           [runContext.runId, ordinal]
         ));
@@ -69,7 +69,7 @@ export class TypeOrmTaskSuggestionRepository implements TaskSuggestionCompletion
 
   public async listForRun(ownerId: string, projectId: string, runId: string): Promise<readonly ProjectTaskSuggestion[]> {
     const rows = await this.dataSource.query(
-      `SELECT "id", "project_id", "run_id", "conversation_id", "title", "details", "status", "version", "created_at", "resolved_at",
+      `SELECT "id", "project_id", "run_id", "conversation_id", "title", "details", "subtasks", "status", "version", "created_at", "resolved_at",
               (SELECT "id" FROM "project_tasks" WHERE "source_suggestion_id" = "project_task_suggestions"."id" LIMIT 1) AS "task_id"
        FROM "project_task_suggestions"
        WHERE "owner_id" = $1 AND "project_id" = $2 AND "run_id" = $3
@@ -87,6 +87,7 @@ interface SuggestionWriteRow {
   readonly conversation_id: string;
   readonly title: string;
   readonly details: string | null;
+  readonly subtasks: ProjectTaskSuggestion['subtasks'];
   readonly status: string;
 }
 
@@ -106,6 +107,7 @@ interface SuggestionListRow {
   readonly conversation_id: string;
   readonly title: string;
   readonly details: string | null;
+  readonly subtasks: ProjectTaskSuggestion['subtasks'];
   readonly status: ProjectTaskSuggestion['status'];
   readonly version: number;
   readonly created_at: Date | string;
@@ -121,6 +123,7 @@ function toProjectTaskSuggestion(row: SuggestionListRow): ProjectTaskSuggestion 
     conversationId: row.conversation_id,
     title: row.title,
     details: row.details,
+    subtasks: row.subtasks ?? [],
     status: row.status,
     version: row.version,
     taskId: row.task_id,
@@ -144,5 +147,6 @@ function matchesSuggestion(row: SuggestionWriteRow, context: TaskSuggestionRunCo
     && row.conversation_id === context.conversationId
     && row.title === draft.title
     && row.details === (draft.details ?? null)
+    && JSON.stringify(row.subtasks ?? []) === JSON.stringify(draft.subtasks ?? [])
     && row.status === 'pending';
 }

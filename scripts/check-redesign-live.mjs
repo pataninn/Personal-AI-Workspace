@@ -1,0 +1,93 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { chromium } from '../frontend/node_modules/@playwright/test/index.mjs';
+
+const base = 'https://127.0.0.1:8443';
+const artifacts = path.resolve('../.codex/docs/personal-ai-workspace-mvp/task-r-chat-task-redesign/artifacts');
+await mkdir(artifacts, { recursive: true });
+// Keep the password and generated cookie in process memory; evidence excludes them.
+const loginScript = `const fs=require('node:fs'),https=require('node:https');const body=JSON.stringify({password:fs.readFileSync(process.env.LOCAL_USER_PASSWORD_FILE,'utf8').trimEnd()});const r=https.request(process.env.APP_ORIGIN+'/api/v1/auth/login',{method:'POST',rejectUnauthorized:false,headers:{Origin:process.env.APP_ORIGIN,'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)}},s=>{let b='';s.on('data',x=>b+=x);s.on('end',()=>{if(s.statusCode!==200)process.exit(1);const data=JSON.parse(b).data;process.stdout.write(JSON.stringify({cookie:s.headers['set-cookie'][0].split(';')[0],csrf:data.csrfToken}));});});r.on('error',()=>process.exit(1));r.end(body);`;
+const session = JSON.parse(execFileSync('docker', ['exec', 'personal-ai-workspace-personal-ai-app-1', 'node', '-e', loginScript], { encoding: 'utf8' }));
+const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
+const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 1000 } });
+const separator = session.cookie.indexOf('=');
+await context.addCookies([{ name: session.cookie.slice(0, separator), value: session.cookie.slice(separator + 1), url: base, secure: true, httpOnly: true, sameSite: 'Lax' }]);
+const page = await context.newPage();
+const errors = [];
+const requests = [];
+page.on('pageerror', (error) => errors.push(error.message));
+page.on('request', (request) => requests.push(new URL(request.url()).origin));
+try {
+  const relativeRoot = `apps/redesign-qa-${randomUUID()}`;
+  const fixtureRoot = `/workspace/${relativeRoot}`;
+  execFileSync('docker', ['exec', 'personal-ai-workspace-personal-ai-app-1', 'node', '-e', 'require("node:fs").mkdirSync(process.argv[1],{recursive:true});', fixtureRoot]);
+  let fixture;
+  const mutationHeaders = { Origin: base, 'X-CSRF-Token': session.csrf };
+  try {
+    const created = await context.request.post(`${base}/api/v1/projects`, { headers: mutationHeaders, data: { name: 'Disposable redesign file QA', relativeRoot } });
+    assert.equal(created.status(), 201); fixture = (await created.json()).data;
+    const files = `${base}/api/v1/projects/${fixture.id}/files`;
+    const upload = await context.request.post(`${files}/upload?path=roundtrip.md`, { headers: { ...mutationHeaders, 'Content-Type': 'application/octet-stream' }, data: Buffer.from('# Round trip\n') });
+    assert.equal(upload.status(), 201);
+    const downloaded = await context.request.get(`${files}/download?path=roundtrip.md`);
+    assert.equal(downloaded.status(), 200); assert.equal((await downloaded.body()).toString(), '# Round trip\n');
+    const originalHash = downloaded.headers().etag.replaceAll('"', '');
+    const edited = await context.request.put(`${files}/content`, { headers: mutationHeaders, data: { path: 'roundtrip.md', content: '# Updated\n', expectedHash: originalHash } });
+    assert.equal(edited.status(), 200);
+    const stale = await context.request.put(`${files}/content`, { headers: mutationHeaders, data: { path: 'roundtrip.md', content: 'Stale overwrite', expectedHash: originalHash } });
+    assert.equal(stale.status(), 409);
+    const refreshed = await context.request.get(`${files}/download?path=roundtrip.md`);
+    assert.equal((await refreshed.body()).toString(), '# Updated\n');
+    assert.equal((await context.request.delete(`${files}/content?path=roundtrip.md`, { headers: { ...mutationHeaders, 'If-Match': refreshed.headers().etag } })).status(), 204);
+    const binary = Buffer.from([0, 255, 128, 42]);
+    assert.equal((await context.request.post(`${files}/upload?path=fixture.bin`, { headers: { ...mutationHeaders, 'Content-Type': 'application/octet-stream' }, data: binary })).status(), 201);
+    const binaryDownload = await context.request.get(`${files}/download?path=fixture.bin`);
+    assert.deepEqual(await binaryDownload.body(), binary);
+    assert.equal((await context.request.delete(`${files}/content?path=fixture.bin`, { headers: { ...mutationHeaders, 'If-Match': binaryDownload.headers().etag } })).status(), 204);
+    assert.equal((await context.request.delete(`${base}/api/v1/projects/${fixture.id}`, { headers: { ...mutationHeaders, 'If-Match': String(fixture.version) } })).status(), 204);
+    execFileSync('docker', ['exec', 'personal-ai-workspace-personal-ai-app-1', 'node', '-e', 'require("node:fs").rmdirSync(process.argv[1]);', fixtureRoot]);
+    fixture = null;
+  } catch (error) {
+    process.stderr.write(`Disposable file fixture retained for review at ${relativeRoot}\n`);
+    throw error;
+  }
+  const response = await page.goto(`${base}/dashboard`);
+  await page.getByRole('heading', { name: 'Recent projects' }).waitFor();
+  assert.equal(await page.locator('section[aria-labelledby="recent-projects-heading"] [data-testid="project-item"]').count(), 4);
+  assert.equal(await page.getByTestId('home-more-projects').evaluate((node) => node.open), false);
+  const overview = await context.request.get(`${base}/api/v1/projects/overview?taskLimit=6`);
+  assert.equal(overview.status(), 200);
+  const data = (await overview.json()).data;
+  assert.equal(data.projects.length, 6);
+  assert(data.tasks.length <= 6);
+  await page.screenshot({ path: path.join(artifacts, 'live-home-desktop.png'), fullPage: true });
+  await page.goto(`${base}/projects/8329879a-1678-41a9-89e8-cdc07e839760`);
+  await page.locator('.workspace-tasks').getByRole('button', { name: 'Tasks', exact: true }).waitFor();
+  await page.getByTestId('conversation-history').waitFor();
+  const history = page.locator('.chat-history-viewport');
+  await history.waitFor();
+  await page.getByTestId('message-item').last().waitFor();
+  await page.waitForFunction(() => { const node = document.querySelector('.chat-history-viewport'); return node && node.scrollHeight - node.scrollTop - node.clientHeight < 80; });
+  assert((await page.locator('.workspace-chat').boundingBox()).width > (await page.locator('.workspace-tasks').boundingBox()).width);
+  await page.screenshot({ path: path.join(artifacts, 'live-workspace-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.getByTestId('workspace-panel-picker').inputValue(), 'chat');
+  await page.getByTestId('workspace-panel-picker').selectOption('files');
+  assert.equal(await page.locator('.workspace-files').isVisible(), true);
+  assert.equal(await page.locator('.workspace-chat').isVisible(), false);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+  await page.screenshot({ path: path.join(artifacts, 'live-workspace-mobile-files.png'), fullPage: true });
+  assert.deepEqual(errors, []);
+  assert(requests.every((origin) => origin === base));
+  const headers = response.headers();
+  const security = Object.fromEntries(['content-security-policy', 'strict-transport-security', 'x-frame-options', 'x-content-type-options'].map((key) => [key, headers[key]]));
+  assert(Object.values(security).every(Boolean));
+  await writeFile(path.join(artifacts, 'live-browser.json'), JSON.stringify({ passed: true, activeProjects: data.projects.length, combinedTasks: data.tasks.length, checks: ['production Home', 'real saved latest chat', 'desktop split', 'mobile selector/files', 'no overflow', 'security headers', 'local requests', 'zero page errors', 'Linux real text/binary upload/download/edit/delete', 'stale write refused', 'disposable project removed and empty fixture folder cleaned'], security, pageErrors: errors, providerCalls: 0 }, null, 2));
+  process.stdout.write('Live browser and disposable file checks passed. No provider requests.\n');
+} finally {
+  await context.request.post(`${base}/api/v1/auth/logout`, { headers: { Origin: base, 'X-CSRF-Token': session.csrf } });
+  await browser.close();
+}

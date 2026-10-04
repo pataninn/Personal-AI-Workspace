@@ -1,8 +1,10 @@
 import { useRef, useState } from 'react';
 
+import { TASK_IMPORTANCE_LABELS } from '@/entities/project-task';
 import type { ProjectTask, ProjectTaskDraft, ProjectTaskSuggestion } from '@/entities/project-task';
 import { validateProjectTaskDraft } from '@/features/project-tasks/model/project-task-validation';
-import type { ProjectTaskFieldErrors } from '@/features/project-tasks/model/project-task-validation';
+import type { ProjectTaskFieldErrors, TaskMetadataDraft } from '@/features/project-tasks/model/project-task-validation';
+import { TaskMetadataFields } from '@/features/project-tasks/ui/TaskMetadataFields';
 import { AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogRoot, AlertDialogTitle, Button, DialogContent, DialogDescription, DialogRoot, DialogTitle, Input, Label, Textarea } from '@/shared/ui';
 
 export type TaskEditorTarget =
@@ -29,6 +31,7 @@ export function TaskEditorDialog({ target, saving, onOpenChange, onSave }: TaskE
   const initialVersion = target?.kind === 'task' ? target.task?.version ?? null : target?.suggestion.version ?? null;
   const [title, setTitle] = useState(initialTitle);
   const [details, setDetails] = useState(initialDetails);
+  const [metadata, setMetadata] = useState<TaskMetadataDraft>(() => initialMetadata(target));
   const [expectedVersion, setExpectedVersion] = useState(initialVersion);
   const [fieldErrors, setFieldErrors] = useState<ProjectTaskFieldErrors>({});
   const [error, setError] = useState<string | null>(null);
@@ -39,7 +42,7 @@ export function TaskEditorDialog({ target, saving, onOpenChange, onSave }: TaskE
   const titleRef = useRef<HTMLInputElement>(null);
   const originalTitle = target?.kind === 'task' ? target.task?.title ?? '' : target?.suggestion.title ?? '';
   const originalDetails = target?.kind === 'task' ? target.task?.details ?? '' : target?.suggestion.details ?? '';
-  const dirty = title !== originalTitle || details !== originalDetails;
+  const dirty = title !== originalTitle || details !== originalDetails || JSON.stringify(metadata) !== JSON.stringify(initialMetadata(target));
   const open = target !== null;
   const titleId = 'project-task-title';
   const detailsId = 'project-task-details';
@@ -68,12 +71,12 @@ export function TaskEditorDialog({ target, saving, onOpenChange, onSave }: TaskE
 
   async function submit(event: React.FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    const validation = validateProjectTaskDraft(title, details);
+    const validation = validateProjectTaskDraft(title, details, metadata);
     setFieldErrors(validation.errors);
     setError(null);
     setSaveNotice('');
     if (Object.keys(validation.errors).length > 0) {
-      titleRef.current?.focus();
+      focusInvalidField(validation.errors);
       return;
     }
     const result = await onSave(validation.draft, idempotencyKey, expectedVersion);
@@ -95,6 +98,7 @@ export function TaskEditorDialog({ target, saving, onOpenChange, onSave }: TaskE
     }
     setTitle(conflict.title);
     setDetails(conflict.details ?? '');
+    setMetadata({ importance: conflict.importance, deadline: conflict.deadline ?? '', subtasks: conflict.subtasks });
     setExpectedVersion(conflict.version);
     setConflict(undefined);
     setFieldErrors({});
@@ -124,6 +128,7 @@ export function TaskEditorDialog({ target, saving, onOpenChange, onSave }: TaskE
     <>
       <DialogRoot open={open} onOpenChange={requestClose}>
         <DialogContent
+          className="max-h-[85dvh] overflow-y-auto"
           data-testid="project-task-editor-dialog"
           aria-describedby="project-task-editor-description"
           onOpenAutoFocus={(event) => { event.preventDefault(); titleRef.current?.focus(); }}
@@ -165,6 +170,7 @@ export function TaskEditorDialog({ target, saving, onOpenChange, onSave }: TaskE
               />
               {fieldErrors.details ? <p id="project-task-details-error" className="field-error" role="alert">{fieldErrors.details}</p> : null}
             </div>
+            <TaskMetadataFields value={metadata} disabled={saving} errors={fieldErrors} onChange={(value) => { setMetadata(value); setIdempotencyKey(createIntentKey()); setFieldErrors((current) => ({ title: current.title, details: current.details })); setError(null); }} />
             <div className="dialog-actions">
               <Button type="button" variant="secondary" data-testid="project-task-editor-cancel" disabled={saving} onClick={() => { requestClose(false); }}>Cancel</Button>
               <Button type="submit" data-testid="project-task-editor-save" disabled={saving || conflict === null} aria-busy={saving || undefined}>{saving ? busyLabel : saveLabel}</Button>
@@ -198,7 +204,7 @@ function TaskVersionConflict({ latest, onReload, onKeepDraft }: {
     <section className="project-task-version-conflict" data-testid="project-task-version-conflict" role="alert">
       <h3>This task changed elsewhere.</h3>
       <p>Reload the latest version or keep your draft open. Review the current task before saving over it.</p>
-      <dl><dt>Latest title</dt><dd>{latest.title}</dd>{latest.details ? <><dt>Latest details</dt><dd>{latest.details}</dd></> : null}</dl>
+      <dl><dt>Latest title</dt><dd>{latest.title}</dd>{latest.details ? <><dt>Latest details</dt><dd>{latest.details}</dd></> : null}<dt>Importance</dt><dd>{TASK_IMPORTANCE_LABELS[latest.importance]}</dd><dt>Deadline</dt><dd>{latest.deadline ?? 'No deadline'}</dd>{latest.subtasks.length ? <><dt>Checklist</dt><dd>{latest.subtasks.map((subtask) => `${subtask.completed ? 'Completed' : 'Open'}: ${subtask.title}`).join('; ')}</dd></> : null}</dl>
       <div className="project-task-conflict-actions">
         <Button type="button" variant="secondary" data-testid="project-task-conflict-reload" onClick={onReload}>Reload latest</Button>
         <Button type="button" variant="secondary" data-testid="project-task-conflict-keep-editing" onClick={onKeepDraft}>Keep editing my draft</Button>
@@ -216,6 +222,18 @@ function editorTitle(target: TaskEditorTarget | null): string {
 
 function createIntentKey(): string {
   return globalThis.crypto.randomUUID();
+}
+
+function focusInvalidField(errors: ProjectTaskFieldErrors): void {
+  const field = errors.title ? 'title' : errors.details ? 'details' : errors.importance ? 'importance' : errors.deadline ? 'deadline' : 'subtask-0';
+  document.getElementById(`project-task-${field}`)?.focus();
+}
+
+function initialMetadata(target: TaskEditorTarget | null): TaskMetadataDraft {
+  if (target?.kind === 'task' && target.task) {
+    return { importance: target.task.importance, deadline: target.task.deadline ?? '', subtasks: target.task.subtasks };
+  }
+  return { importance: 'medium', deadline: '', subtasks: target?.kind === 'suggestion' ? target.suggestion.subtasks.map((subtask) => ({ title: subtask.title, completed: false })) : [] };
 }
 
 function withoutField(values: ProjectTaskFieldErrors, field: 'title' | 'details'): ProjectTaskFieldErrors {

@@ -4,11 +4,13 @@ import { Link, useParams } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '@/app/store/hooks';
 import { loadProject, selectProjectDetail } from '@/entities/project';
 import { Alert, Button, ErrorState, Skeleton, Spinner } from '@/shared/ui';
-import { ChatWorkspace } from '@/widgets/chat-workspace';
+import { ProjectWorkspaceLayout } from '@/widgets/project-workspace';
+import { ProjectFilesPanel, useProjectFiles } from '@/features/project-files';
 
 export function ProjectWorkspacePage(): React.JSX.Element {
   const { projectId = '' } = useParams();
   const dispatch = useAppDispatch();
+  const files = useProjectFiles(projectId);
   const detail = useAppSelector(selectProjectDetail(projectId));
 
   useEffect(() => {
@@ -52,7 +54,7 @@ export function ProjectWorkspacePage(): React.JSX.Element {
           <p className="project-status" data-testid={isArchived ? 'project-archived-status' : 'project-active-status'}>{isArchived ? 'Archived' : 'Active'}</p>
         </div>
       </header>
-      <ChatWorkspace project={project} />
+      <ProjectWorkspaceLayout project={project} filePanel={<ProjectFilesPanel projectId={projectId} paths={files.paths} loading={files.loading} error={files.error} limited={files.limited} onRefresh={files.refresh} />} />
     </div>
   );
 }

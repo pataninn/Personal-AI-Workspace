@@ -1,4 +1,5 @@
 import { useAppSelector } from '@/app/store/hooks';
+import { createPortal } from 'react-dom';
 import { selectCsrfToken } from '@/entities/user-session';
 import type { ConversationHistoryResponse } from '@/entities/conversation';
 import { Alert, Button, Label, Textarea } from '@/shared/ui';
@@ -10,17 +11,19 @@ interface ChatComposerProps {
   readonly conversationId: string;
   readonly disabled: boolean;
   readonly archivedDescriptionId?: string;
+  readonly timelineTarget?: HTMLElement | null;
   readonly onConversationReconciled: (history: ConversationHistoryResponse) => void;
 }
 
 /** Render in a conversation to send directly using the project's saved context. */
-export function ChatComposer({ projectId, conversationId, disabled, archivedDescriptionId, onConversationReconciled }: ChatComposerProps): React.JSX.Element {
+export function ChatComposer({ projectId, conversationId, disabled, archivedDescriptionId, timelineTarget, onConversationReconciled }: ChatComposerProps): React.JSX.Element {
   const csrfToken = useAppSelector(selectCsrfToken);
   const chat = useDirectChat({ projectId, conversationId, csrfToken, disabled, onHistory: onConversationReconciled });
+  const timeline = chat.run && chat.run.decision === 'approved' ? <AiRunTimeline key={chat.run.runId} compact snapshot={chat.run} projectId={projectId}
+    conversationId={conversationId} csrfToken={csrfToken} disabled={disabled} onSnapshotChange={chat.setRun} onConversationReconciled={onConversationReconciled} /> : null;
   return (
     <section className="chat-composer" data-testid="chat-composer">
-      {chat.run && chat.run.decision === 'approved' ? <AiRunTimeline key={chat.run.runId} compact snapshot={chat.run} projectId={projectId}
-        conversationId={conversationId} csrfToken={csrfToken} disabled={disabled} onSnapshotChange={chat.setRun} onConversationReconciled={onConversationReconciled} /> : null}
+      {timelineTarget ? createPortal(timeline, timelineTarget) : timeline}
       <form className="message-composer" onSubmit={(event) => { event.preventDefault(); void chat.send(); }}>
         <Label htmlFor="chat-message">Message</Label>
         <Textarea id="chat-message" data-testid="message-input" rows={3} value={chat.content}

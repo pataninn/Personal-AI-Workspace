@@ -12,11 +12,17 @@ export interface CreateProjectTaskRecord {
   readonly details: string | null;
   readonly idempotencyKey: string;
   readonly requestFingerprint: string;
+  readonly importance: ProjectTask['importance'];
+  readonly deadline: string | null;
+  readonly subtasks: ProjectTask['subtasks'];
 }
 
 export interface UpdateProjectTaskTextRecord {
   readonly title?: string;
   readonly details?: string | null;
+  readonly importance?: ProjectTask['importance'];
+  readonly deadline?: string | null;
+  readonly subtasks?: ProjectTask['subtasks'];
 }
 
 export interface UpdateProjectTaskRecord {
@@ -44,6 +50,9 @@ export interface ResolveProjectTaskSuggestionRecord {
   readonly decision: 'accepted' | 'dismissed';
   readonly title?: string;
   readonly details?: string | null;
+  readonly importance?: ProjectTask['importance'];
+  readonly deadline?: string | null;
+  readonly subtasks?: ProjectTask['subtasks'];
 }
 
 export interface CreateProjectTaskResult {
@@ -60,6 +69,7 @@ export interface IProjectTaskRepository {
   listTasks(ownerId: string, projectId: string, filter: ProjectTaskFilter): Promise<ProjectTaskListSnapshot>;
   createTask(input: CreateProjectTaskRecord): Promise<CreateProjectTaskResult>;
   updateTask(input: UpdateProjectTaskRecord): Promise<{ readonly task: ProjectTask; readonly orderVersion: number }>;
+  deleteTask(input: { readonly ownerId: string; readonly projectId: string; readonly taskId: string; readonly expectedVersion: number }): Promise<{ readonly orderVersion: number }>;
   reorderTask(input: ReorderProjectTaskRecord): Promise<ProjectTaskListSnapshot>;
   listSuggestions(ownerId: string, projectId: string, filter: { readonly status: 'all' | 'pending'; readonly conversationId?: string }): Promise<readonly ProjectTaskSuggestion[]>;
   resolveSuggestion(input: ResolveProjectTaskSuggestionRecord): Promise<ResolveProjectTaskSuggestionResult>;

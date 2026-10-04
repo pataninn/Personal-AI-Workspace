@@ -1,6 +1,7 @@
 import { containsCredentialLikeValue } from '@/shared/egress/redaction';
 import { ProjectTaskValidationError } from '@/modules/tasks/domain/project-task-errors';
 import type { ProjectTaskStatus, TaskSuggestionDraft } from '@/modules/tasks/domain/project-task';
+import { normalizeSuggestionSubtasks } from '@/modules/tasks/domain/task-planning-validation';
 
 const TASK_TITLE_MAX_CODE_POINTS = 120;
 const TASK_DETAILS_MAX_BYTES = 4096;
@@ -8,10 +9,10 @@ const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/gu;
 const DETAILS_CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu;
 const TASK_STATUSES = new Set<ProjectTaskStatus>(['todo', 'in_progress', 'blocked', 'done', 'archived']);
 const ALLOWED_TRANSITIONS: Readonly<Record<ProjectTaskStatus, ReadonlySet<ProjectTaskStatus>>> = {
-  todo: new Set(['in_progress', 'done', 'archived']),
-  in_progress: new Set(['blocked', 'done', 'archived']),
-  blocked: new Set(['in_progress', 'archived']),
-  done: new Set(['archived']),
+  todo: new Set(['in_progress', 'done']),
+  in_progress: new Set(['blocked', 'done']),
+  blocked: new Set(['in_progress', 'done']),
+  done: new Set(),
   archived: new Set()
 };
 
@@ -77,7 +78,8 @@ export function normalizeTaskSuggestionDrafts(drafts: readonly TaskSuggestionDra
     if (containsCredentialLikeValue(title) || (details !== null && containsCredentialLikeValue(details))) {
       throw validationError(`taskSuggestions.${index}`, 'Remove credential-like content from the suggestion.');
     }
-    return { title, ...(details === null ? {} : { details }) };
+    const subtasks = normalizeSuggestionSubtasks(draft.subtasks ?? []);
+    return { title, ...(details === null ? {} : { details }), ...(subtasks.length ? { subtasks } : {}) };
   });
 }
 

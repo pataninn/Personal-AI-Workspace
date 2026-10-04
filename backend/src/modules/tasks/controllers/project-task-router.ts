@@ -10,6 +10,7 @@ import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
 import {
   CreateProjectTaskUseCase,
+  DeleteProjectTaskUseCase,
   ListProjectTaskSuggestionsUseCase,
   ListProjectTasksUseCase,
   ReorderProjectTaskUseCase,
@@ -17,12 +18,17 @@ import {
   UpdateProjectTaskUseCase
 } from '@/modules/tasks/use-cases/project-task-use-cases';
 
-const createTaskSchema = z.object({ title: z.string(), details: z.string().nullable().optional() }).strict();
-const updateTextSchema = z.object({ title: z.string().optional(), details: z.string().nullable().optional() }).strict().refine((value) => 'title' in value || 'details' in value);
-const updateStatusSchema = z.object({ status: z.enum(['todo', 'in_progress', 'blocked', 'done', 'archived']) }).strict();
+const planningFields = {
+  importance: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
+  deadline: z.string().nullable().optional(),
+  subtasks: z.array(z.object({ id: z.string().uuid().optional(), title: z.string(), completed: z.boolean().optional() }).strict()).max(50).optional()
+};
+const createTaskSchema = z.object({ title: z.string(), details: z.string().nullable().optional(), ...planningFields }).strict();
+const updateTextSchema = z.object({ title: z.string().optional(), details: z.string().nullable().optional(), ...planningFields }).strict().refine((value) => Object.keys(value).length > 0);
+const updateStatusSchema = z.object({ status: z.enum(['todo', 'in_progress', 'blocked', 'done']) }).strict();
 const updateTaskSchema = z.union([updateTextSchema, updateStatusSchema]);
 const reorderTaskSchema = z.object({ taskId: z.string(), direction: z.enum(['up', 'down']) }).strict();
-const acceptSuggestionSchema = z.object({ status: z.literal('accepted'), title: z.string().optional(), details: z.string().nullable().optional() }).strict();
+const acceptSuggestionSchema = z.object({ status: z.literal('accepted'), title: z.string().optional(), details: z.string().nullable().optional(), ...planningFields }).strict();
 const dismissSuggestionSchema = z.object({ status: z.literal('dismissed') }).strict();
 const resolveSuggestionSchema = z.union([acceptSuggestionSchema, dismissSuggestionSchema]);
 const taskFilterSchema = z.enum(['all', 'open', 'completed', 'archived']);
@@ -34,6 +40,7 @@ export interface ProjectTaskRouterDependencies {
   readonly listTasks: ListProjectTasksUseCase;
   readonly createTask: CreateProjectTaskUseCase;
   readonly updateTask: UpdateProjectTaskUseCase;
+  readonly deleteTask: DeleteProjectTaskUseCase;
   readonly reorderTask: ReorderProjectTaskUseCase;
   readonly listSuggestions: ListProjectTaskSuggestionsUseCase;
   readonly resolveSuggestion: ResolveProjectTaskSuggestionUseCase;
@@ -146,8 +153,7 @@ function createTaskHandler(dependencies: ProjectTaskRouterDependencies): Request
       const result = await dependencies.createTask.execute({
         ownerId: ownerId(request),
         projectId,
-        title: body.title,
-        details: body.details,
+        ...body,
         idempotencyKey: request.header('idempotency-key') ?? ''
       });
       response.location(`/api/v1/projects/${projectId}/tasks/${result.task.id}`);
@@ -182,6 +188,21 @@ function reorderTaskHandler(dependencies: ProjectTaskRouterDependencies): Reques
       const result = await dependencies.reorderTask.execute({ ownerId: ownerId(request), projectId, taskId: parseId(body.taskId), direction: body.direction, expectedOrderVersion: parseIfMatch(request.header('if-match')) });
       response.setHeader('ETag', `"${result.orderVersion}"`);
       sendData(response, { tasks: result.tasks.map(serializeTask), orderVersion: result.orderVersion });
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
+function deleteTaskHandler(dependencies: ProjectTaskRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const result = await dependencies.deleteTask.execute({
+        ownerId: ownerId(request), projectId: parseId(routeParam(request.params.projectId)),
+        taskId: parseId(routeParam(request.params.taskId)), expectedVersion: parseIfMatch(request.header('if-match'))
+      });
+      response.setHeader('ETag', `"${result.orderVersion}"`);
+      sendData(response, result);
     } catch (error: unknown) {
       next(error);
     }
@@ -231,6 +252,7 @@ export function createProjectTaskRouter(dependencies: ProjectTaskRouterDependenc
   router.get('/tasks', authenticate, listTasksHandler(dependencies));
   router.post('/tasks', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, createTaskHandler(dependencies));
   router.patch('/tasks/:taskId', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, updateTaskHandler(dependencies));
+  router.delete('/tasks/:taskId', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, deleteTaskHandler(dependencies));
   router.patch('/task-order', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, reorderTaskHandler(dependencies));
   router.get('/task-suggestions', authenticate, listSuggestionsHandler(dependencies));
   router.patch('/task-suggestions/:suggestionId', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, resolveSuggestionHandler(dependencies));
