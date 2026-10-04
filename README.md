@@ -45,8 +45,14 @@ in root `.env`, and starts Compose with the existing volumes. Hermes never mount
 the authoritative workspace or receives the Nebius key. It gets only approved,
 bounded, redacted selected files, facts, and chat references.
 
-Select the files needed for each request in **Context**. New generated files
-must also be selected before asking Hermes to edit them in a later run. Standard
+Supported project files are selected automatically in **Context**, including new
+files on the next chat request. Deselect files you do not want included and click
+**Apply to all chats**; those exclusions persist across chats and refreshes.
+Protected files, binary files (including PDFs), and unreadable or oversized files
+are excluded. Discovery is bounded to 500 candidates at depth 6; each run includes
+at most 100 selected files within its existing context size limit. Context shows
+when discovery or selection reaches a limit. You can refresh the list or add a
+relative path when a file falls outside discovery. Standard
 `SKILL.md` files guide frontend design, editing existing projects, and planning.
 Tool activity and command approvals appear in the chat. Routine checks run
 automatically; installs, destructive actions, and other commands ask first.

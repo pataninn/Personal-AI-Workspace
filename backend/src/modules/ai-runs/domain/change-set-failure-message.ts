@@ -1,7 +1,7 @@
 import type { ChangeSetDomainError } from '@/modules/ai-runs/domain/change-errors';
 
 const COLLECTION_FAILURE_REASONS: Readonly<Record<string, string>> = {
-  'The destination already exists.': 'It asked to create a file that already exists. Ask it to edit the existing file instead.',
+  'The destination already exists.': 'It asked to create a file that already exists. Refresh Context, make sure the existing file is selected, and ask it to edit that file instead.',
   'The source file is missing or is not a regular file.': 'It asked to change a file that is missing or is not a regular file. Check the file selection in Context.',
   'The project changed before the proposed change set was collected.': 'A proposed source hash did not match the current file. Retry with the current files selected in Context.',
   'The destination is a directory.': 'It asked to rename a file to a destination that is a folder.',

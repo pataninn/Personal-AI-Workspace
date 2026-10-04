@@ -18,6 +18,7 @@ import { AddAiRunProviderUsage1710000011000 } from '@/infrastructure/database/mi
 import { AddChangeSetOperationPathIndex1710000012000 } from '@/infrastructure/database/migrations/1710000012000-add-change-set-operation-path-index';
 import { CreateProviderPermissions1710000013000 } from '@/infrastructure/database/migrations/1710000013000-create-provider-permissions';
 import { CreateProjectChatContext1710000014000 } from '@/infrastructure/database/migrations/1710000014000-create-project-chat-context';
+import { AddContextFileExclusions1710000015000 } from '@/infrastructure/database/migrations/1710000015000-add-context-file-exclusions';
 
 export function createDataSource(config: DatabaseConfig): DataSource {
   return new DataSource({
@@ -25,7 +26,7 @@ export function createDataSource(config: DatabaseConfig): DataSource {
     url: config.url,
     synchronize: false,
     migrationsRun: false,
-    migrations: [CreateApplicationMetadata1710000000000, CreateUsersAndSessions1710000001000, CreateProjects1710000002000, CreateConversationsAndMessages1710000003000, CreateAiRunsAndEgress1710000004000, CreateSandboxCommands1710000005000, CreateAiRunChat1710000006000, CreateAiRunChangeSets1710000007000, AddConfirmedProviderTransmission1710000008000, CreateProjectFacts1710000009000, CreateProjectTasks1710000010000, AddAiRunProviderUsage1710000011000, AddChangeSetOperationPathIndex1710000012000, CreateProviderPermissions1710000013000, CreateProjectChatContext1710000014000],
+    migrations: [CreateApplicationMetadata1710000000000, CreateUsersAndSessions1710000001000, CreateProjects1710000002000, CreateConversationsAndMessages1710000003000, CreateAiRunsAndEgress1710000004000, CreateSandboxCommands1710000005000, CreateAiRunChat1710000006000, CreateAiRunChangeSets1710000007000, AddConfirmedProviderTransmission1710000008000, CreateProjectFacts1710000009000, CreateProjectTasks1710000010000, AddAiRunProviderUsage1710000011000, AddChangeSetOperationPathIndex1710000012000, CreateProviderPermissions1710000013000, CreateProjectChatContext1710000014000, AddContextFileExclusions1710000015000],
     entities: [],
     logging: false
   });

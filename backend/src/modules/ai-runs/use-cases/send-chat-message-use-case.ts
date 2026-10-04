@@ -13,7 +13,7 @@ export interface SendChatMessageInput {
 
 export class SendChatMessageUseCase {
   public constructor(
-    private readonly contexts: IProjectChatContextRepository,
+    private readonly contexts: Pick<IProjectChatContextRepository, 'get'>,
     private readonly facts: IProjectFactRepository,
     private readonly createRun: Pick<CreateAiRunUseCase, 'execute'>,
     private readonly decideEgress: Pick<DecideEgressUseCase, 'execute'>,
