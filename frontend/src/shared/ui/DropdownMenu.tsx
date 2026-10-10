@@ -5,6 +5,11 @@ import { cn } from '@/shared/lib/cn';
 
 export const DropdownMenuRoot = DropdownMenuPrimitive.Root;
 export const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
+export const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
+
+export function DropdownMenuRadioItem({ className, ...props }: ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioItem>): React.JSX.Element {
+  return <DropdownMenuPrimitive.RadioItem className={cn('dropdown-item', className)} {...props} />;
+}
 
 export function DropdownMenuContent({ className, ...props }: ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>): React.JSX.Element {
   return (

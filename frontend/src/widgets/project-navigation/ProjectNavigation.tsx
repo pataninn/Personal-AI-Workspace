@@ -1,28 +1,20 @@
-import { Link, NavLink, useLocation } from 'react-router-dom';
+import { NavLink } from 'react-router-dom';
 
 import { useAppSelector } from '@/app/store/hooks';
-import { selectProjectErrorCode, selectProjectListStatus, selectProjects } from '@/entities/project';
-import { Alert, Button, Skeleton } from '@/shared/ui';
+import { projectColor, selectProjectErrorCode, selectProjectListStatus, selectProjects } from '@/entities/project';
+import { Alert, Button, Icon, Skeleton } from '@/shared/ui';
 
 interface ProjectNavigationProps {
   readonly onNavigate?: () => void;
 }
 
 export function ProjectNavigation({ onNavigate }: ProjectNavigationProps): React.JSX.Element {
-  const location = useLocation();
   const status = useAppSelector(selectProjectListStatus);
   const projects = useAppSelector(selectProjects);
   const errorCode = useAppSelector(selectProjectErrorCode);
   const activeProjects = projects.filter((project) => project.status === 'active');
   const archivedProjects = projects.filter((project) => project.status === 'archived');
   const boundaryUnavailable = errorCode === 'WORKSPACE_BOUNDARY_UNAVAILABLE';
-  const selectedProjectId = projectIdFromPath(location.pathname);
-  const selectedProject = projects.find((project) => project.id === selectedProjectId);
-  const selectedProjectPath = selectedProjectId ? `/projects/${encodeURIComponent(selectedProjectId)}` : '';
-  const isWorkspacePath = selectedProjectId !== null && (
-    location.pathname === selectedProjectPath ||
-    location.pathname.startsWith(`${selectedProjectPath}/conversations`)
-  );
 
   return (
     <section className="project-navigation" data-testid="project-navigation" aria-labelledby="project-navigation-title">
@@ -43,43 +35,12 @@ export function ProjectNavigation({ onNavigate }: ProjectNavigationProps): React
       {status === 'success' ? (
         <>
           <nav aria-label="Active projects" className="project-nav-list">
-            {activeProjects.map((project) => <NavLink key={project.id} to={`/projects/${project.id}`} onClick={onNavigate} className="project-nav-item">{project.name}</NavLink>)}
+            {activeProjects.map((project) => <NavLink key={project.id} to={`/projects/${project.id}`} onClick={onNavigate} className="project-nav-item"><span className="project-glyph" style={{ background: projectColor(project.id) }}><Icon name="folder" size={14} /></span><span>{project.name}</span></NavLink>)}
           </nav>
           {archivedProjects.length > 0 ? <p className="project-nav-archived">Archived: {archivedProjects.length}</p> : null}
         </>
       ) : null}
-      {selectedProjectId ? (
-        <nav aria-label="Project sections" className="project-nav-memory">
-          <p className="project-nav-current-name">{selectedProject?.name ?? 'Project'}</p>
-          <Link
-            data-testid={`project-workspace-nav-${selectedProjectId}`}
-            to={selectedProjectPath}
-            onClick={onNavigate}
-            className={`project-nav-memory-item${isWorkspacePath ? ' is-active' : ''}`}
-            aria-current={isWorkspacePath ? 'page' : undefined}
-          >
-            Workspace
-          </Link>
-          <NavLink data-testid={`project-memory-nav-${selectedProjectId}`} to={`${selectedProjectPath}/memory`} onClick={onNavigate} className="project-nav-memory-item">Memory</NavLink>
-          <NavLink data-testid={`project-context-nav-${selectedProjectId}`} to={`${selectedProjectPath}/context`} onClick={onNavigate} className="project-nav-memory-item">Context</NavLink>
-          <NavLink data-testid={`project-tasks-nav-${selectedProjectId}`} to={`${selectedProjectPath}/tasks`} onClick={onNavigate} className="project-nav-memory-item">Tasks</NavLink>
-          <NavLink data-testid="project-activity-link" to={`${selectedProjectPath}/activity`} onClick={onNavigate} className="project-nav-memory-item">Activity</NavLink>
-          <NavLink data-testid={`project-file-history-nav-${selectedProjectId}`} to={`${selectedProjectPath}/file-history`} onClick={onNavigate} className="project-nav-memory-item">File history</NavLink>
-        </nav>
-      ) : null}
       {boundaryUnavailable ? <Button type="button" variant="ghost" disabled>Workspace unavailable</Button> : null}
     </section>
   );
-}
-
-function projectIdFromPath(pathname: string): string | null {
-  const match = /^\/projects\/([^/]+)/u.exec(pathname);
-  if (!match?.[1]) {
-    return null;
-  }
-  try {
-    return decodeURIComponent(match[1]);
-  } catch {
-    return null;
-  }
 }

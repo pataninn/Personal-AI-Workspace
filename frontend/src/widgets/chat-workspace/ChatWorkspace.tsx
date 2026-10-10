@@ -7,7 +7,7 @@ import type { ConversationHistoryResponse, ConversationSnapshot } from '@/entiti
 import type { MessageSnapshot } from '@/entities/message';
 import type { ProjectSnapshot } from '@/entities/project';
 import { ApiClientError } from '@/shared/api';
-import { Alert, Button, Card } from '@/shared/ui';
+import { Alert, Button, Card, Icon } from '@/shared/ui';
 
 import { ConversationPane } from './ConversationPane';
 import { ConversationRail } from './ConversationRail';
@@ -26,6 +26,7 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
   historyKeyRef.current = currentHistoryKey;
   const navigate = useNavigate();
   const [listStatus, setListStatus] = useState<LoadStatus>('idle');
+  const [listProjectId, setListProjectId] = useState('');
   const [listAttempt, setListAttempt] = useState(0);
   const [listError, setListError] = useState<ListError | null>(null);
   const [conversations, setConversations] = useState<readonly ConversationSnapshot[]>([]);
@@ -46,6 +47,7 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
       .then((result) => {
         if (!cancelled) {
           setConversations(sortConversations(result.conversations));
+          setListProjectId(projectId);
           setListStatus('success');
         }
       })
@@ -59,10 +61,10 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
   }, [listAttempt, projectId]);
 
   useEffect(() => {
-    if (listStatus === 'success' && !conversationId && conversations[0]) {
+    if (listStatus === 'success' && listProjectId === projectId && !conversationId && conversations[0]) {
       navigate(`/projects/${projectId}/conversations/${conversations[0].id}`, { replace: true });
     }
-  }, [conversations, conversationId, listStatus, navigate, projectId]);
+  }, [conversations, conversationId, listProjectId, listStatus, navigate, projectId]);
 
   useEffect(() => {
     if (!conversationId) {
@@ -158,13 +160,14 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
     window.dispatchEvent(new Event('project-files-changed'));
   }
 
-  if (listStatus === 'success' && conversations.length === 0 && !conversationId) {
+  if (listStatus === 'success' && listProjectId === projectId && conversations.length === 0) {
     return (
       <section className="conversation-workspace" data-testid="conversation-workspace">
         {isArchived ? <Alert id={ARCHIVED_DESCRIPTION_ID} tone="warning" data-testid="project-archived-message">This project is archived. Existing messages are read-only.</Alert> : null}
         <Card className="conversation-welcome" data-testid="conversation-list-empty">
-          <h2>Start your first conversation</h2>
-          <p>Ask a question or describe what you want to build. Your conversations and messages will stay with this project.</p>
+          <span className="conversation-welcome-icon"><Icon name="chat" size={24} /></span>
+          <h2>Get started</h2>
+          <p>Start a conversation to ask a question, plan your next task or work on your project.</p>
           <Button type="button" data-testid="conversation-create-trigger" disabled={isArchived} aria-describedby={isArchived ? ARCHIVED_DESCRIPTION_ID : undefined} onClick={() => setCreateOpen(true)}>New conversation</Button>
         </Card>
         <CreateConversationDialog projectId={projectId} open={createOpen} disabled={isArchived} archivedDescriptionId={ARCHIVED_DESCRIPTION_ID} onOpenChange={setCreateOpen} onCreated={handleCreated} />
@@ -181,9 +184,9 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
       <div className="conversation-layout">
         <ConversationRail
           projectId={projectId}
-          conversations={conversations}
+          conversations={listProjectId === projectId ? conversations : []}
           selectedId={conversationId}
-          status={listStatus}
+          status={listStatus === 'success' && listProjectId !== projectId ? 'loading' : listStatus}
           error={listError}
           disabled={isArchived}
           archivedDescriptionId={ARCHIVED_DESCRIPTION_ID}

@@ -12,7 +12,7 @@ const ALLOWED_TRANSITIONS: Readonly<Record<ProjectTaskStatus, ReadonlySet<Projec
   todo: new Set(['in_progress', 'done']),
   in_progress: new Set(['blocked', 'done']),
   blocked: new Set(['in_progress', 'done']),
-  done: new Set(),
+  done: new Set(['todo']),
   archived: new Set()
 };
 

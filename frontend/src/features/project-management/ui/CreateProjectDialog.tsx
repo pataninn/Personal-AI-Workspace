@@ -13,6 +13,7 @@ import {
   DialogRoot,
   DialogTitle,
   Input,
+  Icon,
   Label
 } from '@/shared/ui';
 import { useAppSelector } from '@/app/store/hooks';
@@ -113,8 +114,9 @@ export function CreateProjectDialog({ open, onOpenChange, onRetryBoundary, onCre
   return (
     <DialogRoot open={open} onOpenChange={(nextOpen) => !isCreating && onOpenChange(nextOpen)}>
       <DialogContent data-testid="project-create-dialog" onOpenAutoFocus={(event) => { event.preventDefault(); nameRef.current?.focus(); }}>
-        <DialogTitle>Create project</DialogTitle>
-        <DialogDescription>Create a project in the configured local workspace. New folders are created there automatically.</DialogDescription>
+        <div className="create-project-decoration"><span aria-hidden="true"><Icon name="plus" size={24} /></span><DialogClose asChild><Button type="button" variant="ghost" className="dialog-icon-close" aria-label="Close new project dialog" disabled={isCreating}><Icon name="close" size={20} /></Button></DialogClose></div>
+        <DialogTitle>New project</DialogTitle>
+        <DialogDescription>A project keeps its conversations, tasks and files together in one folder.</DialogDescription>
         <form className="project-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
           <div className="field-group">
             <Label htmlFor="project-name">Project name</Label>
@@ -122,6 +124,7 @@ export function CreateProjectDialog({ open, onOpenChange, onRetryBoundary, onCre
               ref={nameRef}
               id="project-name"
               data-testid="project-name-input"
+              placeholder="e.g. Website redesign"
               value={name}
               onChange={(event) => setName(event.target.value)}
               aria-required="true"
@@ -129,15 +132,16 @@ export function CreateProjectDialog({ open, onOpenChange, onRetryBoundary, onCre
               aria-describedby={errors.name ? 'project-name-error' : 'project-name-help'}
               disabled={isCreating}
             />
-            <p id="project-name-help" className="field-help">Use a short name you will recognize in the project list.</p>
+            <p id="project-name-help" className="sr-only">Use a short name you will recognize in the project list.</p>
             {errors.name ? <p id="project-name-error" className="field-error" data-testid="project-name-error" role="alert">{errors.name}</p> : null}
           </div>
           <div className="field-group">
-            <Label htmlFor="project-relative-root">Folder inside your workspace</Label>
+            <Label htmlFor="project-relative-root">Root folder</Label>
             <Input
               ref={rootRef}
               id="project-relative-root"
               data-testid="project-relative-root-input"
+              placeholder="e.g. notes/research"
               value={relativeRoot}
               onChange={(event) => setRelativeRoot(event.target.value)}
               aria-required="true"
@@ -145,10 +149,9 @@ export function CreateProjectDialog({ open, onOpenChange, onRetryBoundary, onCre
               aria-describedby={errors.relativeRoot ? 'project-relative-root-error' : 'project-root-help'}
               disabled={isCreating}
             />
-            <p id="project-root-help" className="field-help" data-testid="project-root-help">For example, apps/website or notes/research. This folder will be created under the local folder configured by WORKSPACE_HOST_ROOT. Do not enter a full path, leading slash, .., or a protected folder. The folder stays fixed after creation.</p>
+            <p id="project-root-help" className="field-help" data-testid="project-root-help">Created inside your workspace and fixed after creation. Use a relative path; full paths, leading slashes, .. and protected folders are not allowed.</p>
             {errors.relativeRoot ? <p id="project-relative-root-error" className="field-error" data-testid="project-relative-root-error" role="alert">{errors.relativeRoot}</p> : null}
           </div>
-          <Alert tone="info">The server checks this folder when you create the project. An active project root cannot be changed later. Archive this project and create a new one to use a different root.</Alert>
           {formError ? (
             <Alert tone="error" data-testid={formError.startsWith('The authoritative') ? 'workspace-boundary-error' : 'project-create-error'}>
               <p>{formError}</p>

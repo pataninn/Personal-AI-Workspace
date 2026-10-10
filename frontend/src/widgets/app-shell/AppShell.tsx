@@ -1,16 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { sessionCleared, selectCsrfToken, selectPrincipal } from '@/entities/user-session';
 import { signOut, AUTH_COPY } from '@/features/auth';
-import { useProjectListLoader } from '@/features/project-management';
-import { ProjectNavigation } from '@/widgets/project-navigation';
+import { RemoveProjectDialog, useProjectListLoader } from '@/features/project-management';
+import { ProjectHeader, ProjectNavigation } from '@/widgets/project-navigation';
+import { selectProjects } from '@/entities/project';
+import type { ProjectSnapshot } from '@/entities/project';
 import { useAppDispatch, useAppSelector } from '@/app/store/hooks';
 import { ApiClientError } from '@/shared/api';
 import { loginPath } from '@/shared/lib/navigation';
 import {
   Alert,
   Button,
+  Icon,
   DrawerClose,
   DrawerContent,
   DrawerDescription,
@@ -29,6 +32,7 @@ export function AppShell(): React.JSX.Element {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [logoutError, setLogoutError] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<ProjectSnapshot | null>(null);
   useProjectListLoader();
   const displayName = principal?.displayName || 'Local user';
 
@@ -66,6 +70,7 @@ export function AppShell(): React.JSX.Element {
       </aside>
       <div className="shell-content">
         <header className="app-shell-header" data-testid="app-shell-header">
+          <ShellBreadcrumb />
           <div className="mobile-header-start">
             <DrawerRoot open={drawerOpen} onOpenChange={setDrawerOpen}>
               <DrawerTrigger asChild>
@@ -95,9 +100,11 @@ export function AppShell(): React.JSX.Element {
           </div>
         </header>
         <main ref={mainRef} className="app-shell-main" data-testid="app-shell-main" tabIndex={-1}>
+          <ProjectHeader onRemove={setRemoveTarget} />
           <Outlet />
         </main>
       </div>
+      <RemoveProjectDialog project={removeTarget} onOpenChange={(open) => { if (!open) setRemoveTarget(null); }} onRemoved={() => { setRemoveTarget(null); navigate('/dashboard'); }} />
     </div>
   );
 }
@@ -211,7 +218,7 @@ function AccountMenu({ displayName, isSigningOut, logoutError, onSignOut }: Acco
         }}
         onKeyDown={handleTriggerKeyDown}
       >
-        {displayName}
+        <Icon name="user" size={16} /><span>Account</span>
       </Button>
       {isOpen ? (
         <div
@@ -254,7 +261,17 @@ function isEventInside(container: HTMLElement | null, target: EventTarget | null
 }
 
 function BrandLink(): React.JSX.Element {
-  return <Link className="brand-link" to="/dashboard">Personal AI Workspace</Link>;
+  return <Link className="brand-link" to="/dashboard"><span>Personal AI<br />Workspace</span></Link>;
+}
+
+function ShellBreadcrumb(): React.JSX.Element {
+  const { projectId } = useParams();
+  const { pathname } = useLocation();
+  const project = useAppSelector(selectProjects).find((candidate) => candidate.id === projectId);
+  const section = pathname.split('/').at(-1);
+  const labels: Record<string, string> = { activity: 'Activity', memory: 'Memory', context: 'Context', tasks: 'Tasks', 'file-history': 'History' };
+  const title = projectId && section && labels[section] ? labels[section] : project?.name ?? 'Home';
+  return <nav className="shell-breadcrumb" aria-label="Current page"><strong>{title}</strong></nav>;
 }
 
 function WorkspaceNavigation({ currentPath, onNavigate }: { readonly currentPath: string; readonly onNavigate?: () => void }): React.JSX.Element {
@@ -267,7 +284,7 @@ function WorkspaceNavigation({ currentPath, onNavigate }: { readonly currentPath
         aria-current={currentPath === '/dashboard' ? 'page' : undefined}
         onClick={onNavigate}
       >
-        Workspace
+        <Icon name="home" /><span>Home</span>
       </NavLink>
       <ProjectNavigation onNavigate={onNavigate} />
     </nav>

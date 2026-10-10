@@ -39,7 +39,7 @@ export function ProjectActivityPage(): React.JSX.Element {
       <header className="project-activity-header">
         <div>
           <p className="product-label">{project.name}</p>
-          <h1 ref={headingRef} tabIndex={-1}>Project activity</h1>
+          <h1 ref={headingRef} tabIndex={-1} aria-label="Project activity">Activity</h1>
           <p className="supporting-copy">Review AI runs, selected context, file outcomes, and provider reported usage.</p>
         </div>
         <Link className="button button-secondary" to={`/projects/${encodeURIComponent(project.id)}`}>Back to project</Link>

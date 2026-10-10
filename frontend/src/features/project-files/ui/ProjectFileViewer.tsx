@@ -13,7 +13,7 @@ interface ProjectFileViewerProps {
   readonly onChanged: () => void;
 }
 
-/** Inline file view/editor with version-aware changes and explicit deletion. */
+/** File preview/editor with version-aware changes and explicit deletion. */
 export function ProjectFileViewer({ projectId, path, onChanged }: ProjectFileViewerProps): React.JSX.Element {
   const csrfToken = useAppSelector(selectCsrfToken);
   const editorId = useId();

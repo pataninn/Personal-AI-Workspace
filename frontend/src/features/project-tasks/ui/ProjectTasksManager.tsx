@@ -30,7 +30,8 @@ export function ProjectTasksManager({ projectId, projectName, archived = false, 
   const dismissBusy = dismissTarget !== null && actions.pendingKeys.includes(`suggestion:${dismissTarget.id}`);
   const editorBusy = editor !== null && actions.pendingKeys.includes(editor.kind === 'suggestion' ? `suggestion:${editor.suggestion.id}` : editor.task ? `task:${editor.task.id}` : 'create');
   return (
-    <section className={compact ? 'min-w-0 space-y-3' : 'project-tasks-manager space-y-4'} data-testid="project-tasks-manager" aria-label={`Tasks for ${projectName}`}>
+    <section className={compact ? 'compact-task-manager min-w-0 space-y-3' : 'project-tasks-manager space-y-4'} data-testid="project-tasks-manager" aria-label={`Tasks for ${projectName}`}>
+      {compact ? <header className="compact-tasks-heading"><h2>Tasks</h2><span className="reference-count">{String(taskList.tasks.length).padStart(2, '0')}</span></header> : null}
       {archived ? <Alert tone="warning">This project is read-only.</Alert> : null}
       <p className="sr-only" data-testid="project-tasks-announcement" role="status" aria-live="polite">{manager.announcement}</p>
       <div className="flex flex-wrap items-center justify-between gap-2">

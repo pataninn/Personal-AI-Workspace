@@ -35,7 +35,7 @@ export function ProjectTaskItem({ task, pending, archivedProject, actionError, o
           <span className="font-medium break-words">{task.title}</span>
           <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-muted)]">
             <ProjectTaskStatusLabel status={task.status} />
-            <span>{TASK_IMPORTANCE_LABELS[task.importance]}</span>
+            <span className={`importance-label importance-${task.importance}`}>{TASK_IMPORTANCE_LABELS[task.importance]}</span>
             {task.deadline ? <span className={isTaskOverdue(task) ? 'text-[var(--color-error)]' : undefined}>{isTaskOverdue(task) ? 'Overdue · ' : 'Due '}{formatTaskDeadline(task.deadline)}</span> : null}
             {task.subtasks.length ? <span>{completedCount}/{task.subtasks.length} subtasks</span> : null}
           </span>
@@ -48,6 +48,7 @@ export function ProjectTaskItem({ task, pending, archivedProject, actionError, o
           <p className="text-xs text-[var(--color-text-muted)]">{task.source.label}</p>
           <div className="flex flex-wrap items-center gap-2">
             {task.status !== 'done' ? <Button type="button" data-testid={`project-task-complete-${task.id}`} disabled={!mutable} onClick={() => { onTransition(task, 'done'); }}>Mark complete</Button> : null}
+            {task.status === 'done' && task.subtasks.length === 0 ? <Button type="button" variant="secondary" data-testid={`project-task-reopen-${task.id}`} disabled={!mutable} onClick={() => { onTransition(task, 'todo'); }}>Mark incomplete</Button> : null}
             <DropdownMenuRoot><DropdownMenuTrigger asChild><Button type="button" variant="ghost" data-testid={`project-task-actions-${task.id}`} aria-label={`Actions for ${task.title}`} disabled={!mutable}>More actions</Button></DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem data-testid={`project-task-edit-${task.id}`} onSelect={() => { onEdit(task); }}>Edit task</DropdownMenuItem>

@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 
 import type { AiRunSnapshot, EgressManifest } from '@/entities/ai-run';
 import type { ConversationHistoryResponse } from '@/entities/conversation';
-import { Alert, Button, Card, MarkdownContent, Spinner } from '@/shared/ui';
+import { Alert, Button, Card, Icon, MarkdownContent, Spinner } from '@/shared/ui';
 
 import { useAiRunTimeline } from '@/features/ai-run/model/use-ai-run-timeline';
 import { CommandExecutionSurface } from '@/features/ai-run/ui/CommandExecutionSurface';
@@ -37,6 +37,7 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
   const showReconciliationNotice = timeline.connection === 'disconnected' || ['loading', 'partial', 'failed'].includes(timeline.reconciliationStatus);
   const statusText = statusLabel(timeline.snapshot.status, timeline.connection);
   const partialResponse = timeline.assistantText.length > 0 && ['failed', 'blocked', 'cancelled', 'review_required'].includes(timeline.snapshot.status);
+  const showTyping = compact && !terminal && ['ready', 'queued', 'running'].includes(timeline.snapshot.status) && timeline.connection !== 'disconnected' && timeline.connection !== 'error';
   const headingRef = useRef<HTMLHeadingElement>(null);
   const previousRef = useRef({ status: timeline.snapshot.status, connection: timeline.connection, terminal });
 
@@ -51,14 +52,14 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
   }, [terminal, timeline.connection, timeline.snapshot.status]);
 
   // Once the saved answer is in chat history, the compact stream must not repeat it.
-  if (compact && timeline.snapshot.status === 'succeeded' && timeline.reconciliationStatus === 'complete' && timeline.assistantText && !timeline.error) {
-    return <p className="sr-only" role="status">Assistant response complete.</p>;
+  if (compact && timeline.snapshot.status === 'succeeded' && timeline.reconciliationStatus === 'complete' && !timeline.error) {
+    return <div className="assistant-run-indicator assistant-run-complete" role="status"><Icon name="check" size={18} /><span className="sr-only">Assistant response complete.</span></div>;
   }
 
   return (
-    <section className="ai-run-timeline" data-testid="ai-run-timeline" aria-labelledby="ai-run-timeline-heading">
+    <section className={`ai-run-timeline${compact ? ' ai-run-timeline-compact' : ''}`} data-testid="ai-run-timeline" aria-labelledby="ai-run-timeline-heading">
       <Card className="ai-run-timeline-card">
-        <h3 ref={headingRef} id="ai-run-timeline-heading" data-testid="ai-run-timeline-heading" tabIndex={-1}>{terminalHeading(timeline.snapshot.status, reviewRequired)}</h3>
+        <h3 ref={headingRef} id="ai-run-timeline-heading" data-testid="ai-run-timeline-heading" className={compact ? 'sr-only' : undefined} tabIndex={-1}>{terminalHeading(timeline.snapshot.status, reviewRequired)}</h3>
         {!compact ? <Alert tone="info" data-testid="ai-run-provider-notice">
           <p>{timeline.snapshot.runtime?.kind === 'hermes' ? 'Hermes works in an isolated project copy using the selected context. Completed file changes are validated and recorded in File history.' : DIRECT_PROVIDER_NOTICE}</p>
           {timeline.snapshot.providerApprovalMode === 'remembered_permission' ? <p data-testid="ai-run-remembered-permission-notice">This run was approved by a saved project permission. Revoking it stops runs that have not started; a request already in progress or sent cannot be recalled.</p> : null}
@@ -74,12 +75,12 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
           aria-live={timeline.connection === 'disconnected' ? undefined : 'polite'}
           aria-busy={!terminal && timeline.connection !== 'disconnected'}
         >
-          {!terminal && timeline.connection !== 'disconnected' && timeline.connection !== 'error' ? <Spinner label={statusText} /> : null}
-          {timeline.connection !== 'disconnected' ? <span data-testid="run-connection-status">{statusText}</span> : null}
+          {showTyping ? <span className="assistant-run-indicator assistant-run-typing" aria-hidden="true"><i /><i /><i /></span> : compact && timeline.snapshot.status === 'succeeded' ? <span className="assistant-run-indicator assistant-run-complete"><Icon name="check" size={18} /></span> : !terminal && timeline.connection !== 'disconnected' && timeline.connection !== 'error' ? <Spinner label={statusText} /> : null}
+          {timeline.connection !== 'disconnected' ? <span data-testid="run-connection-status" className={showTyping || compact && timeline.snapshot.status === 'succeeded' ? 'sr-only' : undefined}>{statusText}</span> : null}
         </div> : null}
         {timeline.assistantText ? <article className="ai-run-assistant-output" data-testid="ai-run-assistant-output" aria-labelledby="ai-run-assistant-heading"><h4 id="ai-run-assistant-heading">Assistant response</h4>{partialResponse ? <p className="field-help" data-testid="assistant-stream-partial">Incomplete response</p> : null}<div data-testid="assistant-stream"><MarkdownContent content={timeline.assistantText} /></div></article> : null}
-        {!timeline.assistantText && ['ready', 'queued', 'running', 'waiting_approval'].includes(timeline.snapshot.status) ? <p className="field-help" data-testid="assistant-stream-empty">Waiting for the assistant...</p> : null}
-        {!timeline.assistantText && timeline.snapshot.status === 'succeeded' ? <p className="field-help" data-testid="ai-run-empty-response">The assistant completed without a message.</p> : null}
+        {!compact && !timeline.assistantText && ['ready', 'queued', 'running', 'waiting_approval'].includes(timeline.snapshot.status) ? <p className="field-help" data-testid="assistant-stream-empty">Waiting for the assistant...</p> : null}
+        {!compact && !timeline.assistantText && timeline.snapshot.status === 'succeeded' ? <p className="field-help" data-testid="ai-run-empty-response">The assistant completed without a message.</p> : null}
         {!compact && timeline.snapshot.status === 'succeeded' ? <p className="field-help" data-testid="run-completed">Run complete. Workspace file changes are applied automatically and recorded in File history.</p> : null}
         {timeline.snapshot.status === 'cancelled' ? <Alert tone="info" data-testid="run-cancelled" role="status"><p>Run cancelled. No further assistant work will be applied.</p>{partialResponse ? <p>Incomplete response.</p> : null}</Alert> : null}
         {timeline.snapshot.status === 'failed' ? <Alert tone="error" data-testid="run-failed" role="alert"><p>{timeline.snapshot.safeMessage || 'The assistant could not complete this run.'}</p>{partialResponse ? <p>Incomplete response.</p> : null}</Alert> : null}

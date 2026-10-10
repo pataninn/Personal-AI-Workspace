@@ -2,30 +2,56 @@
 @import "tailwindcss/utilities.css" layer(utilities);
 @import "./workspace-redesign.css";
 
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/geist-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Bricolage Grotesque";
+  src: url("/fonts/bricolage-grotesque-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 500 800;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/geist-mono-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light;
-  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: "Bricolage Grotesque", "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", "SFMono-Regular", Consolas, monospace;
   --text-size: 1rem;
   --line-height: 1.5;
   --heading-line-height: 1.2;
 
-  --color-background: #f1f5f6;
-  --color-surface: #fbfcfc;
+  --color-background: #f0f1ec;
+  --color-surface: #ffffff;
   --color-surface-raised: #ffffff;
-  --color-surface-muted: #e7eff0;
-  --color-text: #193039;
-  --color-text-muted: #596e74;
-  --color-text-subtle: #61777d;
-  --color-border: #d2dee0;
-  --color-border-strong: #9fb2b6;
-  --color-primary: #176b70;
-  --color-primary-hover: #10575c;
-  --color-primary-contrast: #ffffff;
+  --color-surface-muted: #e8eae3;
+  --color-text: #12150f;
+  --color-text-muted: #586050;
+  --color-text-subtle: #68705f;
+  --color-border: #dcded4;
+  --color-border-strong: #b9bdae;
+  --color-primary: #c8f23d;
+  --color-primary-hover: #b5df2e;
+  --color-primary-contrast: #12150f;
+  --color-link: #56691c;
   --color-error-contrast: #ffffff;
-  --color-secondary: #e3ecee;
-  --color-secondary-hover: #d7e4e6;
-  --color-secondary-text: #24464b;
+  --color-secondary: #e8eae3;
+  --color-secondary-hover: #dfe2d8;
+  --color-secondary-text: #25291f;
   --color-error: #ad3b32;
   --color-error-surface: #fff2f0;
   --color-error-border: #e4ada7;
@@ -38,8 +64,8 @@
   --color-info: #225f75;
   --color-info-surface: #eef6f8;
   --color-info-border: #bdd5dc;
-  --color-ring: #267a80;
-  --color-scrim: rgb(19 40 44 / 0.56);
+  --color-ring: #8aa51d;
+  --color-scrim: rgb(10 12 17 / 0.62);
 
   --space-1: 0.25rem;
   --space-2: 0.5rem;
@@ -49,11 +75,11 @@
   --space-8: 2rem;
   --space-12: 3rem;
   --space-16: 4rem;
-  --radius-sm: 0.4rem;
-  --radius-md: 0.65rem;
-  --radius-lg: 0.85rem;
-  --shadow-sm: 0 1px 2px rgb(25 48 57 / 0.05);
-  --shadow-md: 0 10px 28px rgb(25 48 57 / 0.08);
+  --radius-sm: 0.875rem;
+  --radius-md: 1.125rem;
+  --radius-lg: 1.375rem;
+  --shadow-sm: 0 1px 2px rgb(18 21 15 / 0.04);
+  --shadow-md: 0 12px 32px rgb(18 21 15 / 0.12);
   --z-header: 10;
   --z-overlay: 40;
   --z-popover: 50;
@@ -62,36 +88,37 @@
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --color-background: #142326;
-    --color-surface: #1b2d30;
-    --color-surface-raised: #22373a;
-    --color-surface-muted: #2a4043;
-    --color-text: #edf5f4;
-    --color-text-muted: #b4c6c5;
-    --color-text-subtle: #9eb4b3;
-    --color-border: #3c5557;
-    --color-border-strong: #5b7678;
-    --color-primary: #8cd0c9;
-    --color-primary-hover: #abe0da;
-    --color-primary-contrast: #102628;
+    --color-background: #0a0c11;
+    --color-surface: #11141b;
+    --color-surface-raised: #181c26;
+    --color-surface-muted: #1b202b;
+    --color-text: #eef0f5;
+    --color-text-muted: #9099ac;
+    --color-text-subtle: #a5adbd;
+    --color-border: #232937;
+    --color-border-strong: #3a4358;
+    --color-primary: #c8f23d;
+    --color-primary-hover: #d7fa69;
+    --color-primary-contrast: #10130a;
+    --color-link: #c8f23d;
     --color-error-contrast: #2a1110;
-    --color-secondary: #30494b;
-    --color-secondary-hover: #3a5658;
-    --color-secondary-text: #e5f0ef;
-    --color-error: #ffb8ae;
-    --color-error-surface: #462a2a;
-    --color-error-border: #8d5c59;
-    --color-success: #9cdbb6;
-    --color-success-surface: #1d4034;
-    --color-success-border: #487963;
-    --color-warning: #f0cb83;
-    --color-warning-surface: #443919;
-    --color-warning-border: #8c7645;
-    --color-info: #a7d5df;
-    --color-info-surface: #203b43;
-    --color-info-border: #527a83;
-    --color-ring: #8cd0c9;
-    --color-scrim: rgb(0 0 0 / 0.72);
+    --color-secondary: #1b202b;
+    --color-secondary-hover: #252b38;
+    --color-secondary-text: #eef0f5;
+    --color-error: #ff8585;
+    --color-error-surface: #2d1d22;
+    --color-error-border: #63363f;
+    --color-success: #4ade9a;
+    --color-success-surface: #14291f;
+    --color-success-border: #285a43;
+    --color-warning: #ffb547;
+    --color-warning-surface: #2c2417;
+    --color-warning-border: #66502c;
+    --color-info: #a5d8e8;
+    --color-info-surface: #15252c;
+    --color-info-border: #345563;
+    --color-ring: #c8f23d;
+    --color-scrim: rgb(0 0 0 / 0.76);
   }
 }
 
@@ -134,7 +161,7 @@ input {
 }
 
 a {
-  color: var(--color-primary);
+  color: var(--color-link);
 }
 
 button:focus-visible,
@@ -3832,4 +3859,459 @@ h3 {
 .chat-composer .composer-actions {
   justify-content: space-between;
   align-items: center;
+}
+
+/* Visual system inspired by Personal AI Workspace Redesign (1).html. */
+h1,
+h2,
+h3,
+h4,
+.brand-link,
+.project-item-name,
+.conversation-title {
+  font-family: var(--font-display);
+  letter-spacing: -0.025em;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  color: var(--color-text);
+}
+
+.app-shell-layout {
+  grid-template-columns: 16.5rem minmax(0, 1fr);
+  background: var(--color-background);
+}
+
+.desktop-sidebar {
+  gap: var(--space-6);
+  background: var(--color-background);
+  padding: 1.25rem 0.875rem;
+}
+
+.brand-link {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 3rem;
+  padding: 0.25rem 0.625rem 1rem;
+  font-size: 1.05rem;
+  font-weight: 650;
+  line-height: 1.15;
+}
+
+.brand-link::before {
+  display: grid;
+  width: 2.375rem;
+  height: 2.375rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 0.75rem;
+  background: var(--color-primary);
+  color: var(--color-primary-contrast);
+  content: "P";
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 800;
+}
+
+.shell-nav {
+  gap: 0.25rem;
+}
+
+.shell-nav-link,
+.project-nav-item,
+.project-nav-memory-item {
+  min-height: 2.75rem;
+  border-radius: 0.75rem;
+  padding: 0.625rem 0.875rem;
+  color: var(--color-text-muted);
+  font-weight: 550;
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+
+.shell-nav-link:hover,
+.project-nav-item:hover,
+.project-nav-memory-item:hover,
+.shell-nav-link.is-active,
+.project-nav-item[aria-current="page"],
+.project-nav-memory-item[aria-current="page"],
+.project-nav-memory-item.is-active {
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  box-shadow: inset 0 0 0 1px var(--color-border);
+}
+
+.shell-nav-link.is-active,
+.project-nav-item[aria-current="page"],
+.project-nav-memory-item[aria-current="page"],
+.project-nav-memory-item.is-active {
+  box-shadow: inset 0 0 0 1px var(--color-border), inset 3px 0 0 var(--color-primary);
+}
+
+.project-navigation h2 {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.project-nav-list,
+.project-nav-memory {
+  gap: 0.25rem;
+}
+
+.app-shell-header {
+  min-height: 4.25rem;
+  border-color: var(--color-border);
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  padding-inline: clamp(1.25rem, 3vw, 2.75rem);
+  backdrop-filter: blur(14px);
+}
+
+.app-shell-main {
+  width: min(100%, 96rem);
+  padding: clamp(1.75rem, 3.3vw, 3rem) clamp(1.25rem, 3vw, 2.75rem);
+}
+
+.projects-page,
+.project-workspace-view,
+.project-memory-page,
+.project-memory-manager,
+.project-activity-page {
+  gap: var(--space-8);
+}
+
+.projects-page-header h1,
+.project-detail-header h1,
+.project-memory-header h1,
+.project-activity-header h1 {
+  font-size: clamp(2rem, 3.2vw, 2.75rem);
+  font-weight: 650;
+  letter-spacing: -0.04em;
+}
+
+.product-label {
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.11em;
+}
+
+.supporting-copy,
+.field-help {
+  color: var(--color-text-muted);
+}
+
+.card,
+.project-item,
+.project-empty-state,
+.project-section-note,
+.project-boundary-card,
+.conversation-rail,
+.conversation-pane,
+.workspace-tasks,
+.workspace-files,
+.project-activity-panel,
+.change-review-surface,
+.project-memory-fact,
+.more-projects {
+  border: 1px solid var(--color-border);
+  border-radius: 1.25rem;
+  background: var(--color-surface);
+  box-shadow: none;
+}
+
+.card:hover,
+.project-item:hover {
+  transform: none;
+}
+
+.project-item,
+.project-boundary-card,
+.project-empty-state,
+.project-section-note {
+  border-color: var(--color-border);
+}
+
+.project-item:hover,
+.project-item.is-selected,
+.project-item:focus-within {
+  border-color: var(--color-border-strong);
+}
+
+.project-item.is-selected {
+  background: var(--color-surface-raised);
+  box-shadow: inset 0 0 0 1px var(--color-border-strong);
+}
+
+.project-grid {
+  gap: 0.875rem;
+}
+
+.home-page .project-item {
+  min-height: 9rem;
+  padding: 1.25rem;
+}
+
+.home-task-card {
+  padding: clamp(1.25rem, 2vw, 1.75rem);
+}
+
+.home-task-link {
+  min-height: 4.25rem;
+  border-radius: 0.75rem;
+  padding-inline: 0.875rem;
+}
+
+.home-task-link:hover,
+.conversation-item:hover,
+.conversation-item[aria-current="page"] {
+  background: var(--color-surface-muted);
+}
+
+.conversation-item[aria-current="page"] {
+  box-shadow: inset 3px 0 0 var(--color-primary);
+}
+
+.button {
+  min-height: 2.875rem;
+  border-radius: 999px;
+  padding-inline: 1.25rem;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+.button-primary {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: var(--color-primary-contrast);
+}
+
+.button-primary:hover:not(:disabled) {
+  border-color: var(--color-primary-hover);
+  background: var(--color-primary-hover);
+}
+
+.button-secondary {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+}
+
+.button-secondary:hover:not(:disabled),
+.button-ghost:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.button-destructive {
+  border-color: var(--color-error);
+  background: var(--color-error);
+}
+
+.input,
+.textarea,
+.workspace-panel-picker select,
+.context-file-search-controls input,
+.project-task-filters select {
+  min-height: 3.125rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 0.875rem;
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+}
+
+.input:hover,
+.textarea:hover {
+  border-color: var(--color-text-muted);
+}
+
+.input:focus,
+.textarea:focus,
+.workspace-panel-picker select:focus {
+  border-color: var(--color-link);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--color-link);
+}
+
+.workspace-split {
+  grid-template-columns: minmax(0, 1.9fr) minmax(17rem, 1fr);
+  gap: 0.875rem;
+}
+
+.workspace-tasks,
+.workspace-files {
+  padding: 1.125rem;
+  max-height: calc((100dvh - 13rem) / 2);
+}
+
+.workspace-chat .conversation-layout {
+  grid-template-columns: minmax(11rem, 0.42fr) minmax(0, 1fr);
+  gap: 0.875rem;
+}
+
+.workspace-chat .conversation-rail,
+.workspace-chat .conversation-pane {
+  border: 1px solid var(--color-border);
+  border-radius: 1.25rem;
+  background: var(--color-surface);
+}
+
+.workspace-chat .conversation-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 1rem 0.75rem;
+}
+
+.workspace-chat .conversation-rail-header {
+  align-items: stretch;
+}
+
+.workspace-chat .conversation-list {
+  display: grid;
+  max-height: 45vh;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.workspace-chat .conversation-item {
+  max-width: 100%;
+  min-height: 2.75rem;
+  white-space: normal;
+}
+
+.workspace-chat .conversation-pane {
+  padding: 1.25rem;
+}
+
+.workspace-chat .message-item {
+  border-color: var(--color-border);
+  border-radius: 1rem;
+  background: var(--color-surface-raised);
+  padding: 1rem 1.125rem;
+}
+
+.workspace-chat .message-user {
+  border-left-width: 3px;
+  border-left-color: var(--color-primary);
+}
+
+.chat-composer,
+.workspace-chat .chat-composer {
+  border: 1px solid var(--color-border);
+  border-radius: 1.125rem;
+  background: var(--color-surface-raised);
+  padding: 0.75rem;
+}
+
+.chat-composer textarea {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.project-activity-header,
+.project-memory-header {
+  align-items: flex-start;
+}
+
+.project-activity-panel,
+.change-review-surface {
+  padding: clamp(1rem, 2vw, 1.5rem);
+}
+
+.project-activity-list > li,
+.project-file-history-list > li {
+  border-color: var(--color-border);
+}
+
+.dialog-scrim {
+  background: var(--color-scrim);
+  backdrop-filter: blur(3px);
+}
+
+.dialog-content,
+[data-radix-dialog-content] {
+  border: 1px solid var(--color-border);
+  border-radius: 1.375rem;
+  background: var(--color-surface);
+  box-shadow: 0 24px 72px rgb(0 0 0 / 0.2);
+}
+
+.account-menu {
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-md);
+}
+
+.alert,
+.empty-state,
+.error-state,
+.project-empty-state,
+.project-section-note {
+  border-radius: 1rem;
+}
+
+.importance-label,
+.project-status,
+.project-item-status {
+  font-weight: 600;
+}
+
+@media (max-width: 64rem) {
+  .workspace-chat .conversation-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-chat .conversation-list {
+    display: flex;
+    max-height: 4rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .workspace-chat .conversation-item {
+    max-width: 16rem;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 40rem) {
+  .app-shell-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell-header {
+    padding-inline: 1rem;
+  }
+
+  .app-shell-main {
+    padding: 1.5rem 1rem 2rem;
+  }
+
+  .brand-link {
+    padding-bottom: 0.25rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button,
+  .shell-nav-link,
+  .project-nav-item,
+  .project-nav-memory-item {
+    transition: none;
+  }
 }

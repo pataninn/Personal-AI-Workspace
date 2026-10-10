@@ -76,7 +76,7 @@ async function mutateTask(request, response, seed, project, tasks, taskId, metho
   }
   const body = await readBody(request);
   if (body.status !== undefined) {
-    const transitions = { todo: ['in_progress', 'done'], in_progress: ['blocked', 'done'], blocked: ['in_progress', 'done'], done: [], archived: [] };
+    const transitions = { todo: ['in_progress', 'done'], in_progress: ['blocked', 'done'], blocked: ['in_progress', 'done'], done: ['todo'], archived: [] };
     if (!transitions[task.status].includes(body.status)) { sendError(response, 409, 'PROJECT_TASK_STATUS_CONFLICT', 'Status transition is unavailable.'); return; }
   }
   const planning = normalizePlanning(body, task);

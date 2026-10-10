@@ -2,7 +2,7 @@ import { useAppSelector } from '@/app/store/hooks';
 import { createPortal } from 'react-dom';
 import { selectCsrfToken } from '@/entities/user-session';
 import type { ConversationHistoryResponse } from '@/entities/conversation';
-import { Alert, Button, Label, Textarea } from '@/shared/ui';
+import { Alert, Button, Icon, Label, Textarea } from '@/shared/ui';
 import { useDirectChat } from '@/features/ai-run/model/use-direct-chat';
 import { AiRunTimeline } from '@/features/ai-run/ui/AiRunTimeline';
 
@@ -26,13 +26,13 @@ export function ChatComposer({ projectId, conversationId, disabled, archivedDesc
       {timelineTarget ? createPortal(timeline, timelineTarget) : timeline}
       <form className="message-composer" onSubmit={(event) => { event.preventDefault(); void chat.send(); }}>
         <Label htmlFor="chat-message">Message</Label>
-        <Textarea id="chat-message" data-testid="message-input" rows={3} value={chat.content}
+        <Textarea id="chat-message" data-testid="message-input" placeholder="Message the assistant" rows={3} value={chat.content}
           onChange={(event) => chat.setContent(event.target.value)}
           onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void chat.send(); } }}
           aria-describedby={disabled ? archivedDescriptionId : 'chat-send-help'} disabled={disabled || chat.pending} />
         <div className="composer-actions">
           <p id="chat-send-help" className="field-help">Ctrl+Enter or Cmd+Enter to send.</p>
-          <Button type="submit" data-testid="chat-send" aria-busy={chat.pending} aria-describedby={disabled ? archivedDescriptionId : undefined} disabled={disabled || chat.busy || !csrfToken || !chat.content.trim()}>{chat.pending ? 'Sending…' : 'Send'}</Button>
+          <Button type="submit" data-testid="chat-send" aria-busy={chat.pending} aria-describedby={disabled ? archivedDescriptionId : undefined} disabled={disabled || chat.busy || !csrfToken || !chat.content.trim()}>{chat.pending ? 'Sending…' : 'Send'}<Icon name="arrow" size={18} /></Button>
         </div>
       </form>
       {chat.error ? <Alert tone="error" role="alert"><p>{chat.error}</p><Button type="button" variant="secondary" disabled={chat.pending || chat.restoring} onClick={chat.hasRunLink ? chat.refresh : () => { void chat.send(); }}>{chat.hasRunLink ? 'Refresh status' : 'Try again'}</Button></Alert> : null}

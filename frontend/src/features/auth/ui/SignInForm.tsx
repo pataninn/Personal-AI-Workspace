@@ -6,7 +6,8 @@ import { signIn, AUTH_COPY } from '@/features/auth';
 import { useAppDispatch } from '@/app/store/hooks';
 import { ApiClientError } from '@/shared/api';
 import { getSafeReturnTo } from '@/shared/lib/navigation';
-import { Alert, Button, Card, Input, Label, Spinner } from '@/shared/ui';
+import { Alert, Button, Card, Icon, Input, Label, Spinner } from '@/shared/ui';
+import { SignInArtwork } from './SignInArtwork';
 
 const REQUIRED_MESSAGE = 'Enter your local password.';
 const LENGTH_MESSAGE = 'Enter a password between 1 and 1024 characters.';
@@ -72,6 +73,7 @@ export function SignInForm(): React.JSX.Element {
 
   return (
     <main className="login-view" data-testid="login-page">
+      <SignInArtwork />
       <Card className="login-card">
         <p className="product-label">Personal AI Workspace</p>
         <h1>Sign in</h1>
@@ -102,7 +104,7 @@ export function SignInForm(): React.JSX.Element {
             disabled={isSubmitting}
             aria-busy={isSubmitting}
           >
-            {isSubmitting ? <><Spinner label="Signing in" /> Signing in…</> : 'Sign in'}
+            {isSubmitting ? <><Spinner label="Signing in" /> Signing in…</> : <><span>Sign in</span><Icon name="arrow" size={18} /></>}
           </Button>
         </form>
         <p className="privacy-note">{import.meta.env.MODE === 'preview' ? 'This browser preview uses temporary mock data on loopback HTTP.' : 'This is a local workspace. Your password is sent only to this app over its configured HTTPS origin.'}</p>

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ProjectFileViewer } from '@/features/project-files/ui/ProjectFileViewer';
+import { Button, DialogClose, DialogContent, DialogDescription, DialogRoot, DialogTitle, DialogTrigger, Icon } from '@/shared/ui';
 
 interface TreeNode { readonly name: string; readonly path: string; readonly children: Map<string, TreeNode> }
 
@@ -25,7 +26,15 @@ export function ProjectFileTree({ projectId, paths, onChanged }: { readonly proj
 }
 
 function FileTreeNode({ node, projectId, onChanged }: { readonly node: TreeNode; readonly projectId: string; readonly onChanged: () => void }): React.JSX.Element {
-  const [visited, setVisited] = useState(false);
+  const [open, setOpen] = useState(false);
   if (node.children.size > 0) return <li><details className="file-folder"><summary>{node.name}/</summary><ul>{[...node.children.values()].map((child) => <FileTreeNode key={child.path} node={child} projectId={projectId} onChanged={onChanged} />)}</ul></details></li>;
-  return <li><details className="project-file-row" onToggle={(event) => { if (event.currentTarget.open) setVisited(true); }}><summary>{node.name}</summary>{visited ? <ProjectFileViewer projectId={projectId} path={node.path} onChanged={onChanged} /> : null}</details></li>;
+  return <li>
+    <DialogRoot open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild><Button type="button" variant="ghost" className="file-preview-trigger" aria-label={`Preview ${node.path}`}><Icon name="file" size={16} /><span>{node.name}</span></Button></DialogTrigger>
+      <DialogContent className="file-preview-dialog">
+        <header className="file-preview-header"><div><DialogTitle>{node.name}</DialogTitle><DialogDescription>{node.path}</DialogDescription></div><DialogClose asChild><Button type="button" variant="ghost" className="dialog-icon-close" aria-label="Close file preview"><Icon name="close" size={20} /></Button></DialogClose></header>
+        {open ? <ProjectFileViewer projectId={projectId} path={node.path} onChanged={onChanged} /> : null}
+      </DialogContent>
+    </DialogRoot>
+  </li>;
 }

@@ -18,3 +18,4 @@ export type { ProjectDetailState, ProjectListResponse, ProjectSnapshot, ProjectS
 export { getProjectOverview } from '@/entities/project/api/project-overview-api';
 export { useProjectOverview } from '@/entities/project/model/use-project-overview';
 export type { ProjectOverview, HomeTaskSummary } from '@/entities/project/api/project-overview-api';
+export { projectColor } from '@/entities/project/lib/presentation';
