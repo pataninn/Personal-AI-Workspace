@@ -31,9 +31,14 @@ export async function downloadProjectFile(projectId: string, path: string): Prom
   return { blob: await response.blob(), hash };
 }
 
-export async function uploadProjectFile(projectId: string, file: File, csrfToken: string): Promise<void> {
+export async function uploadProjectFile(projectId: string, file: File, csrfToken: string): Promise<{ readonly path: string; readonly converted: boolean }> {
   const response = await fetch(fileUrl(projectId, 'upload', file.name), { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/octet-stream', 'X-CSRF-Token': csrfToken }, body: file });
   if (!response.ok) await fileError(response);
+  const body: unknown = await response.json().catch(() => null);
+  if (!body || typeof body !== 'object' || !('data' in body) || !body.data || typeof body.data !== 'object' || !('path' in body.data) || typeof body.data.path !== 'string' || !('converted' in body.data) || typeof body.data.converted !== 'boolean') {
+    throw new ApiClientError(response.status, 'INVALID_FILE_RESPONSE', 'The uploaded file could not be confirmed. Refresh the file list.');
+  }
+  return { path: body.data.path, converted: body.data.converted };
 }
 
 async function fileError(response: Response): Promise<never> {

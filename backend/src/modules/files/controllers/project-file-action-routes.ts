@@ -29,7 +29,7 @@ export function addProjectFileActionRoutes(options: FileRouteOptions): void {
   }));
   router.post('/upload', ...guard, express.raw({ type: 'application/octet-stream', limit: '8mb' }), handler(async (request, response) => {
     if (!Buffer.isBuffer(request.body)) throw new AppError('VALIDATION_ERROR', 400, 'Choose a file to upload.');
-    const result = await actions.write({ ...scope(request), bytes: request.body, expectedHash: null });
+    const result = await actions.upload({ ...scope(request), bytes: request.body });
     sendData(response, result, 201);
   }));
   router.put('/content', ...guard, handler(async (request, response) => {

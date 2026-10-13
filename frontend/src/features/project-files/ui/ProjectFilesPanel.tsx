@@ -26,7 +26,11 @@ export function ProjectFilesPanel({ projectId, paths, loading, error, limited = 
     if (!file || !csrfToken || uploading) return;
     if (file.size > 8 * 1024 * 1024) { setUploadError('Choose a file 8 MB or smaller.'); return; }
     setUploading(true); setUploadError(null); setNotice('');
-    try { await uploadProjectFile(projectId, file, csrfToken); setNotice(`${file.name} uploaded.`); onRefresh(); }
+    try {
+      const result = await uploadProjectFile(projectId, file, csrfToken);
+      setNotice(result.converted ? `${file.name} converted to ${result.path}.` : `${file.name} uploaded.`);
+      onRefresh();
+    }
     catch (failure: unknown) { setUploadError(failure instanceof Error ? failure.message : 'Upload failed. Try again.'); }
     finally { setUploading(false); if (inputRef.current) inputRef.current.value = ''; }
   }
@@ -37,6 +41,7 @@ export function ProjectFilesPanel({ projectId, paths, loading, error, limited = 
     {loading ? <p role="status">Loading files...</p> : null}
     {error || uploadError ? <p role="alert">{uploadError ?? error}</p> : null}
     {notice ? <p role="status">{notice}</p> : null}
+    <p className="supporting-copy">PDF, Word, PowerPoint, Excel, and EPUB documents are converted to Markdown when uploaded.</p>
     {limited ? <p className="supporting-copy">The file list reached its discovery limit.</p> : null}
     {!loading && !error && paths.length === 0 ? <p className="supporting-copy">No files in this list yet.</p> : null}
     <ProjectFileTree projectId={projectId} paths={paths} onChanged={onRefresh} />

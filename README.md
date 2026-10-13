@@ -231,6 +231,13 @@ PostgreSQL, the workspace identity, the authenticated bridge, and the selected
 gateway route are available. Startup checks route configuration; the first approved
 chat request establishes inference and tool execution with the provider.
 
+The app image installs MarkItDown for converting uploaded PDF, DOCX, PPTX, XLSX,
+XLS, and EPUB documents into adjacent Markdown files. Local backend runs need
+Python 3.10–3.14 with `markitdown[pdf,docx,pptx,xlsx,xls]==0.1.8` installed; set
+`MARKITDOWN_PYTHON` to that environment's Python executable when it is not at
+`/opt/markitdown/bin/python`. Conversion accepts local uploaded files only and
+limits extracted Markdown to 512 KB.
+
 For deterministic local/CI consent tests without a credential, set
 <code>NODE_ENV=development</code> or <code>test</code> and <code>AGENT_RUNTIME_MODE=fake</code>. Production
 rejects fake mode. The fake adapter never calls NVIDIA and still requires the

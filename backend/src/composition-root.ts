@@ -45,6 +45,7 @@ import { ProjectRecoveryCleaner } from '@/infrastructure/workspace/project-recov
 import { DeleteProjectUseCase } from '@/modules/projects/use-cases/delete-project';
 import { GetProjectOverviewUseCase } from '@/modules/projects/use-cases/get-project-overview';
 import { ProjectFileActions } from '@/modules/files/use-cases/project-file-actions';
+import { MarkItDownDocumentConverter } from '@/infrastructure/files/markitdown-document-converter';
 import { DEFAULT_WORKSPACE_INSPECTION_POLICY } from '@/modules/files/domain/workspace-policy';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { runStartupChecks } from '@/infrastructure/startup/startup-checks';
@@ -203,7 +204,7 @@ export async function createApplication(
         },
         workspace: {
           appOrigin: config.appOrigin,
-          fileActions: new ProjectFileActions(new TypeOrmProjectFileAccess(dataSource), new ProjectFileGateway({ containerRoot: config.workspaceRoot, workspaceBoundary })),
+          fileActions: new ProjectFileActions(new TypeOrmProjectFileAccess(dataSource), new ProjectFileGateway({ containerRoot: config.workspaceRoot, workspaceBoundary }), new MarkItDownDocumentConverter()),
           getSession,
           listWorkspaceFiles: new ListWorkspaceFilesUseCase(projectRepository, workspaceGateway),
           treeWorkspaceFiles: new TreeWorkspaceFilesUseCase(projectRepository, workspaceGateway),
