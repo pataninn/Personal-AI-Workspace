@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type { AiRunSnapshot, EgressManifest } from '@/entities/ai-run';
 import type { ConversationHistoryResponse } from '@/entities/conversation';
@@ -33,6 +33,12 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
     onConversationReconciled
   });
   const terminal = ['succeeded', 'failed', 'blocked', 'cancelled', 'review_required', 'rejected'].includes(timeline.snapshot.status);
+  const [refreshRequested, setRefreshRequested] = useState(false);
+  const refreshing = timeline.reconciliationStatus === 'loading';
+  const refresh = (): void => {
+    setRefreshRequested(true);
+    timeline.refresh();
+  };
   const reviewRequired = timeline.snapshot.status === 'review_required' || (timeline.connection === 'error' && timeline.snapshot.providerTransmission === 'unknown');
   const showReconciliationNotice = timeline.connection === 'disconnected' || ['loading', 'partial', 'failed'].includes(timeline.reconciliationStatus);
   const statusText = statusLabel(timeline.snapshot.status, timeline.connection);
@@ -40,6 +46,8 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
   const showTyping = compact && !terminal && ['ready', 'queued', 'running'].includes(timeline.snapshot.status) && timeline.connection !== 'disconnected' && timeline.connection !== 'error';
   const headingRef = useRef<HTMLHeadingElement>(null);
   const previousRef = useRef({ status: timeline.snapshot.status, connection: timeline.connection, terminal });
+
+  useEffect(() => { setRefreshRequested(false); }, [snapshot.runId]);
 
   useEffect(() => {
     const previous = previousRef.current;
@@ -85,9 +93,13 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
         {timeline.snapshot.status === 'cancelled' ? <Alert tone="info" data-testid="run-cancelled" role="status"><p>Run cancelled. No further assistant work will be applied.</p>{partialResponse ? <p>Incomplete response.</p> : null}</Alert> : null}
         {timeline.snapshot.status === 'failed' ? <Alert tone="error" data-testid="run-failed" role="alert"><p>{timeline.snapshot.safeMessage || 'The assistant could not complete this run.'}</p>{partialResponse ? <p>Incomplete response.</p> : null}</Alert> : null}
         {timeline.snapshot.status === 'blocked' ? <Alert tone="error" data-testid="run-blocked" role="alert"><p>Run blocked by policy. This run was not completed.</p></Alert> : null}
-        {timeline.snapshot.status === 'review_required' ? <Alert tone="warning" role="alert" data-testid="ai-run-review-required"><p>The run needs manual review. Refresh run status before trying again.</p><Button type="button" variant="secondary" data-testid="ai-run-review-refresh" onClick={timeline.refresh}>Refresh run status</Button></Alert> : null}
-        {showReconciliationNotice ? <Alert tone="warning" role="alert" data-testid="ai-run-disconnected"><p>{reconciliationMessage(timeline.connection, timeline.reconciliationStatus, timeline.reconciliationReads)}</p><Button type="button" variant="secondary" data-testid="ai-run-disconnected-refresh" onClick={timeline.refresh}>Refresh run status</Button></Alert> : null}
-        {timeline.cancelError ? <Alert tone="error" role="alert" data-testid="run-cancel-error"><p>{timeline.cancelError}</p><Button type="button" variant="secondary" data-testid="run-cancel-error-refresh" onClick={timeline.refresh}>Refresh run status</Button></Alert> : null}
+        {timeline.snapshot.status === 'review_required' ? <Alert tone="warning" role="alert" data-testid="ai-run-review-required">
+          <p>This run stopped and needs review. Refresh checks its saved status; it does not restart the assistant.</p>
+          <Button type="button" variant="secondary" data-testid="ai-run-review-refresh" disabled={refreshing || disabled} aria-busy={refreshing} onClick={refresh}>{refreshing ? 'Refreshing...' : 'Refresh run status'}</Button>
+          {refreshRequested && !refreshing && timeline.reconciliationReads.run ? <p role="status">Status refreshed. This run still needs review.</p> : null}
+        </Alert> : null}
+        {showReconciliationNotice ? <Alert tone="warning" role="alert" data-testid="ai-run-disconnected"><p>{reconciliationMessage(timeline.connection, timeline.reconciliationStatus, timeline.reconciliationReads)}</p><Button type="button" variant="secondary" data-testid="ai-run-disconnected-refresh" disabled={refreshing || disabled} aria-busy={refreshing} onClick={refresh}>{refreshing ? 'Refreshing...' : 'Refresh run status'}</Button></Alert> : null}
+        {timeline.cancelError ? <Alert tone="error" role="alert" data-testid="run-cancel-error"><p>{timeline.cancelError}</p><Button type="button" variant="secondary" data-testid="run-cancel-error-refresh" disabled={refreshing || disabled} aria-busy={refreshing} onClick={refresh}>{refreshing ? 'Refreshing...' : 'Refresh run status'}</Button></Alert> : null}
         {timeline.error && timeline.connection !== 'disconnected' && timeline.snapshot.status !== 'review_required' ? <Alert tone="error" role="alert" data-testid="ai-run-timeline-error">{timeline.error}</Alert> : null}
         {!terminal && timeline.snapshot.status !== 'cancel_requested' ? <Button type="button" variant="secondary" data-testid="ai-run-cancel" disabled={timeline.cancelPending || disabled || !csrfToken} aria-busy={timeline.cancelPending} onClick={timeline.cancel}>{timeline.cancelPending ? 'Stopping assistant run...' : 'Cancel run'}</Button> : null}
         {timeline.snapshot.status === 'cancel_requested' ? <p data-testid="ai-run-cancel-status" role="status">Stopping assistant run...</p> : null}

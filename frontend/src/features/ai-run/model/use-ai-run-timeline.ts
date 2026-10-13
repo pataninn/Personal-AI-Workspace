@@ -114,6 +114,9 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
     if (runRead) {
       const run = runResult.value;
       setSnapshot(run);
+      if (TERMINAL_STATUSES.has(run.status) && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('personal-ai:project-tasks-refresh', { detail: { projectId } }));
+      }
       if (run.status === 'succeeded' && (run.taskSuggestions?.length ?? 0) > 0 && typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('personal-ai:task-suggestions-refresh', { detail: { conversationId } }));
       }
@@ -236,6 +239,9 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
       lastSequence.current.set(event.runId, event.sequence);
       setEvents((current) => [...current, event].slice(-100));
       applyEvent(event, setSnapshot, setAssistantText, setConnection);
+      if (event.type === 'tool.progress' && event.payload.title === 'Project task saved' && event.payload.status === 'completed') {
+        window.dispatchEvent(new CustomEvent('personal-ai:project-tasks-refresh', { detail: { projectId } }));
+      }
       if (isTerminalEvent(event.type)) {
         source.close();
         sourceRef.current = null;
@@ -266,7 +272,7 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
         sourceRef.current = null;
       }
     };
-  }, [enabled, localSnapshot.runId, localSnapshot.status, reconcile, refreshVersion, setSnapshot]);
+  }, [enabled, localSnapshot.runId, localSnapshot.status, projectId, reconcile, refreshVersion, setSnapshot]);
 
   useEffect(() => {
     if (refreshVersion === 0) {

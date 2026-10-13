@@ -12,10 +12,11 @@ import model_tools
 from tools.registry import registry
 from tools import terminal_tool
 from run_agent import AIAgent
+import project_tasks
 
 ROOT = Path(os.environ['PAI_PROJECT_ROOT']).resolve()
 os.chdir(ROOT)
-ALLOWED = {'read_file', 'write_file', 'patch', 'search_files', 'terminal', 'skills_list', 'skill_view', 'todo'}
+ALLOWED = {'read_file', 'write_file', 'patch', 'search_files', 'terminal', 'skills_list', 'skill_view', 'todo', 'project_tasks_list', 'project_task_create', 'project_task_set_status'}
 _dispatch = registry.dispatch
 _init = AIAgent.__init__
 _guards = terminal_tool._check_all_guards
@@ -107,6 +108,8 @@ def complete(tool_call_id, tool_name, **kwargs):
 
 def approval(*args, **kwargs):
     kwargs['timeout'] = 300
+    if len(args) >= 3:
+        project_tasks.connect(args[0].__self__, args[1], args[2])
     return _approval(*args, **kwargs)
 
 

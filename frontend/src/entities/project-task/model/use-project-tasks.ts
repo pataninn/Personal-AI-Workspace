@@ -56,6 +56,14 @@ export function useProjectTasks(projectId: string, filter: ProjectTaskFilter): {
     return () => { generationRef.current += 1; };
   }, [reload]);
 
+  useEffect(() => {
+    const refreshTasks = (event: Event): void => {
+      if (event instanceof CustomEvent && event.detail?.projectId === projectId) void reload();
+    };
+    window.addEventListener('personal-ai:project-tasks-refresh', refreshTasks);
+    return () => { window.removeEventListener('personal-ai:project-tasks-refresh', refreshTasks); };
+  }, [projectId, reload]);
+
   const replaceTasks = useCallback((list: ProjectTaskList): void => {
     if (list.tasks.some((task) => task.projectId !== projectId)) {
       return;

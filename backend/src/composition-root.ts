@@ -22,6 +22,7 @@ import { DirectProviderAgentRuntime } from '@/infrastructure/ai-provider/direct-
 import { HermesAgentRuntime } from '@/infrastructure/hermes/hermes-agent-runtime';
 import { HermesBridgeClient } from '@/infrastructure/hermes/hermes-bridge-client';
 import { ApprovedContextReader } from '@/infrastructure/hermes/approved-context-reader';
+import { HermesProjectTaskTools } from '@/infrastructure/hermes/hermes-project-task-tools';
 import type { IModelProvider } from '@/modules/ai-runs/repositories/model-provider';
 import type { IAgentRuntime } from '@/modules/ai-runs/repositories/agent-runtime';
 import { OpenShellGatewayClient } from '@/infrastructure/sandbox/openshell-gateway-client';
@@ -130,7 +131,8 @@ export async function createApplication(
       workspaceBoundary,
       recoveryRoot: config.recoveryRoot
     });
-    const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository, logger);
+    const taskTools = new HermesProjectTaskTools({ runs: aiRunRepository, list: new ListProjectTasksUseCase(projectRepository, projectTaskRepository), create: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository), update: new UpdateProjectTaskUseCase(projectRepository, projectTaskRepository) });
+    const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository, logger, taskTools);
     const stagingGateway = config.agentRuntimeMode === 'openshell'
       ? new LocalStagingGateway({ stagingRoot: config.stagingRoot })
       : undefined;
@@ -319,10 +321,12 @@ function createAgentRuntime(
   workspaceGateway: WorkspaceGatewayAdapter,
   conversationRepository: TypeOrmConversationRepository,
   projectFactRepository: TypeOrmProjectFactRepository,
-  logger: AppLogger
+  logger: AppLogger,
+  taskTools: HermesProjectTaskTools
 ): IAgentRuntime {
   if (config.agentRuntimeMode === 'hermes') {
     return new HermesAgentRuntime(createHermesBridge(config), new ApprovedContextReader(workspaceGateway, projectFactRepository), {
+      taskTools,
       providerProfile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint,
       diagnose: (detail) => logger.error(detail, 'Hermes runtime operation could not be confirmed.')
     });

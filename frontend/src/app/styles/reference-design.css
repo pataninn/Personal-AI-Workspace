@@ -97,7 +97,6 @@ a { color: inherit; }
 .reference-count { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 0 12px; border-radius: 999px; background: var(--color-surface-muted); color: var(--color-text); font: 600 12.5px/1 var(--font-mono); white-space: nowrap; }
 .home-page .project-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .home-page .project-item { display: block; position: relative; padding: 22px; border: 1px solid var(--color-border); border-radius: 20px; min-height: 236px; background: var(--color-surface); box-shadow: none; }
-.home-page .project-card-active:first-child { background: var(--color-accent-tint); border-color: color-mix(in oklab, var(--color-primary) 35%, var(--color-border)); }
 .home-page .project-item:hover { border-color: var(--color-border-strong); transform: translateY(-2px); }
 .home-page .project-item-link { display: flex; flex-direction: column; align-items: stretch; text-align: left; width: 100%; gap: 0; padding: 0; color: var(--color-text); min-width: 0; }
 .project-card-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 28px; }

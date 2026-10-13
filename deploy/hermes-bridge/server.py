@@ -73,6 +73,11 @@ def dispatch(body):
             raise BridgeError('Invalid command decision')
         run.permission(payload['permissionId'], payload['approved'])
         return {'accepted': True}
+    if operation == 'project-task-result':
+        if run.status != 'running' or not run.acp or run.cancelled.is_set():
+            raise BridgeError('The run cannot accept a project task result')
+        run.acp.task_result(payload.get('requestId'), payload.get('result'))
+        return {'accepted': True}
     if operation in ('cancel', 'delete'):
         run.close()
         with LOCK:

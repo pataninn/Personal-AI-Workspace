@@ -17,6 +17,8 @@ class AcpSession:
         self.counter = 0
         self.session_id = None
         self.permissions = {}
+        self.task_requests = {}
+        self.task_request_count = 0
         self.done = threading.Event()
         threading.Thread(target=self._read, daemon=True).start()
 
@@ -73,6 +75,12 @@ class AcpSession:
         if self.session_id and self.child.poll() is None:
             self.send({'jsonrpc': '2.0', 'method': 'session/cancel', 'params': {'sessionId': self.session_id}})
 
+    def task_result(self, identity, result):
+        request = self.task_requests.pop(str(identity), None)
+        if not request or not isinstance(result, dict):
+            raise BridgeError('The project task request is no longer pending')
+        self.send({'jsonrpc': '2.0', 'id': request['id'], 'result': result})
+
     def close(self):
         try:
             self.cancel()
@@ -96,7 +104,15 @@ class AcpSession:
                     raise BridgeError('ACP output exceeds its limit')
                 frame = json.loads(raw)
                 if 'method' in frame:
-                    if frame['method'] == 'session/request_permission':
+                    if frame['method'] == '_pai/project_tasks' and 'id' in frame:
+                        params = frame.get('params', {})
+                        self.task_request_count += 1
+                        if not isinstance(params, dict) or params.get('sessionId') != self.session_id or self.task_request_count > 50:
+                            self.send({'jsonrpc': '2.0', 'id': frame['id'], 'result': {'error': 'Invalid or excessive project task request.'}})
+                            continue
+                        self.task_requests[str(frame['id'])] = frame
+                        self.state.push({'type': 'project-task-request', 'id': str(frame['id']), 'params': params})
+                    elif frame['method'] == 'session/request_permission':
                         self.permissions[str(frame['id'])] = frame
                         self.state.push({'type': 'permission', 'id': str(frame['id']), 'params': frame['params']})
                     elif frame['method'] == 'session/update':

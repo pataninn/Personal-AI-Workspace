@@ -7,6 +7,7 @@ import { ApprovedContextReader, hash } from '@/infrastructure/hermes/approved-co
 import { HermesBridgeClient, isRecord } from '@/infrastructure/hermes/hermes-bridge-client';
 import { collectHermesChanges } from '@/infrastructure/hermes/hermes-file-changes';
 import { redactEgressText } from '@/shared/egress/redaction';
+import type { HermesProjectTaskTools } from '@/infrastructure/hermes/hermes-project-task-tools';
 
 interface Permission {
   readonly identity: string;
@@ -18,6 +19,8 @@ interface Permission {
 }
 
 interface ActiveRun {
+  readonly input: RuntimeRunInput;
+  readonly taskResults: Map<string, Record<string, unknown>>;
   readonly capability: string;
   readonly permissions: Permission[];
   readonly commandEvents: RuntimeInferenceEvent[];
@@ -32,6 +35,7 @@ interface ActiveRun {
 }
 
 interface HermesRuntimeOptions {
+  readonly taskTools?: HermesProjectTaskTools;
   readonly providerProfile: string;
   readonly model: string;
   readonly endpoint: string;
@@ -59,7 +63,7 @@ export class HermesAgentRuntime implements IAgentRuntime {
   public async create(): Promise<{ readonly kind: 'hermes'; readonly sandboxReady: true }> { return this.prepareDirectRun(); }
 
   public async *startRun(input: RuntimeRunInput): AsyncIterable<RuntimeInferenceEvent> {
-    const active: ActiveRun = { capability: randomBytes(32).toString('base64url'), permissions: [], commandEvents: [], tools: new Map(), cancelled: false, cursor: 0 };
+    const active: ActiveRun = { input, taskResults: new Map(), capability: randomBytes(32).toString('base64url'), permissions: [], commandEvents: [], tools: new Map(), cancelled: false, cursor: 0 };
     this.runs.set(input.runId, active);
     try {
       const snapshot = await this.context.read(input);
@@ -103,6 +107,10 @@ export class HermesAgentRuntime implements IAgentRuntime {
       for (const value of reply.events) {
         if (!isRecord(value) || typeof value.sequence !== 'number' || value.sequence <= active.cursor) throw new AiRunRuntimeUnavailableError();
         active.cursor = value.sequence;
+        if (value.type === 'project-task-request' && typeof value.id === 'string' && isRecord(value.params)) {
+          yield* this.handleTaskRequest(runId, value.id, value.params);
+          continue;
+        }
         active.stage = value.type === 'permission' ? 'command-permission' : 'event-stream';
         yield* this.projectBridgeEvent(runId, value);
       }
@@ -149,6 +157,18 @@ export class HermesAgentRuntime implements IAgentRuntime {
       active.tools.set(toolId, item);
       yield { type: 'tool.progress', toolId, title, status: String(update.status ?? 'running') };
     }
+  }
+
+  private async *handleTaskRequest(runId: string, requestId: string, params: Record<string, unknown>): AsyncIterable<RuntimeInferenceEvent> {
+    const active = this.requireRun(runId);
+    let result = active.taskResults.get(requestId);
+    if (!result) {
+      result = active.cancelled ? { error: 'The run was cancelled. No task change was made.' }
+        : await this.options.taskTools?.execute({ run: active.input, requestId, name: params.name, args: params.args }) ?? { error: 'Project task tools are unavailable.' };
+      active.taskResults.set(requestId, result);
+    }
+    await this.call(runId, 'project-task-result', { requestId, result });
+    yield { type: 'tool.progress', toolId: `project-task-${requestId}`, title: result.saved === true ? 'Project task saved' : result.error ? 'Project task change failed' : 'Project tasks loaded', status: result.error ? 'failed' : 'completed' };
   }
 
   public async proposeCommand(input: RuntimeCommandProposalInput): Promise<void> {
