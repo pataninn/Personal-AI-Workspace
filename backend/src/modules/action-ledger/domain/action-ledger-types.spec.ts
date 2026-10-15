@@ -1,3 +1,5 @@
+import { Buffer } from 'node:buffer';
+
 import {
   ActionLedgerInputInvalidError,
   ActionLedgerMutationResultInvalidError
@@ -8,6 +10,8 @@ import {
   type ActionLedgerExecutionInput,
   type ActionLedgerMutationResult
 } from '@/modules/action-ledger/domain/action-ledger-types';
+import { normalizeTaskDetails, normalizeTaskTitle } from '@/modules/tasks/domain/project-task-validation';
+import { normalizeTaskSubtasks } from '@/modules/tasks/domain/task-planning-validation';
 
 const validInput: ActionLedgerExecutionInput = {
   ownerId: '11111111-1111-4111-8111-111111111111',
@@ -47,6 +51,45 @@ describe('Action ledger contract validation', () => {
     expect(() => assertActionLedgerMutationResult(validInput, {
       ...validMutation,
       reversibleFields: { fullTask: { before: {}, after: {} } } as ActionLedgerMutationResult['reversibleFields']
+    })).toThrow(ActionLedgerInputInvalidError);
+  });
+
+  it('accepts a maximum valid task receipt above the former 8 KiB limit', () => {
+    const makeSubtasks = (title: string, completed: boolean) => normalizeTaskSubtasks(Array.from({ length: 50 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      title,
+      completed
+    }))).map(({ id, title: itemTitle, completed: itemCompleted }) => ({ id, title: itemTitle, completed: itemCompleted }));
+    const beforeTitle = normalizeTaskTitle('🧊'.repeat(120));
+    const afterTitle = normalizeTaskTitle('🌍'.repeat(120));
+    const beforeDetails = normalizeTaskDetails('\\'.repeat(4096)) ?? '';
+    const afterDetails = normalizeTaskDetails('"'.repeat(4096)) ?? '';
+    const reversibleFields = {
+      title: { before: beforeTitle, after: afterTitle },
+      details: { before: beforeDetails, after: afterDetails },
+      status: { before: 'todo', after: 'done' },
+      position: { before: 0, after: 1 },
+      projectId: { before: null, after: '33333333-3333-4333-8333-333333333333' },
+      importance: { before: 'low', after: 'urgent' },
+      deadline: { before: null, after: '2026-12-31' },
+      archivedAt: { before: null, after: '2026-10-16T10:00:00.000Z' },
+      subtasks: { before: makeSubtasks(beforeTitle, false), after: makeSubtasks(afterTitle, true) }
+    } satisfies ActionLedgerMutationResult['reversibleFields'];
+    const serializedBytes = Buffer.byteLength(JSON.stringify(reversibleFields), 'utf8');
+
+    expect(serializedBytes).toBeGreaterThan(8192);
+    expect(Buffer.byteLength(beforeDetails, 'utf8')).toBe(4096);
+    expect(Buffer.byteLength(afterDetails, 'utf8')).toBe(4096);
+    expect(serializedBytes).toBeLessThanOrEqual(81920);
+    expect(() => assertActionLedgerMutationResult(validInput, { ...validMutation, reversibleFields })).not.toThrow();
+  });
+
+  it('rejects reversible JSON beyond the 80 KiB cap', () => {
+    const reversibleFields = { title: { before: 'x'.repeat(40960), after: 'y'.repeat(40960) } };
+
+    expect(() => assertActionLedgerMutationResult(validInput, {
+      ...validMutation,
+      reversibleFields
     })).toThrow(ActionLedgerInputInvalidError);
   });
 

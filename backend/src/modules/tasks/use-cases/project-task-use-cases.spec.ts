@@ -8,6 +8,7 @@ import {
   ProjectTaskValidationError
 } from '@/modules/tasks/domain/project-task-errors';
 import type { IProjectTaskRepository } from '@/modules/tasks/repositories/project-task-repository';
+import type { ITaskMutationCommands } from '@/modules/tasks/use-cases/task-mutation-use-cases';
 import {
   CreateProjectTaskUseCase,
   DeleteProjectTaskUseCase,
@@ -25,6 +26,36 @@ const OTHER_PROJECT_ID = '44444444-4444-4444-8444-444444444444';
 const TASK_ID = '55555555-5555-4555-8555-555555555555';
 const SUGGESTION_ID = '66666666-6666-4666-8666-666666666666';
 const CONVERSATION_ID = '77777777-7777-4777-8777-777777777777';
+
+function canonicalTask(projectId: string | null = PROJECT_ID) {
+  const now = new Date('2026-10-16T08:00:00.000Z');
+  return {
+    id: TASK_ID,
+    projectId,
+    title: 'Saved task',
+    details: null,
+    status: 'todo' as const,
+    importance: 'medium' as const,
+    deadline: null,
+    subtasks: [],
+    position: 0,
+    version: 2,
+    source: { kind: 'user' as const, label: 'Added by you', suggestionId: null, runId: null, conversationId: null, acceptedAt: null },
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null,
+    archivedAt: null
+  };
+}
+
+function mutationResult(projectId: string | null = PROJECT_ID) {
+  const task = canonicalTask(projectId);
+  return {
+    item: { task, collection: projectId ? 'workspace' as const : 'inbox' as const, workspace: projectId ? { id: projectId, name: 'Planning', status: 'active' as const } : null },
+    receipt: {} as never,
+    replayed: false
+  };
+}
 
 function dependencies(projectStatus: 'active' | 'archived' | null = 'active') {
   const findByIdForOwner = jest.fn().mockResolvedValue(
@@ -115,6 +146,20 @@ describe('project task use cases', () => {
       expect(deps.taskRepository.createTask).not.toHaveBeenCalled();
     });
 
+    it('uses the shared action command when enabled and leaves project ownership validation to its transaction', async () => {
+      const deps = dependencies(null);
+      const mutations = { create: jest.fn().mockResolvedValue(mutationResult()) } as unknown as ITaskMutationCommands;
+      const useCase = new CreateProjectTaskUseCase(deps.projectRepository, deps.taskRepositoryContract, mutations);
+
+      const result = await useCase.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, title: 'Created through shared command', idempotencyKey: 'shared-create' });
+
+      expect(result.task).toMatchObject({ id: TASK_ID, title: 'Saved task' });
+      expect(mutations.create).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER_ID, projectId: PROJECT_ID, actorKind: 'manual', title: 'Created through shared command' }));
+      expect(mutations.create).toHaveBeenCalledWith(expect.objectContaining({ operationKey: expect.stringMatching(/^project-create:/u) }));
+      expect(deps.findByIdForOwner).not.toHaveBeenCalled();
+      expect(deps.taskRepository.createTask).not.toHaveBeenCalled();
+    });
+
     it('should report a missing project before attempting creation', async () => {
       const deps = dependencies(null);
       const useCase = new CreateProjectTaskUseCase(deps.projectRepository, deps.taskRepositoryContract);
@@ -178,6 +223,26 @@ describe('project task use cases', () => {
       expect(deps.taskRepository.updateTask).not.toHaveBeenCalled();
     });
 
+    it('uses the shared command for project patches while preserving route scope and explicit nulls', async () => {
+      const deps = dependencies(null);
+      const mutations = { update: jest.fn().mockResolvedValue(mutationResult()) } as unknown as ITaskMutationCommands;
+      const useCase = new UpdateProjectTaskUseCase(deps.projectRepository, deps.taskRepositoryContract, mutations);
+
+      await useCase.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, taskId: TASK_ID, expectedVersion: 1, operationKey: 'shared-update', details: null });
+
+      expect(mutations.update).toHaveBeenCalledWith(expect.objectContaining({
+        ownerId: OWNER_ID,
+        expectedProjectId: PROJECT_ID,
+        taskId: TASK_ID,
+        expectedVersion: 1,
+        details: null,
+        actorKind: 'manual',
+        operationKey: expect.stringMatching(/^project-update:/u)
+      }));
+      expect(deps.findByIdForOwner).not.toHaveBeenCalled();
+      expect(deps.taskRepository.updateTask).not.toHaveBeenCalled();
+    });
+
     it('should reject unsupported status values before reaching the repository', async () => {
       const deps = dependencies();
       const useCase = new UpdateProjectTaskUseCase(deps.projectRepository, deps.taskRepositoryContract);
@@ -200,6 +265,20 @@ describe('project task use cases', () => {
       const input = { ownerId: OWNER_ID, projectId: PROJECT_ID, taskId: TASK_ID, expectedVersion: 4 };
       await expect(useCase.execute(input)).resolves.toEqual({ orderVersion: 2 });
       expect(deps.taskRepository.deleteTask).toHaveBeenCalledWith(input);
+    });
+
+    it('archives through the shared command and keeps the existing order-version response', async () => {
+      const deps = dependencies(null);
+      deps.taskRepository.listTasks.mockResolvedValue({ tasks: [], orderVersion: 5 });
+      const mutations = { archive: jest.fn().mockResolvedValue(mutationResult()) } as unknown as ITaskMutationCommands;
+      const useCase = new DeleteProjectTaskUseCase(deps.projectRepository, deps.taskRepositoryContract, mutations);
+
+      await expect(useCase.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, taskId: TASK_ID, expectedVersion: 1 }))
+        .resolves.toEqual({ orderVersion: 5 });
+
+      expect(mutations.archive).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER_ID, expectedProjectId: PROJECT_ID, taskId: TASK_ID, expectedVersion: 1 }));
+      expect(deps.findByIdForOwner).not.toHaveBeenCalled();
+      expect(deps.taskRepository.deleteTask).not.toHaveBeenCalled();
     });
   });
 

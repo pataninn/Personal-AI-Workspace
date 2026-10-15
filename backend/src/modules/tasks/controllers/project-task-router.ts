@@ -171,7 +171,13 @@ function updateTaskHandler(dependencies: ProjectTaskRouterDependencies): Request
       const projectId = parseId(routeParam(request.params.projectId));
       const taskId = parseId(routeParam(request.params.taskId));
       const body = parseBody(updateTaskSchema, request.body);
-      const result = await dependencies.updateTask.execute({ ownerId: ownerId(request), projectId, taskId, expectedVersion: parseIfMatch(request.header('if-match')), ...body });
+      const operationKey = request.header('idempotency-key');
+      const result = await dependencies.updateTask.execute({
+        ownerId: ownerId(request), projectId, taskId,
+        expectedVersion: parseIfMatch(request.header('if-match')),
+        ...(operationKey === undefined ? {} : { operationKey }),
+        ...body
+      });
       response.setHeader('ETag', `"${result.task.version}"`);
       sendData(response, { task: serializeTask(result.task), orderVersion: result.orderVersion });
     } catch (error: unknown) {
@@ -197,9 +203,11 @@ function reorderTaskHandler(dependencies: ProjectTaskRouterDependencies): Reques
 function deleteTaskHandler(dependencies: ProjectTaskRouterDependencies): RequestHandler {
   return async (request, response, next): Promise<void> => {
     try {
+      const operationKey = request.header('idempotency-key');
       const result = await dependencies.deleteTask.execute({
         ownerId: ownerId(request), projectId: parseId(routeParam(request.params.projectId)),
-        taskId: parseId(routeParam(request.params.taskId)), expectedVersion: parseIfMatch(request.header('if-match'))
+        taskId: parseId(routeParam(request.params.taskId)), expectedVersion: parseIfMatch(request.header('if-match')),
+        ...(operationKey === undefined ? {} : { operationKey })
       });
       response.setHeader('ETag', `"${result.orderVersion}"`);
       sendData(response, result);

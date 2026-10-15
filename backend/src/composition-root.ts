@@ -60,7 +60,7 @@ import { ListWorkspaceFilesUseCase, ReadWorkspaceTextUseCase, SearchWorkspaceTex
 import { StartupChecksError } from '@/shared/errors/app-error';
 import { createLogger, type AppLogger } from '@/shared/logging/logger';
 import { CreateProjectFactUseCase, DeleteProjectFactUseCase, ListProjectFactsUseCase, ReviewProjectFactUseCase, UpdateProjectFactUseCase } from '@/modules/memory';
-import { CreateProjectTaskUseCase, DeleteProjectTaskUseCase, GetGlobalTaskUseCase, ListGlobalTasksUseCase, ListProjectTaskSuggestionsUseCase, ListProjectTasksUseCase, ReorderProjectTaskUseCase, ResolveProjectTaskSuggestionUseCase, UpdateProjectTaskUseCase } from '@/modules/tasks';
+import { CreateProjectTaskUseCase, DeleteProjectTaskUseCase, GetGlobalTaskUseCase, ListGlobalTasksUseCase, ListProjectTaskSuggestionsUseCase, ListProjectTasksUseCase, ReorderProjectTaskUseCase, ResolveProjectTaskSuggestionUseCase, TaskMutationUseCases, UpdateProjectTaskUseCase } from '@/modules/tasks';
 import { GetAiRunActivityUseCase, ListAiRunActivityUseCase } from '@/modules/ai-runs/use-cases/activity-use-cases';
 import { ListProjectFileHistoryUseCase } from '@/modules/ai-runs/use-cases/file-history-use-cases';
 
@@ -106,6 +106,7 @@ export async function createApplication(
     const actionLedgerRepository = new TypeOrmActionLedgerRepository(dataSource);
     const projectFactRepository = new TypeOrmProjectFactRepository(dataSource);
     const projectTaskRepository = new TypeOrmProjectTaskRepository(dataSource);
+    const taskMutationUseCases = new TaskMutationUseCases(actionLedgerRepository, projectTaskRepository, projectTaskRepository);
     const taskSuggestionRepository = new TypeOrmTaskSuggestionRepository(dataSource);
     const conversationRepository = new TypeOrmConversationRepository(dataSource);
     const aiRunRepository = new TypeOrmAiRunRepository(dataSource, taskSuggestionRepository);
@@ -134,7 +135,7 @@ export async function createApplication(
       workspaceBoundary,
       recoveryRoot: config.recoveryRoot
     });
-    const taskTools = new HermesProjectTaskTools({ runs: aiRunRepository, list: new ListProjectTasksUseCase(projectRepository, projectTaskRepository), create: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository), update: new UpdateProjectTaskUseCase(projectRepository, projectTaskRepository) });
+    const taskTools = new HermesProjectTaskTools({ runs: aiRunRepository, list: new ListProjectTasksUseCase(projectRepository, projectTaskRepository), create: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases), update: new UpdateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases) });
     const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository, logger, taskTools);
     const stagingGateway = config.agentRuntimeMode === 'openshell'
       ? new LocalStagingGateway({ stagingRoot: config.stagingRoot })
@@ -262,11 +263,11 @@ export async function createApplication(
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },
         projectTasks: {
-          deleteTask: new DeleteProjectTaskUseCase(projectRepository, projectTaskRepository),
+          deleteTask: new DeleteProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases),
           getSession,
           listTasks: new ListProjectTasksUseCase(projectRepository, projectTaskRepository),
-          createTask: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository),
-          updateTask: new UpdateProjectTaskUseCase(projectRepository, projectTaskRepository),
+          createTask: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases),
+          updateTask: new UpdateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases),
           reorderTask: new ReorderProjectTaskUseCase(projectRepository, projectTaskRepository),
           listSuggestions: new ListProjectTaskSuggestionsUseCase(projectRepository, projectTaskRepository),
           resolveSuggestion: new ResolveProjectTaskSuggestionUseCase(projectRepository, projectTaskRepository),
@@ -277,6 +278,8 @@ export async function createApplication(
           getSession,
           listTasks: new ListGlobalTasksUseCase(projectTaskRepository),
           getTask: new GetGlobalTaskUseCase(projectTaskRepository),
+          mutations: taskMutationUseCases,
+          appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         }
       }),

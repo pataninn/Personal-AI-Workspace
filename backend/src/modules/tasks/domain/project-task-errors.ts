@@ -74,6 +74,12 @@ export class ProjectTaskOrderConflictError extends ProjectTaskDomainError {
   }
 }
 
+export class ProjectTaskMoveConflictError extends ProjectTaskDomainError {
+  public constructor() {
+    super('PROJECT_TASK_MOVE_CONFLICT', 409, 'This task is already in that collection or its collection changed. Reload the task and try again.');
+  }
+}
+
 export class ProjectTaskOrderBoundaryError extends ProjectTaskDomainError {
   public constructor() {
     super('PROJECT_TASK_ORDER_BOUNDARY', 409, 'This task is already at the requested end of the list.');

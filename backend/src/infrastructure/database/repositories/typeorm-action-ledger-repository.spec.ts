@@ -1,6 +1,7 @@
 import type { DataSource, QueryRunner } from 'typeorm';
 
 import {
+  ActionLedgerInputInvalidError,
   ActionLedgerMutationResultInvalidError,
   ActionLedgerOperationKeyReusedError,
   ActionLedgerUndoNotAvailableError
@@ -264,6 +265,23 @@ describe('TypeOrmActionLedgerRepository', () => {
     expect(state.committedTargets).toEqual([]);
     expect(state.committedRecords).toEqual([]);
     expect(state.rollbackCount).toBe(1);
+  });
+
+  it('rolls back a target mutation when its reversible receipt exceeds the persistence cap', async () => {
+    const { dataSource, state } = createFakeDatabase();
+    const repository = new TypeOrmActionLedgerRepository(dataSource);
+
+    await expect(repository.executeAtomically(input, async (transaction) => {
+      await transaction.query('INSERT INTO "target_mutations" ("target_id") VALUES ($1)', [TARGET_ID]);
+      return {
+        ...mutationResult(),
+        reversibleFields: { title: { before: 'x'.repeat(40960), after: 'y'.repeat(40960) } }
+      };
+    })).rejects.toBeInstanceOf(ActionLedgerInputInvalidError);
+
+    expect(state.rollbackCount).toBe(1);
+    expect(state.committedTargets).toEqual([]);
+    expect(state.committedRecords).toEqual([]);
   });
 
   it('rolls back and releases when commit fails before the transaction commits', async () => {

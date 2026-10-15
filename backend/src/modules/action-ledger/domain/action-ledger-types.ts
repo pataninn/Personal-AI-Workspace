@@ -93,7 +93,8 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const REVERSIBLE_FIELD_NAMES: ReadonlySet<string> = new Set([
   'title', 'details', 'status', 'position', 'projectId', 'importance', 'deadline', 'archivedAt', 'subtasks', 'name', 'objective'
 ]);
-const MAX_JSON_BYTES = 4096;
+const MAX_REVERSIBLE_FIELDS_JSON_BYTES = 81920;
+const MAX_OUTCOME_JSON_BYTES = 4096;
 const MAX_DATABASE_INTEGER = 2147483647;
 
 /** Validates owner-scoped action identity before repository I/O. */
@@ -185,7 +186,7 @@ function assertReversibleFields(value: ActionLedgerReversibleFields): void {
       throw new ActionLedgerInputInvalidError('reversibleFields must contain JSON values.');
     }
   }
-  assertJsonSize(value);
+  assertJsonSize(value, MAX_REVERSIBLE_FIELDS_JSON_BYTES, 'reversibleFields');
 }
 
 function assertActionLedgerOutcome(input: ActionLedgerExecutionInput, value: ActionLedgerOutcome): void {
@@ -199,18 +200,18 @@ function assertActionLedgerOutcome(input: ActionLedgerExecutionInput, value: Act
   assertVersion(value.targetVersion, 'outcome.targetVersion');
   assertVersion(value.sourceOrderVersion ?? null, 'outcome.sourceOrderVersion');
   assertVersion(value.destinationOrderVersion ?? null, 'outcome.destinationOrderVersion');
-  assertJsonSize(value);
+  assertJsonSize(value, MAX_OUTCOME_JSON_BYTES, 'outcome');
 }
 
-function assertJsonSize(value: object): void {
+function assertJsonSize(value: object, maxBytes: number, field: string): void {
   let serialized: string | undefined;
   try {
     serialized = JSON.stringify(value);
   } catch {
     throw new ActionLedgerInputInvalidError('JSON fields must be serializable.');
   }
-  if (serialized === undefined || Buffer.byteLength(serialized, 'utf8') > MAX_JSON_BYTES) {
-    throw new ActionLedgerInputInvalidError(`JSON fields must not exceed ${MAX_JSON_BYTES} bytes.`);
+  if (serialized === undefined || Buffer.byteLength(serialized, 'utf8') > maxBytes) {
+    throw new ActionLedgerInputInvalidError(`${field} must not exceed ${maxBytes} bytes.`);
   }
 }
 

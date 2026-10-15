@@ -49,12 +49,17 @@ export class HermesProjectTaskTools {
   private async mutate(input: { readonly run: RuntimeRunInput; readonly requestId: string; readonly name: unknown; readonly args: unknown; readonly scope: { readonly ownerId: string; readonly projectId: string } }): Promise<Record<string, unknown>> {
     if (input.name === 'project_task_create') {
       const draft = createSchema.parse(input.args);
-      const result = await this.dependencies.create.execute({ ...input.scope, ...draft, idempotencyKey: `hermes:${input.run.runId}:${input.requestId}` });
+      const result = await this.dependencies.create.execute({ ...input.scope, ...draft, idempotencyKey: `hermes:${input.run.runId}:${input.requestId}`, actorKind: 'assistant' });
       return { saved: true, task: { id: result.task.id, title: redactEgressText(result.task.title), status: result.task.status, version: result.task.version } };
     }
     if (input.name === 'project_task_set_status') {
       const change = statusSchema.parse(input.args);
-      const result = await this.dependencies.update.execute({ ...input.scope, ...change });
+      const result = await this.dependencies.update.execute({
+        ...input.scope,
+        ...change,
+        operationKey: `hermes:${input.run.runId}:${input.requestId}`,
+        actorKind: 'assistant'
+      });
       return { saved: true, task: { id: result.task.id, title: redactEgressText(result.task.title), status: result.task.status, version: result.task.version } };
     }
     return { error: 'This project task tool is not supported.' };

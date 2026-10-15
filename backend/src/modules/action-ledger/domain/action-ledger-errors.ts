@@ -45,3 +45,11 @@ export class ActionLedgerRollbackBlockedError extends Error {
     this.name = 'ActionLedgerRollbackBlockedError';
   }
 }
+
+/** Raised when restoring the previous receipt-size constraint would reject saved reversible fields. */
+export class ActionLedgerReversibleCapRollbackBlockedError extends Error {
+  public constructor() {
+    super('Cannot restore the 8 KiB reversible-fields limit while larger action receipts exist.');
+    this.name = 'ActionLedgerReversibleCapRollbackBlockedError';
+  }
+}

@@ -2,10 +2,13 @@ import type { RequestHandler, Response } from 'express';
 import { Router } from 'express';
 import { z } from 'zod';
 
-import { authenticateRequest } from '@/modules/auth/controllers/request-auth';
+import { authenticateRequest, requireCsrf, sameOrigin } from '@/modules/auth/controllers/request-auth';
 import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
 import { PROJECT_TASK_IMPORTANCES, PROJECT_TASK_STATUSES } from '@/modules/tasks/domain/project-task';
 import type { GlobalTaskQueryFilters, GlobalTaskQueryItem } from '@/modules/tasks/domain/global-task-query';
+import { ProjectTaskIdempotencyKeyError, ProjectTaskVersionRequiredError } from '@/modules/tasks/domain/project-task-errors';
+import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
+import type { ITaskMutationCommands } from '@/modules/tasks/use-cases/task-mutation-use-cases';
 import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
 import { GetGlobalTaskUseCase, ListGlobalTasksUseCase } from '@/modules/tasks/use-cases/global-task-query-use-cases';
@@ -39,11 +42,45 @@ const listQuerySchema = z.object({
 });
 
 const detailQuerySchema = z.object({ includeArchived: booleanQuery.optional() }).strict();
+const positiveVersion = z.number().int().positive().max(2147483647);
+const subtaskSchema = z.object({ id: z.string().uuid().optional(), title: z.string(), completed: z.boolean().optional() }).strict();
+const createMutationSchema = z.object({
+  title: z.string(),
+  details: z.string().nullable().optional(),
+  workspaceId: z.string().uuid().nullable().optional(),
+  importance: z.enum(PROJECT_TASK_IMPORTANCES).optional(),
+  deadline: z.string().nullable().optional(),
+  subtasks: z.array(subtaskSchema).max(50).optional(),
+  expectedOrderVersion: positiveVersion.optional()
+}).strict();
+const updateMutationSchema = z.object({
+  title: z.string().optional(),
+  details: z.string().nullable().optional(),
+  status: z.enum(['todo', 'in_progress', 'blocked', 'done']).optional(),
+  importance: z.enum(PROJECT_TASK_IMPORTANCES).optional(),
+  deadline: z.string().nullable().optional(),
+  subtasks: z.array(subtaskSchema).max(50).optional()
+}).strict().superRefine((value, context) => {
+  if (Object.keys(value).length === 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['request'], message: 'Provide at least one field to update.' });
+  }
+  if (value.status !== undefined && Object.keys(value).length > 1) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['status'], message: 'Send a status transition separately from field edits.' });
+  }
+});
+const moveMutationSchema = z.object({
+  workspaceId: z.string().uuid().nullable(),
+  expectedSourceOrderVersion: positiveVersion.optional(),
+  expectedDestinationOrderVersion: positiveVersion.optional()
+}).strict();
+const archiveMutationSchema = z.object({ expectedOrderVersion: positiveVersion.optional() }).strict();
 
 export interface GlobalTaskRouterDependencies {
   readonly getSession: GetSessionUseCase;
   readonly listTasks: ListGlobalTasksUseCase;
   readonly getTask: GetGlobalTaskUseCase;
+  readonly mutations?: ITaskMutationCommands;
+  readonly appOrigin?: string;
   readonly clearSessionCookie: (response: Response) => void;
 }
 
@@ -61,6 +98,43 @@ function parseQuery<T extends z.ZodTypeAny>(schema: T, value: unknown): z.infer<
     })));
   }
   return result.data;
+}
+
+function parseMutationBody<T extends z.ZodTypeAny>(schema: T, value: unknown): z.infer<T> {
+  const result = schema.safeParse(value);
+  if (!result.success) {
+    throw new AppError('VALIDATION_ERROR', 400, 'The task mutation request is invalid.', result.error.issues.map((issue) => ({
+      field: issue.path.join('.') || 'request',
+      message: issue.message
+    })));
+  }
+  return result.data;
+}
+
+function parseIfMatch(value: string | undefined): number {
+  const match = value?.match(/^"([1-9]\d*)"$/u);
+  const version = match?.[1] ? Number(match[1]) : Number.NaN;
+  if (!Number.isSafeInteger(version) || version < 1 || version > 2147483647) {
+    throw new ProjectTaskVersionRequiredError();
+  }
+  return version;
+}
+
+function requiredIdempotencyKey(value: string | undefined): string {
+  const key = value?.trim() ?? '';
+  if (!/^[A-Za-z0-9._:-]{1,128}$/u.test(key)) {
+    throw new ProjectTaskIdempotencyKeyError();
+  }
+  return key;
+}
+
+function serializeReceipt(record: ActionLedgerRecord): Record<string, unknown> {
+  return {
+    id: record.id,
+    actionKind: record.actionKind,
+    undoStatus: record.undoStatus,
+    outcome: record.outcome
+  };
 }
 
 function ownerId(request: Parameters<RequestHandler>[0]): string {
@@ -130,10 +204,97 @@ function getTaskHandler(dependencies: GlobalTaskRouterDependencies): RequestHand
   };
 }
 
+function createTaskMutationHandler(commands: ITaskMutationCommands): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const body = parseMutationBody(createMutationSchema, request.body);
+      const { workspaceId, expectedOrderVersion, ...taskFields } = body;
+      const result = await commands.create({
+        ownerId: ownerId(request),
+        operationKey: requiredIdempotencyKey(request.header('idempotency-key')),
+        projectId: workspaceId ?? null,
+        ...(expectedOrderVersion === undefined ? {} : { expectedOrderVersion }),
+        ...taskFields
+      });
+      response.location(`/api/v1/tasks/${result.item.task.id}`);
+      response.setHeader('ETag', `"${result.item.task.version}"`);
+      sendData(response, { item: serializeItem(result.item), receipt: serializeReceipt(result.receipt), replayed: result.replayed }, 201);
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
+function updateTaskMutationHandler(commands: ITaskMutationCommands): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const body = parseMutationBody(updateMutationSchema, request.body);
+      const result = await commands.update({
+        ownerId: ownerId(request),
+        taskId: taskId(request.params.taskId),
+        expectedVersion: parseIfMatch(request.header('if-match')),
+        operationKey: requiredIdempotencyKey(request.header('idempotency-key')),
+        ...body
+      });
+      response.setHeader('ETag', `"${result.item.task.version}"`);
+      sendData(response, { item: serializeItem(result.item), receipt: serializeReceipt(result.receipt), replayed: result.replayed });
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
+function moveTaskMutationHandler(commands: ITaskMutationCommands): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const body = parseMutationBody(moveMutationSchema, request.body);
+      const result = await commands.move({
+        ownerId: ownerId(request),
+        taskId: taskId(request.params.taskId),
+        expectedVersion: parseIfMatch(request.header('if-match')),
+        operationKey: requiredIdempotencyKey(request.header('idempotency-key')),
+        workspaceId: body.workspaceId,
+        ...(body.expectedSourceOrderVersion === undefined ? {} : { expectedSourceOrderVersion: body.expectedSourceOrderVersion }),
+        ...(body.expectedDestinationOrderVersion === undefined ? {} : { expectedDestinationOrderVersion: body.expectedDestinationOrderVersion })
+      });
+      response.setHeader('ETag', `"${result.item.task.version}"`);
+      sendData(response, { item: serializeItem(result.item), receipt: serializeReceipt(result.receipt), replayed: result.replayed });
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
+function archiveTaskMutationHandler(commands: ITaskMutationCommands): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const body = parseMutationBody(archiveMutationSchema, request.body ?? {});
+      const result = await commands.archive({
+        ownerId: ownerId(request),
+        taskId: taskId(request.params.taskId),
+        expectedVersion: parseIfMatch(request.header('if-match')),
+        operationKey: requiredIdempotencyKey(request.header('idempotency-key')),
+        ...(body.expectedOrderVersion === undefined ? {} : { expectedOrderVersion: body.expectedOrderVersion })
+      });
+      response.setHeader('ETag', `"${result.item.task.version}"`);
+      sendData(response, { item: serializeItem(result.item), receipt: serializeReceipt(result.receipt), replayed: result.replayed });
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
 export function createGlobalTaskRouter(dependencies: GlobalTaskRouterDependencies): Router {
   const router = Router();
   const authenticate = authenticateRequest(dependencies.getSession, dependencies.clearSessionCookie);
   router.get('/tasks', authenticate, listTasksHandler(dependencies));
   router.get('/tasks/:taskId', authenticate, getTaskHandler(dependencies));
+  if (dependencies.mutations) {
+    const writeOrigin = sameOrigin(dependencies.appOrigin ?? '');
+    router.post('/tasks', authenticate, writeOrigin, requireCsrf, createTaskMutationHandler(dependencies.mutations));
+    router.patch('/tasks/:taskId', authenticate, writeOrigin, requireCsrf, updateTaskMutationHandler(dependencies.mutations));
+    router.post('/tasks/:taskId/move', authenticate, writeOrigin, requireCsrf, moveTaskMutationHandler(dependencies.mutations));
+    router.post('/tasks/:taskId/archive', authenticate, writeOrigin, requireCsrf, archiveTaskMutationHandler(dependencies.mutations));
+  }
   return router;
 }

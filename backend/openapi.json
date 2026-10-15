@@ -58,6 +58,30 @@
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "500": { "$ref": "#/components/responses/InternalError" }
         }
+      },
+      "post": {
+        "tags": ["Global tasks"],
+        "summary": "Create an owner-owned task in Inbox or an active planning workspace",
+        "operationId": "createGlobalTask",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/ProjectTaskIdempotencyHeader" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GlobalTaskCreateRequest" } } }
+        },
+        "responses": {
+          "201": { "description": "The task and its durable action receipt.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GlobalTaskMutationEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ProjectTaskBadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectTaskNotFound" },
+          "409": { "$ref": "#/components/responses/ProjectTaskCreateConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
       }
     },
     "/api/v1/tasks/{taskId}": {
@@ -77,6 +101,84 @@
           "400": { "$ref": "#/components/responses/TaskQueryBadRequest" },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "404": { "$ref": "#/components/responses/TaskQueryNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "patch": {
+        "tags": ["Global tasks"],
+        "summary": "Update one owner-owned task without changing its collection",
+        "operationId": "updateGlobalTask",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/IfMatchProjectTaskVersionHeader" },
+          { "$ref": "#/components/parameters/ProjectTaskIdempotencyHeader" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GlobalTaskUpdateRequest" } } }
+        },
+        "responses": {
+          "200": { "description": "The current task and its durable action receipt.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GlobalTaskMutationEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ProjectTaskBadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectTaskNotFound" },
+          "409": { "$ref": "#/components/responses/ProjectTaskUpdateConflict" },
+          "428": { "$ref": "#/components/responses/ProjectTaskPreconditionRequired" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/move": {
+      "parameters": [
+        { "name": "taskId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+        { "$ref": "#/components/parameters/OriginHeader" },
+        { "$ref": "#/components/parameters/CsrfHeader" },
+        { "$ref": "#/components/parameters/IfMatchProjectTaskVersionHeader" },
+        { "$ref": "#/components/parameters/ProjectTaskIdempotencyHeader" }
+      ],
+      "post": {
+        "tags": ["Global tasks"],
+        "summary": "Move a task to Inbox or an active owner-owned planning workspace",
+        "operationId": "moveGlobalTask",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GlobalTaskMoveRequest" } } } },
+        "responses": {
+          "200": { "description": "The moved task and its source/destination order receipt.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GlobalTaskMutationEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ProjectTaskBadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectTaskNotFound" },
+          "409": { "$ref": "#/components/responses/ProjectTaskOrderConflict" },
+          "428": { "$ref": "#/components/responses/ProjectTaskPreconditionRequired" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/archive": {
+      "parameters": [
+        { "name": "taskId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+        { "$ref": "#/components/parameters/OriginHeader" },
+        { "$ref": "#/components/parameters/CsrfHeader" },
+        { "$ref": "#/components/parameters/IfMatchProjectTaskVersionHeader" },
+        { "$ref": "#/components/parameters/ProjectTaskIdempotencyHeader" }
+      ],
+      "post": {
+        "tags": ["Global tasks"],
+        "summary": "Soft archive an owner-owned task and keep its stable ID/history",
+        "operationId": "archiveGlobalTask",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": { "required": false, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GlobalTaskArchiveRequest" } } } },
+        "responses": {
+          "200": { "description": "The archived task and its durable action receipt.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GlobalTaskMutationEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ProjectTaskBadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectTaskNotFound" },
+          "409": { "$ref": "#/components/responses/ProjectTaskUpdateConflict" },
+          "428": { "$ref": "#/components/responses/ProjectTaskPreconditionRequired" },
           "500": { "$ref": "#/components/responses/InternalError" }
         }
       }
@@ -2830,6 +2932,9 @@
           },
           {
             "$ref": "#/components/parameters/IfMatchProjectTaskVersionHeader"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectTaskOptionalIdempotencyHeader"
           }
         ],
         "requestBody": {
@@ -2889,7 +2994,7 @@
         "tags": [
           "Workspace redesign"
         ],
-        "summary": "Permanently remove a project task and its task events",
+        "summary": "Archive a project task while preserving its stable ID and task events",
         "security": [
           {
             "sessionCookie": []
@@ -2897,7 +3002,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Success",
+            "description": "Task archived and the active project order updated.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2996,6 +3101,9 @@
           },
           {
             "$ref": "#/components/parameters/IfMatchProjectTaskVersionHeader"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectTaskOptionalIdempotencyHeader"
           }
         ]
       }
@@ -4009,6 +4117,30 @@
         "in": "header",
         "required": true,
         "description": "Unique retry key for this create request; 1 to 128 ASCII letters, digits, period, underscore, colon, or hyphen.",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        }
+      },
+      "TaskMutationIdempotencyHeader": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "Unique retry key for this task mutation; 1 to 128 ASCII letters, digits, period, underscore, colon, or hyphen.",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        }
+      },
+      "ProjectTaskOptionalIdempotencyHeader": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": false,
+        "description": "Optional retry key for compatibility with existing project-scoped clients. When omitted, the server derives a stable operation identity from the normalized request.",
         "schema": {
           "type": "string",
           "minLength": 1,
@@ -7304,7 +7436,10 @@
             "$ref": "#/components/schemas/Uuid"
           },
           "projectId": {
-            "$ref": "#/components/schemas/Uuid"
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Null identifies an Inbox task."
           },
           "title": {
             "type": "string",
@@ -7324,7 +7459,7 @@
           "position": {
             "type": "integer",
             "minimum": 0,
-            "description": "Zero-based position in the active project order; archived tasks are excluded."
+            "description": "Zero-based position in the active task collection; archived tasks are excluded."
           },
           "version": {
             "type": "integer",
@@ -7554,6 +7689,100 @@
         },
         "additionalProperties": false
       },
+      "TaskMutationReceipt": {
+        "type": "object",
+        "required": ["id", "actionKind", "undoStatus", "outcome"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "actionKind": { "type": "string", "enum": ["task.create", "task.update", "task.move", "task.archive"] },
+          "undoStatus": { "type": "string", "enum": ["available", "not_reversible", "undone"] },
+          "outcome": {
+            "type": "object",
+            "required": ["targetId", "targetVersion"],
+            "properties": {
+              "targetId": { "$ref": "#/components/schemas/Uuid" },
+              "targetVersion": { "type": "integer", "minimum": 1 },
+              "sourceOrderVersion": { "type": "integer", "minimum": 1 },
+              "destinationOrderVersion": { "type": "integer", "minimum": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "GlobalTaskMutationResult": {
+        "type": "object",
+        "required": ["item", "receipt", "replayed"],
+        "properties": {
+          "item": { "$ref": "#/components/schemas/GlobalTaskQueryItem" },
+          "receipt": { "$ref": "#/components/schemas/TaskMutationReceipt" },
+          "replayed": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      },
+      "GlobalTaskMutationEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/GlobalTaskMutationResult" },
+          "error": { "type": "null" }
+        },
+        "additionalProperties": false
+      },
+      "GlobalTaskCreateRequest": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "details": { "type": "string", "maxLength": 4096, "nullable": true },
+          "workspaceId": { "type": "string", "format": "uuid", "nullable": true, "description": "Omit or use null to create in Inbox. Rootless planning workspaces are valid." },
+          "importance": { "$ref": "#/components/schemas/ProjectTaskImportance" },
+          "deadline": { "type": "string", "format": "date", "nullable": true, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+          "subtasks": { "type": "array", "maxItems": 50, "items": { "$ref": "#/components/schemas/TaskChecklistDraft" } },
+          "expectedOrderVersion": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": false
+      },
+      "GlobalTaskUpdateTextRequest": {
+        "type": "object",
+        "minProperties": 1,
+        "properties": {
+          "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "details": { "type": "string", "maxLength": 4096, "nullable": true },
+          "importance": { "$ref": "#/components/schemas/ProjectTaskImportance" },
+          "deadline": { "type": "string", "format": "date", "nullable": true, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+          "subtasks": { "type": "array", "maxItems": 50, "items": { "$ref": "#/components/schemas/TaskChecklistDraft" } }
+        },
+        "additionalProperties": false
+      },
+      "GlobalTaskUpdateStatusRequest": {
+        "type": "object",
+        "required": ["status"],
+        "properties": { "status": { "type": "string", "enum": ["todo", "in_progress", "blocked", "done"] } },
+        "additionalProperties": false
+      },
+      "GlobalTaskUpdateRequest": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/GlobalTaskUpdateTextRequest" },
+          { "$ref": "#/components/schemas/GlobalTaskUpdateStatusRequest" }
+        ],
+        "description": "Patch only supplied fields; details and deadline may be explicitly cleared with null. Send a status transition alone."
+      },
+      "GlobalTaskMoveRequest": {
+        "type": "object",
+        "required": ["workspaceId"],
+        "properties": {
+          "workspaceId": { "type": "string", "format": "uuid", "nullable": true, "description": "Use null to move the task into Inbox. Rootless planning workspaces are valid." },
+          "expectedSourceOrderVersion": { "type": "integer", "minimum": 1 },
+          "expectedDestinationOrderVersion": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": false
+      },
+      "GlobalTaskArchiveRequest": {
+        "type": "object",
+        "properties": { "expectedOrderVersion": { "type": "integer", "minimum": 1 } },
+        "additionalProperties": false
+      },
       "ProjectTaskMutation": {
         "type": "object",
         "required": [
@@ -7697,7 +7926,7 @@
       },
       "UpdateProjectTaskStatusRequest": {
         "type": "object",
-        "description": "Apply an allowed status transition. Manual Done completes every checklist item in the same write. Archive is replaced by permanent DELETE.",
+        "description": "Apply an allowed status transition. Manual Done completes every checklist item in the same write. Use DELETE on the project task route to archive it.",
         "required": [
           "status"
         ],
