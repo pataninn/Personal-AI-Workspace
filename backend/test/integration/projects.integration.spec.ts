@@ -10,11 +10,21 @@ import { LogoutUseCase } from '@/modules/auth/use-cases/logout';
 import type { IClock, ILoginRateLimiter, IOpaqueTokenProvider, IPasswordHasher } from '@/modules/auth/repositories/security-providers';
 import type { CreateSessionInput, ISessionRepository } from '@/modules/auth/repositories/session-repository';
 import type { CreateLocalUserInput, IUserRepository } from '@/modules/auth/repositories/user-repository';
-import { ProjectNotFoundError, ProjectRemovalBusyError, ProjectRootReparsePointError, ProjectVersionConflictError, WorkspaceBoundaryUnavailableError } from '@/modules/projects/domain/project-errors';
+import { ProjectIdempotencyKeyInvalidError, ProjectNotFoundError, ProjectRemovalBusyError, ProjectRootReparsePointError, ProjectVersionConflictError, WorkspaceBoundaryUnavailableError } from '@/modules/projects/domain/project-errors';
 import type { Project } from '@/modules/projects/domain/project-types';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspace-boundary';
 import { CreateProjectUseCase, DeleteProjectUseCase, GetProjectOverviewUseCase, GetProjectUseCase, ListProjectsUseCase, UpdateProjectStatusUseCase } from '@/modules/projects';
+import type {
+  AttachInitialProjectRootInput,
+  CreatePlanningProjectInput,
+  IWorkspacePlanningUseCases,
+  ProjectActionResult,
+  ReuseProjectInput,
+  SearchProjectMetadataInput,
+  UpdateProjectObjectiveInput
+} from '@/modules/projects/use-cases/workspace-planning-use-cases';
+import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
 import type { RemoveProjectRecord } from '@/modules/projects/repositories/project-removal-repository';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { GetReadinessUseCase } from '@/modules/health';
@@ -149,7 +159,52 @@ class FixturePasswordHasher implements IPasswordHasher {
 }
 class FixtureRateLimiter implements ILoginRateLimiter { public consume(): boolean { return true; } }
 
-function buildApp(boundary: FixtureWorkspaceBoundary, projectRepository = new FixtureProjectRepository()): express.Express {
+function planningFixture(project: Project = activeProject): IWorkspacePlanningUseCases {
+  const makeReceipt = (target: Project): ActionLedgerRecord => ({
+    id: '33333333-3333-4333-8333-333333333333',
+    ownerId: 'user-1',
+    operationKey: 'planning-key',
+    requestFingerprint: 'fingerprint',
+    actorKind: 'manual',
+    turnId: null,
+    targetKind: 'workspace',
+    targetId: target.id,
+    actionKind: 'workspace.create',
+    expectedVersion: null,
+    undoOfActionId: null,
+    preVersion: null,
+    postVersion: target.version,
+    reversibleFields: {},
+    outcome: { targetId: target.id, targetVersion: target.version },
+    undoStatus: 'available',
+    undoActionId: null,
+    createdAt: NOW.toISOString()
+  });
+  const action = async (target: Project = project, replayed = false): Promise<ProjectActionResult> => ({ project: target, receipt: makeReceipt(target), replayed });
+  const createdPlanningProject: Project = {
+    ...project,
+    id: '44444444-4444-4444-8444-444444444444',
+    name: 'Plan',
+    slug: 'plan',
+    relativeRoot: null,
+    version: 1
+  };
+  const secondSearchProject: Project = { ...project, id: '55555555-5555-4555-8555-555555555555', name: `${project.name} copy` };
+  return {
+    search: jest.fn(async ({ limit }: SearchProjectMetadataInput) => ({ projects: [project, secondSearchProject], limit, hasMore: false })),
+    reuse: jest.fn(async (_input: ReuseProjectInput) => project),
+    createPlanning: jest.fn(async (input: CreatePlanningProjectInput) => {
+      if (typeof input.operationKey !== 'string' || !input.operationKey.trim()) {
+        throw new ProjectIdempotencyKeyInvalidError();
+      }
+      return action(createdPlanningProject);
+    }),
+    updateObjective: jest.fn(async (_input: UpdateProjectObjectiveInput) => action()),
+    attachInitialRoot: jest.fn(async (_input: AttachInitialProjectRootInput) => action())
+  };
+}
+
+function buildApp(boundary: FixtureWorkspaceBoundary, projectRepository = new FixtureProjectRepository(), workspacePlanning: IWorkspacePlanningUseCases = planningFixture()): express.Express {
   const users = new FixtureUserRepository();
   const sessions = new FixtureSessionRepository();
   const tokenProvider = new FixtureTokenProvider();
@@ -176,6 +231,7 @@ function buildApp(boundary: FixtureWorkspaceBoundary, projectRepository = new Fi
       listProjects: new ListProjectsUseCase(projectRepository),
       getProject: new GetProjectUseCase(projectRepository),
       updateProjectStatus: new UpdateProjectStatusUseCase(projectRepository, boundary),
+      workspacePlanning,
       deleteProject: new DeleteProjectUseCase(projectRepository),
       getOverview: new GetProjectOverviewUseCase({ getOverview: async (ownerId) => ({
         projects: (await projectRepository.listByOwner(ownerId, false)).map((project) => ({ ...project, lastActivityAt: NOW })),
@@ -291,5 +347,38 @@ describe('projects API (integration)', () => {
       .send({ name: 'Wrong mode', workspaceMode: 'planning', relativeRoot: 'notes' }).expect(400);
     await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
       .send({ name: 'Missing mode and root' }).expect(400);
+  });
+
+  it('exposes bounded metadata search, explicit reuse, and idempotent mutation headers', async () => {
+    const planning = planningFixture();
+    const app = buildApp(new FixtureWorkspaceBoundary(), new FixtureProjectRepository(), planning);
+    const session = await login(app);
+
+    const search = await request(app).get('/api/v1/projects/search?query=launch&limit=5').set('Cookie', session.cookie).expect(200);
+    expect(search.body.data).toMatchObject({ limit: 5, hasMore: false, ambiguous: true });
+    expect(search.body.data.projects).toHaveLength(2);
+    expect(search.body.data.projects[0]).toMatchObject({ id: PROJECT_ID, name: 'Existing app', version: 1 });
+    expect(search.body.data.projects[0]).not.toHaveProperty('relativeRoot');
+    expect(search.body.data.projects[0]).not.toHaveProperty('ownerId');
+    await request(app).get('/api/v1/projects/search?query=x').set('Cookie', session.cookie).expect(400);
+
+    await request(app).post('/api/v1/projects/reuse').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
+      .send({ projectId: PROJECT_ID }).expect(200).expect(({ body }) => expect(body.data).toMatchObject({ id: PROJECT_ID, workspaceMode: 'file_backed' }));
+    expect(planning.reuse).toHaveBeenCalledWith({ ownerId: 'user-1', projectId: PROJECT_ID });
+
+    await request(app).post('/api/v1/projects/planning').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
+      .send({ name: 'Plan' }).expect(400).expect(({ body }) => expect(body.error.code).toBe('IDEMPOTENCY_KEY_REQUIRED'));
+    await request(app).post('/api/v1/projects/planning').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
+      .set('Idempotency-Key', 'plan-operation-1').send({ name: 'Plan' }).expect(201).expect(({ body }) => {
+        expect(body.data).toMatchObject({ replayed: false, project: { id: '44444444-4444-4444-8444-444444444444', relativeRoot: null }, receipt: { actionKind: 'workspace.create' } });
+      });
+    expect(planning.createPlanning).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'user-1', operationKey: 'plan-operation-1', name: 'Plan' }));
+
+    await request(app).patch(`/api/v1/projects/${PROJECT_ID}/objective`).set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
+      .set('Idempotency-Key', 'objective-operation-1').send({ objective: 'Improve the app' }).expect(400)
+      .expect(({ body }) => expect(body.error.code).toBe('PROJECT_VERSION_REQUIRED'));
+    await request(app).patch(`/api/v1/projects/${PROJECT_ID}/root-attachment`).set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
+      .set('If-Match', '1').set('Idempotency-Key', 'root-operation-1').send({ relativeRoot: '.' }).expect(200);
+    expect(planning.attachInitialRoot).toHaveBeenCalledWith(expect.objectContaining({ expectedVersion: 1, operationKey: 'root-operation-1', relativeRoot: '.' }));
   });
 });

@@ -8,6 +8,13 @@ import type {
   IProjectRepository,
   UpdateProjectStatusRecord
 } from '@/modules/projects/repositories/project-repository';
+import type {
+  CreatePlanningProjectRecord,
+  IProjectWorkspaceRepository,
+  ProjectMetadataSearchResult,
+  UpdateProjectObjectiveRecord,
+  AttachProjectRootRecord
+} from '@/modules/projects/repositories/project-workspace-repository';
 
 interface ProjectRow {
   readonly id: string;
@@ -58,7 +65,7 @@ async function findActiveRoots(queryRunner: QueryRunner, ownerId: string): Promi
   return rows.map((row) => row.relative_root);
 }
 
-export class TypeOrmProjectRepository implements IProjectRepository {
+export class TypeOrmProjectRepository implements IProjectRepository, IProjectWorkspaceRepository<QueryRunner> {
   public constructor(private readonly dataSource: DataSource) {}
 
   public async listByOwner(ownerId: string, includeArchived: boolean): Promise<readonly Project[]> {
@@ -86,6 +93,84 @@ export class TypeOrmProjectRepository implements IProjectRepository {
       [ownerId]
     );
     return rows.map((row) => row.relative_root);
+  }
+
+  public async searchForOwner(ownerId: string, query: string, limit: number): Promise<ProjectMetadataSearchResult> {
+    const rows: readonly ProjectRow[] = await this.dataSource.query(
+      `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"
+       FROM "projects"
+       WHERE "owner_id" = $1 AND "status" = 'active'
+         AND (strpos(lower("name"), lower($2)) > 0 OR strpos(lower(coalesce("objective", '')), lower($2)) > 0)
+       ORDER BY "updated_at" DESC, "name" ASC, "id" ASC LIMIT $3`,
+      [ownerId, query, limit + 1]
+    );
+    return { projects: rows.slice(0, limit).map(toProject), hasMore: rows.length > limit };
+  }
+
+  public async lockOwnerRoots(transaction: QueryRunner, ownerId: string): Promise<void> {
+    await lockOwner(transaction, ownerId);
+  }
+
+  public async findByIdForOwnerForUpdate(transaction: QueryRunner, ownerId: string, projectId: string): Promise<Project | null> {
+    const rows: readonly ProjectRow[] = await transaction.query(
+      `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"
+       FROM "projects" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1 FOR UPDATE`,
+      [ownerId, projectId]
+    );
+    return rows[0] ? toProject(rows[0]) : null;
+  }
+
+  public async listActiveRootKeys(transaction: QueryRunner, ownerId: string, exceptProjectId?: string): Promise<readonly string[]> {
+    const exclude = exceptProjectId === undefined ? '' : ' AND "id" <> $2';
+    const parameters = exceptProjectId === undefined ? [ownerId] : [ownerId, exceptProjectId];
+    const rows: readonly { relative_root: string }[] = await transaction.query(
+      `SELECT "relative_root_key" AS "relative_root" FROM "projects"
+       WHERE "owner_id" = $1 AND "status" = 'active' AND "relative_root_key" IS NOT NULL${exclude}`,
+      parameters
+    );
+    return rows.map((row) => row.relative_root);
+  }
+
+  public async createPlanning(transaction: QueryRunner, input: CreatePlanningProjectRecord): Promise<Project> {
+    try {
+      const rows: readonly ProjectRow[] = await transaction.query(
+        `INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective")
+         VALUES ($1, $2, $3, $4, NULL, NULL, $5)
+         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"`,
+        [input.id, input.ownerId, input.name, input.slug, input.objective]
+      );
+      const row = rows[0];
+      if (!row) throw new Error('The planning project was not returned after insert.');
+      return toProject(row);
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) throw new ProjectNameConflictError();
+      throw error;
+    }
+  }
+
+  public async updateObjective(transaction: QueryRunner, input: UpdateProjectObjectiveRecord): Promise<Project | null> {
+    const [rows]: readonly [readonly ProjectRow[], number] = await transaction.query(
+      `UPDATE "projects" SET "objective" = $1, "version" = "version" + 1, "updated_at" = now()
+       WHERE "owner_id" = $2 AND "id" = $3 AND "version" = $4
+       RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"`,
+      [input.objective, input.ownerId, input.projectId, input.expectedVersion]
+    );
+    return rows[0] ? toProject(rows[0]) : null;
+  }
+
+  public async attachInitialRoot(transaction: QueryRunner, input: AttachProjectRootRecord): Promise<Project | null> {
+    try {
+      const [rows]: readonly [readonly ProjectRow[], number] = await transaction.query(
+        `UPDATE "projects" SET "relative_root" = $1, "relative_root_key" = $2, "version" = "version" + 1, "updated_at" = now()
+         WHERE "owner_id" = $3 AND "id" = $4 AND "version" = $5 AND "relative_root" IS NULL
+         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"`,
+        [input.relativeRoot, input.relativeRootKey, input.ownerId, input.projectId, input.expectedVersion]
+      );
+      return rows[0] ? toProject(rows[0]) : null;
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) throw new ProjectRootOverlapError();
+      throw error;
+    }
   }
 
   public async create(input: CreateProjectRecord): Promise<Project> {

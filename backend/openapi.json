@@ -121,6 +121,117 @@
         ]
       }
     },
+    "/api/v1/projects/search": {
+      "get": {
+        "tags": ["Workspace redesign"],
+        "summary": "Search active owner-owned workspace metadata",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "query", "in": "query", "required": true, "schema": { "type": "string", "minLength": 2, "maxLength": 120 } },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 } }
+        ],
+        "responses": {
+          "200": { "description": "A bounded page of owner-owned workspace metadata without filesystem paths.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectMetadataSearchPageEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/projects/reuse": {
+      "post": {
+        "tags": ["Workspace redesign"],
+        "summary": "Reuse an explicitly selected active workspace",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ReuseProjectRequest" } } } },
+        "responses": {
+          "200": { "description": "The explicitly selected owner-owned workspace.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectNotFound" },
+          "409": { "$ref": "#/components/responses/MutationConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        },
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" }
+        ]
+      }
+    },
+    "/api/v1/projects/planning": {
+      "post": {
+        "tags": ["Workspace redesign"],
+        "summary": "Create an owner-scoped planning workspace",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatePlanningProjectRequest" } } } },
+        "responses": {
+          "201": { "description": "Workspace created with its durable action receipt.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectPlanningActionEnvelope" } } } },
+          "200": { "description": "An idempotent replay of a previously committed creation.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectPlanningActionEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "409": { "$ref": "#/components/responses/MutationConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        },
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/WorkspaceIdempotencyKeyHeader" }
+        ]
+      }
+    },
+    "/api/v1/projects/{projectId}/objective": {
+      "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
+      "patch": {
+        "tags": ["Workspace redesign"],
+        "summary": "Update a workspace objective",
+        "description": "Requires the current project version and an idempotency key. A replay with the same key and request returns the committed result.",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpdateProjectObjectiveRequest" } } } },
+        "responses": {
+          "200": { "description": "Workspace and durable action receipt.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectPlanningActionEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectNotFound" },
+          "409": { "$ref": "#/components/responses/MutationConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        },
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/ProjectIfMatchHeader" },
+          { "$ref": "#/components/parameters/WorkspaceIdempotencyKeyHeader" }
+        ]
+      }
+    },
+    "/api/v1/projects/{projectId}/root-attachment": {
+      "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
+      "patch": {
+        "tags": ["Workspace redesign"],
+        "summary": "Attach an existing folder to a planning workspace",
+        "description": "Validates an existing folder read-only. It does not create, move, or delete files. This action is recorded as not reversible.",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AttachProjectRootRequest" } } } },
+        "responses": {
+          "200": { "description": "Workspace and durable non-reversible action receipt.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectPlanningActionEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectNotFound" },
+          "409": { "$ref": "#/components/responses/MutationConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/WorkspaceUnavailable" }
+        },
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/ProjectIfMatchHeader" },
+          { "$ref": "#/components/parameters/WorkspaceIdempotencyKeyHeader" }
+        ]
+      }
+    },
     "/api/v1/projects/{projectId}/chat-context": {
       "parameters": [
         {
@@ -3783,6 +3894,20 @@
           "maxLength": 200,
           "pattern": "^[\\x21-\\x7e]+$"
         }
+      },
+      "WorkspaceIdempotencyKeyHeader": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "Stable key for replaying this workspace mutation. Reusing it for a different request returns a conflict.",
+        "schema": { "type": "string", "minLength": 1, "maxLength": 200 }
+      },
+      "ProjectIfMatchHeader": {
+        "name": "If-Match",
+        "in": "header",
+        "required": true,
+        "description": "Current positive workspace version as a decimal integer, without quotes.",
+        "schema": { "type": "string", "pattern": "^0*[1-9][0-9]*$" }
       },
       "IfMatchVersionHeader": {
         "name": "If-Match",
@@ -8253,6 +8378,99 @@
             "additionalProperties": false
           },
           "error": { "nullable": true, "type": "object", "description": "Null on success." }
+        },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "ReuseProjectRequest": {
+        "type": "object",
+        "properties": { "projectId": { "$ref": "#/components/schemas/Uuid" } },
+        "required": ["projectId"],
+        "additionalProperties": false
+      },
+      "CreatePlanningProjectRequest": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "maxLength": 120 },
+          "objective": { "type": "string", "maxLength": 2000, "nullable": true }
+        },
+        "required": ["name"],
+        "additionalProperties": false
+      },
+      "UpdateProjectObjectiveRequest": {
+        "type": "object",
+        "properties": { "objective": { "type": "string", "maxLength": 2000, "nullable": true } },
+        "required": ["objective"],
+        "additionalProperties": false
+      },
+      "AttachProjectRootRequest": {
+        "type": "object",
+        "properties": { "relativeRoot": { "type": "string", "maxLength": 2048 } },
+        "required": ["relativeRoot"],
+        "additionalProperties": false
+      },
+      "ProjectMetadataSearchItem": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "name": { "type": "string" },
+          "objective": { "type": "string", "nullable": true },
+          "workspaceMode": { "type": "string", "enum": ["planning", "file_backed"] },
+          "status": { "type": "string", "enum": ["active"] },
+          "version": { "type": "integer", "minimum": 1 }
+        },
+        "required": ["id", "name", "objective", "workspaceMode", "status", "version"],
+        "additionalProperties": false
+      },
+      "ProjectMetadataSearchPage": {
+        "type": "object",
+        "properties": {
+          "projects": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectMetadataSearchItem" } },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 20 },
+          "hasMore": { "type": "boolean" },
+          "ambiguous": { "type": "boolean", "description": "True when more than one match was returned or additional matches exist." }
+        },
+        "required": ["projects", "limit", "hasMore", "ambiguous"],
+        "additionalProperties": false
+      },
+      "ProjectMetadataSearchPageEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": { "$ref": "#/components/schemas/ProjectMetadataSearchPage" },
+          "error": { "type": "object", "nullable": true, "description": "Null on success." }
+        },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "ProjectActionReceipt": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "actionKind": { "type": "string", "enum": ["workspace.create", "workspace.update"] },
+          "targetId": { "$ref": "#/components/schemas/Uuid" },
+          "preVersion": { "type": "integer", "minimum": 1, "nullable": true },
+          "postVersion": { "type": "integer", "minimum": 1 },
+          "undoStatus": { "type": "string", "enum": ["available", "not_reversible", "undone"] },
+          "createdAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "actionKind", "targetId", "preVersion", "postVersion", "undoStatus", "createdAt"],
+        "additionalProperties": false
+      },
+      "ProjectPlanningActionResult": {
+        "type": "object",
+        "properties": {
+          "project": { "$ref": "#/components/schemas/ProjectRepresentation" },
+          "receipt": { "$ref": "#/components/schemas/ProjectActionReceipt" },
+          "replayed": { "type": "boolean" }
+        },
+        "required": ["project", "receipt", "replayed"],
+        "additionalProperties": false
+      },
+      "ProjectPlanningActionEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": { "$ref": "#/components/schemas/ProjectPlanningActionResult" },
+          "error": { "type": "object", "nullable": true, "description": "Null on success." }
         },
         "required": ["data", "error"],
         "additionalProperties": false

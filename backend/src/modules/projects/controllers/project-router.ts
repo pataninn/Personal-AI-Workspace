@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { ProjectNotFoundError, ProjectVersionRequiredError } from '@/modules/projects/domain/project-errors';
 import { projectCapabilities, projectWorkspaceMode, type Project } from '@/modules/projects/domain/project-types';
+import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
 import { authenticateRequest, requireCsrf, sameOrigin } from '@/modules/auth/controllers/request-auth';
 import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
 import { AppError } from '@/shared/errors/app-error';
@@ -17,6 +18,7 @@ import type {
   ListProjectsUseCase,
   UpdateProjectStatusUseCase
 } from '@/modules/projects/use-cases/project-use-cases';
+import type { IWorkspacePlanningUseCases } from '@/modules/projects/use-cases/workspace-planning-use-cases';
 
 const createProjectSchema = z.object({
   name: z.string().max(120),
@@ -36,17 +38,36 @@ const updateProjectSchema = z.object({
   status: z.enum(['active', 'archived'])
 }).strict();
 
+const projectSearchSchema = z.object({
+  query: z.string().trim().min(2).max(120),
+  limit: z.coerce.number().int().min(1).max(20).optional()
+}).strict();
+
+const reuseProjectSchema = z.object({ projectId: z.string().uuid() }).strict();
+
+const planningProjectSchema = z.object({
+  name: z.string().max(120),
+  objective: z.string().max(2000).nullable().optional()
+}).strict();
+
+const updateObjectiveSchema = z.object({ objective: z.string().max(2000).nullable() }).strict();
+
+const attachRootSchema = z.object({ relativeRoot: z.string().max(2048) }).strict();
+
 export interface ProjectRouterDependencies {
   readonly getSession: GetSessionUseCase;
   readonly createProject: CreateProjectUseCase;
   readonly listProjects: ListProjectsUseCase;
   readonly getProject: GetProjectUseCase;
   readonly updateProjectStatus: UpdateProjectStatusUseCase;
+  readonly workspacePlanning: IWorkspacePlanningUseCases;
   readonly deleteProject?: DeleteProjectUseCase;
   readonly getOverview?: GetProjectOverviewUseCase;
   readonly appOrigin: string;
   readonly clearSessionCookie: (response: Response) => void;
 }
+
+type ProjectPlanningRouterDependencies = ProjectRouterDependencies & { readonly workspacePlanning: IWorkspacePlanningUseCases };
 
 function parseBody<T>(schema: z.ZodType<T>, body: unknown): T {
   const result = schema.safeParse(body);
@@ -110,6 +131,144 @@ function serializeProject(project: Project): Record<string, unknown> {
     version: project.version,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString()
+  };
+}
+
+function serializeProjectAction(receipt: ActionLedgerRecord): Record<string, unknown> {
+  return {
+    id: receipt.id,
+    actionKind: receipt.actionKind,
+    targetId: receipt.targetId,
+    preVersion: receipt.preVersion,
+    postVersion: receipt.postVersion,
+    undoStatus: receipt.undoStatus,
+    createdAt: receipt.createdAt
+  };
+}
+
+function projectSearchHandler(dependencies: ProjectPlanningRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const ownerId = request.auth?.principal.id;
+      if (!ownerId) {
+        next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
+        return;
+      }
+      const query = parseBody(projectSearchSchema, request.query);
+      const result = await dependencies.workspacePlanning.search({ ownerId, query: query.query, limit: query.limit ?? 10 });
+      sendData(response, {
+        projects: result.projects.map((project) => ({
+          id: project.id,
+          name: project.name,
+          objective: project.objective,
+          workspaceMode: projectWorkspaceMode(project),
+          status: project.status,
+          version: project.version
+        })),
+        limit: result.limit,
+        hasMore: result.hasMore,
+        ambiguous: result.projects.length > 1 || result.hasMore
+      });
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
+function reuseProjectHandler(dependencies: ProjectPlanningRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const ownerId = request.auth?.principal.id;
+      if (!ownerId) {
+        next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
+        return;
+      }
+      const input = parseBody(reuseProjectSchema, request.body);
+      const project = await dependencies.workspacePlanning.reuse({ ownerId, projectId: input.projectId });
+      sendData(response, serializeProject(project));
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
+function createPlanningProjectHandler(dependencies: ProjectPlanningRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const ownerId = request.auth?.principal.id;
+      if (!ownerId) {
+        next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
+        return;
+      }
+      const input = parseBody(planningProjectSchema, request.body);
+      const result = await dependencies.workspacePlanning.createPlanning({
+        ownerId,
+        operationKey: request.header('idempotency-key'),
+        name: input.name,
+        ...(input.objective !== undefined ? { objective: input.objective } : {})
+      });
+      sendData(response, {
+        project: serializeProject(result.project),
+        receipt: serializeProjectAction(result.receipt),
+        replayed: result.replayed
+      }, result.replayed ? 200 : 201);
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
+function updateProjectObjectiveHandler(dependencies: ProjectPlanningRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const ownerId = request.auth?.principal.id;
+      if (!ownerId) {
+        next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
+        return;
+      }
+      const input = parseBody(updateObjectiveSchema, request.body);
+      const result = await dependencies.workspacePlanning.updateObjective({
+        ownerId,
+        projectId: parseProjectId(routeProjectId(request.params.projectId)),
+        expectedVersion: parseVersion(request.header('if-match')),
+        operationKey: request.header('idempotency-key'),
+        objective: input.objective
+      });
+      sendData(response, {
+        project: serializeProject(result.project),
+        receipt: serializeProjectAction(result.receipt),
+        replayed: result.replayed
+      });
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
+function attachInitialProjectRootHandler(dependencies: ProjectPlanningRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      const ownerId = request.auth?.principal.id;
+      if (!ownerId) {
+        next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
+        return;
+      }
+      const input = parseBody(attachRootSchema, request.body);
+      const result = await dependencies.workspacePlanning.attachInitialRoot({
+        ownerId,
+        projectId: parseProjectId(routeProjectId(request.params.projectId)),
+        expectedVersion: parseVersion(request.header('if-match')),
+        operationKey: request.header('idempotency-key'),
+        relativeRoot: input.relativeRoot
+      });
+      sendData(response, {
+        project: serializeProject(result.project),
+        receipt: serializeProjectAction(result.receipt),
+        replayed: result.replayed
+      });
+    } catch (error: unknown) {
+      next(error);
+    }
   };
 }
 
@@ -190,6 +349,11 @@ export function createProjectRouter(dependencies: ProjectRouterDependencies): Ro
   const authenticate = authenticateRequest(dependencies.getSession, dependencies.clearSessionCookie);
   router.get('/', authenticate, listHandler(dependencies));
   router.post('/', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, createHandler(dependencies));
+  router.get('/search', authenticate, projectSearchHandler(dependencies));
+  router.post('/reuse', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, reuseProjectHandler(dependencies));
+  router.post('/planning', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, createPlanningProjectHandler(dependencies));
+  router.patch('/:projectId/objective', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, updateProjectObjectiveHandler(dependencies));
+  router.patch('/:projectId/root-attachment', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, attachInitialProjectRootHandler(dependencies));
   router.get('/overview', authenticate, overviewHandler(dependencies));
   router.get('/:projectId', authenticate, getHandler(dependencies));
   router.patch('/:projectId', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, updateStatusHandler(dependencies));

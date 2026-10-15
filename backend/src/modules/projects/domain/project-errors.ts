@@ -103,6 +103,36 @@ export class ProjectNameConflictError extends ProjectDomainError {
   }
 }
 
+export class ProjectArchivedError extends ProjectDomainError {
+  public constructor() {
+    super('PROJECT_ARCHIVED', 409, 'Archived projects cannot be selected or changed.');
+  }
+}
+
+export class ProjectRootAlreadyAttachedError extends ProjectDomainError {
+  public constructor() {
+    super('PROJECT_ROOT_ALREADY_ATTACHED', 409, 'This project already has an attached folder.');
+  }
+}
+
+export class ProjectActionKeyReusedError extends ProjectDomainError {
+  public constructor() {
+    super('IDEMPOTENCY_KEY_REUSED', 409, 'The Idempotency-Key was already used for a different request.');
+  }
+}
+
+export class ProjectIdempotencyKeyInvalidError extends ProjectDomainError {
+  public constructor() {
+    super('IDEMPOTENCY_KEY_REQUIRED', 400, 'A valid Idempotency-Key header is required.');
+  }
+}
+
+export class ProjectMetadataQueryInvalidError extends ProjectDomainError {
+  public constructor() {
+    super('PROJECT_SEARCH_INVALID', 400, 'The project search request is invalid.');
+  }
+}
+
 export class ProjectNotFoundError extends ProjectDomainError {
   public constructor() {
     super('PROJECT_NOT_FOUND', 404, 'Project not found.');
