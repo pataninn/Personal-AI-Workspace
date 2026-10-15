@@ -1,5 +1,6 @@
 import type { DataSource, QueryRunner } from 'typeorm';
 
+import type { GlobalTaskQueryCursorPosition, GlobalTaskQueryFilters, GlobalTaskQueryItem } from '@/modules/tasks/domain/global-task-query';
 import {
   ProjectTaskArchivedError,
   ProjectTaskArchivedProjectError,
@@ -30,6 +31,7 @@ import type {
   ResolveProjectTaskSuggestionResult,
   UpdateProjectTaskRecord
 } from '@/modules/tasks/repositories/project-task-repository';
+import type { IGlobalTaskQueryRepository, GlobalTaskQueryRepositoryPage } from '@/modules/tasks/repositories/global-task-query-repository';
 
 interface TaskRow {
   readonly id: string;
@@ -53,6 +55,13 @@ interface TaskRow {
   readonly completed_at: Date | string | null;
   readonly archived_at: Date | string | null;
   readonly idempotency_snapshot?: unknown;
+}
+
+interface GlobalTaskQueryRow extends TaskRow {
+  readonly workspace_id: string | null;
+  readonly workspace_name: string | null;
+  readonly workspace_status: 'active' | 'archived' | null;
+  readonly cursor_created_at: string;
 }
 
 interface SuggestionRow {
@@ -147,6 +156,24 @@ function toTask(row: TaskRow): ProjectTask {
     completedAt: nullableDate(row.completed_at),
     archivedAt: nullableDate(row.archived_at)
   };
+}
+
+function toGlobalTaskQueryItem(row: GlobalTaskQueryRow): GlobalTaskQueryItem {
+  if (row.project_id === null) {
+    return { task: toTask(row), collection: 'inbox', workspace: null };
+  }
+  if (!row.workspace_id || !row.workspace_name || !row.workspace_status) {
+    throw new Error('The global task query returned a task without its owner-scoped workspace.');
+  }
+  return {
+    task: toTask(row),
+    collection: 'workspace',
+    workspace: { id: row.workspace_id, name: row.workspace_name, status: row.workspace_status }
+  };
+}
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/gu, '\\$&');
 }
 
 function toSuggestion(row: SuggestionRow): ProjectTaskSuggestion {
@@ -419,11 +446,78 @@ async function compactTaskPositions(queryRunner: QueryRunner, ownerId: string, p
   );
 }
 
-export class TypeOrmProjectTaskRepository implements IProjectTaskRepository {
+export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGlobalTaskQueryRepository {
   public constructor(private readonly dataSource: DataSource) {}
 
   public async listTasks(ownerId: string, projectId: string, filter: ProjectTaskFilter): Promise<ProjectTaskListSnapshot> {
     return taskRowsForFilter(this.dataSource, ownerId, projectId, filter);
+  }
+
+  public async listGlobalTasks(input: {
+    readonly ownerId: string;
+    readonly filters: GlobalTaskQueryFilters;
+    readonly after: GlobalTaskQueryCursorPosition | null;
+  }): Promise<GlobalTaskQueryRepositoryPage> {
+    const { filters, ownerId, after } = input;
+    const rows = asRows<GlobalTaskQueryRow>(await this.dataSource.query(
+      `SELECT ${TASK_COLUMNS}, p."id" AS "workspace_id", p."name" AS "workspace_name", p."status" AS "workspace_status",
+              to_char(t."created_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "cursor_created_at"
+       FROM "project_tasks" t
+       LEFT JOIN "projects" p ON p."id" = t."project_id" AND p."owner_id" = t."owner_id"
+       WHERE t."owner_id" = $1
+         AND ($2::uuid IS NULL OR t."project_id" = $2)
+         AND (NOT $3::boolean OR t."project_id" IS NULL)
+         AND ($4::"project_task_status" IS NULL OR t."status" = $4)
+         AND ($5::"project_task_importance" IS NULL OR t."importance" = $5)
+         AND ($6::date IS NULL OR t."deadline" >= $6::date)
+         AND ($7::date IS NULL OR t."deadline" <= $7::date)
+         AND ($8::text IS NULL OR t."title" ILIKE $8 OR COALESCE(t."details", '') ILIKE $8)
+         AND ($9::boolean OR (t."status" <> 'archived' AND (t."project_id" IS NULL OR p."status" <> 'archived')))
+         AND ($10::timestamptz IS NULL OR (t."created_at", t."id") < ($10::timestamptz, $11::uuid))
+       ORDER BY t."created_at" DESC, t."id" DESC
+       LIMIT $12`,
+      [
+        ownerId,
+        filters.workspaceId ?? null,
+        filters.inboxOnly,
+        filters.status ?? null,
+        filters.importance ?? null,
+        filters.deadlineFrom ?? null,
+        filters.deadlineTo ?? null,
+        filters.q ? `%${escapeLike(filters.q)}%` : null,
+        filters.includeArchived,
+        after?.createdAt ?? null,
+        after?.taskId ?? null,
+        filters.limit + 1
+      ]
+    ));
+    const hasMore = rows.length > filters.limit;
+    const visible = rows.slice(0, filters.limit);
+    const lastRow = visible[visible.length - 1];
+    return {
+      items: visible.map(toGlobalTaskQueryItem),
+      hasMore,
+      lastPosition: hasMore && lastRow ? { createdAt: lastRow.cursor_created_at, taskId: lastRow.id } : null
+    };
+  }
+
+  public async getGlobalTask(input: {
+    readonly ownerId: string;
+    readonly taskId: string;
+    readonly includeArchived: boolean;
+  }): Promise<GlobalTaskQueryItem | null> {
+    const rows = asRows<GlobalTaskQueryRow>(await this.dataSource.query(
+      `SELECT ${TASK_COLUMNS}, p."id" AS "workspace_id", p."name" AS "workspace_name", p."status" AS "workspace_status",
+              to_char(t."created_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "cursor_created_at"
+       FROM "project_tasks" t
+       LEFT JOIN "projects" p ON p."id" = t."project_id" AND p."owner_id" = t."owner_id"
+       WHERE t."owner_id" = $1 AND t."id" = $2
+         AND ($3::boolean OR (t."status" <> 'archived' AND (t."project_id" IS NULL OR p."status" <> 'archived')))
+       LIMIT 1`,
+      [input.ownerId, input.taskId, input.includeArchived]
+    ));
+    const row = rows[0];
+    return row ? toGlobalTaskQueryItem(row) : null;
   }
 
   public async createTask(input: CreateProjectTaskRecord): Promise<CreateProjectTaskResult> {

@@ -59,7 +59,7 @@ import { ListWorkspaceFilesUseCase, ReadWorkspaceTextUseCase, SearchWorkspaceTex
 import { StartupChecksError } from '@/shared/errors/app-error';
 import { createLogger, type AppLogger } from '@/shared/logging/logger';
 import { CreateProjectFactUseCase, DeleteProjectFactUseCase, ListProjectFactsUseCase, ReviewProjectFactUseCase, UpdateProjectFactUseCase } from '@/modules/memory';
-import { CreateProjectTaskUseCase, DeleteProjectTaskUseCase, ListProjectTaskSuggestionsUseCase, ListProjectTasksUseCase, ReorderProjectTaskUseCase, ResolveProjectTaskSuggestionUseCase, UpdateProjectTaskUseCase } from '@/modules/tasks';
+import { CreateProjectTaskUseCase, DeleteProjectTaskUseCase, GetGlobalTaskUseCase, ListGlobalTasksUseCase, ListProjectTaskSuggestionsUseCase, ListProjectTasksUseCase, ReorderProjectTaskUseCase, ResolveProjectTaskSuggestionUseCase, UpdateProjectTaskUseCase } from '@/modules/tasks';
 import { GetAiRunActivityUseCase, ListAiRunActivityUseCase } from '@/modules/ai-runs/use-cases/activity-use-cases';
 import { ListProjectFileHistoryUseCase } from '@/modules/ai-runs/use-cases/file-history-use-cases';
 
@@ -268,6 +268,12 @@ export async function createApplication(
           listSuggestions: new ListProjectTaskSuggestionsUseCase(projectRepository, projectTaskRepository),
           resolveSuggestion: new ResolveProjectTaskSuggestionUseCase(projectRepository, projectTaskRepository),
           appOrigin: config.appOrigin,
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
+        globalTasks: {
+          getSession,
+          listTasks: new ListGlobalTasksUseCase(projectTaskRepository),
+          getTask: new GetGlobalTaskUseCase(projectTaskRepository),
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         }
       }),

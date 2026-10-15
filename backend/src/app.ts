@@ -27,7 +27,7 @@ import { SandboxCommandDomainError } from '@/modules/ai-runs/domain/command-erro
 import { ChangeSetDomainError } from '@/modules/ai-runs/domain/change-errors';
 import { ProjectFactDomainError } from '@/modules/memory/domain/project-fact-errors';
 import { createProjectFactRouter, type ProjectFactRouterDependencies } from '@/modules/memory';
-import { createProjectTaskRouter, ProjectTaskDomainError, type ProjectTaskRouterDependencies } from '@/modules/tasks';
+import { createGlobalTaskRouter, createProjectTaskRouter, ProjectTaskDomainError, type GlobalTaskRouterDependencies, type ProjectTaskRouterDependencies } from '@/modules/tasks';
 
 export interface CreateAppOptions {
   readonly logger: AppLogger;
@@ -43,6 +43,7 @@ export interface CreateAppOptions {
   readonly aiRunChat?: AiRunChatRouterDependencies;
   readonly projectFacts?: ProjectFactRouterDependencies;
   readonly projectTasks?: ProjectTaskRouterDependencies;
+  readonly globalTasks?: GlobalTaskRouterDependencies;
 }
 
 const requestIdMiddleware: RequestHandler = (request, response, next) => {
@@ -193,6 +194,9 @@ export function createApp(options: CreateAppOptions): Express {
   }
   if (options.projectTasks) {
     app.use('/api/v1/projects/:projectId', createProjectTaskRouter(options.projectTasks));
+  }
+  if (options.globalTasks) {
+    app.use('/api/v1', createGlobalTaskRouter(options.globalTasks));
   }
 
   if (options.staticDirectory && existsSync(options.staticDirectory)) {

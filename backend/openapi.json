@@ -3,7 +3,7 @@
   "info": {
     "title": "Personal AI Workspace API",
     "version": "0.1.0",
-    "description": "Authenticated REST endpoints for project-scoped conversations, project tasks, durable project facts, and AI runs."
+    "description": "Authenticated REST endpoints for project-scoped conversations, project tasks, owner-wide task queries, durable project facts, and AI runs."
   },
   "servers": [
     {
@@ -27,10 +27,60 @@
       "name": "Project tasks"
     },
     {
+      "name": "Global tasks"
+    },
+    {
       "name": "Workspace redesign"
     }
   ],
   "paths": {
+    "/api/v1/tasks": {
+      "get": {
+        "tags": ["Global tasks"],
+        "summary": "List owner-scoped tasks across Inbox and workspaces",
+        "operationId": "listGlobalTasks",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "workspaceId", "in": "query", "description": "Restrict the query to one owned workspace.", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "inboxOnly", "in": "query", "description": "When true, return Inbox tasks only; mutually exclusive with workspaceId.", "schema": { "type": "boolean", "default": false } },
+          { "name": "status", "in": "query", "description": "Filter by task status. Archived status requires includeArchived=true.", "schema": { "type": "string", "enum": ["todo", "in_progress", "blocked", "done", "archived"] } },
+          { "name": "importance", "in": "query", "schema": { "type": "string", "enum": ["low", "medium", "high", "urgent"] } },
+          { "name": "deadlineFrom", "in": "query", "description": "Inclusive date-only lower bound.", "schema": { "type": "string", "format": "date" } },
+          { "name": "deadlineTo", "in": "query", "description": "Inclusive date-only upper bound.", "schema": { "type": "string", "format": "date" } },
+          { "name": "q", "in": "query", "description": "Case-insensitive title/details substring; at most 200 characters.", "schema": { "type": "string", "maxLength": 200 } },
+          { "name": "includeArchived", "in": "query", "description": "Include archived tasks and archived workspaces.", "schema": { "type": "boolean", "default": false } },
+          { "name": "limit", "in": "query", "description": "Maximum items in this page.", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 } },
+          { "name": "cursor", "in": "query", "description": "Opaque continuation token bound to owner, filters, and limit.", "schema": { "type": "string", "maxLength": 1024 } }
+        ],
+        "responses": {
+          "200": { "description": "A deterministic page of owner-owned tasks.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GlobalTaskQueryPageEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/TaskQueryBadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}": {
+      "parameters": [
+        { "name": "taskId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+      ],
+      "get": {
+        "tags": ["Global tasks"],
+        "summary": "Get an owner-scoped task by its stable ID",
+        "operationId": "getGlobalTask",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "includeArchived", "in": "query", "description": "Allow an archived task or archived workspace.", "schema": { "type": "boolean", "default": false } }
+        ],
+        "responses": {
+          "200": { "description": "The task and its current Inbox/workspace identity.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GlobalTaskQueryItemEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/TaskQueryBadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/TaskQueryNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
     "/api/v1/projects": {
       "get": {
         "tags": ["Workspace redesign"],
@@ -4273,6 +4323,40 @@
           }
         }
       },
+      "TaskQueryBadRequest": {
+        "description": "The global task filters or cursor are invalid for this authenticated owner and query.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+            "examples": {
+              "validation": {
+                "value": {
+                  "data": null,
+                  "error": { "code": "VALIDATION_ERROR", "message": "The global task query is invalid." }
+                }
+              },
+              "cursor": {
+                "value": {
+                  "data": null,
+                  "error": { "code": "TASK_CURSOR_INVALID", "message": "The task query cursor is invalid for these filters. Restart the query." }
+                }
+              }
+            }
+          }
+        }
+      },
+      "TaskQueryNotFound": {
+        "description": "The task is missing, belongs to another owner, or is archived by default; these cases are not distinguished.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
+            "example": {
+              "data": null,
+              "error": { "code": "TASK_NOT_FOUND", "message": "The requested task was not found." }
+            }
+          }
+        }
+      },
       "ProjectTaskPreconditionRequired": {
         "description": "If-Match is missing or is not a quoted positive version.",
         "content": {
@@ -7295,6 +7379,53 @@
           "error": {
             "type": "null"
           }
+        },
+        "additionalProperties": false
+      },
+      "GlobalTaskWorkspace": {
+        "type": "object",
+        "required": ["id", "name", "status"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "name": { "type": "string" },
+          "status": { "type": "string", "enum": ["active", "archived"] }
+        },
+        "additionalProperties": false
+      },
+      "GlobalTaskQueryItem": {
+        "type": "object",
+        "required": ["task", "collection", "workspace"],
+        "properties": {
+          "task": { "$ref": "#/components/schemas/ProjectTask" },
+          "collection": { "type": "string", "enum": ["inbox", "workspace"] },
+          "workspace": { "$ref": "#/components/schemas/GlobalTaskWorkspace", "nullable": true }
+        },
+        "additionalProperties": false
+      },
+      "GlobalTaskQueryPage": {
+        "type": "object",
+        "required": ["items", "nextCursor"],
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/GlobalTaskQueryItem" } },
+          "nextCursor": { "type": "string", "nullable": true }
+        },
+        "additionalProperties": false
+      },
+      "GlobalTaskQueryPageEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/GlobalTaskQueryPage" },
+          "error": { "type": "null" }
+        },
+        "additionalProperties": false
+      },
+      "GlobalTaskQueryItemEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/GlobalTaskQueryItem" },
+          "error": { "type": "null" }
         },
         "additionalProperties": false
       },
