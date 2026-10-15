@@ -58,7 +58,7 @@ describe('AppShell', () => {
     renderShell();
 
     expect(screen.getByTestId('app-shell')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Workspace' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Home' })).toHaveAttribute('aria-current', 'page');
     const trigger = screen.getByRole('button', { name: 'Open navigation' });
     await user.click(trigger);
     expect(screen.getByRole('dialog')).toBeInTheDocument();

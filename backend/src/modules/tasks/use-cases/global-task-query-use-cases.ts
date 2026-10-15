@@ -70,3 +70,11 @@ export class GetGlobalTaskUseCase {
     return item;
   }
 }
+
+export class CountInboxTasksUseCase {
+  public constructor(private readonly taskQueryRepository: IGlobalTaskQueryRepository) {}
+
+  public execute(input: { readonly ownerId: string }): Promise<number> {
+    return this.taskQueryRepository.countInboxTasks(input);
+  }
+}

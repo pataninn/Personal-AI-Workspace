@@ -270,7 +270,7 @@ function ShellBreadcrumb(): React.JSX.Element {
   const project = useAppSelector(selectProjects).find((candidate) => candidate.id === projectId);
   const section = pathname.split('/').at(-1);
   const labels: Record<string, string> = { activity: 'Activity', memory: 'Memory', context: 'Context', tasks: 'Tasks', 'file-history': 'History' };
-  const title = projectId && section && labels[section] ? labels[section] : project?.name ?? 'Home';
+  const title = pathname === '/tasks' ? 'All tasks' : pathname.startsWith('/tasks/') ? 'Task details' : projectId && section && labels[section] ? labels[section] : project?.name ?? 'Home';
   return <nav className="shell-breadcrumb" aria-label="Current page"><strong>{title}</strong></nav>;
 }
 

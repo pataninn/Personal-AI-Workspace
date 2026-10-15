@@ -11,6 +11,7 @@ export interface GlobalTaskQueryRepositoryPage {
 }
 
 export interface IGlobalTaskQueryRepository {
+  countInboxTasks(input: { readonly ownerId: string }): Promise<number>;
   listGlobalTasks(input: {
     readonly ownerId: string;
     readonly filters: GlobalTaskQueryFilters;

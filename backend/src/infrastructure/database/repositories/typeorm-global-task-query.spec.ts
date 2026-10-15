@@ -45,6 +45,18 @@ function createRepository(rows: readonly unknown[]) {
 }
 
 describe('TypeOrmProjectTaskRepository global queries', () => {
+  it('counts active owner Inbox tasks independently of filters or the current page', async () => {
+    const { repository, query } = createRepository([{ count: '17' }]);
+
+    await expect(repository.countInboxTasks({ ownerId: OWNER })).resolves.toBe(17);
+
+    const [sql, values] = query.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain('WHERE "owner_id" = $1');
+    expect(sql).toContain('"project_id" IS NULL');
+    expect(sql).toContain('"status" <> \'archived\'');
+    expect(values).toEqual([OWNER]);
+  });
+
   it('owner-scopes joined workspaces, maps Inbox, and emits the exact keyset position', async () => {
     const { repository, query } = createRepository([
       taskRow(INBOX_TASK, null),

@@ -999,6 +999,19 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
     return row ? toGlobalTaskQueryItem(row) : null;
   }
 
+  public async countInboxTasks(input: { readonly ownerId: string }): Promise<number> {
+    const rows = asRows<CountRow>(await this.dataSource.query(
+      `SELECT count(*)::text AS "count" FROM "project_tasks"
+       WHERE "owner_id" = $1 AND "project_id" IS NULL AND "status" <> 'archived'`,
+      [input.ownerId]
+    ));
+    const count = Number(rows[0]?.count ?? 0);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error('The project task repository returned an invalid Inbox count.');
+    }
+    return count;
+  }
+
   public async createTask(input: CreateProjectTaskRecord): Promise<CreateProjectTaskResult> {
     return withTransaction(this.dataSource, async (queryRunner) => {
       await lockActiveProject(queryRunner, input.ownerId, input.projectId);

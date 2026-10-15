@@ -49,6 +49,35 @@ test('Home overview ranks dated tasks before undated importance and updates acti
   assert.equal(overview.tasks[1].deadline, null);
 });
 
+test('global task capture is idempotent and increments the canonical Inbox count once', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const countUrl = `${origin}/api/v1/tasks/inbox/count`;
+  assert.equal((await (await fetch(countUrl, { headers: headers(cookie) })).json()).data.count, 0);
+  const request = { title: 'Send the proposal', details: null, workspaceId: null, importance: 'medium', deadline: null, subtasks: [] };
+  const create = () => fetch(`${origin}/api/v1/tasks`, { method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'home-capture-intent-1' }), body: JSON.stringify(request) });
+  const first = await create(); const firstBody = (await first.json()).data;
+  const replay = await create(); const replayBody = (await replay.json()).data;
+  assert.equal(first.status, 201); assert.equal(firstBody.item.task.projectId, null); assert.equal(firstBody.item.collection, 'inbox');
+  assert.equal(firstBody.item.task.status, 'todo'); assert.equal(firstBody.item.task.importance, 'medium');
+  assert.equal(replay.status, 200); assert.equal(replayBody.replayed, true); assert.equal(replayBody.item.task.id, firstBody.item.task.id);
+  assert.equal((await (await fetch(countUrl, { headers: headers(cookie) })).json()).data.count, 1);
+  const detail = await fetch(`${origin}/api/v1/tasks/${firstBody.item.task.id}`, { headers: headers(cookie) });
+  assert.equal((await detail.json()).data.task.id, firstBody.item.task.id);
+});
+
+test('global task reads filter collections, retain stable keyset pages, and reject cursor reuse', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const first = await (await fetch(`${origin}/api/v1/tasks?limit=1`, { headers: headers(cookie) })).json();
+  assert.equal(first.data.items.length, 1); assert.ok(first.data.nextCursor);
+  const secondResponse = await fetch(`${origin}/api/v1/tasks?limit=1&cursor=${encodeURIComponent(first.data.nextCursor)}`, { headers: headers(cookie) });
+  const second = (await secondResponse.json()).data;
+  assert.equal(second.items.length, 1); assert.notEqual(second.items[0].task.id, first.data.items[0].task.id);
+  const inbox = await (await fetch(`${origin}/api/v1/tasks?inboxOnly=true`, { headers: headers(cookie) })).json();
+  assert.deepEqual(inbox.data.items, []);
+  const wrongScope = await fetch(`${origin}/api/v1/tasks?q=another-filter&limit=1&cursor=${encodeURIComponent(first.data.nextCursor)}`, { headers: headers(cookie) });
+  assert.equal(wrongScope.status, 400); assert.equal((await wrongScope.json()).error.code, 'TASK_CURSOR_INVALID');
+});
+
 test('task metadata, checklists, completion/reopening and permanent removal use current versions', async () => {
   const { origin } = await startPreview(); const cookie = await signIn(origin);
   const endpoint = `${origin}/api/v1/projects/${PROJECT_ID}/tasks`;

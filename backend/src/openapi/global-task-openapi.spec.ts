@@ -17,12 +17,16 @@ describe('global task query OpenAPI contract', () => {
     const document = record(openApiDocument, 'OpenAPI document');
     const paths = record(document.paths, 'paths');
     const listOperation = record(record(paths['/api/v1/tasks'], 'global tasks path').get, 'global task list');
+    const inboxCountOperation = record(record(paths['/api/v1/tasks/inbox/count'], 'Inbox count path').get, 'Inbox count');
     const detailPath = record(paths['/api/v1/tasks/{taskId}'], 'global task detail path');
     const detailOperation = record(detailPath.get, 'global task detail');
     const listResponses = record(listOperation.responses, 'list responses');
 
     expect(listOperation.operationId).toBe('listGlobalTasks');
     expect(detailOperation.operationId).toBe('getGlobalTask');
+    expect(inboxCountOperation.operationId).toBe('getInboxTaskCount');
+    expect(inboxCountOperation.security).toEqual([{ sessionCookie: [] }]);
+    expect(record(inboxCountOperation.responses, 'Inbox count responses')['200']).toBeDefined();
     expect(listOperation.security).toEqual([{ sessionCookie: [] }]);
     expect(detailOperation.security).toEqual([{ sessionCookie: [] }]);
     expect(listOperation.parameters).toEqual(expect.arrayContaining([
@@ -45,7 +49,7 @@ describe('global task query OpenAPI contract', () => {
     expect(detailPath.parameters).toEqual([expect.objectContaining({ name: 'taskId', in: 'path', required: true })]);
 
     const schemas = record(record(document.components, 'components').schemas, 'schemas');
-    ['GlobalTaskWorkspace', 'GlobalTaskQueryItem', 'GlobalTaskQueryPage', 'GlobalTaskQueryPageEnvelope', 'GlobalTaskQueryItemEnvelope'].forEach((name) => {
+    ['GlobalTaskWorkspace', 'GlobalTaskQueryItem', 'GlobalTaskQueryPage', 'GlobalTaskQueryPageEnvelope', 'GlobalTaskQueryItemEnvelope', 'InboxTaskCount', 'InboxTaskCountEnvelope'].forEach((name) => {
       expect(schemas[name]).toBeDefined();
     });
     expect(list(record(schemas.GlobalTaskQueryItem, 'global task item').required, 'item required fields')).toEqual(expect.arrayContaining(['task', 'collection', 'workspace']));

@@ -2062,6 +2062,228 @@ textarea:focus-visible {
   }
 }
 
+.home-inbox-capture {
+  display: grid;
+  gap: var(--space-3);
+  margin-block: var(--space-6);
+}
+
+.home-inbox-capture .home-section-heading p,
+.home-inbox-capture .supporting-copy {
+  margin-block: 0;
+}
+
+.home-inbox-capture-form {
+  display: flex;
+  min-width: 0;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.home-inbox-capture-form > .button {
+  flex: 0 0 auto;
+}
+
+.global-tasks-page,
+.task-detail-page {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-5);
+}
+
+.global-tasks-header,
+.task-detail-header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-5);
+}
+
+.global-tasks-header h1,
+.task-detail-header h1 {
+  margin: 0;
+  font-size: clamp(1.75rem, 4vw, 2.25rem);
+}
+
+.global-task-collection-nav,
+.global-task-filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.global-task-collection-nav a {
+  color: var(--color-text-muted);
+  text-decoration: none;
+}
+
+.global-task-collection-nav a[aria-current="page"] {
+  color: var(--color-text);
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 0.25rem;
+}
+
+.global-task-filters {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.global-task-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  gap: var(--space-3);
+}
+
+.global-task-filter-grid > div {
+  min-width: 0;
+}
+
+.global-task-archived-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.global-task-list,
+.task-detail-checklist {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.global-task-row {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.global-task-row:hover {
+  border-color: var(--color-border-strong);
+}
+
+.global-task-row:focus-visible {
+  outline: 3px solid var(--color-ring);
+  outline-offset: 3px;
+}
+
+.global-task-primary,
+.global-task-metadata {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.global-task-primary {
+  flex: 1 1 16rem;
+}
+
+.global-task-primary > strong {
+  overflow-wrap: anywhere;
+}
+
+.global-task-primary > .supporting-copy {
+  flex-basis: 100%;
+}
+
+.global-task-metadata {
+  color: var(--color-text-muted);
+}
+
+.global-task-archived {
+  padding: 0.125rem 0.5rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.global-task-empty {
+  padding: var(--space-5);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-lg);
+}
+
+.global-task-empty h2,
+.global-task-empty p {
+  margin-block: 0 var(--space-2);
+}
+
+.task-detail-header > a {
+  flex: 0 0 auto;
+}
+
+.task-detail-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.task-detail-fields > div {
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.task-detail-fields dt {
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}
+
+.task-detail-fields dd {
+  margin: var(--space-1) 0 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.task-detail-page h2 {
+  font-size: 1.15rem;
+}
+
+.task-detail-copy {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.task-detail-checklist li {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 40rem) {
+  .home-inbox-capture-form,
+  .global-tasks-header,
+  .task-detail-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .home-inbox-capture-form > .button,
+  .task-detail-header > a {
+    width: 100%;
+  }
+}
+
 @media (max-width: 64rem) {
   .app-shell-layout {
     display: block;

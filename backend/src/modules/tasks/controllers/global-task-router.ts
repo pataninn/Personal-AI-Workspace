@@ -11,7 +11,7 @@ import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-l
 import type { ITaskMutationCommands } from '@/modules/tasks/use-cases/task-mutation-use-cases';
 import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
-import { GetGlobalTaskUseCase, ListGlobalTasksUseCase } from '@/modules/tasks/use-cases/global-task-query-use-cases';
+import { CountInboxTasksUseCase, GetGlobalTaskUseCase, ListGlobalTasksUseCase } from '@/modules/tasks/use-cases/global-task-query-use-cases';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/u;
@@ -77,6 +77,7 @@ const archiveMutationSchema = z.object({ expectedOrderVersion: positiveVersion.o
 
 export interface GlobalTaskRouterDependencies {
   readonly getSession: GetSessionUseCase;
+  readonly countInboxTasks: CountInboxTasksUseCase;
   readonly listTasks: ListGlobalTasksUseCase;
   readonly getTask: GetGlobalTaskUseCase;
   readonly mutations?: ITaskMutationCommands;
@@ -204,6 +205,18 @@ function getTaskHandler(dependencies: GlobalTaskRouterDependencies): RequestHand
   };
 }
 
+function getInboxTaskCountHandler(dependencies: GlobalTaskRouterDependencies): RequestHandler {
+  return async (request, response, next): Promise<void> => {
+    try {
+      parseQuery(z.object({}).strict(), request.query);
+      const count = await dependencies.countInboxTasks.execute({ ownerId: ownerId(request) });
+      sendData(response, { count });
+    } catch (error: unknown) {
+      next(error);
+    }
+  };
+}
+
 function createTaskMutationHandler(commands: ITaskMutationCommands): RequestHandler {
   return async (request, response, next): Promise<void> => {
     try {
@@ -287,6 +300,7 @@ function archiveTaskMutationHandler(commands: ITaskMutationCommands): RequestHan
 export function createGlobalTaskRouter(dependencies: GlobalTaskRouterDependencies): Router {
   const router = Router();
   const authenticate = authenticateRequest(dependencies.getSession, dependencies.clearSessionCookie);
+  router.get('/tasks/inbox/count', authenticate, getInboxTaskCountHandler(dependencies));
   router.get('/tasks', authenticate, listTasksHandler(dependencies));
   router.get('/tasks/:taskId', authenticate, getTaskHandler(dependencies));
   if (dependencies.mutations) {

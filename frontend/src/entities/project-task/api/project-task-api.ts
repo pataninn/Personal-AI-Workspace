@@ -115,7 +115,7 @@ export function normalizeProjectTask(value: unknown, expectedProjectId?: string)
   const record = asRecord(value);
   const task: ProjectTask = {
     id: readNonEmptyString(record?.id),
-    projectId: readNonEmptyString(record?.projectId),
+    projectId: readNullableString(record?.projectId),
     title: readNonEmptyString(record?.title),
     details: readNullableString(record?.details),
     importance: readTaskImportance(record?.importance),

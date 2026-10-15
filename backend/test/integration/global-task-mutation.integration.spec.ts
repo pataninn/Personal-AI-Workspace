@@ -8,7 +8,7 @@ import { GetReadinessUseCase } from '@/modules/health';
 import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
 import type { GlobalTaskQueryItem } from '@/modules/tasks/domain/global-task-query';
 import type { IGlobalTaskQueryRepository } from '@/modules/tasks/repositories/global-task-query-repository';
-import { GetGlobalTaskUseCase, ListGlobalTasksUseCase } from '@/modules/tasks/use-cases/global-task-query-use-cases';
+import { CountInboxTasksUseCase, GetGlobalTaskUseCase, ListGlobalTasksUseCase } from '@/modules/tasks/use-cases/global-task-query-use-cases';
 import type { ITaskMutationCommands, TaskMutationCommandResult } from '@/modules/tasks/use-cases/task-mutation-use-cases';
 import { createLogger } from '@/shared/logging/logger';
 
@@ -72,6 +72,7 @@ function commandResult(actionKind: ActionLedgerRecord['actionKind'], projectId: 
 
 function fixture() {
   const taskQuery = {
+    countInboxTasks: jest.fn().mockResolvedValue(0),
     listGlobalTasks: jest.fn().mockResolvedValue({ items: [], hasMore: false, lastPosition: null }),
     getGlobalTask: jest.fn().mockResolvedValue(item(null))
   } as unknown as IGlobalTaskQueryRepository;
@@ -95,6 +96,7 @@ function fixture() {
     readiness: new GetReadinessUseCase(readiness),
     globalTasks: {
       getSession,
+      countInboxTasks: new CountInboxTasksUseCase(taskQuery),
       listTasks: new ListGlobalTasksUseCase(taskQuery),
       getTask: new GetGlobalTaskUseCase(taskQuery),
       mutations,

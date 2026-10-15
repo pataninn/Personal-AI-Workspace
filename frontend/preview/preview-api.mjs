@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createPreviewAiRuns } from './preview-ai-runs.mjs';
 import { createPreviewSeed } from './preview-seed.mjs';
 import { handlePreviewTasks } from './preview-tasks.mjs';
+import { handlePreviewGlobalTasks } from './preview-global-tasks.mjs';
 import { handlePreviewFiles } from './preview-files.mjs';
 import { previewOverview, removePreviewProject } from './preview-overview.mjs';
 
@@ -131,6 +132,7 @@ export function createPreviewApi() {
     if (await aiRuns.handle(request, response, seed, parts, method)) {
       return;
     }
+    if (await handlePreviewGlobalTasks(request, response, seed, idempotency, parts, method, url)) return;
     if (parts[2] === 'projects') {
       if (parts[3] === 'overview' && method === 'GET') { previewOverview(response, seed, url); return; }
       if (await handlePreviewTasks(request, response, seed, idempotency, parts, method, url)) return;

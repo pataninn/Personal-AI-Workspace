@@ -9,6 +9,8 @@ import { ProjectContextPage } from '@/pages/project-context';
 import { ProjectTasksPage } from '@/pages/project-tasks';
 import { ProjectActivityPage } from '@/pages/project-activity';
 import { ProjectFileHistoryPage } from '@/pages/project-file-history';
+import { AllTasksPage } from '@/pages/all-tasks';
+import { TaskDetailPage } from '@/pages/task-detail';
 import { LoginPage } from '@/pages/login';
 import { NotFoundPage } from '@/pages/not-found';
 import { selectSessionErrorCode, selectSessionStatus } from '@/entities/user-session';
@@ -53,6 +55,8 @@ export const router = createBrowserRouter([
             element: <AppShell />,
             children: [
               { path: 'dashboard', element: <DashboardPage /> },
+              { path: 'tasks', element: <AllTasksPage /> },
+              { path: 'tasks/:taskId', element: <TaskDetailPage /> },
               { path: 'projects/:projectId', element: <ProjectWorkspacePage /> },
               { path: 'projects/:projectId/memory', element: <ProjectMemoryPage /> },
               { path: 'projects/:projectId/context', element: <ProjectContextPage /> },

@@ -9,7 +9,7 @@ import { GetReadinessUseCase } from '@/modules/health';
 import type { GlobalTaskQueryItem } from '@/modules/tasks/domain/global-task-query';
 import { encodeGlobalTaskQueryCursor } from '@/modules/tasks/domain/global-task-query-cursor';
 import type { IGlobalTaskQueryRepository } from '@/modules/tasks/repositories/global-task-query-repository';
-import { GetGlobalTaskUseCase, ListGlobalTasksUseCase } from '@/modules/tasks/use-cases/global-task-query-use-cases';
+import { CountInboxTasksUseCase, GetGlobalTaskUseCase, ListGlobalTasksUseCase } from '@/modules/tasks/use-cases/global-task-query-use-cases';
 import { createLogger } from '@/shared/logging/logger';
 
 const ORIGIN = 'https://127.0.0.1:8443';
@@ -49,9 +49,10 @@ function taskItem(projectId: string | null): GlobalTaskQueryItem {
 }
 
 function fixture() {
+  const countInboxTasks = jest.fn().mockResolvedValue(7);
   const listGlobalTasks = jest.fn().mockResolvedValue({ items: [taskItem(null)], hasMore: false, lastPosition: null });
   const getGlobalTask = jest.fn().mockImplementation(async (input: { readonly taskId: string }) => input.taskId === TASK ? taskItem(WORKSPACE) : null);
-  const taskQuery = { listGlobalTasks, getGlobalTask } as unknown as IGlobalTaskQueryRepository;
+  const taskQuery = { countInboxTasks, listGlobalTasks, getGlobalTask } as unknown as IGlobalTaskQueryRepository;
   const getSession = { execute: jest.fn().mockImplementation(async (token: unknown) => {
     if (token !== 'valid') throw new UnauthenticatedError();
     return { sessionId: 'session', principal: { id: OWNER }, csrfToken: 'csrf', expiresAt: new Date('2099-01-01') };
@@ -64,15 +65,27 @@ function fixture() {
     readiness: new GetReadinessUseCase(readiness),
     globalTasks: {
       getSession,
+      countInboxTasks: new CountInboxTasksUseCase(taskQuery),
       listTasks: new ListGlobalTasksUseCase(taskQuery),
       getTask: new GetGlobalTaskUseCase(taskQuery),
       clearSessionCookie: () => undefined
     }
   });
-  return { app, listGlobalTasks, getGlobalTask };
+  return { app, countInboxTasks, listGlobalTasks, getGlobalTask };
 }
 
 describe('global task query API', () => {
+  it('returns the canonical Inbox count for the session owner, independent of task pages', async () => {
+    const { app, countInboxTasks } = fixture();
+    const count = await request(app).get('/api/v1/tasks/inbox/count').set(HEADERS).expect(200);
+
+    expect(count.body.data).toEqual({ count: 7 });
+    expect(countInboxTasks).toHaveBeenCalledWith({ ownerId: OWNER });
+    await request(app).get('/api/v1/tasks/inbox/count').expect(401);
+    await request(app).get('/api/v1/tasks/inbox/count?status=done').set(HEADERS).expect(400);
+    expect(countInboxTasks).toHaveBeenCalledTimes(1);
+  });
+
   it('lists Inbox and workspace task data from the session owner with validated filters', async () => {
     const { app, listGlobalTasks } = fixture();
     const response = await request(app)

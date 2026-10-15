@@ -28,6 +28,6 @@ export {
   ResolveProjectTaskSuggestionUseCase,
   UpdateProjectTaskUseCase
 } from '@/modules/tasks/use-cases/project-task-use-cases';
-export { GetGlobalTaskUseCase, ListGlobalTasksUseCase } from '@/modules/tasks/use-cases/global-task-query-use-cases';
+export { CountInboxTasksUseCase, GetGlobalTaskUseCase, ListGlobalTasksUseCase } from '@/modules/tasks/use-cases/global-task-query-use-cases';
 export { TaskMutationUseCases, projectTaskOperationKey, derivedProjectTaskOperationIdentity } from '@/modules/tasks/use-cases/task-mutation-use-cases';
 export type { ITaskMutationCommands, TaskMutationCommandResult, TaskMutationCreateInput, TaskMutationUpdateInput, TaskMutationMoveInput, TaskMutationArchiveInput, TaskPatchInput } from '@/modules/tasks/use-cases/task-mutation-use-cases';

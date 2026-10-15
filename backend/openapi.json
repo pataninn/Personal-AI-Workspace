@@ -84,6 +84,20 @@
         }
       }
     },
+    "/api/v1/tasks/inbox/count": {
+      "get": {
+        "tags": ["Global tasks"],
+        "summary": "Get the canonical count of active tasks in the caller's Inbox",
+        "operationId": "getInboxTaskCount",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "A server-owned Inbox count excluding archived tasks and independent of list filters or pagination.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/InboxTaskCountEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
     "/api/v1/tasks/{taskId}": {
       "parameters": [
         { "name": "taskId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
@@ -7676,6 +7690,21 @@
         "required": ["data", "error"],
         "properties": {
           "data": { "$ref": "#/components/schemas/GlobalTaskQueryPage" },
+          "error": { "type": "null" }
+        },
+        "additionalProperties": false
+      },
+      "InboxTaskCount": {
+        "type": "object",
+        "required": ["count"],
+        "properties": { "count": { "type": "integer", "minimum": 0 } },
+        "additionalProperties": false
+      },
+      "InboxTaskCountEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/InboxTaskCount" },
           "error": { "type": "null" }
         },
         "additionalProperties": false
