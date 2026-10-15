@@ -34,7 +34,7 @@ import type {
 interface TaskRow {
   readonly id: string;
   readonly owner_id: string;
-  readonly project_id: string;
+  readonly project_id: string | null;
   readonly title: string;
   readonly details: string | null;
   readonly importance: ProjectTask['importance'];
@@ -89,7 +89,7 @@ interface PositionRow {
 }
 
 const TASK_COLUMNS = `t."id", t."owner_id", t."project_id", t."title", t."details", t."importance", t."deadline"::text AS "deadline", t."subtasks", t."status", t."position", t."version", t."source_kind", t."source_suggestion_id",
-  s."run_id" AS "source_run_id", s."conversation_id" AS "source_conversation_id", s."resolved_at" AS "source_accepted_at",
+  t."source_run_id", t."source_conversation_id", t."source_accepted_at",
   t."created_at", t."updated_at", t."completed_at", t."archived_at"`;
 
 function asRows<T>(result: unknown): readonly T[] {
@@ -293,7 +293,6 @@ async function maxTaskPosition(queryRunner: QueryRunner, ownerId: string, projec
 async function loadTask(queryRunner: QueryRunner, ownerId: string, projectId: string, taskId: string, forUpdate = false): Promise<ProjectTask | null> {
   const rows = asRows<TaskRow>(await queryRunner.query(
     `SELECT ${TASK_COLUMNS} FROM "project_tasks" t
-     LEFT JOIN "project_task_suggestions" s ON s."id" = t."source_suggestion_id"
      WHERE t."owner_id" = $1 AND t."project_id" = $2 AND t."id" = $3 LIMIT 1${forUpdate ? ' FOR UPDATE OF t' : ''}`,
     [ownerId, projectId, taskId]
   ));
@@ -303,8 +302,7 @@ async function loadTask(queryRunner: QueryRunner, ownerId: string, projectId: st
 async function loadTaskBySource(queryRunner: QueryRunner, ownerId: string, projectId: string, suggestionId: string): Promise<ProjectTask | null> {
   const rows = asRows<TaskRow>(await queryRunner.query(
     `SELECT ${TASK_COLUMNS} FROM "project_tasks" t
-     LEFT JOIN "project_task_suggestions" s ON s."id" = t."source_suggestion_id"
-     WHERE t."owner_id" = $1 AND t."project_id" = $2 AND t."source_suggestion_id" = $3 LIMIT 1`,
+     WHERE t."owner_id" = $1 AND t."source_suggestion_project_id" = $2 AND t."source_suggestion_id" = $3 LIMIT 1`,
     [ownerId, projectId, suggestionId]
   ));
   return rows[0] ? toTask(rows[0]) : null;
@@ -319,7 +317,6 @@ async function loadTaskList(queryRunner: QueryRunner, ownerId: string, projectId
   };
   const rows = asRows<TaskRow>(await queryRunner.query(
     `SELECT ${TASK_COLUMNS} FROM "project_tasks" t
-     LEFT JOIN "project_task_suggestions" s ON s."id" = t."source_suggestion_id"
      WHERE t."owner_id" = $1 AND t."project_id" = $2 AND ${conditions[filter]}
      ORDER BY t."position" ASC, t."id" ASC`,
     [ownerId, projectId]
@@ -351,7 +348,9 @@ async function loadSuggestion(queryRunner: QueryRunner, ownerId: string, project
     `SELECT s."id", s."owner_id", s."project_id", s."run_id", s."conversation_id", s."title", s."details", s."subtasks", s."status", s."version", s."created_at", s."resolved_at",
             t."id" AS "task_id"
      FROM "project_task_suggestions" s
-     LEFT JOIN "project_tasks" t ON t."source_suggestion_id" = s."id"
+     LEFT JOIN "project_tasks" t ON t."owner_id" = s."owner_id"
+       AND t."source_suggestion_project_id" = s."project_id"
+       AND t."source_suggestion_id" = s."id"
      WHERE s."owner_id" = $1 AND s."project_id" = $2 AND s."id" = $3 LIMIT 1${forUpdate ? ' FOR UPDATE OF s' : ''}`,
     [ownerId, projectId, suggestionId]
   ));
@@ -375,13 +374,23 @@ async function taskRowsForFilter(dataSource: DataSource, ownerId: string, projec
 
 async function appendTask(
   queryRunner: QueryRunner,
-  input: { readonly ownerId: string; readonly projectId: string; readonly title: string; readonly details: string | null; readonly sourceSuggestionId?: string; readonly importance: ProjectTask['importance']; readonly deadline: string | null; readonly subtasks: ProjectTask['subtasks'] }
+  input: {
+    readonly ownerId: string;
+    readonly projectId: string;
+    readonly title: string;
+    readonly details: string | null;
+    readonly sourceSuggestion?: { readonly id: string; readonly projectId: string; readonly runId: string; readonly conversationId: string };
+    readonly importance: ProjectTask['importance'];
+    readonly deadline: string | null;
+    readonly subtasks: ProjectTask['subtasks'];
+  }
 ): Promise<ProjectTask> {
   const position = await countActiveTasks(queryRunner, input.ownerId, input.projectId);
+  const sourceSuggestion = input.sourceSuggestion;
   const rows = asRows<{ readonly id: string }>(await queryRunner.query(
-    `INSERT INTO "project_tasks" ("owner_id", "project_id", "title", "details", "position", "source_kind", "source_suggestion_id", "importance", "deadline", "subtasks", "status", "completed_at")
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::"project_task_status", CASE WHEN $11::"project_task_status" = 'done' THEN now() ELSE NULL END) RETURNING "id"`,
-    [input.ownerId, input.projectId, input.title, input.details, position, input.sourceSuggestionId ? 'assistant_suggestion' : 'user', input.sourceSuggestionId ?? null, input.importance, input.deadline, JSON.stringify(input.subtasks), isTaskChecklistComplete(input.subtasks) ? 'done' : 'todo']
+    `INSERT INTO "project_tasks" ("owner_id", "project_id", "title", "details", "position", "source_kind", "source_suggestion_id", "source_suggestion_project_id", "source_run_id", "source_conversation_id", "source_accepted_at", "importance", "deadline", "subtasks", "status", "completed_at")
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CASE WHEN $7::uuid IS NOT NULL THEN now() ELSE NULL END, $11, $12, $13::jsonb, $14::"project_task_status", CASE WHEN $14::"project_task_status" = 'done' THEN now() ELSE NULL END) RETURNING "id"`,
+    [input.ownerId, input.projectId, input.title, input.details, position, sourceSuggestion ? 'assistant_suggestion' : 'user', sourceSuggestion?.id ?? null, sourceSuggestion?.projectId ?? null, sourceSuggestion?.runId ?? null, sourceSuggestion?.conversationId ?? null, input.importance, input.deadline, JSON.stringify(input.subtasks), isTaskChecklistComplete(input.subtasks) ? 'done' : 'todo']
   ));
   const taskId = rows[0]?.id;
   if (!taskId) {
@@ -598,7 +607,8 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository {
   public async listSuggestions(ownerId: string, projectId: string, filter: { readonly status: 'all' | 'pending'; readonly conversationId?: string }): Promise<readonly ProjectTaskSuggestion[]> {
     const rows = asRows<SuggestionRow>(await this.dataSource.query(
       `SELECT s."id", s."owner_id", s."project_id", s."run_id", s."conversation_id", s."title", s."details", s."subtasks", s."status", s."version", s."created_at", s."resolved_at",
-              (SELECT t."id" FROM "project_tasks" t WHERE t."source_suggestion_id" = s."id" LIMIT 1) AS "task_id"
+              (SELECT t."id" FROM "project_tasks" t
+               WHERE t."owner_id" = s."owner_id" AND t."source_suggestion_project_id" = s."project_id" AND t."source_suggestion_id" = s."id" LIMIT 1) AS "task_id"
        FROM "project_task_suggestions" s
        JOIN "projects" p ON p."id" = s."project_id" AND p."owner_id" = s."owner_id"
        WHERE s."owner_id" = $1 AND s."project_id" = $2
@@ -669,7 +679,12 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository {
         importance: input.importance ?? 'medium',
         deadline: input.deadline ?? null,
         subtasks: input.subtasks ?? normalizeTaskSubtasks(current.subtasks),
-        sourceSuggestionId: current.id
+        sourceSuggestion: {
+          id: current.id,
+          projectId: current.projectId,
+          runId: current.runId,
+          conversationId: current.conversationId
+        }
       });
       await queryRunner.query(
         `UPDATE "project_task_suggestions" SET "status" = 'accepted', "version" = "version" + 1, "resolved_by_user_id" = $1, "resolved_at" = now()

@@ -7,6 +7,9 @@ import type { ProjectTaskStatus, ProjectTaskSubtask } from '@/modules/tasks/doma
 const OWNER = '11111111-1111-4111-8111-111111111111';
 const PROJECT = '22222222-2222-4222-8222-222222222222';
 const TASK = '33333333-3333-4333-8333-333333333333';
+const SUGGESTION = '55555555-5555-4555-8555-555555555555';
+const RUN = '66666666-6666-4666-8666-666666666666';
+const CONVERSATION = '77777777-7777-4777-8777-777777777777';
 const CHILD = { id: '44444444-4444-4444-8444-444444444444', title: 'Review', completed: false };
 
 function fixture(currentStatus: ProjectTaskStatus, children: readonly ProjectTaskSubtask[]) {
@@ -46,9 +49,172 @@ describe('task checklist persistence boundary', () => {
       subtasks: children, idempotencyKey: 'create', requestFingerprint: 'fingerprint' });
     const insert = query.mock.calls.find(([sql]: [string]) => sql.startsWith('INSERT INTO "project_tasks"'));
     // The status parameter is reused in CASE; both occurrences must have one enum type.
-    expect(insert?.[0]).toContain('$10::jsonb, $11::"project_task_status", CASE WHEN $11::"project_task_status" = \'done\'');
-    expect(insert?.[1]?.[10]).toBe(completed ? 'done' : 'todo');
+    expect(insert?.[0]).toContain('$13::jsonb, $14::"project_task_status", CASE WHEN $14::"project_task_status" = \'done\'');
+    expect(insert?.[1]?.[13]).toBe(completed ? 'done' : 'todo');
     expect(runner.commitTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads accepted suggestion provenance from the task snapshot instead of the mutable suggestion row', async () => {
+    const { repository, query } = fixture('todo', []);
+    const acceptedAt = '2026-10-05T00:01:00Z';
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM "project_task_order_states"')) return [{ version: 3 }];
+      if (sql.includes('FROM "project_tasks" t')) return [{
+        ...row('todo', [], 1),
+        source_kind: 'assistant_suggestion',
+        source_suggestion_id: SUGGESTION,
+        source_run_id: RUN,
+        source_conversation_id: CONVERSATION,
+        source_accepted_at: acceptedAt
+      }];
+      return [];
+    });
+
+    const snapshot = await repository.listTasks(OWNER, PROJECT, 'all');
+    const taskSelect = query.mock.calls.find(([sql]: [string]) => sql.includes('FROM "project_tasks" t'));
+
+    expect(snapshot.tasks[0]?.projectId).toBe(PROJECT);
+    expect(snapshot.tasks[0]?.source).toMatchObject({
+      kind: 'assistant_suggestion',
+      suggestionId: SUGGESTION,
+      runId: RUN,
+      conversationId: CONVERSATION,
+      acceptedAt: new Date(acceptedAt)
+    });
+    expect(taskSelect?.[0]).toContain('t."source_run_id"');
+    expect(taskSelect?.[0]).not.toContain('JOIN "project_task_suggestions"');
+  });
+
+  it('writes suggestion provenance only from the owner-scoped suggestion record', async () => {
+    let suggestionReads = 0;
+    let taskReads = 0;
+    const query = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM "projects"')) return [{ status: 'active' }];
+      if (sql.includes('SELECT "version" FROM "project_task_order_states"')) return [{ version: 1 }];
+      if (sql.includes('FROM "project_task_suggestions" s')) {
+        suggestionReads += 1;
+        const accepted = suggestionReads > 1;
+        return [{
+          id: SUGGESTION,
+          owner_id: OWNER,
+          project_id: PROJECT,
+          run_id: RUN,
+          conversation_id: CONVERSATION,
+          title: 'Suggested task',
+          details: null,
+          subtasks: [],
+          status: accepted ? 'accepted' : 'pending',
+          version: accepted ? 2 : 1,
+          created_at: '2026-10-05T00:00:00Z',
+          resolved_at: accepted ? '2026-10-05T00:01:00Z' : null,
+          task_id: accepted ? TASK : null
+        }];
+      }
+      if (sql.includes('count(*)')) return [{ count: 0 }];
+      if (sql.startsWith('INSERT INTO "project_tasks"')) return [{ id: TASK }];
+      if (sql.includes('FROM "project_tasks" t')) {
+        taskReads += 1;
+        return [{
+          ...row('todo', [], 1),
+          source_kind: 'assistant_suggestion',
+          source_suggestion_id: SUGGESTION,
+          source_run_id: RUN,
+          source_conversation_id: CONVERSATION,
+          source_accepted_at: '2026-10-05T00:01:00Z'
+        }];
+      }
+      if (sql.startsWith('UPDATE "project_task_order_states"')) return [{ version: 2 }];
+      return [];
+    });
+    const runner = {
+      query,
+      connect: jest.fn(),
+      startTransaction: jest.fn(),
+      commitTransaction: jest.fn(),
+      rollbackTransaction: jest.fn(),
+      release: jest.fn(),
+      isTransactionActive: true
+    };
+    const dataSource = { createQueryRunner: () => runner as unknown as QueryRunner } as DataSource;
+    const repository = new TypeOrmProjectTaskRepository(dataSource);
+
+    const result = await repository.resolveSuggestion({
+      ownerId: OWNER,
+      projectId: PROJECT,
+      suggestionId: SUGGESTION,
+      expectedVersion: 1,
+      decision: 'accepted'
+    });
+    const insert = query.mock.calls.find(([sql]: [string]) => sql.startsWith('INSERT INTO "project_tasks"'));
+    const suggestionJoin = query.mock.calls.find(([sql]: [string]) => sql.includes('LEFT JOIN "project_tasks" t'));
+
+    expect(result.decision).toBe('accepted');
+    expect(insert?.[0]).toContain('CASE WHEN $7::uuid IS NOT NULL THEN now() ELSE NULL END');
+    expect(insert?.[1]?.slice(6, 10)).toEqual([SUGGESTION, PROJECT, RUN, CONVERSATION]);
+    expect(suggestionJoin?.[0]).toContain('t."owner_id" = s."owner_id"');
+    expect(suggestionJoin?.[0]).toContain('t."source_suggestion_project_id" = s."project_id"');
+    expect(taskReads).toBe(2);
+  });
+
+  it('maps an owner-scoped accepted task currently in Inbox to a null projectId', async () => {
+    const acceptedAt = '2026-10-05T00:01:00Z';
+    const query = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM "projects"')) return [{ status: 'active' }];
+      if (sql.includes('FROM "project_task_order_states"')) return [{ version: 4 }];
+      if (sql.includes('FROM "project_task_suggestions" s')) return [{
+        id: SUGGESTION,
+        owner_id: OWNER,
+        project_id: PROJECT,
+        run_id: RUN,
+        conversation_id: CONVERSATION,
+        title: 'Suggested task',
+        details: null,
+        subtasks: [],
+        status: 'accepted',
+        version: 2,
+        created_at: '2026-10-05T00:00:00Z',
+        resolved_at: acceptedAt,
+        task_id: TASK
+      }];
+      if (sql.includes('source_suggestion_project_id')) return [{
+        ...row('todo', [], 2),
+        project_id: null,
+        source_kind: 'assistant_suggestion',
+        source_suggestion_id: SUGGESTION,
+        source_run_id: RUN,
+        source_conversation_id: CONVERSATION,
+        source_accepted_at: acceptedAt
+      }];
+      return [];
+    });
+    const runner = {
+      query,
+      connect: jest.fn(),
+      startTransaction: jest.fn(),
+      commitTransaction: jest.fn(),
+      rollbackTransaction: jest.fn(),
+      release: jest.fn(),
+      isTransactionActive: true
+    };
+    const dataSource = { createQueryRunner: () => runner as unknown as QueryRunner } as DataSource;
+    const repository = new TypeOrmProjectTaskRepository(dataSource);
+
+    const result = await repository.resolveSuggestion({
+      ownerId: OWNER,
+      projectId: PROJECT,
+      suggestionId: SUGGESTION,
+      expectedVersion: 2,
+      decision: 'accepted'
+    });
+    const taskLookup = query.mock.calls.find(([sql]: [string]) => sql.includes('WHERE t."owner_id" = $1 AND t."source_suggestion_project_id"'));
+
+    expect(result.decision).toBe('accepted');
+    if (result.decision === 'accepted') {
+      expect(result.task.projectId).toBeNull();
+      expect(result.task.source.suggestionId).toBe(SUGGESTION);
+    }
+    expect(taskLookup?.[0]).toContain('WHERE t."owner_id" = $1 AND t."source_suggestion_project_id" = $2 AND t."source_suggestion_id" = $3');
+    expect(taskLookup?.[1]).toEqual([OWNER, PROJECT, SUGGESTION]);
   });
   it('stores manual parent completion and checked children in the same versioned update', async () => {
     const { repository, query, runner } = fixture('todo', [CHILD]);

@@ -26,7 +26,7 @@ export interface ProjectTaskSource {
 
 export interface ProjectTask {
   readonly id: string;
-  readonly projectId: string;
+  readonly projectId: string | null;
   readonly title: string;
   readonly details: string | null;
   readonly status: ProjectTaskStatus;
