@@ -14,8 +14,9 @@ interface ProjectRow {
   readonly owner_id: string;
   readonly name: string;
   readonly slug: string;
-  readonly relative_root: string;
-  readonly relative_root_key: string;
+  readonly relative_root: string | null;
+  readonly relative_root_key: string | null;
+  readonly objective: string | null;
   readonly status: ProjectStatus;
   readonly version: number;
   readonly created_at: Date | string;
@@ -33,6 +34,7 @@ function toProject(row: ProjectRow): Project {
     name: row.name,
     slug: row.slug,
     relativeRoot: row.relative_root,
+    objective: row.objective,
     status: row.status,
     version: row.version,
     createdAt: toDate(row.created_at),
@@ -50,7 +52,7 @@ async function lockOwner(queryRunner: QueryRunner, ownerId: string): Promise<voi
 
 async function findActiveRoots(queryRunner: QueryRunner, ownerId: string): Promise<readonly string[]> {
   const rows: readonly { relative_root: string }[] = await queryRunner.query(
-    'SELECT "relative_root_key" AS "relative_root" FROM "projects" WHERE "owner_id" = $1 AND "status" = \'active\'',
+    'SELECT "relative_root_key" AS "relative_root" FROM "projects" WHERE "owner_id" = $1 AND "status" = \'active\' AND "relative_root_key" IS NOT NULL',
     [ownerId]
   );
   return rows.map((row) => row.relative_root);
@@ -62,7 +64,7 @@ export class TypeOrmProjectRepository implements IProjectRepository {
   public async listByOwner(ownerId: string, includeArchived: boolean): Promise<readonly Project[]> {
     const statusFilter = includeArchived ? '' : ' AND "status" = \'active\'';
     const rows: readonly ProjectRow[] = await this.dataSource.query(
-      `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "status", "version", "created_at", "updated_at"
+      `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"
        FROM "projects" WHERE "owner_id" = $1${statusFilter} ORDER BY CASE WHEN "status" = 'active' THEN 0 ELSE 1 END, "name" ASC, "created_at" ASC`,
       [ownerId]
     );
@@ -71,7 +73,7 @@ export class TypeOrmProjectRepository implements IProjectRepository {
 
   public async findByIdForOwner(ownerId: string, projectId: string): Promise<Project | null> {
     const rows: readonly ProjectRow[] = await this.dataSource.query(
-      `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "status", "version", "created_at", "updated_at"
+      `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"
        FROM "projects" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1`,
       [ownerId, projectId]
     );
@@ -80,7 +82,7 @@ export class TypeOrmProjectRepository implements IProjectRepository {
 
   public async listActiveRoots(ownerId: string): Promise<readonly string[]> {
     const rows: readonly { relative_root: string }[] = await this.dataSource.query(
-      'SELECT "relative_root_key" AS "relative_root" FROM "projects" WHERE "owner_id" = $1 AND "status" = \'active\'',
+      'SELECT "relative_root_key" AS "relative_root" FROM "projects" WHERE "owner_id" = $1 AND "status" = \'active\' AND "relative_root_key" IS NOT NULL',
       [ownerId]
     );
     return rows.map((row) => row.relative_root);
@@ -93,14 +95,15 @@ export class TypeOrmProjectRepository implements IProjectRepository {
     try {
       await lockOwner(queryRunner, input.ownerId);
       const roots = await findActiveRoots(queryRunner, input.ownerId);
-      if (roots.some((root) => projectRootsOverlap(input.relativeRoot, root))) {
+      const relativeRoot = input.relativeRoot;
+      if (relativeRoot !== null && roots.some((root) => projectRootsOverlap(relativeRoot, root))) {
         throw new ProjectRootOverlapError();
       }
       const rows: readonly ProjectRow[] = await queryRunner.query(
-        `INSERT INTO "projects" ("owner_id", "name", "slug", "relative_root", "relative_root_key")
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "status", "version", "created_at", "updated_at"`,
-        [input.ownerId, input.name, input.slug, input.relativeRoot, input.relativeRootKey ?? projectRootOverlapKey(input.relativeRoot)]
+        `INSERT INTO "projects" ("owner_id", "name", "slug", "relative_root", "relative_root_key", "objective")
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"`,
+        [input.ownerId, input.name, input.slug, input.relativeRoot, input.relativeRoot === null ? null : input.relativeRootKey ?? projectRootOverlapKey(input.relativeRoot), input.objective]
       );
       const row = rows[0];
       if (!row) {
@@ -129,13 +132,13 @@ export class TypeOrmProjectRepository implements IProjectRepository {
         const current = await queryRunner.query(
           'SELECT "relative_root_key" AS "relative_root" FROM "projects" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1',
           [input.ownerId, input.projectId]
-        ) as readonly { relative_root: string }[];
+        ) as readonly { relative_root: string | null }[];
         const roots = await queryRunner.query(
-          'SELECT "relative_root_key" AS "relative_root" FROM "projects" WHERE "owner_id" = $1 AND "status" = \'active\' AND "id" <> $2',
+          'SELECT "relative_root_key" AS "relative_root" FROM "projects" WHERE "owner_id" = $1 AND "status" = \'active\' AND "id" <> $2 AND "relative_root_key" IS NOT NULL',
           [input.ownerId, input.projectId]
-        ) as readonly { relative_root: string }[];
+        ) as readonly { relative_root: string | null }[];
         const candidate = current[0]?.relative_root;
-        if (candidate && roots.some((row) => projectRootsOverlap(candidate, row.relative_root))) {
+        if (candidate !== null && candidate !== undefined && roots.some((row) => row.relative_root !== null && projectRootsOverlap(candidate, row.relative_root))) {
           throw new ProjectRootOverlapError();
         }
       }
@@ -143,7 +146,7 @@ export class TypeOrmProjectRepository implements IProjectRepository {
       const [rows]: readonly [readonly ProjectRow[], number] = await queryRunner.query(
         `UPDATE "projects" SET "status" = $1, "version" = "version" + 1, "updated_at" = now()
          WHERE "owner_id" = $2 AND "id" = $3 AND "version" = $4
-         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "status", "version", "created_at", "updated_at"`,
+         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"`,
         [input.status, input.ownerId, input.projectId, input.expectedVersion]
       );
       const updated = rows[0] ? toProject(rows[0]) : null;

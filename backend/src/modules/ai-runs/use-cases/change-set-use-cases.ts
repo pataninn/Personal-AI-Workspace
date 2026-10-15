@@ -22,9 +22,10 @@ import type {
 import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-repository';
 import type { IProposedChangeSetRepository } from '@/modules/ai-runs/repositories/change-set-repository';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
+import { requireProjectFileRoot } from '@/modules/projects/domain/project-file-root';
 import type { IWorkspaceMutationGateway, WorkspaceFileSnapshot, WorkspaceMutationScope, WorkspaceApplyResult } from '@/modules/ai-runs/repositories/workspace-mutation-gateway';
 import type { IProjectChatContextRepository } from '@/modules/ai-runs/repositories/project-chat-context-repository';
-import { assertActiveAiRunProject } from '@/modules/ai-runs/use-cases/assert-ai-run-project';
+import { assertActiveAiRunProject, assertAiRunProjectHasFileRoot } from '@/modules/ai-runs/use-cases/assert-ai-run-project';
 import { hashText } from '@/modules/ai-runs/use-cases/manifest-builder';
 import { redactSensitiveText, truncateUtf8 } from '@/infrastructure/workspace/workspace-text';
 import { WorkspaceRelativePath } from '@/modules/files/domain/workspace-path';
@@ -66,7 +67,7 @@ export class CollectProposedChangeSetUseCase {
     if (input.changes.length === 0 || input.changes.length > CHANGE_SET_LIMITS.maxOperations) {
       throw new ChangeSetValidationError([{ field: 'changes', message: 'The proposed operation count is outside the safe limit.' }]);
     }
-    const scope: WorkspaceMutationScope = { projectId: project.id, relativeRoot: project.relativeRoot };
+    const scope: WorkspaceMutationScope = { projectId: project.id, relativeRoot: requireProjectFileRoot(project) };
     const operations = await this.buildOperations(scope, run.manifest.files, input.changes);
     const totalSizeBytes = operations.reduce((total, operation) => total + operation.sizeBytes, 0);
     if (totalSizeBytes > CHANGE_SET_LIMITS.maxTotalContentBytes) {
@@ -173,9 +174,18 @@ function validateUntrustedText(change: RuntimeChangeProposal, index: number): vo
 }
 
 export class GetProposedChangeSetUseCase {
-  public constructor(private readonly changeSets: IProposedChangeSetRepository) {}
+  public constructor(
+    private readonly aiRunRepository: IAiRunRepository,
+    private readonly projectRepository: IProjectRepository,
+    private readonly changeSets: IProposedChangeSetRepository
+  ) {}
 
   public async execute(input: { readonly ownerId: string; readonly runId: string }): Promise<ProposedChangeSet> {
+    const run = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
+    if (!run) {
+      throw new ChangeSetNotFoundError();
+    }
+    await assertAiRunProjectHasFileRoot(this.projectRepository, input.ownerId, run.projectId);
     const changeSet = await this.changeSets.findByRunForOwner(input.ownerId, input.runId);
     if (!changeSet) {
       throw new ChangeSetNotFoundError();
@@ -289,7 +299,7 @@ export class DecideProposedChangeSetUseCase {
     if (!project || project.status === 'archived') {
       throw new ChangeSetBlockedError('This project is archived and read-only.');
     }
-    return project.relativeRoot;
+    return requireProjectFileRoot(project);
   }
 
   private async saveManualReview(changeSet: ProposedChangeSet): Promise<ProposedChangeSet> {

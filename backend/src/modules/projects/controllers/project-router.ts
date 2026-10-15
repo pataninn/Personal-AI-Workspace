@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import { ProjectNotFoundError, ProjectVersionRequiredError } from '@/modules/projects/domain/project-errors';
-import type { Project } from '@/modules/projects/domain/project-types';
+import { projectCapabilities, projectWorkspaceMode, type Project } from '@/modules/projects/domain/project-types';
 import { authenticateRequest, requireCsrf, sameOrigin } from '@/modules/auth/controllers/request-auth';
 import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
 import { AppError } from '@/shared/errors/app-error';
@@ -20,8 +20,17 @@ import type {
 
 const createProjectSchema = z.object({
   name: z.string().max(120),
-  relativeRoot: z.string().max(2048)
-}).strict();
+  relativeRoot: z.string().max(2048).optional(),
+  workspaceMode: z.enum(['planning', 'file_backed']).optional(),
+  objective: z.string().max(2000).optional()
+}).strict().superRefine((input, context) => {
+  if (input.workspaceMode === 'planning' && input.relativeRoot !== undefined) {
+    context.addIssue({ code: 'custom', path: ['relativeRoot'], message: 'Planning workspaces do not have a folder.' });
+  }
+  if (input.workspaceMode !== 'planning' && input.relativeRoot === undefined) {
+    context.addIssue({ code: 'custom', path: ['relativeRoot'], message: 'Provide a folder for a file-backed project.' });
+  }
+});
 
 const updateProjectSchema = z.object({
   status: z.enum(['active', 'archived'])
@@ -94,6 +103,9 @@ function serializeProject(project: Project): Record<string, unknown> {
     name: project.name,
     slug: project.slug,
     relativeRoot: project.relativeRoot,
+    objective: project.objective,
+    workspaceMode: projectWorkspaceMode(project),
+    capabilities: projectCapabilities(project),
     status: project.status,
     version: project.version,
     createdAt: project.createdAt.toISOString(),

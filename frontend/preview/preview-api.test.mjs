@@ -163,6 +163,64 @@ test('shows seeded projects and supports create, archive, and restore', async ()
   assert.equal((await restore.json()).data.status, 'active');
 });
 
+test('creates rootless planning metadata and refuses file-backed capabilities without a root', async () => {
+  const { origin } = await startPreview();
+  const cookie = await signIn(origin);
+  const created = await fetch(`${origin}/api/v1/projects`, {
+    method: 'POST', headers: headers(cookie),
+    body: JSON.stringify({ name: 'Launch plan', workspaceMode: 'planning', objective: '  Track the launch  ' })
+  });
+  assert.equal(created.status, 201);
+  const project = (await created.json()).data;
+  assert.equal(project.relativeRoot, null);
+  assert.equal(project.objective, 'Track the launch');
+  assert.equal(project.workspaceMode, 'planning');
+  assert.deepEqual(project.capabilities, { planning: true, fileAccess: false });
+
+  const detail = await fetch(`${origin}/api/v1/projects/${project.id}`, { headers: { Cookie: cookie } });
+  assert.deepEqual((await detail.json()).data, project);
+  const overview = await fetch(`${origin}/api/v1/projects/overview`, { headers: { Cookie: cookie } });
+  const listed = (await overview.json()).data.projects.find((item) => item.id === project.id);
+  assert.equal(listed.relativeRoot, null);
+  assert.equal(listed.capabilities.fileAccess, false);
+
+  const filePaths = [
+    `${origin}/api/v1/projects/${project.id}/files/tree`,
+    `${origin}/api/v1/projects/${project.id}/chat-context`,
+    `${origin}/api/v1/projects/${project.id}/file-history?path=README.md`
+  ];
+  for (const url of filePaths) {
+    const response = await fetch(url, { headers: { Cookie: cookie } });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, 'PROJECT_ROOT_NOT_ATTACHED');
+  }
+  const run = await fetch(`${origin}/api/v1/projects/${project.id}/ai-runs`, {
+    method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'planning-project-run' }),
+    body: JSON.stringify({ conversationId: CONVERSATION_ID, request: 'Run a check', context: {} })
+  });
+  assert.equal(run.status, 409);
+  assert.equal((await run.json()).error.code, 'PROJECT_ROOT_NOT_ATTACHED');
+});
+
+test('preserves rooted compatibility and rejects inconsistent planning mode requests', async () => {
+  const { origin } = await startPreview();
+  const cookie = await signIn(origin);
+  const wrongRootMode = await fetch(`${origin}/api/v1/projects`, {
+    method: 'POST', headers: headers(cookie),
+    body: JSON.stringify({ name: 'Bad plan', workspaceMode: 'planning', relativeRoot: 'notes' })
+  });
+  assert.equal(wrongRootMode.status, 400);
+  const missingRoot = await fetch(`${origin}/api/v1/projects`, {
+    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Missing root' })
+  });
+  assert.equal(missingRoot.status, 400);
+  const workspaceRoot = await fetch(`${origin}/api/v1/projects`, {
+    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Whole workspace', relativeRoot: '.' })
+  });
+  assert.equal(workspaceRoot.status, 409);
+  assert.equal((await workspaceRoot.json()).error.code, 'PROJECT_ROOT_OVERLAP');
+});
+
 test('supports seeded history, new conversations, and idempotent message retries', async () => {
   const { origin } = await startPreview();
   const cookie = await signIn(origin);

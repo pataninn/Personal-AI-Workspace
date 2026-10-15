@@ -30,7 +30,7 @@ describe('Task 4.1 proposed change-set Express boundary (integration)', () => {
     const headers = authHeaders();
 
     const response = await request(context.app).get(`/api/v1/ai-runs/${context.runId}/proposed-change-set`).set(headers).expect(200);
-    expect(response.body.data.counts).toMatchObject({ total: 1, edits: 1, destructive: 0 });
+    expect(response.body.data.counts).toMatchObject({ total: 1, edits: 1, destructive: 1 });
     expect(response.body.data.operations[0]).toMatchObject({ path: SOURCE, expectedSourceHash: SOURCE_HASH });
     expect(JSON.stringify(response.body)).not.toContain('super-secret-proposed-content');
     expect(response.body.data).not.toHaveProperty('backupCheckpoints');
@@ -100,7 +100,7 @@ async function buildContext(options: { readonly outcome?: WorkspaceApplyResult['
   const gateway = new MutationFixture(runs, changeSets, run.id, options.outcome ?? 'applied');
   const collector = new CollectProposedChangeSetUseCase(runs, projects, gateway, changeSets);
     const collected = await collector.execute({ ownerId: OWNER_ID, runId: run.id, changes: [{ operation: 'edit', path: SOURCE, content: 'const replacement = "bounded-proposed-content";', summary: 'Replace the implementation' }], fakeRuntime: true });
-  const getChangeSet = new GetProposedChangeSetUseCase(changeSets);
+  const getChangeSet = new GetProposedChangeSetUseCase(runs, projects, changeSets);
   const decideChangeSet = new DecideProposedChangeSetUseCase(runs, projects, changeSets, gateway);
   const readiness = new InMemoryReadinessState();
   readiness.markReady();
@@ -150,7 +150,7 @@ async function createSucceededRun(repository: InMemoryAiRunRepository): Promise<
 
 class ProjectFixture implements IProjectRepository {
   public status: Project['status'] = 'active';
-  private readonly project: Project = { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', status: 'active', version: 1, createdAt: new Date(), updatedAt: new Date() };
+  private readonly project: Project = { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', objective: null, status: 'active', version: 1, createdAt: new Date(), updatedAt: new Date() };
   public async listByOwner(): Promise<readonly Project[]> { return [{ ...this.project, status: this.status }]; }
   public async findByIdForOwner(ownerId: string, projectId: string): Promise<Project | null> { return ownerId === OWNER_ID && projectId === PROJECT_ID ? { ...this.project, status: this.status } : null; }
   public async listActiveRoots(): Promise<readonly string[]> { return ['project']; }

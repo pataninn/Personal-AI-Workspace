@@ -36,7 +36,7 @@ class ProjectFixture implements IProjectRepository {
   public async updateStatus(): Promise<never> { throw new Error('Not used by project fact integration tests.'); }
 
   private project(): Project {
-    return { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', status: this.status, version: 1, createdAt: NOW, updatedAt: NOW };
+    return { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', objective: null, status: this.status, version: 1, createdAt: NOW, updatedAt: NOW };
   }
 }
 

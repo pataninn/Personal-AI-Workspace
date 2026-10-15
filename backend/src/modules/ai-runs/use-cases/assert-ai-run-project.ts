@@ -2,6 +2,7 @@ import { AiRunNotFoundError } from '@/modules/ai-runs/domain/ai-run-errors';
 import { ProjectArchivedError } from '@/modules/conversations/domain/conversation-errors';
 import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-repository';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
+import { requireProjectFileRoot } from '@/modules/projects/domain/project-file-root';
 
 /**
  * Mutating run endpoints must check the project immediately before asking the
@@ -25,4 +26,18 @@ export async function assertActiveAiRunProject(
   if (project.status === 'archived') {
     throw new ProjectArchivedError();
   }
+  requireProjectFileRoot(project);
+}
+
+/** Read paths retain archived-project access but must not expose file-backed run data for planning projects. */
+export async function assertAiRunProjectHasFileRoot(
+  projectRepository: IProjectRepository,
+  ownerId: string,
+  projectId: string
+): Promise<void> {
+  const project = await projectRepository.findByIdForOwner(ownerId, projectId);
+  if (!project) {
+    throw new AiRunNotFoundError();
+  }
+  requireProjectFileRoot(project);
 }

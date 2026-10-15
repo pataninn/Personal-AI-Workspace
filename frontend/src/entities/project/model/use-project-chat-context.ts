@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { getProjectChatContext, updateProjectChatContext, type ProjectChatContext } from '@/entities/project/api/project-chat-context-api';
 
-export function useProjectChatContext(projectId: string, csrfToken: string | null): {
+export function useProjectChatContext(projectId: string, csrfToken: string | null, enabled = true): {
   readonly context: ProjectChatContext | null;
   readonly loading: boolean;
   readonly saving: boolean;
@@ -21,6 +21,10 @@ export function useProjectChatContext(projectId: string, csrfToken: string | nul
 
   useEffect(() => {
     let cancelled = false;
+    if (!enabled) {
+      setContext(null); setLoading(false); setError(null);
+      return () => { cancelled = true; };
+    }
     setContext(null); setLoading(true); setError(null);
     void getProjectChatContext(projectId).then((value) => {
       if (!cancelled) setContext(value);
@@ -28,10 +32,10 @@ export function useProjectChatContext(projectId: string, csrfToken: string | nul
       if (!cancelled) setError('Project context could not be loaded. Try again.');
     }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [projectId, attempt]);
+  }, [enabled, projectId, attempt]);
 
   const save = useCallback(async (changes: Partial<ProjectChatContext>): Promise<boolean> => {
-    if (!csrfToken || busy.current) return false;
+    if (!enabled || !csrfToken || busy.current) return false;
     busy.current = true; setSaving(true); setError(null);
     try {
       const saved = await updateProjectChatContext(projectId, changes, csrfToken);
@@ -41,7 +45,7 @@ export function useProjectChatContext(projectId: string, csrfToken: string | nul
       if (currentProject.current === projectId) setError('Context could not be saved. Your previous selection is still in use. Try again.');
       return false;
     } finally { busy.current = false; setSaving(false); }
-  }, [csrfToken, projectId]);
+  }, [csrfToken, enabled, projectId]);
 
   return { context, loading, saving, error, save, reload: () => setAttempt((value) => value + 1) };
 }

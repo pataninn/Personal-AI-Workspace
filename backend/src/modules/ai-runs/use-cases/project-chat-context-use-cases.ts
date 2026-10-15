@@ -1,4 +1,5 @@
 import { ProjectNotFoundError } from '@/modules/projects/domain/project-errors';
+import { requireProjectFileRoot } from '@/modules/projects/domain/project-file-root';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { IProjectFactRepository } from '@/modules/memory/repositories/project-fact-repository';
 import { ProjectFactNotFoundError } from '@/modules/memory/domain/project-fact-errors';
@@ -20,9 +21,10 @@ export class ProjectChatContextUseCases {
   public async get(ownerId: string, projectId: string): Promise<ProjectChatContext> {
     const project = await this.projects.findByIdForOwner(ownerId, projectId);
     if (!project) throw new ProjectNotFoundError();
+    const relativeRoot = requireProjectFileRoot(project);
     const context = await this.contexts.get(ownerId, projectId);
     const facts = await this.facts.findActiveByIds(ownerId, projectId, context.factIds);
-    const inventory = await discoverProjectContextFiles(this.workspace, { projectId, relativeRoot: project.relativeRoot }, context.relativePaths);
+    const inventory = await discoverProjectContextFiles(this.workspace, { projectId, relativeRoot }, context.relativePaths);
     const excludedPaths = context.excludedPaths ?? [];
     const eligible = inventory.paths.filter((path) => !excludedPaths.includes(path));
     return { ...context, factIds: facts.map((fact) => fact.id), excludedPaths, availablePaths: inventory.paths,
@@ -32,13 +34,14 @@ export class ProjectChatContextUseCases {
   public async update(ownerId: string, projectId: string, changes: Partial<ProjectChatContext>): Promise<ProjectChatContext> {
     const project = await this.projects.findByIdForOwner(ownerId, projectId);
     if (!project || project.status === 'archived') throw new ProjectNotFoundError();
+    const relativeRoot = requireProjectFileRoot(project);
     if (changes.factIds !== undefined) {
       const ids = validateContextFactIds(changes.factIds);
       if ((await this.facts.findActiveByIds(ownerId, projectId, ids)).length !== ids.length) throw new ProjectFactNotFoundError();
     }
     if (changes.relativePaths !== undefined) {
       for (const path of validateContextPaths(changes.relativePaths)) {
-        await this.workspace.readText({ projectId, relativeRoot: project.relativeRoot }, { path });
+        await this.workspace.readText({ projectId, relativeRoot }, { path });
       }
     }
     const excludedPaths = changes.excludedPaths === undefined

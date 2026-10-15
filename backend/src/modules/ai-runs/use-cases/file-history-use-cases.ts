@@ -2,6 +2,7 @@ import { AiRunValidationError } from '@/modules/ai-runs/domain/ai-run-errors';
 import type { ProjectFileHistoryItemDto, ProjectFileHistoryOutcome, ProjectFileHistoryPageDto } from '@/modules/ai-runs/domain/file-history-types';
 import type { IProposedChangeSetRepository } from '@/modules/ai-runs/repositories/change-set-repository';
 import { ProjectNotFoundError } from '@/modules/projects/domain/project-errors';
+import { requireProjectFileRoot } from '@/modules/projects/domain/project-file-root';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import { redactSensitiveText } from '@/infrastructure/workspace/workspace-text';
 import { WorkspaceRelativePath } from '@/modules/files/domain/workspace-path';
@@ -28,6 +29,7 @@ export class ListProjectFileHistoryUseCase {
   public async execute(input: ListProjectFileHistoryInput): Promise<ProjectFileHistoryPageDto> {
     const project = await this.projectRepository.findByIdForOwner(input.ownerId, input.projectId);
     if (!project) throw new ProjectNotFoundError();
+    requireProjectFileRoot(project);
     const path = parsePath(input.path);
     const outcome = parseOutcome(input.outcome);
     const limit = parseLimit(input.limit);

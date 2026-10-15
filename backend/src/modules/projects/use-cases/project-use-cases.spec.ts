@@ -12,6 +12,7 @@ const project: Project = {
   name: 'Website',
   slug: 'website',
   relativeRoot: 'apps/website',
+  objective: null,
   status: 'active',
   version: 1,
   createdAt: new Date('2026-09-12T00:00:00.000Z'),
@@ -61,9 +62,35 @@ describe('project use cases', () => {
     expect(workspace.createProjectRoot).not.toHaveBeenCalled();
   });
 
+  it('creates a planning workspace without checking or creating a workspace folder', async () => {
+    const planningProject: Project = { ...project, relativeRoot: null, objective: 'Plan the launch' };
+    const projects = repository({ create: jest.fn().mockResolvedValue(planningProject) });
+    const workspace = boundary({ assertReady: jest.fn().mockRejectedValue(new Error('workspace unavailable')) });
+    const useCase = new CreateProjectUseCase(projects, workspace);
+
+    await expect(useCase.execute({ ownerId: 'owner-1', name: 'Launch plan', workspaceMode: 'planning', objective: '  Plan the launch  ' }))
+      .resolves.toMatchObject({ relativeRoot: null, objective: 'Plan the launch' });
+    expect(workspace.assertReady).not.toHaveBeenCalled();
+    expect(workspace.createProjectRoot).not.toHaveBeenCalled();
+    expect(projects.listActiveRoots).not.toHaveBeenCalled();
+    expect(projects.create).toHaveBeenCalledWith(expect.objectContaining({ relativeRoot: null, relativeRootKey: null, objective: 'Plan the launch' }));
+  });
+
+  it('preserves the workspace-root sentinel and rejects its overlap with any other active root', async () => {
+    const rootProject: Project = { ...project, relativeRoot: '.' };
+    const projects = repository({ create: jest.fn().mockResolvedValue(rootProject) });
+    const workspace = boundary();
+    const useCase = new CreateProjectUseCase(projects, workspace);
+
+    await expect(useCase.execute({ ownerId: 'owner-1', name: 'Root', relativeRoot: '.' })).resolves.toMatchObject({ relativeRoot: '.' });
+    expect(projects.create).toHaveBeenCalledWith(expect.objectContaining({ relativeRoot: '.', relativeRootKey: '.' }));
+    const overlapping = new CreateProjectUseCase(repository({ listActiveRoots: jest.fn().mockResolvedValue(['apps/site']) }), workspace);
+    await expect(overlapping.execute({ ownerId: 'owner-1', name: 'Root', relativeRoot: '.' })).rejects.toMatchObject({ code: 'PROJECT_ROOT_OVERLAP' });
+  });
+
   it('keeps reads owner-scoped and maps a missing guessed ID to not found', async () => {
     const projects = repository({ findByIdForOwner: jest.fn().mockResolvedValue(null) });
-    const useCase = new GetProjectUseCase(projects, boundary());
+    const useCase = new GetProjectUseCase(projects);
 
     await expect(useCase.execute({ ownerId: 'owner-2', projectId: 'project-1' })).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' });
     expect(projects.findByIdForOwner).toHaveBeenCalledWith('owner-2', 'project-1');
@@ -79,6 +106,20 @@ describe('project use cases', () => {
     expect(projects.updateStatus).toHaveBeenCalledWith(expect.objectContaining({ status: 'active', expectedVersion: 1 }));
   });
 
+  it('reactivates rootless planning metadata without workspace readiness or root validation', async () => {
+    const planningProject: Project = { ...project, relativeRoot: null, status: 'archived' };
+    const projects = repository({
+      findByIdForOwner: jest.fn().mockResolvedValue(planningProject),
+      updateStatus: jest.fn().mockResolvedValue({ ...planningProject, status: 'active', version: 2 })
+    });
+    const workspace = boundary({ assertReady: jest.fn().mockRejectedValue(new Error('workspace unavailable')) });
+
+    await expect(new UpdateProjectStatusUseCase(projects, workspace).execute({ ownerId: 'owner-1', projectId: 'project-1', status: 'active', expectedVersion: 1 }))
+      .resolves.toMatchObject({ status: 'active', relativeRoot: null });
+    expect(workspace.assertReady).not.toHaveBeenCalled();
+    expect(workspace.validateProjectRoot).not.toHaveBeenCalled();
+  });
+
   it('blocks restoring an archived root when another active project now owns the same root', async () => {
     const projects = repository({
       findByIdForOwner: jest.fn().mockResolvedValue({ ...project, status: 'archived' }),
@@ -91,12 +132,11 @@ describe('project use cases', () => {
     expect(projects.updateStatus).not.toHaveBeenCalled();
   });
 
-  it('fails project list closed when the workspace identity is unavailable', async () => {
+  it('keeps project metadata available when the workspace identity is unavailable', async () => {
     const projects = repository();
-    const workspace = boundary({ assertReady: jest.fn().mockRejectedValue(new Error('identity mismatch')) });
-    const useCase = new ListProjectsUseCase(projects, workspace);
+    const useCase = new ListProjectsUseCase(projects);
 
-    await expect(useCase.execute({ ownerId: 'owner-1', includeArchived: true })).rejects.toThrow('identity');
-    expect(projects.listByOwner).not.toHaveBeenCalled();
+    await expect(useCase.execute({ ownerId: 'owner-1', includeArchived: true })).resolves.toEqual([project]);
+    expect(projects.listByOwner).toHaveBeenCalledWith('owner-1', true);
   });
 });

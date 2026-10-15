@@ -14,7 +14,7 @@ export function ProjectList({ projects, onCreate }: ProjectListProps): React.JSX
   return <div className="project-grid" data-testid="project-list">{projects.map((project) => <Card key={project.id} className={`project-item${project.status === 'active' ? ' project-card-active' : ''}`} data-testid="project-item">
     <Link className="project-item-link" to={`/projects/${project.id}`}>
       <div className="project-card-top"><span className="project-tile" style={{ background: projectColor(project.id) }}><Icon name="folder" size={24} /></span><span className={`reference-pill${project.status === 'active' ? ' reference-pill-active' : ''}`}><i aria-hidden="true" />{project.status === 'active' ? 'Active' : 'Archived'}</span></div>
-      <h3>{project.name}</h3><p className="project-card-root">{project.relativeRoot}</p>
+      <h3>{project.name}</h3><p className="project-card-root">{project.relativeRoot ?? 'Planning workspace'}</p>{project.relativeRoot === null && project.objective ? <p className="project-card-objective">{project.objective}</p> : null}
       <div className="project-card-bottom"><time dateTime={project.updatedAt}>Updated {new Date(project.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time><span className="project-open-arrow"><Icon name="arrow" /></span></div>
     </Link>
   </Card>)}</div>;

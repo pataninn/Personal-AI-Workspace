@@ -51,9 +51,9 @@ const session = {
   errorCode: null
 };
 
-function renderManager(archived = false): void {
+function renderManager(archived = false, fileAccess = true): void {
   const store = configureStore({ reducer: { userSession: userSessionReducer }, preloadedState: { userSession: session } });
-  render(<Provider store={store}><MemoryRouter><ProjectMemoryManager projectId={PROJECT_ID} projectName="Personal AI" archived={archived} /></MemoryRouter></Provider>);
+  render(<Provider store={store}><MemoryRouter><ProjectMemoryManager projectId={PROJECT_ID} projectName="Personal AI" archived={archived} fileAccess={fileAccess} /></MemoryRouter></Provider>);
 }
 
 describe('ProjectMemoryManager', () => {
@@ -76,6 +76,26 @@ describe('ProjectMemoryManager', () => {
     await user.click(checkbox);
     await waitFor(() => expect(updateContextMock).toHaveBeenCalledWith(PROJECT_ID, { factIds: [FACT_ID] }, 'csrf-token'));
     expect(checkbox).toBeChecked();
+  });
+
+  it('keeps rootless project facts available without loading chat context or showing chat-selection controls', async () => {
+    listFactsMock.mockResolvedValueOnce([]).mockResolvedValue([baseFact]);
+    createFactMock.mockResolvedValue(baseFact);
+    renderManager(false, false);
+    const user = userEvent.setup();
+
+    expect(await screen.findByTestId('project-memory-empty')).toHaveTextContent('Add a fact to keep useful project information together.');
+    expect(screen.getByText('Chat context selection is unavailable in planning workspaces. Saved facts remain available to review and edit.')).toBeInTheDocument();
+    expect(getContextMock).not.toHaveBeenCalled();
+    await user.click(screen.getByTestId('project-memory-empty-add'));
+    await user.type(screen.getByRole('textbox', { name: 'Fact name' }), baseFact.title);
+    await user.type(screen.getByRole('textbox', { name: 'What should the assistant know?' }), baseFact.content);
+    await user.click(screen.getByTestId('project-fact-save'));
+
+    await waitFor(() => expect(createFactMock).toHaveBeenCalledWith(PROJECT_ID, { title: baseFact.title, content: baseFact.content }, 'csrf-token'));
+    expect(await screen.findByText(baseFact.title)).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: `Use ${baseFact.title} in all chats` })).not.toBeInTheDocument();
+    expect(getContextMock).not.toHaveBeenCalled();
   });
 
   it('shows a tick while saving and restores the saved selection if the request fails', async () => {

@@ -46,7 +46,7 @@ class ProjectFixture implements IProjectRepository {
   }
 
   public async listActiveRoots(ownerId: string): Promise<readonly string[]> {
-    return (await this.listByOwner(ownerId, false)).map((project) => project.relativeRoot);
+    return (await this.listByOwner(ownerId, false)).flatMap((project) => project.relativeRoot === null ? [] : [project.relativeRoot]);
   }
 
   public async create(): Promise<Project> { throw new Error('Not used by command routes.'); }
@@ -54,7 +54,7 @@ class ProjectFixture implements IProjectRepository {
 
   private makeProject(id: string, ownerId: string): Project {
     const now = new Date('2026-09-16T00:00:00.000Z');
-    return { id, ownerId, name: 'Project', slug: 'project', relativeRoot: id === PROJECT_ID ? '' : 'other', status: 'active', version: 1, createdAt: now, updatedAt: now };
+    return { id, ownerId, name: 'Project', slug: 'project', relativeRoot: id === PROJECT_ID ? 'project' : 'other', objective: null, status: 'active', version: 1, createdAt: now, updatedAt: now };
   }
 }
 
@@ -168,8 +168,8 @@ async function buildFixture(runtime: FakeAgentRuntime = new FakeAgentRuntime()):
     appVersion: 'test',
     sandboxCommands: {
       getSession,
-      listCommands: new ListSandboxCommandsUseCase(runs, commands),
-      getCommand: new GetSandboxCommandUseCase(runs, commands),
+      listCommands: new ListSandboxCommandsUseCase(runs, commands, project),
+      getCommand: new GetSandboxCommandUseCase(runs, commands, project),
       decideCommand: new DecideSandboxCommandUseCase(runs, commands, runtime, project),
       cancelCommand: new CancelSandboxCommandUseCase(runs, commands, runtime, project),
       appOrigin: APP_ORIGIN,

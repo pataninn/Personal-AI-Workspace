@@ -25,6 +25,7 @@ const project: Project = {
   name: 'Workspace',
   slug: 'workspace',
   relativeRoot: 'workspace',
+  objective: null,
   status: 'active',
   version: 1,
   createdAt: NOW,

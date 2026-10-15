@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { IConversationRepository } from '@/modules/conversations/repositories/conversation-repository';
 import { ProjectNotFoundError } from '@/modules/projects/domain/project-errors';
+import { requireProjectFileRoot } from '@/modules/projects/domain/project-file-root';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { IWorkspaceGateway } from '@/modules/files/repositories/workspace-gateway';
 import type { WorkspaceReadResult } from '@/modules/files/domain/workspace-types';
@@ -25,6 +26,7 @@ import type { IProjectFactRepository } from '@/modules/memory/repositories/proje
 import { ProjectFactNotFoundError } from '@/modules/memory/domain/project-fact-errors';
 import type { IProviderPermissionRepository } from '@/modules/ai-runs/repositories/provider-permission-repository';
 import { AiRunProviderPermissionRevokedError } from '@/modules/ai-runs/domain/ai-run-errors';
+import { assertAiRunProjectHasFileRoot } from '@/modules/ai-runs/use-cases/assert-ai-run-project';
 
 export interface CreateAiRunInput {
   readonly ownerId: string;
@@ -60,6 +62,7 @@ export class CreateAiRunUseCase {
     if (!project || project.status === 'archived') {
       throw new ProjectNotFoundError();
     }
+    const relativeRoot = requireProjectFileRoot(project);
     const conversation = await this.conversationRepository.findWithMessagesForOwner({
       ownerId: input.ownerId,
       projectId: input.projectId,
@@ -82,7 +85,7 @@ export class CreateAiRunUseCase {
     const built = await buildManifest({
       workspaceGateway: this.workspaceGateway,
       projectId: project.id,
-      relativeRoot: project.relativeRoot,
+      relativeRoot,
       request,
       requestedPaths: relativePaths,
       messages,
@@ -96,7 +99,7 @@ export class CreateAiRunUseCase {
       projectId: input.projectId,
       conversationId: input.conversationId,
       request,
-      relativeRoot: project.relativeRoot,
+      relativeRoot,
       requestedPaths: relativePaths,
       manifest: built.manifest,
       idempotencyKey,
@@ -140,13 +143,14 @@ export interface GetAiRunInput {
 }
 
 export class GetAiRunUseCase {
-  public constructor(private readonly aiRunRepository: IAiRunRepository) {}
+  public constructor(private readonly aiRunRepository: IAiRunRepository, private readonly projectRepository: IProjectRepository) {}
 
   public async execute(input: GetAiRunInput): Promise<AiRun> {
     const run = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
     if (!run) {
       throw new AiRunNotFoundError();
     }
+    await assertAiRunProjectHasFileRoot(this.projectRepository, input.ownerId, run.projectId);
     return run;
   }
 }
@@ -164,6 +168,7 @@ export interface DecideEgressInput {
 export class DecideEgressUseCase {
   public constructor(
     private readonly aiRunRepository: IAiRunRepository,
+    private readonly projectRepository: IProjectRepository,
     private readonly conversationRepository: IConversationRepository,
     private readonly workspaceGateway: IWorkspaceGateway,
     private readonly stagingGateway: IStagingGateway | undefined,
@@ -185,6 +190,7 @@ export class DecideEgressUseCase {
     if (!current) {
       throw new AiRunNotFoundError();
     }
+    await assertAiRunProjectHasFileRoot(this.projectRepository, input.ownerId, current.projectId);
     if (current.manifest.manifestHash !== manifestHash) {
       throw new AiRunManifestConflictError();
     }
@@ -248,6 +254,7 @@ export class DecideEgressUseCase {
     if (!this.providerPermissionRepository) return null;
     const current = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
     if (!current || current.decision !== 'pending' || current.manifestInvalidated) return null;
+    await assertAiRunProjectHasFileRoot(this.projectRepository, input.ownerId, current.projectId);
     const permission = await this.providerPermissionRepository.findActive({
       ownerId: input.ownerId,
       projectId: current.projectId,

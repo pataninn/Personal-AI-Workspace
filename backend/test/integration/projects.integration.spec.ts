@@ -31,6 +31,7 @@ const activeProject: Project = {
   name: 'Existing app',
   slug: 'existing-app',
   relativeRoot: 'apps',
+  objective: null,
   status: 'active',
   version: 1,
   createdAt: NOW,
@@ -59,10 +60,10 @@ class FixtureProjectRepository implements IProjectRepository {
   }
 
   public async listActiveRoots(ownerId: string): Promise<readonly string[]> {
-    return [...this.records.values()].filter((project) => project.ownerId === ownerId && project.status === 'active').map((project) => project.relativeRoot);
+    return [...this.records.values()].filter((project) => project.ownerId === ownerId && project.status === 'active').flatMap((project) => project.relativeRoot === null ? [] : [project.relativeRoot]);
   }
 
-  public async create(input: { readonly ownerId: string; readonly name: string; readonly slug: string; readonly relativeRoot: string }): Promise<Project> {
+  public async create(input: import('@/modules/projects/repositories/project-repository').CreateProjectRecord): Promise<Project> {
     const created: Project = { ...input, id: '22222222-2222-4222-8222-222222222222', status: 'active', version: 1, createdAt: NOW, updatedAt: NOW };
     this.records.set(created.id, created);
     return created;
@@ -172,8 +173,8 @@ function buildApp(boundary: FixtureWorkspaceBoundary, projectRepository = new Fi
     projects: {
       getSession,
       createProject: new CreateProjectUseCase(projectRepository, boundary),
-      listProjects: new ListProjectsUseCase(projectRepository, boundary),
-      getProject: new GetProjectUseCase(projectRepository, boundary),
+      listProjects: new ListProjectsUseCase(projectRepository),
+      getProject: new GetProjectUseCase(projectRepository),
       updateProjectStatus: new UpdateProjectStatusUseCase(projectRepository, boundary),
       deleteProject: new DeleteProjectUseCase(projectRepository),
       getOverview: new GetProjectOverviewUseCase({ getOverview: async (ownerId) => ({
@@ -262,11 +263,33 @@ describe('projects API (integration)', () => {
     await request(app).patch(`/api/v1/projects/${created.body.data.id}`).set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf).set('If-Match', '1').send({ status: 'active' }).expect(409).expect(({ body }) => expect(body.error.code).toBe('PROJECT_VERSION_CONFLICT'));
   });
 
-  it('fails closed when the workspace identity is unavailable', async () => {
+  it('keeps project metadata readable when the workspace identity is unavailable', async () => {
     const boundary = new FixtureWorkspaceBoundary();
     boundary.available = false;
     const app = buildApp(boundary);
     const session = await login(app);
-    await request(app).get('/api/v1/projects').set('Cookie', session.cookie).expect(503).expect(({ body }) => expect(body.error.code).toBe('WORKSPACE_BOUNDARY_UNAVAILABLE'));
+    await request(app).get('/api/v1/projects').set('Cookie', session.cookie).expect(200);
+    await request(app).get(`/api/v1/projects/${PROJECT_ID}`).set('Cookie', session.cookie).expect(200);
+    const planning = await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
+      .send({ name: 'Launch plan', workspaceMode: 'planning', objective: '  Track the launch  ' }).expect(201);
+    expect(planning.body.data).toMatchObject({
+      relativeRoot: null,
+      objective: 'Track the launch',
+      workspaceMode: 'planning',
+      capabilities: { planning: true, fileAccess: false }
+    });
+    await request(app).get(`/api/v1/projects/${planning.body.data.id}`).set('Cookie', session.cookie).expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ relativeRoot: null, objective: 'Track the launch' }));
+    await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
+      .send({ name: 'Unready', relativeRoot: 'notes' }).expect(503).expect(({ body }) => expect(body.error.code).toBe('WORKSPACE_BOUNDARY_UNAVAILABLE'));
+  });
+
+  it('rejects inconsistent planning mode and root request combinations', async () => {
+    const app = buildApp(new FixtureWorkspaceBoundary());
+    const session = await login(app);
+    await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
+      .send({ name: 'Wrong mode', workspaceMode: 'planning', relativeRoot: 'notes' }).expect(400);
+    await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
+      .send({ name: 'Missing mode and root' }).expect(400);
   });
 });

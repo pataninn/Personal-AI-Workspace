@@ -4,8 +4,9 @@ export interface CreateProjectRecord {
   readonly ownerId: string;
   readonly name: string;
   readonly slug: string;
-  readonly relativeRoot: string;
-  readonly relativeRootKey?: string;
+  readonly relativeRoot: string | null;
+  readonly relativeRootKey?: string | null;
+  readonly objective: string | null;
 }
 
 export interface UpdateProjectStatusRecord {

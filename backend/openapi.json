@@ -25,9 +25,52 @@
     },
     {
       "name": "Project tasks"
+    },
+    {
+      "name": "Workspace redesign"
     }
   ],
   "paths": {
+    "/api/v1/projects": {
+      "get": {
+        "tags": ["Workspace redesign"],
+        "summary": "List owner-scoped project metadata",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{
+          "name": "includeArchived",
+          "in": "query",
+          "schema": { "type": "boolean", "default": true }
+        }],
+        "responses": {
+          "200": { "description": "Projects and their derived planning/file capabilities.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectListEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "post": {
+        "tags": ["Workspace redesign"],
+        "summary": "Create a planning workspace or file-backed project",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateProjectRequest" } } }
+        },
+        "responses": {
+          "201": { "description": "Project metadata created.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "409": { "$ref": "#/components/responses/MutationConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/WorkspaceUnavailable" }
+        },
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" }
+        ]
+      }
+    },
     "/api/v1/projects/{projectId}/chat-context": {
       "parameters": [
         {
@@ -3095,6 +3138,7 @@
       }
     },
     "/api/v1/projects/{projectId}": {
+      "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
       "parameters": [
         {
           "$ref": "#/components/parameters/ProjectIdPath"
@@ -3203,6 +3247,40 @@
           }
         ],
         "description": "Rejects active/unresolved AI runs, applies or commands. Durable quarantine cleanup survives crashes. PROJECT_REMOVAL_CLEANUP_PENDING means app records were removed but cleanup must be retried at startup."
+      },
+      "get": {
+        "tags": ["Workspace redesign"],
+        "summary": "Get owner-scoped project metadata",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Project metadata and derived capabilities.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/ProjectNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "patch": {
+        "tags": ["Workspace redesign"],
+        "summary": "Change project lifecycle status",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpdateProjectStatusRequest" } } }
+        },
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "name": "If-Match", "in": "header", "required": true, "schema": { "type": "string", "pattern": "^[1-9][0-9]*$" } }
+        ],
+        "responses": {
+          "200": { "description": "Project status changed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectNotFound" },
+          "409": { "$ref": "#/components/responses/MutationConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
       }
     },
     "/api/v1/projects/{projectId}/files/upload": {
@@ -3887,7 +3965,7 @@
         }
       },
       "MutationConflict": {
-        "description": "The project is archived or the idempotency key was reused with different content.",
+        "description": "The project is archived, a required file root is unavailable, or an idempotency key was reused with different content.",
         "content": {
           "application/json": {
             "schema": {
@@ -3909,6 +3987,15 @@
                   "error": {
                     "code": "IDEMPOTENCY_KEY_REUSED",
                     "message": "This retry key was already used for different content."
+                  }
+                }
+              },
+              "rootNotAttached": {
+                "value": {
+                  "data": null,
+                  "error": {
+                    "code": "PROJECT_ROOT_NOT_ATTACHED",
+                    "message": "Attach a project folder before using file access or assistant runs."
                   }
                 }
               }
@@ -7904,7 +7991,19 @@
             "type": "string"
           },
           "relativeRoot": {
-            "type": "string"
+            "type": "string",
+            "nullable": true
+          },
+          "objective": {
+            "type": "string",
+            "nullable": true
+          },
+          "workspaceMode": {
+            "type": "string",
+            "enum": ["planning", "file_backed"]
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/ProjectCapabilities"
           },
           "status": {
             "type": "string",
@@ -7935,12 +8034,96 @@
           "name",
           "slug",
           "relativeRoot",
+          "objective",
+          "workspaceMode",
+          "capabilities",
           "status",
           "version",
           "createdAt",
           "updatedAt",
           "lastActivityAt"
         ],
+        "additionalProperties": false
+      },
+      "ProjectCapabilities": {
+        "type": "object",
+        "properties": {
+          "planning": { "type": "boolean", "enum": [true] },
+          "fileAccess": { "type": "boolean" }
+        },
+        "required": ["planning", "fileAccess"],
+        "additionalProperties": false
+      },
+      "ProjectRepresentation": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "name": { "type": "string" },
+          "slug": { "type": "string" },
+          "relativeRoot": { "type": "string", "nullable": true },
+          "objective": { "type": "string", "nullable": true },
+          "workspaceMode": { "type": "string", "enum": ["planning", "file_backed"] },
+          "capabilities": { "$ref": "#/components/schemas/ProjectCapabilities" },
+          "status": { "type": "string", "enum": ["active", "archived"] },
+          "version": { "type": "integer", "minimum": 1 },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "name", "slug", "relativeRoot", "objective", "workspaceMode", "capabilities", "status", "version", "createdAt", "updatedAt"],
+        "additionalProperties": false
+      },
+      "CreateProjectRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "maxLength": 120 },
+              "workspaceMode": { "type": "string", "enum": ["planning"] },
+              "objective": { "type": "string", "maxLength": 2000 }
+            },
+            "required": ["name", "workspaceMode"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "maxLength": 120 },
+              "relativeRoot": { "type": "string", "maxLength": 2048 },
+              "workspaceMode": { "type": "string", "enum": ["file_backed"] },
+              "objective": { "type": "string", "maxLength": 2000 }
+            },
+            "required": ["name", "relativeRoot"],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "UpdateProjectStatusRequest": {
+        "type": "object",
+        "properties": { "status": { "type": "string", "enum": ["active", "archived"] } },
+        "required": ["status"],
+        "additionalProperties": false
+      },
+      "ProjectEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": { "$ref": "#/components/schemas/ProjectRepresentation" },
+          "error": { "nullable": true, "type": "object", "description": "Null on success." }
+        },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "ProjectListEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": { "projects": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectRepresentation" } } },
+            "required": ["projects"],
+            "additionalProperties": false
+          },
+          "error": { "nullable": true, "type": "object", "description": "Null on success." }
+        },
+        "required": ["data", "error"],
         "additionalProperties": false
       },
       "HomeTaskSummary": {

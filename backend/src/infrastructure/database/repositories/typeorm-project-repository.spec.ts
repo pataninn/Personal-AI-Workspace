@@ -16,6 +16,7 @@ function projectRow(status: ProjectStatus): Record<string, unknown> {
     slug: 'website',
     relative_root: 'apps/website',
     relative_root_key: 'apps/website',
+    objective: null,
     status,
     version: 2,
     created_at: CREATED_AT,
@@ -43,6 +44,29 @@ function fixture(query: jest.Mock): {
 }
 
 describe('TypeOrmProjectRepository', () => {
+  it('maps a rootless planning row with its objective without inventing a file root', async () => {
+    const row = { ...projectRow('active'), relative_root: null, relative_root_key: null, objective: 'Plan the launch' };
+    const dataSource = { query: jest.fn().mockResolvedValue([row]) } as unknown as DataSource;
+    const project = (await new TypeOrmProjectRepository(dataSource).listByOwner(OWNER_ID, false))[0];
+
+    expect(project).toMatchObject({ relativeRoot: null, objective: 'Plan the launch' });
+  });
+
+  it('creates a rootless project without overlap lookup and persists null root columns', async () => {
+    const row = { ...projectRow('active'), relative_root: null, relative_root_key: null, objective: 'Plan the launch' };
+    const query = jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce([row]);
+    const { repository, commitTransaction, rollbackTransaction } = fixture(query);
+
+    const project = await repository.create({ ownerId: OWNER_ID, name: 'Planning', slug: 'planning', relativeRoot: null, relativeRootKey: null, objective: 'Plan the launch' });
+
+    expect(project).toMatchObject({ relativeRoot: null, objective: 'Plan the launch' });
+    expect(query.mock.calls[1]?.[0]).toContain('"relative_root_key" IS NOT NULL');
+    expect(query.mock.calls[2]?.[0]).toContain('"relative_root_key", "objective"');
+    expect(query.mock.calls[2]?.[1]).toEqual([OWNER_ID, 'Planning', 'planning', null, null, 'Plan the launch']);
+    expect(commitTransaction).toHaveBeenCalledTimes(1);
+    expect(rollbackTransaction).not.toHaveBeenCalled();
+  });
+
   it.each<ProjectStatus>(['archived', 'active'])('returns a serializable project after changing status to %s', async (status) => {
     const query = jest.fn().mockResolvedValueOnce([]);
     if (status === 'active') {

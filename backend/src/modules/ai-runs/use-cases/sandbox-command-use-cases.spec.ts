@@ -5,6 +5,7 @@ import { FakeAgentRuntime } from '@/infrastructure/sandbox/fake-agent-runtime';
 import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-repository';
 import type { Project } from '@/modules/projects/domain/project-types';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
+import type { ISandboxCommandRepository } from '@/modules/ai-runs/repositories/sandbox-command-repository';
 import { CancelSandboxCommandUseCase, DecideSandboxCommandUseCase, GetSandboxCommandUseCase, ListSandboxCommandsUseCase, ProposeSandboxCommandUseCase } from '@/modules/ai-runs/use-cases/sandbox-command-use-cases';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -18,7 +19,7 @@ class ReadyRunRepository implements IAiRunRepository {
     projectId: PROJECT_ID,
     conversationId: '44444444-4444-4444-8444-444444444444',
     request: 'inspect',
-    relativeRoot: '',
+    relativeRoot: 'project',
     requestedPaths: [],
     manifest: {
       manifestHash: 'a'.repeat(64),
@@ -60,12 +61,14 @@ class ReadyRunRepository implements IAiRunRepository {
 
 class ProjectRepositoryFixture implements IProjectRepository {
   public status: Project['status'] = 'active';
+  public relativeRoot: string | null = 'project';
   private readonly project: Project = {
     id: PROJECT_ID,
     ownerId: OWNER_ID,
     name: 'Project',
     slug: 'project',
-    relativeRoot: '',
+    relativeRoot: this.relativeRoot,
+    objective: null,
     status: 'active',
     version: 1,
     createdAt: new Date('2026-09-16T00:00:00.000Z'),
@@ -74,9 +77,9 @@ class ProjectRepositoryFixture implements IProjectRepository {
 
   public async listByOwner(): Promise<readonly Project[]> { return [{ ...this.project, status: this.status }]; }
   public async findByIdForOwner(ownerId: string, projectId: string): Promise<Project | null> {
-    return ownerId === OWNER_ID && projectId === PROJECT_ID ? { ...this.project, status: this.status } : null;
+    return ownerId === OWNER_ID && projectId === PROJECT_ID ? { ...this.project, relativeRoot: this.relativeRoot, status: this.status } : null;
   }
-  public async listActiveRoots(): Promise<readonly string[]> { return this.status === 'active' ? [''] : []; }
+  public async listActiveRoots(): Promise<readonly string[]> { return this.status === 'active' ? ['project'] : []; }
   public async create(): Promise<Project> { return { ...this.project, status: this.status }; }
   public async updateStatus(): Promise<Project | null> { return { ...this.project, status: this.status }; }
 }
@@ -153,7 +156,7 @@ describe('sandbox command use cases', () => {
 
     expect(result.status).toBe('completed');
     expect(fixture.runtime.executedCommands).toHaveLength(1);
-    await expect(new GetSandboxCommandUseCase(fixture.runRepository, fixture.repository).execute({ ownerId: OWNER_ID, runId: RUN_ID, commandId: fixture.proposal.id })).resolves.toMatchObject({ status: 'completed', decision: 'approved' });
+    await expect(new GetSandboxCommandUseCase(fixture.runRepository, fixture.repository, fixture.projectRepository).execute({ ownerId: OWNER_ID, runId: RUN_ID, commandId: fixture.proposal.id })).resolves.toMatchObject({ status: 'completed', decision: 'approved' });
   });
 
   it('rejects without a runtime call and blocks stale hashes', async () => {
@@ -191,7 +194,7 @@ describe('sandbox command use cases', () => {
     const pending = await cancel.execute({ ownerId: OWNER_ID, runId: RUN_ID, commandId: fixture.proposal.id, idempotencyKey: 'cancel-1' });
     expect(pending.status).toBe('cancel_requested');
     await approval;
-    const cancelled = await new GetSandboxCommandUseCase(fixture.runRepository, fixture.repository).execute({ ownerId: OWNER_ID, runId: RUN_ID, commandId: fixture.proposal.id });
+    const cancelled = await new GetSandboxCommandUseCase(fixture.runRepository, fixture.repository, fixture.projectRepository).execute({ ownerId: OWNER_ID, runId: RUN_ID, commandId: fixture.proposal.id });
     expect(cancelled.status).toBe('cancelled');
     expect(cancelled.result).toBeUndefined();
   });
@@ -250,7 +253,7 @@ describe('sandbox command use cases', () => {
 
     await approve;
     expect((await cancellation).status).toBe('cancel_requested');
-    const current = await new GetSandboxCommandUseCase(runRepository, repository).execute({ ownerId: OWNER_ID, runId: RUN_ID, commandId: proposal.resource.id });
+    const current = await new GetSandboxCommandUseCase(runRepository, repository, projectRepository).execute({ ownerId: OWNER_ID, runId: RUN_ID, commandId: proposal.resource.id });
     expect(current.status).toBe('cancelled');
     expect(current.result).toBeUndefined();
   });
@@ -279,7 +282,7 @@ describe('sandbox command use cases', () => {
     const proposal = new ProposeSandboxCommandUseCase(runRepository, repository, runtime, projectRepository);
 
     await expect(proposal.execute({ ownerId: OWNER_ID, runId: RUN_ID, command: 'pwd', args: [], idempotencyKey: 'proposal-runtime-failure' })).rejects.toThrow('runtime proposal failed');
-    const commands = await new ListSandboxCommandsUseCase(runRepository, repository).execute({ ownerId: OWNER_ID, runId: RUN_ID });
+    const commands = await new ListSandboxCommandsUseCase(runRepository, repository, projectRepository).execute({ ownerId: OWNER_ID, runId: RUN_ID });
     expect(commands[0]?.status).toBe('review_required');
   });
 
@@ -288,10 +291,27 @@ describe('sandbox command use cases', () => {
     const runRepository = new ReadyRunRepository();
     const projectRepository = new ProjectRepositoryFixture();
     const proposal = await new ProposeSandboxCommandUseCase(runRepository, repository, new FakeAgentRuntime(), projectRepository).execute({ ownerId: OWNER_ID, runId: RUN_ID, command: 'pwd', args: [], idempotencyKey: 'proposal-scope' });
-    const list = new ListSandboxCommandsUseCase(runRepository, repository);
+    const list = new ListSandboxCommandsUseCase(runRepository, repository, projectRepository);
 
     await expect(list.execute({ ownerId: OWNER_ID, runId: '99999999-9999-4999-8999-999999999999' })).rejects.toMatchObject({ code: 'COMMAND_NOT_FOUND' });
-    await expect(new GetSandboxCommandUseCase(runRepository, repository).execute({ ownerId: '99999999-9999-4999-8999-999999999999', runId: RUN_ID, commandId: proposal.resource.id })).rejects.toMatchObject({ code: 'COMMAND_NOT_FOUND' });
+    await expect(new GetSandboxCommandUseCase(runRepository, repository, projectRepository).execute({ ownerId: '99999999-9999-4999-8999-999999999999', runId: RUN_ID, commandId: proposal.resource.id })).rejects.toMatchObject({ code: 'COMMAND_NOT_FOUND' });
+  });
+
+  it('refuses list and single-command history for a planning project before repository reads', async () => {
+    const runRepository = new ReadyRunRepository();
+    const projectRepository = new ProjectRepositoryFixture();
+    projectRepository.relativeRoot = null;
+    const listForRun = jest.fn();
+    const findByIdForOwner = jest.fn();
+    const repository = { listForRun, findByIdForOwner } as unknown as ISandboxCommandRepository;
+
+    await expect(new ListSandboxCommandsUseCase(runRepository, repository, projectRepository).execute({ ownerId: OWNER_ID, runId: RUN_ID }))
+      .rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED', statusCode: 409 });
+    await expect(new GetSandboxCommandUseCase(runRepository, repository, projectRepository).execute({ ownerId: OWNER_ID, runId: RUN_ID, commandId: '66666666-6666-4666-8666-666666666666' }))
+      .rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED', statusCode: 409 });
+
+    expect(listForRun).not.toHaveBeenCalled();
+    expect(findByIdForOwner).not.toHaveBeenCalled();
   });
 
   it('blocks approval and cancellation after the project is archived', async () => {
@@ -316,7 +336,7 @@ describe('sandbox command use cases', () => {
       await propose.execute({ ownerId: OWNER_ID, runId: RUN_ID, command: 'pwd', args: [], idempotencyKey: `proposal-list-${index}` });
     }
 
-    const commands = await new ListSandboxCommandsUseCase(runRepository, repository).execute({ ownerId: OWNER_ID, runId: RUN_ID });
+    const commands = await new ListSandboxCommandsUseCase(runRepository, repository, projectRepository).execute({ ownerId: OWNER_ID, runId: RUN_ID });
     expect(commands).toHaveLength(100);
   });
 });

@@ -5,6 +5,9 @@ export function previewOverview(response, seed, url) {
   const limit = Number(raw[0] ?? 6);
   if (raw.length > 1 || !Number.isInteger(limit) || limit < 1 || limit > 100) { sendError(response, 400, 'VALIDATION_ERROR', 'Choose a limit of 1 to 100.'); return; }
   const projects = seed.projects.filter((project) => project.status === 'active').map((project) => ({ ...project,
+    objective: project.objective ?? null,
+    workspaceMode: project.relativeRoot === null ? 'planning' : 'file_backed',
+    capabilities: { planning: true, fileAccess: project.relativeRoot !== null },
     lastActivityAt: [project.updatedAt, ...seed.conversations.filter((item) => item.projectId === project.id).map((item) => item.lastActivityAt),
       ...seed.tasks.filter((item) => item.projectId === project.id).map((item) => item.updatedAt)].sort().at(-1) })).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt) || a.id.localeCompare(b.id));
   const ranks = { low: 0, medium: 1, high: 2, urgent: 3 };

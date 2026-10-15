@@ -17,6 +17,7 @@ interface ProjectMemoryManagerProps {
   readonly projectId: string;
   readonly projectName: string;
   readonly archived: boolean;
+  readonly fileAccess: boolean;
 }
 
 interface EditorState {
@@ -24,9 +25,9 @@ interface EditorState {
 }
 
 /** Usage: Render on a project memory page; this component coordinates fact loading and versioned create, review, edit, and delete actions. */
-export function ProjectMemoryManager({ projectId, projectName, archived }: ProjectMemoryManagerProps): React.JSX.Element {
+export function ProjectMemoryManager({ projectId, projectName, archived, fileAccess }: ProjectMemoryManagerProps): React.JSX.Element {
   const csrfToken = useAppSelector(selectCsrfToken);
-  const chatContext = useProjectChatContext(projectId, csrfToken);
+  const chatContext = useProjectChatContext(projectId, csrfToken, fileAccess);
   const { facts, status, reload, upsertFact, removeFact } = useProjectFacts(projectId);
   const actions = useProjectMemoryActions(projectId, csrfToken);
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -150,19 +151,19 @@ export function ProjectMemoryManager({ projectId, projectName, archived }: Proje
   }
   return (
     <section className="project-memory-manager" data-testid="project-memory-manager">
-      <p className="supporting-copy">Tick facts to include them automatically in every chat in this project.</p>
-      {chatContext.error ? <Alert tone="error"><p>{chatContext.error}</p><Button type="button" onClick={chatContext.reload}>Reload context</Button></Alert> : null}
+      {fileAccess ? <p className="supporting-copy">Tick facts to include them automatically in every chat in this project.</p> : <p className="supporting-copy">Chat context selection is unavailable in planning workspaces. Saved facts remain available to review and edit.</p>}
+      {fileAccess && chatContext.error ? <Alert tone="error"><p>{chatContext.error}</p><Button type="button" onClick={chatContext.reload}>Reload context</Button></Alert> : null}
       {archived ? <Alert id={archivedDescriptionId} tone="warning" data-testid="project-memory-archived-message">This project is archived. Its memory is available to review, but you cannot change it or use it for new runs.</Alert> : null}
       <p className="form-status" data-testid="project-memory-announcement" role="status" aria-live="polite">{announcement}</p>
       <div className="project-memory-toolbar">
-        <p className="supporting-copy">Your selection applies to all conversations in this project.</p>
+        {fileAccess ? <p className="supporting-copy">Your selection applies to all conversations in this project.</p> : null}
         <Button type="button" data-testid="project-memory-add" disabled={archived || busy || !csrfToken} aria-describedby={archived ? archivedDescriptionId : undefined} onClick={openAddDialog}>Add a fact</Button>
       </div>
       <div className="project-memory-list" data-testid="project-memory-list" aria-busy={status === 'loading' || undefined}>
         {status === 'idle' || status === 'loading' ? <MemoryLoading /> : null}
         {status === 'error' ? <section className="error-state project-memory-error" data-testid="project-memory-error" role="alert" aria-labelledby="project-memory-error-title"><h2 id="project-memory-error-title">Project memory could not be loaded</h2><p>We could not load saved facts. Try again.</p><Button type="button" variant="secondary" data-testid="project-memory-retry" onClick={() => { void reload(); }}>Try again</Button></section> : null}
-        {status === 'success' && facts.length === 0 ? <section className="empty-state project-memory-empty" data-testid="project-memory-empty" aria-labelledby="project-memory-empty-title"><h2 id="project-memory-empty-title">No saved facts yet</h2><p>Add a fact when there is something useful for this project that you want the assistant to remember.</p><Button type="button" data-testid="project-memory-empty-add" disabled={archived || busy || !csrfToken} aria-describedby={archived ? archivedDescriptionId : undefined} onClick={openAddDialog}>Add a fact</Button></section> : null}
-        {status === 'success' && facts.length > 0 ? <ul className="memory-fact-list">{facts.map((fact) => <MemoryFactItem key={fact.id} fact={fact} archived={archived} busy={busy} archivedDescriptionId={archivedDescriptionId} actionError={factActionError[fact.id] ?? null} onEdit={openEditDialog} onVerify={(selected) => { void markReviewed(selected); }} onDelete={openDeleteDialog} includedInChat={(pendingFactIds ?? chatContext.context?.factIds)?.includes(fact.id)} contextDisabled={chatContext.loading || chatContext.saving || !chatContext.context || !csrfToken || (!chatContext.context.factIds.includes(fact.id) && chatContext.context.factIds.length >= 25)} onContextToggle={(selected, included) => { void toggleChatFact(selected, included); }} />)}</ul> : null}
+        {status === 'success' && facts.length === 0 ? <section className="empty-state project-memory-empty" data-testid="project-memory-empty" aria-labelledby="project-memory-empty-title"><h2 id="project-memory-empty-title">No saved facts yet</h2><p>{fileAccess ? 'Add a fact when there is something useful for this project that you want the assistant to remember.' : 'Add a fact to keep useful project information together.'}</p><Button type="button" data-testid="project-memory-empty-add" disabled={archived || busy || !csrfToken} aria-describedby={archived ? archivedDescriptionId : undefined} onClick={openAddDialog}>Add a fact</Button></section> : null}
+        {status === 'success' && facts.length > 0 ? <ul className="memory-fact-list">{facts.map((fact) => <MemoryFactItem key={fact.id} fact={fact} archived={archived} busy={busy} archivedDescriptionId={archivedDescriptionId} actionError={factActionError[fact.id] ?? null} onEdit={openEditDialog} onVerify={(selected) => { void markReviewed(selected); }} onDelete={openDeleteDialog} includedInChat={fileAccess ? (pendingFactIds ?? chatContext.context?.factIds)?.includes(fact.id) : undefined} contextDisabled={chatContext.loading || chatContext.saving || !chatContext.context || !csrfToken || (!chatContext.context.factIds.includes(fact.id) && chatContext.context.factIds.length >= 25)} onContextToggle={fileAccess ? (selected, included) => { void toggleChatFact(selected, included); } : undefined} />)}</ul> : null}
       </div>
       <ProjectFactEditorDialog
         key={editor?.fact?.id ?? 'new-project-fact'}

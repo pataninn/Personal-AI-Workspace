@@ -88,6 +88,10 @@ export function createPreviewAiRuns() {
       sendError(response, 409, 'PROJECT_ARCHIVED', 'This preview project is archived.');
       return;
     }
+    if (project.relativeRoot === null) {
+      sendError(response, 409, 'PROJECT_ROOT_NOT_ATTACHED', 'Attach a project folder before using file access or assistant runs.');
+      return;
+    }
     const key = validIdempotencyKey(request);
     if (!key) {
       sendError(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'The mock preview requires an idempotency key.');

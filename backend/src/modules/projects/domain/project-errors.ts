@@ -73,6 +73,27 @@ export class ProjectRootOverlapError extends ProjectDomainError {
   }
 }
 
+export class ProjectRootNotAttachedError extends ProjectDomainError {
+  public constructor() {
+    super('PROJECT_ROOT_NOT_ATTACHED', 409, 'Attach a project folder before using file access or assistant runs.');
+  }
+}
+
+export class ProjectWorkspaceModeInvalidError extends ProjectDomainError {
+  public constructor(message = 'Choose planning mode without a folder, or provide a folder for file-backed mode.') {
+    super('PROJECT_WORKSPACE_MODE_INVALID', 400, message, [{ field: 'workspaceMode', message }]);
+  }
+}
+
+export class ProjectObjectiveInvalidError extends ProjectDomainError {
+  public constructor() {
+    super('PROJECT_OBJECTIVE_INVALID', 400, 'The project objective is invalid.', [{
+      field: 'objective',
+      message: 'Use a project objective with at most 2,000 characters.'
+    }]);
+  }
+}
+
 export class ProjectNameConflictError extends ProjectDomainError {
   public constructor() {
     super('PROJECT_NAME_CONFLICT', 409, 'An active project with this name already exists.', [{

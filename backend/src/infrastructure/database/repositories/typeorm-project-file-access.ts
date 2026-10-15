@@ -1,7 +1,7 @@
 import type { DataSource } from 'typeorm';
 import type { IProjectFileAccess } from '@/modules/files/repositories/project-file-access';
 import type { WorkspaceProjectScope } from '@/modules/files/domain/workspace-types';
-import { ProjectNotFoundError } from '@/modules/projects/domain/project-errors';
+import { ProjectNotFoundError, ProjectRootNotAttachedError } from '@/modules/projects/domain/project-errors';
 import { AppError } from '@/shared/errors/app-error';
 
 /** Serialize manual writes with project deletion and record recent file activity. */
@@ -10,9 +10,10 @@ export class TypeOrmProjectFileAccess implements IProjectFileAccess {
 
   public execute<T>(input: { readonly ownerId: string; readonly projectId: string; readonly writable: boolean }, action: (scope: WorkspaceProjectScope) => Promise<T>): Promise<T> {
     return this.dataSource.transaction(async (manager) => {
-      const rows: { id: string; relative_root: string; status: string }[] = await manager.query('SELECT id, relative_root, status FROM projects WHERE owner_id=$1 AND id=$2 FOR UPDATE', [input.ownerId, input.projectId]);
+      const rows: { id: string; relative_root: string | null; status: string }[] = await manager.query('SELECT id, relative_root, status FROM projects WHERE owner_id=$1 AND id=$2 FOR UPDATE', [input.ownerId, input.projectId]);
       const project = rows[0];
       if (!project) throw new ProjectNotFoundError();
+      if (project.relative_root === null) throw new ProjectRootNotAttachedError();
       if (input.writable) {
         if (project.status === 'archived') throw new AppError('PROJECT_READ_ONLY', 409, 'This project is read-only.');
         const busy: { id: string }[] = await manager.query("SELECT id FROM ai_runs WHERE owner_id=$1 AND project_id=$2 AND (status IN ('pending_approval','staging','ready','queued','running','waiting_approval','cancel_requested','review_required') OR cleanup='unknown') LIMIT 1", [input.ownerId, input.projectId]);

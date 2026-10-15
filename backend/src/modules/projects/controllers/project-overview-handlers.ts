@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import type { ProjectRouterDependencies } from '@/modules/projects/controllers/project-router';
 import { ProjectNotFoundError, ProjectVersionRequiredError } from '@/modules/projects/domain/project-errors';
+import { projectCapabilities, projectWorkspaceMode } from '@/modules/projects/domain/project-types';
 import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
 
@@ -20,7 +21,8 @@ export function overviewHandler(dependencies: ProjectRouterDependencies): Reques
       if (!dependencies.getOverview) throw new AppError('PROJECT_OVERVIEW_UNAVAILABLE', 503, 'The project overview is unavailable.');
       const overview = await dependencies.getOverview.execute({ ownerId, taskLimit: taskLimit.data });
       sendData(response, { projects: overview.projects.map(({ ownerId: _ownerId, ...project }) => ({
-        ...project, createdAt: project.createdAt.toISOString(), updatedAt: project.updatedAt.toISOString(), lastActivityAt: project.lastActivityAt.toISOString()
+        ...project, workspaceMode: projectWorkspaceMode(project), capabilities: projectCapabilities(project),
+        createdAt: project.createdAt.toISOString(), updatedAt: project.updatedAt.toISOString(), lastActivityAt: project.lastActivityAt.toISOString()
       })), tasks: overview.tasks });
     } catch (error: unknown) { next(error); }
   };

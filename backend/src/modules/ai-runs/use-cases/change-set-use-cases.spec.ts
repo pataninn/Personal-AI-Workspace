@@ -8,7 +8,7 @@ import type { IWorkspaceMutationGateway, WorkspaceApplyResult, WorkspaceFileSnap
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { Project } from '@/modules/projects/domain/project-types';
 import { InMemoryProposedChangeSetRepository } from '@/infrastructure/ai-runs/in-memory-change-set-repository';
-import { CollectProposedChangeSetUseCase, DecideProposedChangeSetUseCase } from '@/modules/ai-runs/use-cases/change-set-use-cases';
+import { CollectProposedChangeSetUseCase, DecideProposedChangeSetUseCase, GetProposedChangeSetUseCase } from '@/modules/ai-runs/use-cases/change-set-use-cases';
 import { ChangeSetConflictError } from '@/modules/ai-runs/domain/change-errors';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -70,10 +70,22 @@ describe('proposed change-set use cases', () => {
 
     expect(result.status).toBe('awaiting_approval');
     expect(result.fakeRuntime).toBe(true);
-    expect(result.operations[0]).toMatchObject({ path: FILE_PATH, expectedSourceHash: ORIGINAL_HASH, backupRequired: false });
+    expect(result.operations[0]).toMatchObject({ path: FILE_PATH, expectedSourceHash: ORIGINAL_HASH, backupRequired: true });
     expect(result.operations[0]?.preview?.text).not.toContain('secret-value');
     expect(result.proposalHash).toMatch(/^[0-9a-f]{64}$/u);
     expect(await repository.findByRunForOwner(OWNER_ID, RUN_ID)).toEqual(result);
+  });
+
+  it('does not read proposed change-set history for a planning project', async () => {
+    const runs = new RunRepository();
+    const projects = new ProjectRepository();
+    projects.project = { ...projects.project, relativeRoot: null };
+    const changeSets = new InMemoryProposedChangeSetRepository();
+    const findChangeSet = jest.spyOn(changeSets, 'findByRunForOwner');
+    const get = new GetProposedChangeSetUseCase(runs, projects, changeSets);
+
+    await expect(get.execute({ ownerId: OWNER_ID, runId: RUN_ID })).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED', statusCode: 409 });
+    expect(findChangeSet).not.toHaveBeenCalled();
   });
 
   it('builds a line diff with unchanged context, additions, and removals', async () => {
@@ -237,10 +249,10 @@ class RunRepository implements IAiRunRepository {
 }
 
 class ProjectRepository implements IProjectRepository {
-  public project: Project = { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', status: 'active', version: 1, createdAt: new Date(), updatedAt: new Date() };
+  public project: Project = { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', objective: null, status: 'active', version: 1, createdAt: new Date(), updatedAt: new Date() };
   public async listByOwner(): Promise<readonly Project[]> { return [this.project]; }
   public async findByIdForOwner(ownerId: string, projectId: string): Promise<Project | null> { return ownerId === OWNER_ID && projectId === PROJECT_ID ? this.project : null; }
-  public async listActiveRoots(): Promise<readonly string[]> { return [this.project.relativeRoot]; }
+  public async listActiveRoots(): Promise<readonly string[]> { return this.project.relativeRoot === null ? [] : [this.project.relativeRoot]; }
   public async create(): Promise<Project> { return this.project; }
   public async updateStatus(): Promise<Project | null> { return this.project; }
 }

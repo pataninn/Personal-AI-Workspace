@@ -10,8 +10,8 @@ import { ProjectFilesPanel, useProjectFiles } from '@/features/project-files';
 export function ProjectWorkspacePage(): React.JSX.Element {
   const { projectId = '' } = useParams();
   const dispatch = useAppDispatch();
-  const files = useProjectFiles(projectId);
   const detail = useAppSelector(selectProjectDetail(projectId));
+  const files = useProjectFiles(projectId, detail.project?.relativeRoot !== null && detail.project?.relativeRoot !== undefined);
 
   useEffect(() => {
     if (projectId) {

@@ -33,6 +33,7 @@ const activeProject: Project = {
   name: 'Workspace',
   slug: 'workspace',
   relativeRoot: 'apps',
+  objective: null,
   status: 'active',
   version: 1,
   createdAt: NOW,
@@ -45,7 +46,7 @@ class ProjectFixture implements IProjectRepository {
     return ownerId === activeProject.ownerId && projectId === activeProject.id ? activeProject : null;
   }
   public async listActiveRoots(): Promise<readonly string[]> { return ['apps']; }
-  public async create(input: { readonly ownerId: string; readonly name: string; readonly slug: string; readonly relativeRoot: string }): Promise<Project> { return { ...activeProject, ...input }; }
+  public async create(input: import('@/modules/projects/repositories/project-repository').CreateProjectRecord): Promise<Project> { return { ...activeProject, ...input }; }
   public async updateStatus(): Promise<Project | null> { return null; }
 }
 

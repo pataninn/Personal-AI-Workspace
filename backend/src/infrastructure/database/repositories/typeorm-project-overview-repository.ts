@@ -8,7 +8,8 @@ interface ProjectActivityRow {
   readonly owner_id: string;
   readonly name: string;
   readonly slug: string;
-  readonly relative_root: string;
+  readonly relative_root: string | null;
+  readonly objective: string | null;
   readonly status: ProjectStatus;
   readonly version: number;
   readonly created_at: Date | string;
@@ -19,7 +20,7 @@ interface ProjectActivityRow {
 function toSummary(row: ProjectActivityRow): ActiveProjectSummary {
   return {
     id: row.id, ownerId: row.owner_id, name: row.name, slug: row.slug,
-    relativeRoot: row.relative_root, status: row.status, version: row.version,
+    relativeRoot: row.relative_root, objective: row.objective, status: row.status, version: row.version,
     createdAt: new Date(row.created_at), updatedAt: new Date(row.updated_at),
     lastActivityAt: new Date(row.last_activity_at)
   };

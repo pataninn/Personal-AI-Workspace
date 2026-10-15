@@ -145,7 +145,7 @@ export async function createApplication(
     const collectProposedChangeSet = new CollectProposedChangeSetUseCase(aiRunRepository, projectRepository, workspaceMutationGateway, changeSetRepository);
     const decideProposedChangeSet = new DecideProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository, workspaceMutationGateway, chatContextRepository);
     const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, proposeSandboxCommand, projectRepository, collectProposedChangeSet, providerPermissionRepository, decideProposedChangeSet);
-    const decideEgress = new DecideEgressUseCase(aiRunRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot, projectFactRepository, providerPermissionRepository);
+    const decideEgress = new DecideEgressUseCase(aiRunRepository, projectRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot, projectFactRepository, providerPermissionRepository);
     const sendChatMessage = new SendChatMessageUseCase(projectChatContext, projectFactRepository, createAiRun, decideEgress, startAiRun);
     const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository, commandRepository);
     const passwordHasher = new BcryptPasswordHasher();
@@ -187,8 +187,8 @@ export async function createApplication(
           getOverview: new GetProjectOverviewUseCase(new TypeOrmProjectOverviewRepository(dataSource)),
           getSession,
           createProject: new CreateProjectUseCase(projectRepository, workspaceBoundary),
-          listProjects: new ListProjectsUseCase(projectRepository, workspaceBoundary),
-          getProject: new GetProjectUseCase(projectRepository, workspaceBoundary),
+          listProjects: new ListProjectsUseCase(projectRepository),
+          getProject: new GetProjectUseCase(projectRepository),
           updateProjectStatus: new UpdateProjectStatusUseCase(projectRepository, workspaceBoundary),
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
@@ -217,13 +217,13 @@ export async function createApplication(
           sendChatMessage,
           getSession,
           createAiRun,
-          getAiRun: new GetAiRunUseCase(aiRunRepository),
+          getAiRun: new GetAiRunUseCase(aiRunRepository, projectRepository),
           decideEgress,
-          getProposedChangeSet: new GetProposedChangeSetUseCase(changeSetRepository),
+          getProposedChangeSet: new GetProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository),
           decideProposedChangeSet,
           taskSuggestionsForRun: taskSuggestionRepository,
           listActivity: new ListAiRunActivityUseCase(projectRepository, aiRunRepository),
-          getActivity: new GetAiRunActivityUseCase(aiRunRepository, changeSetRepository, conversationRepository),
+          getActivity: new GetAiRunActivityUseCase(aiRunRepository, changeSetRepository, conversationRepository, projectRepository),
           listFileHistory: new ListProjectFileHistoryUseCase(projectRepository, changeSetRepository),
           listProviderPermissions: new ListProviderPermissionsUseCase(providerPermissionRepository),
           revokeProviderPermission: new RevokeProviderPermissionUseCase(providerPermissionRepository),
@@ -232,8 +232,8 @@ export async function createApplication(
         },
         sandboxCommands: {
           getSession,
-          listCommands: new ListSandboxCommandsUseCase(aiRunRepository, commandRepository),
-           getCommand: new GetSandboxCommandUseCase(aiRunRepository, commandRepository),
+          listCommands: new ListSandboxCommandsUseCase(aiRunRepository, commandRepository, projectRepository),
+           getCommand: new GetSandboxCommandUseCase(aiRunRepository, commandRepository, projectRepository),
            decideCommand: new DecideSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger),
            cancelCommand: new CancelSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger),
           appOrigin: config.appOrigin,
@@ -241,7 +241,7 @@ export async function createApplication(
         },
         aiRunChat: {
           getSession,
-          getAiRun: new GetAiRunUseCase(aiRunRepository),
+          getAiRun: new GetAiRunUseCase(aiRunRepository, projectRepository),
           startAiRun,
           cancelAiRun,
           events: runEvents,

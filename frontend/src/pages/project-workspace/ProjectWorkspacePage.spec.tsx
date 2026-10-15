@@ -81,7 +81,7 @@ describe('ProjectWorkspacePage boundary errors', () => {
     expect(screen.getByRole('heading', { name: 'Website' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Project files' })).toHaveTextContent('README.md');
     expect(getProjectMock).toHaveBeenCalledWith(PROJECT_ID);
-    expect(useProjectFilesMock).toHaveBeenCalledWith(PROJECT_ID);
+    expect(useProjectFilesMock).toHaveBeenCalledWith(PROJECT_ID, true);
   });
 
   it('shows a safe retryable boundary error instead of a false not-found state', async () => {
@@ -96,6 +96,15 @@ describe('ProjectWorkspacePage boundary errors', () => {
     const user = userEvent.setup();
     await user.click(screen.getByTestId('workspace-boundary-retry-button'));
     await waitFor(() => expect(getProjectMock).toHaveBeenCalledWith(PROJECT_ID));
+  });
+
+  it('keeps project-file loading disabled for a rootless planning workspace', async () => {
+    const project: ProjectSnapshot = { id: PROJECT_ID, name: 'Launch plan', slug: 'launch-plan', relativeRoot: null, objective: 'Plan the launch', status: 'active', version: 1, createdAt: '2026-10-05', updatedAt: '2026-10-05' };
+    getProjectMock.mockResolvedValue(project);
+    renderWorkspace({ status: 'idle', project: null, errorCode: null });
+
+    await screen.findByRole('region', { name: 'Project workspace layout' });
+    expect(useProjectFilesMock).toHaveBeenCalledWith(PROJECT_ID, false);
   });
 
   it('reserves not-found copy for PROJECT_NOT_FOUND and retries network failures', async () => {

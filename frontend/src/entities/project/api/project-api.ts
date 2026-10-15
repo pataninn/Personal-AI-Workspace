@@ -9,7 +9,16 @@ export function removeProject(projectId: string, version: number, csrfToken: str
 
 export interface CreateProjectRequest {
   readonly name: string;
+  readonly objective?: string;
+  readonly workspaceMode: 'planning';
+  readonly relativeRoot?: never;
+}
+
+export interface CreateFileBackedProjectRequest {
+  readonly name: string;
+  readonly objective?: string;
   readonly relativeRoot: string;
+  readonly workspaceMode?: 'file_backed';
 }
 
 export async function listProjects(includeArchived = true): Promise<ProjectListResponse> {
@@ -22,7 +31,7 @@ export function getProject(projectId: string): Promise<ProjectSnapshot> {
 }
 
 export function createProject(
-  request: CreateProjectRequest,
+  request: CreateProjectRequest | CreateFileBackedProjectRequest,
   csrfToken: string
 ): Promise<ProjectSnapshot> {
   return postJson<ProjectSnapshot>(PROJECTS_PATH, request, { 'X-CSRF-Token': csrfToken });

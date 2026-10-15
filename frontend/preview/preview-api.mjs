@@ -59,17 +59,28 @@ function findConversation(seed, conversationId, projectId) {
 
 function isOverlappingRoot(seed, root, excludingId) {
   const key = root.toLowerCase();
-  return seed.projects.some((project) => project.status === 'active' && project.id !== excludingId && (
-    project.relativeRoot.toLowerCase() === key ||
-    project.relativeRoot.toLowerCase().startsWith(`${key}/`) ||
-    key.startsWith(`${project.relativeRoot.toLowerCase()}/`)
-  ));
+  return seed.projects.some((project) => {
+    if (project.status !== 'active' || project.id === excludingId || project.relativeRoot === null) return false;
+    const existing = project.relativeRoot.toLowerCase();
+    return key === '.' || existing === '.' || existing === key || existing.startsWith(`${key}/`) || key.startsWith(`${existing}/`);
+  });
 }
 
 function isValidRoot(root) {
+  if (root === '.') return true;
   return root.length > 0 && !root.startsWith('/') && !root.startsWith('\\') &&
     !/^[a-z]:/iu.test(root) && !root.includes(':') &&
     root.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
+}
+
+function serializeProject(project) {
+  const fileAccess = project.relativeRoot !== null;
+  return {
+    ...project,
+    objective: project.objective ?? null,
+    workspaceMode: fileAccess ? 'file_backed' : 'planning',
+    capabilities: { planning: true, fileAccess }
+  };
 }
 
 function previewSession() {
@@ -142,25 +153,39 @@ export function createPreviewApi() {
 async function handleProjects(request, response, seed, idempotency, parts, method) {
   const projectId = parts[3];
   if (!projectId && method === 'GET') {
-    sendData(response, { projects: seed.projects });
+    sendData(response, { projects: seed.projects.map(serializeProject) });
     return;
   }
   if (!projectId && method === 'POST') {
     const body = await readBody(request);
     const name = typeof body?.name === 'string' ? body.name.trim() : '';
-    const relativeRoot = typeof body?.relativeRoot === 'string' ? body.relativeRoot.trim().replaceAll('\\', '/') : '';
-    if (!name || !isValidRoot(relativeRoot)) {
-      sendError(response, 400, 'VALIDATION_ERROR', 'Enter a project name and relative root.');
+    const hasRoot = body?.relativeRoot !== undefined;
+    const requestedMode = body?.workspaceMode;
+    const planning = requestedMode === 'planning' && !hasRoot;
+    const fileBacked = (requestedMode === undefined || requestedMode === 'file_backed') && hasRoot && typeof body.relativeRoot === 'string';
+    const relativeRoot = fileBacked ? body.relativeRoot.trim().replaceAll('\\', '/') : null;
+    const objectiveInput = body?.objective;
+    if (!name || name.length > 120 || !(planning || fileBacked) || (objectiveInput !== undefined && (typeof objectiveInput !== 'string' || objectiveInput.length > 2000))) {
+      sendError(response, 400, 'VALIDATION_ERROR', 'Enter a valid project name, workspace mode, folder, and objective.');
       return;
     }
-    if (isOverlappingRoot(seed, relativeRoot)) {
+    const objective = typeof objectiveInput === 'string' ? objectiveInput.trim() || null : null;
+    if (planning && hasRoot) {
+      sendError(response, 400, 'VALIDATION_ERROR', 'Planning workspaces do not have a folder.');
+      return;
+    }
+    if (fileBacked && !isValidRoot(relativeRoot)) {
+      sendError(response, 400, 'VALIDATION_ERROR', 'Enter a valid relative project root.');
+      return;
+    }
+    if (relativeRoot !== null && isOverlappingRoot(seed, relativeRoot)) {
       sendError(response, 409, 'PROJECT_ROOT_OVERLAP', 'Choose a non-overlapping preview root.');
       return;
     }
     const createdAt = now();
-    const project = { id: randomUUID(), name, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), relativeRoot, status: 'active', version: 1, createdAt, updatedAt: createdAt };
+    const project = { id: randomUUID(), name, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), relativeRoot, objective, status: 'active', version: 1, createdAt, updatedAt: createdAt };
     seed.projects.push(project);
-    sendData(response, project, 201);
+    sendData(response, serializeProject(project), 201);
     return;
   }
   const project = findProject(seed, projectId);
@@ -169,7 +194,7 @@ async function handleProjects(request, response, seed, idempotency, parts, metho
     return;
   }
   if (!parts[4] && method === 'GET') {
-    sendData(response, project);
+    sendData(response, serializeProject(project));
     return;
   }
   if (!parts[4] && method === 'PATCH') {
@@ -182,14 +207,14 @@ async function handleProjects(request, response, seed, idempotency, parts, metho
       sendError(response, 409, 'PROJECT_VERSION_CONFLICT', 'Refresh the mock project and try again.');
       return;
     }
-    if (body.status === 'active' && isOverlappingRoot(seed, project.relativeRoot, project.id)) {
+    if (body.status === 'active' && project.relativeRoot !== null && isOverlappingRoot(seed, project.relativeRoot, project.id)) {
       sendError(response, 409, 'PROJECT_ROOT_OVERLAP', 'Choose a non-overlapping preview root.');
       return;
     }
     project.status = body.status;
     project.version += 1;
     project.updatedAt = now();
-    sendData(response, project);
+    sendData(response, serializeProject(project));
     return;
   }
   if (parts[4] === 'conversations') {

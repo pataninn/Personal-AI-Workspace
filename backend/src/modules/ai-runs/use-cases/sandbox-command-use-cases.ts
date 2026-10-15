@@ -19,9 +19,11 @@ import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-rep
 import type { IAgentRuntime } from '@/modules/ai-runs/repositories/agent-runtime';
 import type { ISandboxCommandRepository } from '@/modules/ai-runs/repositories/sandbox-command-repository';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
+import { requireProjectFileRoot } from '@/modules/projects/domain/project-file-root';
 import { hashText } from '@/modules/ai-runs/use-cases/manifest-builder';
 import { validateIdempotencyKey } from '@/modules/ai-runs/domain/ai-run-validation';
 import { sanitizeCommandResult } from '@/modules/ai-runs/domain/command-result';
+import { assertAiRunProjectHasFileRoot } from '@/modules/ai-runs/use-cases/assert-ai-run-project';
 
 export interface SandboxCommandLogger {
   readonly error: (context: { readonly commandId: string }, message: string) => void;
@@ -104,7 +106,8 @@ export class ProposeSandboxCommandUseCase {
 export class ListSandboxCommandsUseCase {
   public constructor(
     private readonly aiRunRepository: IAiRunRepository,
-    private readonly commandRepository: ISandboxCommandRepository
+    private readonly commandRepository: ISandboxCommandRepository,
+    private readonly projectRepository: IProjectRepository
   ) {}
 
   public async execute(input: { readonly ownerId: string; readonly runId: string }): Promise<readonly SandboxCommand[]> {
@@ -112,6 +115,7 @@ export class ListSandboxCommandsUseCase {
     if (!run) {
       throw new SandboxCommandNotFoundError();
     }
+    await assertAiRunProjectHasFileRoot(this.projectRepository, input.ownerId, run.projectId);
     return this.commandRepository.listForRun(input.ownerId, input.runId, MAX_SANDBOX_COMMANDS_PER_LIST);
   }
 }
@@ -119,7 +123,8 @@ export class ListSandboxCommandsUseCase {
 export class GetSandboxCommandUseCase {
   public constructor(
     private readonly aiRunRepository: IAiRunRepository,
-    private readonly commandRepository: ISandboxCommandRepository
+    private readonly commandRepository: ISandboxCommandRepository,
+    private readonly projectRepository: IProjectRepository
   ) {}
 
   public async execute(input: { readonly ownerId: string; readonly runId: string; readonly commandId: string }): Promise<SandboxCommand> {
@@ -127,6 +132,7 @@ export class GetSandboxCommandUseCase {
     if (!run) {
       throw new SandboxCommandNotFoundError();
     }
+    await assertAiRunProjectHasFileRoot(this.projectRepository, input.ownerId, run.projectId);
     const command = await this.commandRepository.findByIdForOwner(input.ownerId, input.runId, input.commandId);
     if (!command) {
       throw new SandboxCommandNotFoundError();
@@ -356,6 +362,7 @@ async function assertActiveProject(projectRepository: IProjectRepository, ownerI
   if (project.status === 'archived') {
     throw new SandboxCommandProjectArchivedError();
   }
+  requireProjectFileRoot(project);
 }
 
 function validateProposalHash(value: unknown): string {

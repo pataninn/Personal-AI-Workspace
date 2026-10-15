@@ -36,6 +36,7 @@ export function makeProject(id: string, ownerId: string, status: ProjectStatus =
     name: `Project ${id.slice(0, 4)}`,
     slug: `project-${id.slice(0, 4)}`,
     relativeRoot: `root-${id.slice(0, 4)}`,
+    objective: null,
     status,
     version: 1,
     createdAt: NOW,
@@ -69,7 +70,7 @@ export class ConversationProjectFixture implements IProjectRepository {
   }
 
   public async listActiveRoots(ownerId: string): Promise<readonly string[]> {
-    return [...this.records.values()].filter((project) => project.ownerId === ownerId && project.status === 'active').map((project) => project.relativeRoot);
+    return [...this.records.values()].filter((project) => project.ownerId === ownerId && project.status === 'active').flatMap((project) => project.relativeRoot === null ? [] : [project.relativeRoot]);
   }
 
   public async create(input: CreateProjectRecord): Promise<Project> {

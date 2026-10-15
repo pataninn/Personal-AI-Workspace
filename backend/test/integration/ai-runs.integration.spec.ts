@@ -6,7 +6,7 @@ import { InMemoryAiRunRepository } from '@/infrastructure/ai-runs/in-memory-ai-r
 import { FakeAgentRuntime } from '@/infrastructure/sandbox/fake-agent-runtime';
 import { FakeStagingGateway } from '@/infrastructure/staging/fake-staging-gateway';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
-import type { WorkspaceReadResult } from '@/modules/files/domain/workspace-types';
+import type { WorkspaceReadResult, WorkspaceTreeResult } from '@/modules/files/domain/workspace-types';
 import type { IWorkspaceGateway } from '@/modules/files/repositories/workspace-gateway';
 import type { Conversation, Message, MessagePage } from '@/modules/conversations/domain/conversation-types';
 import type { AddMessageRecord, FindConversationInput, IConversationRepository } from '@/modules/conversations/repositories/conversation-repository';
@@ -35,7 +35,8 @@ class ProjectFixture implements IProjectRepository {
     ownerId: OWNER_ID,
     name: 'Project',
     slug: 'project',
-    relativeRoot: '',
+    relativeRoot: 'project',
+    objective: null,
     status: 'active',
     version: 1,
     createdAt: new Date(),
@@ -43,7 +44,7 @@ class ProjectFixture implements IProjectRepository {
   };
   public async listByOwner(): Promise<readonly Project[]> { return [this.project]; }
   public async findByIdForOwner(): Promise<Project | null> { return { ...this.project, status: this.status }; }
-  public async listActiveRoots(): Promise<readonly string[]> { return ['']; }
+  public async listActiveRoots(): Promise<readonly string[]> { return ['project']; }
   public async create(): Promise<Project> { return this.project; }
   public async updateStatus(): Promise<Project | null> { return this.project; }
 }
@@ -70,7 +71,7 @@ class WorkspaceFixture implements IWorkspaceGateway {
   public changed = false;
 
   public async list(): Promise<never> { throw new Error('Not used'); }
-  public async tree(): Promise<never> { throw new Error('Not used'); }
+  public async tree(): Promise<WorkspaceTreeResult> { return { directory: '', depth: 6, entries: [], truncated: false }; }
   public async searchText(): Promise<never> { throw new Error('Not used'); }
   public async readText(_scope: unknown, input: { readonly path: string }): Promise<WorkspaceReadResult> {
     const content = this.changed ? 'changed content\n' : 'safe content\n';
@@ -96,7 +97,7 @@ function buildApp(): { readonly app: express.Express; readonly staging: FakeStag
   const contexts = { get: jest.fn(async () => chatContext), update: jest.fn(async (_owner: string, _project: string, changes: Partial<ProjectChatContext>) => { chatContext = { ...chatContext, ...changes }; return chatContext; }) };
   const facts: IProjectFactRepository = { findActiveByIds: jest.fn().mockResolvedValue([]), listActiveByProject: jest.fn(), findActiveById: jest.fn(), create: jest.fn(), update: jest.fn(), verify: jest.fn(), softDelete: jest.fn() };
   const createRun = new CreateAiRunUseCase(projects, conversations, workspace, repository, 'nvidia-hosted-nim', 'test-model', facts);
-  const decide = new DecideEgressUseCase(repository, conversations, workspace, staging, runtime, '/workspace', facts);
+  const decide = new DecideEgressUseCase(repository, projects, conversations, workspace, staging, runtime, '/workspace', facts);
   const start = new StartAiRunUseCase(repository, conversations, runtime, runEvents, undefined, projects);
   const app = createApp({
     logger: createLogger('silent'),
@@ -107,14 +108,14 @@ function buildApp(): { readonly app: express.Express; readonly staging: FakeStag
       sendChatMessage: new SendChatMessageUseCase(contexts, facts, createRun, decide, start),
       getSession,
       createAiRun: new CreateAiRunUseCase(projects, conversations, workspace, repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b'),
-      getAiRun: new GetAiRunUseCase(repository),
-      decideEgress: new DecideEgressUseCase(repository, conversations, workspace, staging, runtime, '/workspace'),
+      getAiRun: new GetAiRunUseCase(repository, projects),
+      decideEgress: new DecideEgressUseCase(repository, projects, conversations, workspace, staging, runtime, '/workspace'),
       appOrigin: APP_ORIGIN,
       clearSessionCookie: () => undefined
     },
     aiRunChat: {
       getSession,
-      getAiRun: new GetAiRunUseCase(repository),
+      getAiRun: new GetAiRunUseCase(repository, projects),
       startAiRun: new StartAiRunUseCase(repository, conversations, runtime, runEvents, undefined, projects),
       cancelAiRun: new CancelAiRunUseCase(repository, runtime, runEvents, projects),
       events: runEvents,
@@ -132,7 +133,7 @@ describe('AI runs API (integration)', () => {
     const contextPath = `/api/v1/projects/${PROJECT_ID}/chat-context`;
     await request(context.app).get(contextPath).set(headers).expect(200).expect(({ body }) => expect(body.data.includeProjectConversations).toBe(true));
     await request(context.app).patch(contextPath).set(headers).send({ relativePaths: ['README.md'] }).expect(200);
-    await request(context.app).get(contextPath).set(headers).expect(200).expect(({ body }) => expect(body.data).toEqual({ relativePaths: ['README.md'], factIds: [], includeProjectConversations: true }));
+    await request(context.app).get(contextPath).set(headers).expect(200).expect(({ body }) => expect(body.data).toMatchObject({ relativePaths: ['README.md'], factIds: [], includeProjectConversations: true, availablePaths: ['README.md'], excludedPaths: [], fileSelectionLimited: false }));
     const sent = await request(context.app).post(`/api/v1/projects/${PROJECT_ID}/chat-runs`).set(headers).set('Idempotency-Key', 'direct-chat-test')
       .send({ conversationId: CONVERSATION_ID, request: 'Continue the earlier chat' }).expect(202);
     expect(sent.body.data.run.decision).toBe('approved');

@@ -16,6 +16,16 @@ export function ProjectWorkspaceLayout({ project, filePanel }: ProjectWorkspaceL
   const { conversationId } = useParams();
   const [panel, setPanel] = useState<'chat' | 'tasks' | 'files'>('chat');
   useEffect(() => { setPanel('chat'); }, [project.id]);
+  if (project.relativeRoot === null) {
+    return <div className="planning-workspace" data-testid="planning-workspace">
+      <section aria-labelledby="planning-workspace-title">
+        <h2 id="planning-workspace-title">Planning workspace</h2>
+        {project.objective ? <p>{project.objective}</p> : null}
+        <p>Files and assistant runs are unavailable until a project folder is attached.</p>
+      </section>
+      <section className="workspace-tasks"><ProjectTasksManager projectId={project.id} projectName={project.name} archived={project.status === 'archived'} conversationId={null} compact /></section>
+    </div>;
+  }
   return <>
     <div className="workspace-panel-picker">
       <Label htmlFor="workspace-panel">Show</Label>

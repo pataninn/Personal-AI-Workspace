@@ -4,9 +4,9 @@ import { TypeOrmProjectFileAccess } from '@/infrastructure/database/repositories
 
 const INPUT = { ownerId: 'owner', projectId: 'project', writable: true };
 
-function fixture(options: { missing?: boolean; archived?: boolean; busy?: boolean; activeChangeSet?: boolean; runningCommand?: boolean } = {}) {
+function fixture(options: { missing?: boolean; rootless?: boolean; archived?: boolean; busy?: boolean; activeChangeSet?: boolean; runningCommand?: boolean } = {}) {
   const query = jest.fn().mockImplementation(async (sql: string) => {
-    if (sql.startsWith('SELECT id, relative_root')) return options.missing ? [] : [{ id: 'project', relative_root: 'folder', status: options.archived ? 'archived' : 'active' }];
+    if (sql.startsWith('SELECT id, relative_root')) return options.missing ? [] : [{ id: 'project', relative_root: options.rootless ? null : 'folder', status: options.archived ? 'archived' : 'active' }];
     if (sql.includes('FROM ai_runs')) return options.busy ? [{ id: 'run' }] : [];
     if (sql.includes('ai_run_change_sets')) return options.activeChangeSet ? [{ id: 'change', status: 'applying' }] : [];
     if (sql.includes('sandbox_commands')) return options.runningCommand ? [{ id: 'command', status: 'running' }] : [];
@@ -33,6 +33,14 @@ describe('manual file ownership/run guard review', () => {
     const { access } = fixture(options);
     const action = jest.fn();
     await expect(access.execute(INPUT, action)).rejects.toMatchObject({ code });
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it('rejects a planning project before running a file action', async () => {
+    const { access, query } = fixture({ rootless: true });
+    const action = jest.fn();
+    await expect(access.execute(INPUT, action)).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED', statusCode: 409 });
+    expect(query).toHaveBeenCalledTimes(1);
     expect(action).not.toHaveBeenCalled();
   });
 

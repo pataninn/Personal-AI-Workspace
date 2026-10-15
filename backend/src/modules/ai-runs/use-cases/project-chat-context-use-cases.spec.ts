@@ -15,7 +15,7 @@ function fixture(): {
   const facts: jest.Mocked<IProjectFactRepository> = { findActiveByIds: jest.fn().mockResolvedValue([]), listActiveByProject: jest.fn(),
     findActiveById: jest.fn(), create: jest.fn(), update: jest.fn(), verify: jest.fn(), softDelete: jest.fn() };
   const contexts = { get: jest.fn().mockResolvedValue({ relativePaths: ['README.md'], factIds: [], includeProjectConversations: true }), update: jest.fn().mockResolvedValue({ relativePaths: ['app.ts'], factIds: [], includeProjectConversations: true }) };
-  const workspace: jest.Mocked<IWorkspaceGateway> = { readText: jest.fn(), list: jest.fn(), tree: jest.fn(), searchText: jest.fn() };
+  const workspace: jest.Mocked<IWorkspaceGateway> = { readText: jest.fn(), list: jest.fn(), tree: jest.fn().mockResolvedValue({ directory: '', depth: 6, entries: [], truncated: false }), searchText: jest.fn() };
   return { useCases: new ProjectChatContextUseCases(projects, contexts, facts, workspace), projects, contexts, facts, workspace };
 }
 
@@ -39,16 +39,27 @@ describe('ProjectChatContextUseCases', () => {
     expect(facts.findActiveByIds).toHaveBeenCalledWith('owner', 'project', [factId]);
     expect(contexts.update).not.toHaveBeenCalled();
   });
-  it('checks selected files through the workspace boundary and patches only changed fields', async () => {
+  it('checks selected files through the workspace boundary and saves the derived exclusions', async () => {
     const { useCases, workspace, contexts } = fixture();
     await useCases.update('owner', 'project', { relativePaths: ['app.ts'] });
     expect(workspace.readText).toHaveBeenCalledWith({ projectId: 'project', relativeRoot: 'project' }, { path: 'app.ts' });
-    expect(contexts.update).toHaveBeenCalledWith('owner', 'project', { relativePaths: ['app.ts'] });
+    expect(contexts.update).toHaveBeenCalledWith('owner', 'project', { relativePaths: ['app.ts'], excludedPaths: [] });
   });
   it('does not persist files which fail boundary validation', async () => {
     const { useCases, workspace, contexts } = fixture();
     workspace.readText.mockRejectedValue(new Error('Protected path'));
     await expect(useCases.update('owner', 'project', { relativePaths: ['.env'] })).rejects.toThrow('Protected path');
+    expect(contexts.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects project context reads and updates when a planning project has no file root', async () => {
+    const { useCases, projects, workspace, contexts } = fixture();
+    projects.findByIdForOwner.mockResolvedValue({ status: 'active', relativeRoot: null } as Awaited<ReturnType<IProjectRepository['findByIdForOwner']>>);
+    await expect(useCases.get('owner', 'project')).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED' });
+    await expect(useCases.update('owner', 'project', { relativePaths: ['README.md'] })).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED' });
+    expect(workspace.list).not.toHaveBeenCalled();
+    expect(workspace.readText).not.toHaveBeenCalled();
+    expect(contexts.get).not.toHaveBeenCalled();
     expect(contexts.update).not.toHaveBeenCalled();
   });
 });
