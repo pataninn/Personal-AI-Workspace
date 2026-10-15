@@ -31,9 +31,57 @@
     },
     {
       "name": "Workspace redesign"
+    },
+    {
+      "name": "Action history"
     }
   ],
   "paths": {
+    "/api/v1/actions/{actionId}": {
+      "get": {
+        "tags": ["Action history"],
+        "summary": "Read safe owner-scoped metadata for one action receipt",
+        "operationId": "getActionReceipt",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "actionId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } }
+        ],
+        "responses": {
+          "200": { "description": "Minimal receipt metadata for client reload verification; reversible fields are excluded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionReceiptMetadataEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "description": "The action receipt is missing or is not owned by the caller.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/actions/{actionId}/undo": {
+      "post": {
+        "tags": ["Action history"],
+        "summary": "Undo one owner-owned saved action when its recorded state is unchanged",
+        "operationId": "undoAction",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "actionId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[A-Za-z0-9._:-]+$" } }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionUndoRequest" } } }
+        },
+        "responses": {
+          "200": { "description": "The original action, committed compensation receipt, and latest owner-scoped target.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionUndoSuccessEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "The action receipt is missing or is not owned by the caller.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "The receipt is stale, unavailable, already undone, or the key was reused.", "content": { "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/ActionUndoConflictEnvelope" }, { "$ref": "#/components/schemas/ErrorEnvelope" }] } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
     "/api/v1/tasks": {
       "get": {
         "tags": ["Global tasks"],
@@ -8729,6 +8777,126 @@
         "properties": {
           "data": { "$ref": "#/components/schemas/ProjectPlanningActionResult" },
           "error": { "type": "object", "nullable": true, "description": "Null on success." }
+        },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "ActionUndoRequest": {
+        "type": "object",
+        "properties": {
+          "completedTaskCreateActionIds": { "type": "array", "maxItems": 100, "items": { "$ref": "#/components/schemas/Uuid" }, "description": "Already-compensated child task.create receipts, newest first, for an unchanged planning workspace create." }
+        },
+        "additionalProperties": false
+      },
+      "ActionReceiptMetadata": {
+        "type": "object",
+        "description": "Owner-scoped receipt identity and undo state for client reload verification. Excludes reversible before/after values and request fingerprints.",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "actionKind": { "type": "string" },
+          "targetKind": { "type": "string", "enum": ["task", "workspace"] },
+          "targetId": { "$ref": "#/components/schemas/Uuid" },
+          "postVersion": { "type": "integer", "minimum": 1, "nullable": true },
+          "undoStatus": { "type": "string", "enum": ["available", "not_reversible", "undone"] },
+          "undoActionId": { "allOf": [{ "$ref": "#/components/schemas/Uuid" }], "nullable": true }
+        },
+        "required": ["id", "actionKind", "targetKind", "targetId", "postVersion", "undoStatus", "undoActionId"],
+        "additionalProperties": false
+      },
+      "ActionReceiptMetadataEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": { "$ref": "#/components/schemas/ActionReceiptMetadata" },
+          "error": { "type": "object", "nullable": true, "description": "Null on success." }
+        },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "ActionUndoRecordSummary": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "actionKind": { "type": "string" },
+          "targetKind": { "type": "string", "enum": ["task", "workspace"] },
+          "targetId": { "$ref": "#/components/schemas/Uuid" },
+          "preVersion": { "type": "integer", "minimum": 1, "nullable": true },
+          "postVersion": { "type": "integer", "minimum": 1, "nullable": true },
+          "outcome": { "type": "object", "additionalProperties": true },
+          "undoStatus": { "type": "string", "enum": ["available", "not_reversible", "undone"] },
+          "undoActionId": { "allOf": [{ "$ref": "#/components/schemas/Uuid" }], "nullable": true },
+          "createdAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "actionKind", "targetKind", "targetId", "preVersion", "postVersion", "outcome", "undoStatus", "undoActionId", "createdAt"],
+        "additionalProperties": false
+      },
+      "ActionUndoTarget": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": { "kind": { "type": "string", "enum": ["task"] }, "item": { "$ref": "#/components/schemas/GlobalTaskQueryItem" } },
+            "required": ["kind", "item"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": { "type": "string", "enum": ["workspace"] },
+              "workspace": {
+                "type": "object",
+                "properties": {
+                  "id": { "$ref": "#/components/schemas/Uuid" },
+                  "name": { "type": "string" },
+                  "slug": { "type": "string" },
+                  "relativeRoot": { "type": "string", "nullable": true },
+                  "objective": { "type": "string", "nullable": true },
+                  "status": { "type": "string", "enum": ["active", "archived"] },
+                  "version": { "type": "integer", "minimum": 1 },
+                  "createdAt": { "type": "string", "format": "date-time" },
+                  "updatedAt": { "type": "string", "format": "date-time" }
+                },
+                "required": ["id", "name", "slug", "relativeRoot", "objective", "status", "version", "createdAt", "updatedAt"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["kind", "workspace"],
+            "additionalProperties": false
+          }
+        ],
+        "nullable": true
+      },
+      "ActionUndoSuccessEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "originalAction": { "$ref": "#/components/schemas/ActionUndoRecordSummary" },
+              "undoReceipt": { "$ref": "#/components/schemas/ActionUndoRecordSummary" },
+              "target": { "$ref": "#/components/schemas/ActionUndoTarget" },
+              "replayed": { "type": "boolean" }
+            },
+            "required": ["originalAction", "undoReceipt", "target", "replayed"],
+            "additionalProperties": false
+          },
+          "error": { "type": "object", "nullable": true }
+        },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "ActionUndoConflictEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "originalAction": { "$ref": "#/components/schemas/ActionUndoRecordSummary" },
+              "target": { "$ref": "#/components/schemas/ActionUndoTarget" },
+              "reason": { "type": "string", "enum": ["changed", "not_reversible", "already_undone", "unsupported_action", "target_missing", "archived_workspace", "workspace_not_empty", "folder_attached", "missing_reversal_data"] }
+            },
+            "required": ["originalAction", "target", "reason"],
+            "additionalProperties": false
+          },
+          "error": { "$ref": "#/components/schemas/ApiError" }
         },
         "required": ["data", "error"],
         "additionalProperties": false

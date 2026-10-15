@@ -41,6 +41,7 @@ export type ActionLedgerReversibleFieldName =
   | 'importance'
   | 'deadline'
   | 'archivedAt'
+  | 'completedAt'
   | 'subtasks'
   | 'name'
   | 'objective';
@@ -91,7 +92,7 @@ export interface PersistedActionLedgerRecord {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REVERSIBLE_FIELD_NAMES: ReadonlySet<string> = new Set([
-  'title', 'details', 'status', 'position', 'projectId', 'importance', 'deadline', 'archivedAt', 'subtasks', 'name', 'objective'
+  'title', 'details', 'status', 'position', 'projectId', 'importance', 'deadline', 'archivedAt', 'completedAt', 'subtasks', 'name', 'objective'
 ]);
 const MAX_REVERSIBLE_FIELDS_JSON_BYTES = 81920;
 const MAX_OUTCOME_JSON_BYTES = 4096;
@@ -154,6 +155,12 @@ export function assertActionLedgerMutationResult(
 export function assertActionLedgerOperationIdentity(ownerId: string, operationKey: string): void {
   assertUuid(ownerId, 'ownerId');
   assertBoundedText(operationKey, 200, 'operationKey');
+}
+
+/** Validates owner-scoped lookup identity without accepting an arbitrary SQL identifier. */
+export function assertActionLedgerRecordIdentity(ownerId: string, actionId: string): void {
+  assertUuid(ownerId, 'ownerId');
+  assertUuid(actionId, 'actionId');
 }
 
 function assertUuid(value: string, field: string): void {

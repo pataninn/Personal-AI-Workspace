@@ -14,6 +14,7 @@ import { SystemClock } from '@/infrastructure/auth/system-clock';
 import { TypeOrmSessionRepository, TypeOrmUserRepository } from '@/infrastructure/database/repositories/typeorm-auth-repositories';
 import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories/typeorm-project-repository';
 import { TypeOrmActionLedgerRepository } from '@/infrastructure/database/repositories/typeorm-action-ledger-repository';
+import { ActionUndoUseCases } from '@/modules/home-assistant/use-cases/action-undo-use-cases';
 import { TypeOrmConversationRepository } from '@/infrastructure/database/repositories/typeorm-conversation-repository';
 import { WorkspaceBoundaryAdapter } from '@/infrastructure/workspace/workspace-boundary';
 import { WorkspaceGatewayAdapter } from '@/infrastructure/workspace/workspace-gateway';
@@ -280,6 +281,12 @@ export async function createApplication(
           listTasks: new ListGlobalTasksUseCase(projectTaskRepository),
           getTask: new GetGlobalTaskUseCase(projectTaskRepository),
           mutations: taskMutationUseCases,
+          appOrigin: config.appOrigin,
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
+        actionUndo: {
+          getSession,
+          undoAction: new ActionUndoUseCases(actionLedgerRepository, projectTaskRepository, projectRepository),
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         }

@@ -1,4 +1,5 @@
 import type { Project } from '@/modules/projects/domain/project-types';
+import type { ActionLedgerRecord, ActionLedgerMutationResult } from '@/modules/action-ledger/domain/action-ledger-types';
 
 export interface ProjectMetadataSearchResult {
   readonly projects: readonly Project[];
@@ -37,4 +38,16 @@ export interface IProjectWorkspaceRepository<TTransaction> {
   createPlanning(transaction: TTransaction, input: CreatePlanningProjectRecord): Promise<Project>;
   updateObjective(transaction: TTransaction, input: UpdateProjectObjectiveRecord): Promise<Project | null>;
   attachInitialRoot(transaction: TTransaction, input: AttachProjectRootRecord): Promise<Project | null>;
+}
+
+/** Undo-only workspace participant. It never creates or removes filesystem content. */
+export interface IWorkspaceUndoParticipant<TTransaction> {
+  undoWorkspaceInTransaction(
+    transaction: TTransaction,
+    input: {
+      readonly ownerId: string;
+      readonly original: ActionLedgerRecord;
+      readonly completedTaskCreateActionIds: readonly string[];
+    }
+  ): Promise<ActionLedgerMutationResult>;
 }

@@ -30,6 +30,8 @@ interface FakeLedgerState {
   releaseCount: number;
   lockWaitCount: number;
   waitForLockWaiter(): Promise<void>;
+  rowLockWaitCount: number;
+  waitForRowLockWaiter(): Promise<void>;
 }
 
 interface FakeTransaction {
@@ -43,6 +45,8 @@ interface FakeTransaction {
 function createFakeDatabase(): { readonly dataSource: DataSource; readonly runner: QueryRunner; readonly state: FakeLedgerState } {
   let notifyLockWaiter: () => void = () => undefined;
   const lockWaitPromise = new Promise<void>((resolve) => { notifyLockWaiter = resolve; });
+  let notifyRowLockWaiter: () => void = () => undefined;
+  const rowLockWaitPromise = new Promise<void>((resolve) => { notifyRowLockWaiter = resolve; });
   const state: FakeLedgerState = {
     committedTargets: [],
     committedRecords: [],
@@ -53,7 +57,9 @@ function createFakeDatabase(): { readonly dataSource: DataSource; readonly runne
     rollbackCount: 0,
     releaseCount: 0,
     lockWaitCount: 0,
-    waitForLockWaiter: () => lockWaitPromise
+    waitForLockWaiter: () => lockWaitPromise,
+    rowLockWaitCount: 0,
+    waitForRowLockWaiter: () => rowLockWaitPromise
   };
   const locks = new Map<string, { readonly transaction: FakeTransaction; readonly waiters: Array<{ readonly transaction: FakeTransaction; readonly resolve: () => void }> }>();
   let nextId = 0;
@@ -108,6 +114,18 @@ function createFakeDatabase(): { readonly dataSource: DataSource; readonly runne
         return rows as unknown as readonly Record<string, unknown>[];
       }
       if (sql.includes('SELECT') && sql.includes('FROM "action_ledger_records"') && sql.includes('"undo_status" = \'available\'')) {
+        if (sql.includes('FOR UPDATE')) {
+          const key = `receipt:${String(parameters[0])}:${String(parameters[1])}`;
+          const held = locks.get(key);
+          if (!held) {
+            transaction.lockKeys.add(key);
+            locks.set(key, { transaction, waiters: [] });
+          } else if (held.transaction !== transaction) {
+            state.rowLockWaitCount += 1;
+            notifyRowLockWaiter();
+            await new Promise<void>((resolve) => held.waiters.push({ transaction, resolve }));
+          }
+        }
         const rows = [...state.committedRecords, ...transaction.pendingRecords].filter((row) =>
           row.owner_id === parameters[0] && row.id === parameters[1] && row.target_kind === parameters[2] && row.target_id === parameters[3] && row.undo_status === 'available'
         );
@@ -231,6 +249,16 @@ function mutationResult(): ActionLedgerMutationResult {
 }
 
 describe('TypeOrmActionLedgerRepository', () => {
+  it('looks up an action receipt by owner and action ID together', async () => {
+    const query = jest.fn().mockResolvedValue([]);
+    const repository = new TypeOrmActionLedgerRepository({ query } as unknown as DataSource);
+
+    await expect(repository.findActionByIdForOwner(OWNER_ID, ORIGINAL_ACTION_ID)).resolves.toBeNull();
+
+    expect(query.mock.calls[0]?.[0]).toContain('WHERE "owner_id" = $1 AND "id" = $2');
+    expect(query.mock.calls[0]?.[1]).toEqual([OWNER_ID, ORIGINAL_ACTION_ID]);
+  });
+
   it('commits the target mutation and receipt on the same transaction', async () => {
     const { dataSource, runner, state } = createFakeDatabase();
     const repository = new TypeOrmActionLedgerRepository(dataSource);
@@ -358,6 +386,51 @@ describe('TypeOrmActionLedgerRepository', () => {
     expect(secondMutation).not.toHaveBeenCalled();
     expect(state.committedRecords).toHaveLength(1);
     expect(state.committedTargets).toEqual([TARGET_ID]);
+  });
+
+  it('serializes different-key undo attempts on the original receipt row before invoking the second mutation', async () => {
+    const { dataSource, state } = createFakeDatabase();
+    const repository = new TypeOrmActionLedgerRepository(dataSource);
+    const original = await repository.executeAtomically(input, async () => mutationResult());
+    const undoInput = (operationKey: string): ActionLedgerExecutionInput => ({
+      ...input,
+      operationKey,
+      requestFingerprint: `fingerprint-${operationKey}`,
+      actionKind: 'undo',
+      expectedVersion: 2,
+      undoOfActionId: original.record.id
+    });
+    let signalFirstMutation: () => void = () => undefined;
+    let releaseFirstMutation: () => void = () => undefined;
+    const firstMutationStarted = new Promise<void>((resolve) => { signalFirstMutation = resolve; });
+    const firstMutationGate = new Promise<void>((resolve) => { releaseFirstMutation = resolve; });
+    const firstMutation = jest.fn(async (transaction: QueryRunner) => {
+      await transaction.query('INSERT INTO "target_mutations" ("target_id") VALUES ($1)', [TARGET_ID]);
+      signalFirstMutation();
+      await firstMutationGate;
+      return { ...mutationResult(), preVersion: 2, postVersion: 3, outcome: { targetId: TARGET_ID, targetVersion: 3 }, undoStatus: 'not_reversible' as const };
+    });
+    const secondMutation = jest.fn(async () => ({
+      ...mutationResult(), preVersion: 2, postVersion: 3, outcome: { targetId: TARGET_ID, targetVersion: 3 }, undoStatus: 'not_reversible' as const
+    }));
+
+    const first = repository.executeAtomically(undoInput('undo-key-a'), firstMutation);
+    await firstMutationStarted;
+    const second = repository.executeAtomically(undoInput('undo-key-b'), secondMutation);
+    await state.waitForRowLockWaiter();
+
+    expect(state.rowLockWaitCount).toBe(1);
+    expect(secondMutation).not.toHaveBeenCalled();
+    releaseFirstMutation();
+    const firstResult = await first;
+    await expect(second).rejects.toBeInstanceOf(ActionLedgerUndoNotAvailableError);
+
+    expect(firstResult.record.undoOfActionId).toBe(original.record.id);
+    expect(firstMutation).toHaveBeenCalledTimes(1);
+    expect(secondMutation).not.toHaveBeenCalled();
+    expect(state.committedTargets).toEqual([TARGET_ID]);
+    expect(state.committedRecords).toHaveLength(2);
+    expect(state.committedRecords[0]?.undo_status).toBe('undone');
   });
 
   it('conflicts on a reused key with a different fingerprint before mutation', async () => {

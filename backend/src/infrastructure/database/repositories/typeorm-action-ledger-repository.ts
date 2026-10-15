@@ -8,12 +8,14 @@ import {
   assertActionLedgerExecutionInput,
   assertActionLedgerMutationResult,
   assertActionLedgerOperationIdentity,
+  assertActionLedgerRecordIdentity,
   type ActionLedgerExecutionInput,
   type ActionLedgerMutationResult,
   type ActionLedgerRecord,
   type PersistedActionLedgerRecord
 } from '@/modules/action-ledger/domain/action-ledger-types';
 import type { IActionLedgerRepository } from '@/modules/action-ledger/repositories/action-ledger-repository';
+import type { IActionLedgerUndoRepository } from '@/modules/action-ledger/repositories/action-ledger-undo-repository';
 import { toActionLedgerRecord, type ActionLedgerRow } from '@/infrastructure/database/repositories/action-ledger-persistence-mappers';
 
 const ACTION_LEDGER_COLUMNS = `"id", "owner_id", "operation_key", "request_fingerprint", "actor_kind", "turn_id",
@@ -21,7 +23,7 @@ const ACTION_LEDGER_COLUMNS = `"id", "owner_id", "operation_key", "request_finge
   "reversible_fields", "outcome", "undo_status", "undo_of_action_id", "undo_action_id", "created_at"`;
 
 /** Persists action receipts and runs the target participant on the receipt's transaction. */
-export class TypeOrmActionLedgerRepository implements IActionLedgerRepository<QueryRunner> {
+export class TypeOrmActionLedgerRepository implements IActionLedgerRepository<QueryRunner>, IActionLedgerUndoRepository<QueryRunner> {
   public constructor(private readonly dataSource: DataSource) {}
 
   /** Replays or applies one owner-scoped operation with mutation and receipt in one transaction. */
@@ -100,6 +102,17 @@ export class TypeOrmActionLedgerRepository implements IActionLedgerRepository<Qu
       `SELECT ${ACTION_LEDGER_COLUMNS} FROM "action_ledger_records"
        WHERE "owner_id" = $1 AND "operation_key" = $2 LIMIT 1`,
       [ownerId, operationKey]
+    );
+    return rows[0] ? toActionLedgerRecord(rows[0]) : null;
+  }
+
+  /** Finds an original action only within its authenticated owner's receipt history. */
+  public async findActionByIdForOwner(ownerId: string, actionId: string): Promise<ActionLedgerRecord | null> {
+    assertActionLedgerRecordIdentity(ownerId, actionId);
+    const rows: readonly ActionLedgerRow[] = await this.dataSource.query(
+      `SELECT ${ACTION_LEDGER_COLUMNS} FROM "action_ledger_records"
+       WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1`,
+      [ownerId, actionId]
     );
     return rows[0] ? toActionLedgerRecord(rows[0]) : null;
   }

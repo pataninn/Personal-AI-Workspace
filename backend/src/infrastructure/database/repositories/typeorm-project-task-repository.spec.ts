@@ -1,6 +1,8 @@
 import type { DataSource, QueryRunner } from 'typeorm';
 
 import { TypeOrmProjectTaskRepository } from '@/infrastructure/database/repositories/typeorm-project-task-repository';
+import { ActionLedgerTargetStateConflictError } from '@/modules/action-ledger/domain/action-ledger-errors';
+import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
 import { ProjectTaskVersionConflictError } from '@/modules/tasks/domain/project-task-errors';
 import type { ProjectTaskStatus, ProjectTaskSubtask } from '@/modules/tasks/domain/project-task';
 
@@ -36,7 +38,9 @@ function row(status: ProjectTaskStatus, subtasks: readonly ProjectTaskSubtask[],
   return { id: TASK, owner_id: OWNER, project_id: PROJECT, title: 'Parent', details: null,
     importance: 'medium', deadline: null, subtasks, status, version, position: 0, source_kind: 'user', source_suggestion_id: null,
     source_run_id: null, source_conversation_id: null, source_accepted_at: null,
-    created_at: '2026-10-05T00:00:00Z', updated_at: '2026-10-05T00:00:00Z', completed_at: status === 'done' ? '2026-10-05T00:00:00Z' : null, archived_at: null };
+    created_at: '2026-10-05T00:00:00Z', updated_at: '2026-10-05T00:00:00Z', completed_at: status === 'done' ? '2026-10-05T00:00:00Z' : null,
+    completed_at_exact: status === 'done' ? '2026-10-05T00:00:00.000000Z' : null,
+    archived_at: null, archived_at_exact: null };
 }
 
 const INPUT = { ownerId: OWNER, projectId: PROJECT, taskId: TASK, expectedVersion: 1 };
@@ -251,5 +255,240 @@ describe('task checklist persistence boundary', () => {
     expect(query.mock.calls.some(([sql]: [string]) => sql.startsWith('UPDATE "project_tasks"'))).toBe(false);
     expect(runner.rollbackTransaction).toHaveBeenCalledTimes(1);
     expect(runner.commitTransaction).not.toHaveBeenCalled();
+  });
+});
+
+describe('task action undo participants', () => {
+  it('records the created task position in immutable creation event details', async () => {
+    const created = row('todo', [], 1);
+    let creationEventValues: readonly unknown[] | undefined;
+    const query = jest.fn().mockImplementation(async (sql: string, values: readonly unknown[] = []) => {
+      if (sql.includes('FROM "projects"')) return [{ status: 'active' }];
+      if (sql.startsWith('INSERT INTO "project_task_order_states"')) return [];
+      if (sql.includes('FROM "project_task_order_states"')) return [{ version: 1 }];
+      if (sql.includes('count(*) AS "count"')) return [{ count: 0 }];
+      if (sql.startsWith('INSERT INTO "project_tasks"')) return [{ id: TASK }];
+      if (sql.includes('FROM "project_tasks" t')) return [created];
+      if (sql.startsWith('INSERT INTO "project_task_events"')) {
+        creationEventValues = values;
+        return [];
+      }
+      if (sql.startsWith('UPDATE "project_task_order_states"')) return [{ version: 2 }];
+      return [];
+    });
+    const { repository } = fixture('todo', []);
+
+    await repository.createInTransaction({ query } as unknown as QueryRunner, {
+      ownerId: OWNER, taskId: TASK, projectId: PROJECT, title: 'Child', details: null, importance: 'medium', deadline: null,
+      subtasks: [], actorKind: 'manual'
+    });
+
+    expect(creationEventValues?.[5]).toBe('task.created');
+    expect(JSON.parse(String(creationEventValues?.[6]))).toMatchObject({ sourceKind: 'user', position: 0 });
+  });
+
+  it('captures exact PostgreSQL completion microseconds in a done-to-todo receipt', async () => {
+    const before = { ...row('done', [], 1), completed_at: '2026-10-15T12:00:00.123Z', completed_at_exact: '2026-10-15T12:00:00.123456Z' };
+    const after = { ...row('todo', [], 2), completed_at: null, completed_at_exact: null };
+    let taskRead = 0;
+    const query = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM "project_tasks" t')) {
+        taskRead += 1;
+        return [taskRead <= 2 ? before : after];
+      }
+      if (sql.includes('FROM "projects"')) return [{ status: 'active' }];
+      if (sql.startsWith('UPDATE "project_tasks"')) return [{ id: TASK }];
+      if (sql.includes('FROM "project_task_order_states"')) return [{ version: 8 }];
+      return [];
+    });
+    const { repository } = fixture('todo', []);
+    const runner = { query } as unknown as QueryRunner;
+
+    const receipt = await repository.updateInTransaction(runner, {
+      ownerId: OWNER,
+      taskId: TASK,
+      expectedVersion: 1,
+      status: 'todo',
+      actorKind: 'manual'
+    });
+
+    expect(receipt.reversibleFields).toMatchObject({
+      status: { before: 'done', after: 'todo' },
+      completedAt: { before: '2026-10-15T12:00:00.123456Z', after: null }
+    });
+  });
+
+  it('restores the exact completion timestamp on undo and rejects legacy done before-images without it', async () => {
+    const original: ActionLedgerRecord = {
+      id: '88888888-8888-4888-8888-888888888888', ownerId: OWNER, operationKey: 'task-update', requestFingerprint: 'fp',
+      actorKind: 'manual', turnId: null, targetKind: 'task', targetId: TASK, actionKind: 'task.update', expectedVersion: 1,
+      preVersion: 1, postVersion: 2,
+      reversibleFields: {
+        status: { before: 'done', after: 'todo' },
+        completedAt: { before: '2026-10-15T12:00:00.123456Z', after: null }
+      },
+      outcome: { targetId: TASK, targetVersion: 2, sourceOrderVersion: 8 }, undoStatus: 'available', undoOfActionId: null,
+      undoActionId: null, createdAt: '2026-10-15T12:00:01.000Z'
+    };
+    const current = { ...row('todo', [], 2), completed_at: null, completed_at_exact: null };
+    const query = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM "project_tasks" t')) return [current];
+      if (sql.includes('FROM "projects"')) return [{ status: 'active' }];
+      if (sql.startsWith('INSERT INTO "project_task_order_states"')) return [];
+      if (sql.includes('FROM "project_task_order_states"')) return [{ version: 11 }];
+      if (sql.startsWith('UPDATE "project_tasks"')) return [{ version: 3 }];
+      return [];
+    });
+    const { repository } = fixture('todo', []);
+    const runner = { query } as unknown as QueryRunner;
+
+    await repository.undoTaskInTransaction(runner, { ownerId: OWNER, original });
+
+    const restore = query.mock.calls.find(([sql]: [string]) => sql.startsWith('UPDATE "project_tasks"'));
+    expect(restore?.[0]).toContain('"completed_at" = $2::timestamptz');
+    expect(restore?.[1]).toEqual(['done', '2026-10-15T12:00:00.123456Z', OWNER, TASK, 2]);
+
+    const legacy = { ...original, reversibleFields: { status: { before: 'done', after: 'todo' } } } as ActionLedgerRecord;
+    const legacyQuery = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM "project_tasks" t')) return [current];
+      if (sql.includes('FROM "projects"')) return [{ status: 'active' }];
+      if (sql.startsWith('INSERT INTO "project_task_order_states"')) return [];
+      if (sql.includes('FROM "project_task_order_states"')) return [{ version: 11 }];
+      return [];
+    });
+    const legacyRepository = fixture('todo', []).repository;
+    await expect(legacyRepository.undoTaskInTransaction({ query: legacyQuery } as unknown as QueryRunner, { ownerId: OWNER, original: legacy }))
+      .rejects.toMatchObject({ reason: 'missing_reversal_data' });
+    expect(legacyQuery.mock.calls.some(([sql]: [string]) => sql.startsWith('UPDATE "project_tasks"'))).toBe(false);
+  });
+
+  it('undoes a created child after later sibling creation and compensation when its recorded position is unchanged', async () => {
+    const original: ActionLedgerRecord = {
+      id: '88888888-8888-4888-8888-888888888888', ownerId: OWNER, operationKey: 'task-create', requestFingerprint: 'fp',
+      actorKind: 'manual', turnId: null, targetKind: 'task', targetId: TASK, actionKind: 'task.create', expectedVersion: null,
+      preVersion: null, postVersion: 1, reversibleFields: {},
+      outcome: { targetId: TASK, targetVersion: 1, destinationOrderVersion: 2 }, undoStatus: 'available', undoOfActionId: null,
+      undoActionId: null, createdAt: '2026-10-15T12:00:01.000Z'
+    };
+    const current = { ...row('todo', [], 1), position: 0 };
+    const query = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM "project_tasks" t')) return [current];
+      if (sql.includes('FROM "projects"')) return [{ status: 'active' }];
+      if (sql.startsWith('INSERT INTO "project_task_order_states"')) return [];
+      if (sql.includes('FROM "project_task_order_states"')) return [{ version: 4 }];
+      if (sql.includes('created_position')) return [{ project_id: PROJECT, created_position: '0', created_count: 1 }];
+      if (sql.startsWith('UPDATE "project_tasks" SET "status" = \'archived\'')) return [{ version: 2 }];
+      if (sql.includes('max(t."position")')) return [{ max_position: 1 }];
+      if (sql.includes('count(*) AS "count"')) return [{ count: 1 }];
+      if (sql.startsWith('UPDATE "project_task_order_states"')) return [{ version: 6 }];
+      return [];
+    });
+    const { repository } = fixture('todo', []);
+
+    const result = await repository.undoTaskInTransaction({ query } as unknown as QueryRunner, { ownerId: OWNER, original });
+
+    expect(result).toMatchObject({ preVersion: 1, postVersion: 2, outcome: { targetId: TASK, targetVersion: 2, sourceOrderVersion: 6 } });
+    expect(query.mock.calls.some(([sql]: [string]) => sql.includes('destinationOrderVersion'))).toBe(false);
+
+    const movedPosition = { ...current, position: 1 };
+    const changedQuery = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM "project_tasks" t')) return [movedPosition];
+      if (sql.includes('FROM "projects"')) return [{ status: 'active' }];
+      if (sql.startsWith('INSERT INTO "project_task_order_states"')) return [];
+      if (sql.includes('FROM "project_task_order_states"')) return [{ version: 4 }];
+      if (sql.includes('created_position')) return [{ project_id: PROJECT, created_position: '0', created_count: 1 }];
+      return [];
+    });
+    await expect(repository.undoTaskInTransaction({ query: changedQuery } as unknown as QueryRunner, { ownerId: OWNER, original }))
+      .rejects.toMatchObject({ reason: 'missing_reversal_data' });
+    expect(changedQuery.mock.calls.some(([sql]: [string]) => sql.startsWith('UPDATE "project_tasks"'))).toBe(false);
+  });
+
+  it('restores changed task fields for task.update and increments from the current version', async () => {
+    const original: ActionLedgerRecord = {
+      id: '88888888-8888-4888-8888-888888888888', ownerId: OWNER, operationKey: 'task-update', requestFingerprint: 'fp',
+      actorKind: 'manual', turnId: null, targetKind: 'task', targetId: TASK, actionKind: 'task.update', expectedVersion: 1,
+      preVersion: 1, postVersion: 2,
+      reversibleFields: { title: { before: 'Before', after: 'After' } },
+      outcome: { targetId: TASK, targetVersion: 2, sourceOrderVersion: 8 }, undoStatus: 'available', undoOfActionId: null,
+      undoActionId: null, createdAt: '2026-10-15T12:00:01.000Z'
+    };
+    const current = { ...row('todo', [], 2), title: 'After' };
+    const query = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM "project_tasks" t')) return [current];
+      if (sql.includes('FROM "projects"')) return [{ status: 'active' }];
+      if (sql.includes('FROM "project_task_order_states"')) return [{ version: 8 }];
+      if (sql.startsWith('UPDATE "project_tasks" SET "title"')) return [{ version: 3 }];
+      return [];
+    });
+    const { repository } = fixture('todo', []);
+
+    const result = await repository.undoTaskInTransaction({ query } as unknown as QueryRunner, { ownerId: OWNER, original });
+
+    const restore = query.mock.calls.find(([sql]: [string]) => sql.startsWith('UPDATE "project_tasks" SET "title"'));
+    expect(restore?.[1]).toEqual(['Before', OWNER, TASK, 2]);
+    expect(result).toMatchObject({ preVersion: 2, postVersion: 3, outcome: { targetId: TASK, targetVersion: 3 } });
+  });
+
+  it('moves a task back to its recorded source collection without restoring its old version', async () => {
+    const destination = '99999999-9999-4999-8999-999999999999';
+    const original: ActionLedgerRecord = {
+      id: '88888888-8888-4888-8888-888888888888', ownerId: OWNER, operationKey: 'task-move', requestFingerprint: 'fp',
+      actorKind: 'manual', turnId: null, targetKind: 'task', targetId: TASK, actionKind: 'task.move', expectedVersion: 1,
+      preVersion: 1, postVersion: 2,
+      reversibleFields: { projectId: { before: PROJECT, after: destination }, position: { before: 0, after: 1 } },
+      outcome: { targetId: TASK, targetVersion: 2, sourceOrderVersion: 5, destinationOrderVersion: 8 }, undoStatus: 'available', undoOfActionId: null,
+      undoActionId: null, createdAt: '2026-10-15T12:00:01.000Z'
+    };
+    const current = { ...row('todo', [], 2), project_id: destination, position: 1 };
+    const query = jest.fn().mockImplementation(async (sql: string, values: readonly unknown[] = []) => {
+      if (sql.includes('FROM "project_tasks" t')) return [current];
+      if (sql.includes('FROM "projects"')) return [{ status: 'active' }];
+      if (sql.includes('FROM "project_task_order_states"')) return [{ version: values[1] === PROJECT ? 5 : 8 }];
+      if (sql.includes('count(*) AS "count"')) return [{ count: 2 }];
+      if (sql.includes('max(t."position")')) return [{ max_position: 1 }];
+      if (sql.startsWith('UPDATE "project_tasks" SET "project_id"')) return [{ version: 3 }];
+      if (sql.startsWith('UPDATE "project_task_order_states"')) return [{ version: values[1] === PROJECT ? 6 : 9 }];
+      return [];
+    });
+    const { repository } = fixture('todo', []);
+
+    const result = await repository.undoTaskInTransaction({ query } as unknown as QueryRunner, { ownerId: OWNER, original });
+
+    const restore = query.mock.calls.find(([sql]: [string]) => sql.startsWith('UPDATE "project_tasks" SET "project_id"'));
+    expect(restore?.[1]).toEqual([PROJECT, 0, OWNER, TASK, 2, destination]);
+    expect(result).toMatchObject({ preVersion: 2, postVersion: 3, outcome: { targetId: TASK, targetVersion: 3, sourceOrderVersion: 9, destinationOrderVersion: 6 } });
+  });
+
+  it('restores an archived task status and archive timestamp at a new version', async () => {
+    const original: ActionLedgerRecord = {
+      id: '88888888-8888-4888-8888-888888888888', ownerId: OWNER, operationKey: 'task-archive', requestFingerprint: 'fp',
+      actorKind: 'manual', turnId: null, targetKind: 'task', targetId: TASK, actionKind: 'task.archive', expectedVersion: 1,
+      preVersion: 1, postVersion: 2,
+      reversibleFields: {
+        status: { before: 'todo', after: 'archived' },
+        archivedAt: { before: null, after: '2026-10-15T12:00:00.123456Z' }
+      },
+      outcome: { targetId: TASK, targetVersion: 2, sourceOrderVersion: 8 }, undoStatus: 'available', undoOfActionId: null,
+      undoActionId: null, createdAt: '2026-10-15T12:00:01.000Z'
+    };
+    const current = { ...row('archived', [], 2), archived_at: '2026-10-15T12:00:00.123Z', archived_at_exact: '2026-10-15T12:00:00.123456Z' };
+    const query = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM "project_tasks" t')) return [current];
+      if (sql.includes('FROM "projects"')) return [{ status: 'active' }];
+      if (sql.includes('FROM "project_task_order_states"')) return [{ version: 8 }];
+      if (sql.includes('count(*) AS "count"')) return [{ count: 2 }];
+      if (sql.includes('max(t."position")')) return [{ max_position: 1 }];
+      if (sql.startsWith('UPDATE "project_tasks" SET "status" = $1')) return [{ version: 3 }];
+      if (sql.startsWith('UPDATE "project_task_order_states"')) return [{ version: 9 }];
+      return [];
+    });
+    const { repository } = fixture('todo', []);
+
+    const result = await repository.undoTaskInTransaction({ query } as unknown as QueryRunner, { ownerId: OWNER, original });
+
+    const restore = query.mock.calls.find(([sql]: [string]) => sql.startsWith('UPDATE "project_tasks" SET "status" = $1'));
+    expect(restore?.[1]).toEqual(['todo', null, OWNER, TASK, 2]);
+    expect(result).toMatchObject({ preVersion: 2, postVersion: 3, outcome: { targetId: TASK, targetVersion: 3, sourceOrderVersion: 9 } });
   });
 });

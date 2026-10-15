@@ -1,4 +1,5 @@
 import type { ActionLedgerActorKind, ActionLedgerMutationResult } from '@/modules/action-ledger/domain/action-ledger-types';
+import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
 import type { ProjectTask, ProjectTaskImportance, ProjectTaskSubtask, ProjectTaskStatus } from '@/modules/tasks/domain/project-task';
 
 export interface CreateTaskMutationInput {
@@ -59,4 +60,12 @@ export interface ITaskMutationParticipant<TTransaction> {
   updateInTransaction(transaction: TTransaction, input: UpdateTaskMutationInput): Promise<AppliedTaskMutation>;
   moveInTransaction(transaction: TTransaction, input: MoveTaskMutationInput): Promise<AppliedTaskMutation>;
   archiveInTransaction(transaction: TTransaction, input: ArchiveTaskMutationInput): Promise<AppliedTaskMutation>;
+}
+
+/** Narrow reversal participant; the ledger still owns transaction and receipt persistence. */
+export interface ITaskUndoParticipant<TTransaction> {
+  undoTaskInTransaction(
+    transaction: TTransaction,
+    input: { readonly ownerId: string; readonly original: ActionLedgerRecord }
+  ): Promise<ActionLedgerMutationResult>;
 }

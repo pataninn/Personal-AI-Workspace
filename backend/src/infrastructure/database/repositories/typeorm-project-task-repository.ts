@@ -1,6 +1,7 @@
 import type { DataSource, QueryRunner } from 'typeorm';
 
-import type { ActionLedgerReversibleFields } from '@/modules/action-ledger/domain/action-ledger-types';
+import type { ActionLedgerMutationResult, ActionLedgerRecord, ActionLedgerReversibleFields } from '@/modules/action-ledger/domain/action-ledger-types';
+import { ActionLedgerTargetStateConflictError } from '@/modules/action-ledger/domain/action-ledger-errors';
 import type { GlobalTaskQueryCursorPosition, GlobalTaskQueryFilters, GlobalTaskQueryItem } from '@/modules/tasks/domain/global-task-query';
 import {
   ProjectTaskArchivedError,
@@ -40,6 +41,7 @@ import type {
   ArchiveTaskMutationInput,
   CreateTaskMutationInput,
   ITaskMutationParticipant,
+  ITaskUndoParticipant,
   MoveTaskMutationInput,
   UpdateTaskMutationInput
 } from '@/modules/tasks/repositories/task-mutation-participant';
@@ -64,7 +66,9 @@ interface TaskRow {
   readonly created_at: Date | string;
   readonly updated_at: Date | string;
   readonly completed_at: Date | string | null;
+  readonly completed_at_exact?: string | null;
   readonly archived_at: Date | string | null;
+  readonly archived_at_exact?: string | null;
   readonly idempotency_snapshot?: unknown;
 }
 
@@ -110,7 +114,9 @@ interface PositionRow {
 
 const TASK_COLUMNS = `t."id", t."owner_id", t."project_id", t."title", t."details", t."importance", t."deadline"::text AS "deadline", t."subtasks", t."status", t."position", t."version", t."source_kind", t."source_suggestion_id",
   t."source_run_id", t."source_conversation_id", t."source_accepted_at",
-  t."created_at", t."updated_at", t."completed_at", t."archived_at"`;
+  t."created_at", t."updated_at", t."completed_at", t."archived_at",
+  to_char(t."completed_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "completed_at_exact",
+  to_char(t."archived_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "archived_at_exact"`;
 
 function asRows<T>(result: unknown): readonly T[] {
   if (!Array.isArray(result)) {
@@ -465,13 +471,18 @@ function collectionValues(ownerId: string, projectId: string | null): unknown[] 
   return projectId === null ? [ownerId] : [ownerId, projectId];
 }
 
-async function loadTaskByOwner(queryRunner: QueryRunner, ownerId: string, taskId: string, forUpdate = false): Promise<ProjectTask | null> {
+async function loadTaskRowByOwner(queryRunner: QueryRunner, ownerId: string, taskId: string, forUpdate = false): Promise<TaskRow | null> {
   const rows = asRows<TaskRow>(await queryRunner.query(
     `SELECT ${TASK_COLUMNS} FROM "project_tasks" t
      WHERE t."owner_id" = $1 AND t."id" = $2 LIMIT 1${forUpdate ? ' FOR UPDATE OF t' : ''}`,
     [ownerId, taskId]
   ));
-  return rows[0] ? toTask(rows[0]) : null;
+  return rows[0] ?? null;
+}
+
+async function loadTaskByOwner(queryRunner: QueryRunner, ownerId: string, taskId: string, forUpdate = false): Promise<ProjectTask | null> {
+  const row = await loadTaskRowByOwner(queryRunner, ownerId, taskId, forUpdate);
+  return row ? toTask(row) : null;
 }
 
 async function lockCollectionProject(queryRunner: QueryRunner, ownerId: string, projectId: string | null): Promise<void> {
@@ -590,7 +601,110 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function taskReversibleFields(before: ProjectTask, after: ProjectTask): { readonly fields: ActionLedgerReversibleFields; readonly undoStatus: 'available' | 'not_reversible' } {
+function canonicalJsonValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJsonValue).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJsonValue(entry)}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
+}
+
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  return canonicalJsonValue(left) === canonicalJsonValue(right);
+}
+
+function persistedTaskField(row: TaskRow, field: keyof ActionLedgerReversibleFields): unknown {
+  switch (field) {
+    case 'title': return row.title;
+    case 'details': return row.details;
+    case 'status': return row.status;
+    case 'position': return row.position;
+    case 'projectId': return row.project_id;
+    case 'importance': return row.importance;
+    case 'deadline': return row.deadline;
+    case 'archivedAt': return row.archived_at_exact ?? null;
+    case 'completedAt': return row.completed_at_exact ?? null;
+    case 'subtasks': return row.subtasks ?? [];
+    default: return undefined;
+  }
+}
+
+function collectionKey(projectId: string | null): string {
+  return projectId === null ? '0:inbox' : `1:${projectId}`;
+}
+
+function nullableUuidField(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)) return value;
+  throw new ActionLedgerTargetStateConflictError('not_reversible');
+}
+
+function undoTaskResult(
+  taskId: string,
+  preVersion: number,
+  postVersion: number,
+  orderVersions: { readonly sourceOrderVersion?: number; readonly destinationOrderVersion?: number }
+): ActionLedgerMutationResult {
+  return {
+    preVersion,
+    postVersion,
+    reversibleFields: {},
+    outcome: { targetId: taskId, targetVersion: postVersion, ...orderVersions },
+    undoStatus: 'not_reversible'
+  };
+}
+
+async function lockUndoCollections(queryRunner: QueryRunner, ownerId: string, projectIds: readonly (string | null)[]): Promise<Map<string, number>> {
+  const unique = [...new Set(projectIds)].sort((left, right) => collectionKey(left).localeCompare(collectionKey(right)));
+  try {
+    await lockCollectionProjects(queryRunner, ownerId, unique);
+    const versions = new Map<string, number>();
+    for (const projectId of unique) {
+      versions.set(projectId ?? 'inbox', await lockCollectionOrderState(queryRunner, ownerId, projectId));
+    }
+    return versions;
+  } catch (error: unknown) {
+    if (error instanceof ProjectTaskArchivedProjectError) throw new ActionLedgerTargetStateConflictError('archived_workspace');
+    if (error instanceof ProjectTaskNotFoundError) throw new ActionLedgerTargetStateConflictError('target_missing');
+    throw error;
+  }
+}
+
+function assertExpectedOrderVersion(current: number | undefined, expected: number | null | undefined): asserts current is number {
+  if (current === undefined || expected === undefined || expected === null || current !== expected) {
+    throw new ActionLedgerTargetStateConflictError('changed');
+  }
+}
+
+async function insertActiveTaskAtPosition(queryRunner: QueryRunner, ownerId: string, projectId: string | null, position: number): Promise<void> {
+  const count = await countCollectionTasks(queryRunner, ownerId, projectId);
+  if (!Number.isSafeInteger(position) || position < 0 || position > count) throw new ActionLedgerTargetStateConflictError('changed');
+  const maxPosition = await maxCollectionTaskPosition(queryRunner, ownerId, projectId);
+  const offset = maxPosition + count + 2;
+  const predicate = collectionPredicate(projectId, 't', 3);
+  const offsetParameter = projectId === null ? '$2' : '$3';
+  const positionParameter = projectId === null ? '$3' : '$4';
+  const firstValues = projectId === null ? [ownerId, offset, position] : [ownerId, projectId, offset, position];
+  await queryRunner.query(
+    `UPDATE "project_tasks" t SET "position" = t."position" + ${offsetParameter}
+     WHERE t."owner_id" = $1 AND ${predicate} AND t."status" <> 'archived' AND t."position" >= ${positionParameter}`,
+    firstValues
+  );
+  const secondValues = projectId === null ? [ownerId, offset, position] : [ownerId, projectId, offset, position];
+  await queryRunner.query(
+    `UPDATE "project_tasks" t SET "position" = t."position" - ${offsetParameter} + 1
+     WHERE t."owner_id" = $1 AND ${predicate} AND t."status" <> 'archived' AND t."position" >= (${offsetParameter} + ${positionParameter})`,
+    secondValues
+  );
+}
+
+function taskReversibleFields(
+  before: ProjectTask,
+  after: ProjectTask,
+  beforeCompletedAtExact?: string | null,
+  afterCompletedAtExact?: string | null
+): { readonly fields: ActionLedgerReversibleFields; readonly undoStatus: 'available' | 'not_reversible' } {
   const changes: Partial<Record<keyof ActionLedgerReversibleFields, { readonly before: unknown; readonly after: unknown }>> = {};
   const add = (field: keyof ActionLedgerReversibleFields, oldValue: unknown, newValue: unknown): void => {
     if (canonicalJson(oldValue) !== canonicalJson(newValue)) {
@@ -605,6 +719,9 @@ function taskReversibleFields(before: ProjectTask, after: ProjectTask): { readon
   add('importance', before.importance, after.importance);
   add('deadline', before.deadline, after.deadline);
   add('archivedAt', before.archivedAt?.toISOString() ?? null, after.archivedAt?.toISOString() ?? null);
+  if (beforeCompletedAtExact !== undefined && afterCompletedAtExact !== undefined) {
+    add('completedAt', beforeCompletedAtExact, afterCompletedAtExact);
+  }
   add('subtasks', before.subtasks, after.subtasks);
   const fields = changes as ActionLedgerReversibleFields;
   return { fields, undoStatus: Object.keys(fields).length > 0 ? 'available' : 'not_reversible' };
@@ -629,10 +746,12 @@ function makeTaskMutation(input: {
   readonly sourceOrderVersion?: number;
   readonly destinationOrderVersion?: number;
   readonly create?: boolean;
+  readonly beforeCompletedAtExact?: string | null;
+  readonly afterCompletedAtExact?: string | null;
 }): AppliedTaskMutation {
   const reversible = input.create
     ? { fields: {} as ActionLedgerReversibleFields, undoStatus: 'available' as const }
-    : taskReversibleFields(input.before as ProjectTask, input.task);
+    : taskReversibleFields(input.before as ProjectTask, input.task, input.beforeCompletedAtExact, input.afterCompletedAtExact);
   return {
     preVersion: input.before?.version ?? null,
     postVersion: input.task.version,
@@ -643,7 +762,7 @@ function makeTaskMutation(input: {
   };
 }
 
-export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGlobalTaskQueryRepository, ITaskMutationParticipant<QueryRunner> {
+export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGlobalTaskQueryRepository, ITaskMutationParticipant<QueryRunner>, ITaskUndoParticipant<QueryRunner> {
   public constructor(private readonly dataSource: DataSource) {}
 
   /** Creates the task within the action-ledger transaction. */
@@ -674,7 +793,7 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
       taskId: task.id,
       actorKind: input.actorKind,
       eventType: 'task.created',
-      details: { sourceKind: 'user' }
+      details: { sourceKind: 'user', position: task.position }
     });
     const nextOrderVersion = await bumpCollectionOrderVersion(queryRunner, input.ownerId, input.projectId);
     return makeTaskMutation({ task, before: null, destinationOrderVersion: nextOrderVersion, create: true });
@@ -690,10 +809,11 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
       throw new ProjectTaskNotFoundError();
     }
     await lockCollectionProject(queryRunner, input.ownerId, observed.projectId);
-    const current = await loadTaskByOwner(queryRunner, input.ownerId, input.taskId, true);
-    if (!current) {
+    const currentRow = await loadTaskRowByOwner(queryRunner, input.ownerId, input.taskId, true);
+    if (!currentRow) {
       throw new ProjectTaskNotFoundError();
     }
+    const current = toTask(currentRow);
     if (current.projectId !== observed.projectId) {
       throw new ProjectTaskMoveConflictError();
     }
@@ -769,10 +889,11 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
     if (!updated[0]) {
       throw new ProjectTaskVersionConflictError();
     }
-    const task = await loadTaskByOwner(queryRunner, input.ownerId, input.taskId);
-    if (!task) {
+    const taskRow = await loadTaskRowByOwner(queryRunner, input.ownerId, input.taskId);
+    if (!taskRow) {
       throw new ProjectTaskNotFoundError();
     }
+    const task = toTask(taskRow);
     if (task.status !== current.status) {
       await insertTaskMutationEvent(queryRunner, {
         ownerId: input.ownerId,
@@ -796,7 +917,9 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
     return makeTaskMutation({
       task,
       before: current,
-      sourceOrderVersion: await readCollectionOrderVersion(queryRunner, input.ownerId, current.projectId)
+      sourceOrderVersion: await readCollectionOrderVersion(queryRunner, input.ownerId, current.projectId),
+      beforeCompletedAtExact: currentRow.completed_at_exact ?? null,
+      afterCompletedAtExact: taskRow.completed_at_exact ?? null
     });
   }
 
@@ -926,6 +1049,186 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
       details: { from: current.status, to: 'archived' }
     });
     return makeTaskMutation({ task, before: current, sourceOrderVersion });
+  }
+
+  /** Applies a version-checked task compensation on the action ledger's transaction. */
+  public async undoTaskInTransaction(
+    queryRunner: QueryRunner,
+    input: { readonly ownerId: string; readonly original: ActionLedgerRecord }
+  ): Promise<ActionLedgerMutationResult> {
+    const { ownerId, original } = input;
+    if (original.targetKind !== 'task' || original.undoStatus !== 'available') throw new ActionLedgerTargetStateConflictError('not_reversible');
+    if (!['task.create', 'task.update', 'task.move', 'task.archive'].includes(original.actionKind)) {
+      throw new ActionLedgerTargetStateConflictError('unsupported_action');
+    }
+    if (original.postVersion === null || original.outcome.targetVersion !== original.postVersion || original.outcome.targetId !== original.targetId) {
+      throw new ActionLedgerTargetStateConflictError('changed');
+    }
+
+    const observedRow = await loadTaskRowByOwner(queryRunner, ownerId, original.targetId);
+    if (!observedRow) throw new ActionLedgerTargetStateConflictError('target_missing');
+    const observed = toTask(observedRow);
+    const reversible = original.reversibleFields;
+    const targetCollection = original.actionKind === 'task.move'
+      ? nullableUuidField(reversible.projectId?.before)
+      : observed.projectId;
+    const currentCollection = observed.projectId;
+    if (original.actionKind === 'task.move' && !sameJsonValue(reversible.projectId?.after, observed.projectId)) {
+      throw new ActionLedgerTargetStateConflictError('changed');
+    }
+    const orderVersions = await lockUndoCollections(queryRunner, ownerId, original.actionKind === 'task.move'
+      ? [currentCollection, targetCollection]
+      : [currentCollection]);
+    const lockedRow = await loadTaskRowByOwner(queryRunner, ownerId, original.targetId, true);
+    if (!lockedRow) throw new ActionLedgerTargetStateConflictError('target_missing');
+    const current = toTask(lockedRow);
+    if (current.projectId !== observed.projectId || current.version !== original.postVersion) throw new ActionLedgerTargetStateConflictError('changed');
+
+    if (original.actionKind === 'task.create') {
+      if (current.status === 'archived') throw new ActionLedgerTargetStateConflictError('changed');
+      const currentOrderVersion = orderVersions.get(current.projectId ?? 'inbox');
+      if (original.outcome.destinationOrderVersion === undefined || original.outcome.destinationOrderVersion === null
+        || currentOrderVersion === undefined || currentOrderVersion < original.outcome.destinationOrderVersion) {
+        throw new ActionLedgerTargetStateConflictError('changed');
+      }
+      const creationRows = asRows<{ readonly project_id: string | null; readonly created_position: string | null; readonly created_count: string | number }>(await queryRunner.query(
+        `SELECT (SELECT "project_id" FROM "project_task_events" WHERE "owner_id" = $1 AND "task_id" = $2 AND "event_type" = 'task.created' LIMIT 1) AS "project_id",
+          (SELECT "details"->>'position' FROM "project_task_events" WHERE "owner_id" = $1 AND "task_id" = $2 AND "event_type" = 'task.created' LIMIT 1) AS "created_position",
+          (SELECT count(*) FROM "project_task_events" WHERE "owner_id" = $1 AND "task_id" = $2 AND "event_type" = 'task.created') AS "created_count"`,
+        [ownerId, current.id]
+      ));
+      const creation = creationRows[0];
+      const createdPosition = creation?.created_position === null || creation?.created_position === undefined
+        ? Number.NaN
+        : Number(creation.created_position);
+      if (!creation || Number(creation.created_count) !== 1 || creation.project_id !== current.projectId
+        || !Number.isSafeInteger(createdPosition) || createdPosition !== current.position) {
+        throw new ActionLedgerTargetStateConflictError('missing_reversal_data');
+      }
+      const updated = asRows<{ readonly version: number }>(await queryRunner.query(
+        `UPDATE "project_tasks" SET "status" = 'archived', "archived_at" = now(), "version" = "version" + 1, "updated_at" = now()
+         WHERE "owner_id" = $1 AND "id" = $2 AND "version" = $3 AND "status" <> 'archived' RETURNING "version"`,
+        [ownerId, current.id, original.postVersion]
+      ));
+      if (!updated[0]) throw new ActionLedgerTargetStateConflictError('changed');
+      await compactCollectionTaskPositions(queryRunner, ownerId, current.projectId, current.position);
+      const orderVersion = await bumpCollectionOrderVersion(queryRunner, ownerId, current.projectId);
+      await insertTaskMutationEvent(queryRunner, {
+        ownerId,
+        projectId: current.projectId,
+        taskId: current.id,
+        actorKind: 'manual',
+        eventType: 'task.status_changed',
+        details: { from: current.status, to: 'archived', undoOfActionId: original.id }
+      });
+      return undoTaskResult(current.id, current.version, updated[0].version, { sourceOrderVersion: orderVersion });
+    }
+
+    if (original.actionKind === 'task.update') {
+      if (current.status === 'archived' || Object.keys(reversible).length === 0) throw new ActionLedgerTargetStateConflictError('not_reversible');
+      const statusField = reversible.status;
+      const completedAtField = reversible.completedAt;
+      if (statusField?.before === 'done' && !completedAtField) throw new ActionLedgerTargetStateConflictError('missing_reversal_data');
+      const assignments: string[] = [];
+      const values: unknown[] = [];
+      for (const [field, pair] of Object.entries(reversible)) {
+        if (!pair || !('before' in pair) || !('after' in pair)) throw new ActionLedgerTargetStateConflictError('not_reversible');
+        if (!['title', 'details', 'status', 'importance', 'deadline', 'subtasks', 'completedAt'].includes(field)) {
+          throw new ActionLedgerTargetStateConflictError('unsupported_action');
+        }
+        const fieldName = field as keyof ActionLedgerReversibleFields;
+        const currentValue = persistedTaskField(lockedRow, fieldName);
+        if (!sameJsonValue(currentValue, pair.after)) throw new ActionLedgerTargetStateConflictError('changed');
+        values.push(field === 'subtasks' ? JSON.stringify(pair.before) : pair.before);
+        const column = field === 'completedAt' ? 'completed_at' : field === 'archivedAt' ? 'archived_at' : field;
+        assignments.push(`"${column}" = $${values.length}${field === 'subtasks' ? '::jsonb' : field === 'completedAt' ? '::timestamptz' : ''}`);
+      }
+      if (statusField && !completedAtField && statusField.after === 'done') {
+        // Older todo→done receipts lack the null before-image; the task invariant makes null exact.
+        assignments.push('"completed_at" = NULL');
+      }
+      if (assignments.length === 0) throw new ActionLedgerTargetStateConflictError('not_reversible');
+      values.push(ownerId, current.id, current.version);
+      const updated = asRows<{ readonly version: number }>(await queryRunner.query(
+        `UPDATE "project_tasks" SET ${assignments.join(', ')}, "version" = "version" + 1, "updated_at" = now()
+         WHERE "owner_id" = $${values.length - 2} AND "id" = $${values.length - 1} AND "version" = $${values.length} RETURNING "version"`,
+        values
+      ));
+      if (!updated[0]) throw new ActionLedgerTargetStateConflictError('changed');
+      const restoredStatus = statusField !== undefined;
+      await insertTaskMutationEvent(queryRunner, {
+        ownerId,
+        projectId: current.projectId,
+        taskId: current.id,
+        actorKind: 'manual',
+        eventType: restoredStatus ? 'task.status_changed' : 'task.updated',
+        details: restoredStatus
+          ? { from: current.status, to: String(statusField.before), undoOfActionId: original.id }
+          : { fields: Object.keys(reversible), undoOfActionId: original.id }
+      });
+      const sourceOrderVersion = orderVersions.get(current.projectId ?? 'inbox');
+      return undoTaskResult(current.id, current.version, updated[0].version, sourceOrderVersion === undefined ? {} : { sourceOrderVersion });
+    }
+
+    if (original.actionKind === 'task.archive') {
+      const status = reversible.status;
+      const archivedAt = reversible.archivedAt;
+      if (current.status !== 'archived' || !status || status.before === 'archived' || status.after !== 'archived' || !archivedAt || archivedAt.before !== null) {
+        throw new ActionLedgerTargetStateConflictError('not_reversible');
+      }
+      assertExpectedOrderVersion(orderVersions.get(current.projectId ?? 'inbox'), original.outcome.sourceOrderVersion);
+      await insertActiveTaskAtPosition(queryRunner, ownerId, current.projectId, current.position);
+      const updated = asRows<{ readonly version: number }>(await queryRunner.query(
+        `UPDATE "project_tasks" SET "status" = $1, "archived_at" = $2::timestamptz, "version" = "version" + 1, "updated_at" = now()
+         WHERE "owner_id" = $3 AND "id" = $4 AND "version" = $5 AND "status" = 'archived' RETURNING "version"`,
+        [status.before, archivedAt.before, ownerId, current.id, current.version]
+      ));
+      if (!updated[0]) throw new ActionLedgerTargetStateConflictError('changed');
+      const orderVersion = await bumpCollectionOrderVersion(queryRunner, ownerId, current.projectId);
+      await insertTaskMutationEvent(queryRunner, {
+        ownerId,
+        projectId: current.projectId,
+        taskId: current.id,
+        actorKind: 'manual',
+        eventType: 'task.status_changed',
+        details: { from: 'archived', to: String(status.before), undoOfActionId: original.id }
+      });
+      return undoTaskResult(current.id, current.version, updated[0].version, { sourceOrderVersion: orderVersion });
+    }
+
+    const projectIdField = reversible.projectId;
+    const positionField = reversible.position;
+    if (!projectIdField || !positionField || !sameJsonValue(positionField.after, current.position) || current.status === 'archived') {
+      throw new ActionLedgerTargetStateConflictError('not_reversible');
+    }
+    assertExpectedOrderVersion(orderVersions.get(projectIdField.before === null ? 'inbox' : String(projectIdField.before)), original.outcome.sourceOrderVersion);
+    assertExpectedOrderVersion(orderVersions.get(projectIdField.after === null ? 'inbox' : String(projectIdField.after)), original.outcome.destinationOrderVersion);
+    const sourceProjectId = nullableUuidField(projectIdField.before);
+    const destinationProjectId = nullableUuidField(projectIdField.after);
+    await insertActiveTaskAtPosition(queryRunner, ownerId, sourceProjectId, Number(positionField.before));
+    const updated = asRows<{ readonly version: number }>(await queryRunner.query(
+      `UPDATE "project_tasks" SET "project_id" = $1, "position" = $2, "version" = "version" + 1, "updated_at" = now()
+       WHERE "owner_id" = $3 AND "id" = $4 AND "version" = $5 AND "project_id" IS NOT DISTINCT FROM $6 RETURNING "version"`,
+      [sourceProjectId, positionField.before, ownerId, current.id, current.version, destinationProjectId]
+    ));
+    if (!updated[0]) throw new ActionLedgerTargetStateConflictError('changed');
+    await compactCollectionTaskPositions(queryRunner, ownerId, destinationProjectId, current.position);
+    const sourceOrderVersion = await bumpCollectionOrderVersion(queryRunner, ownerId, destinationProjectId);
+    const destinationOrderVersion = await bumpCollectionOrderVersion(queryRunner, ownerId, sourceProjectId);
+    await insertTaskMutationEvent(queryRunner, {
+      ownerId,
+      projectId: destinationProjectId,
+      taskId: current.id,
+      actorKind: 'manual',
+      eventType: 'task.updated',
+      details: {
+        fields: ['projectId', 'position'],
+        fromCollection: destinationProjectId ?? 'inbox',
+        toCollection: sourceProjectId ?? 'inbox',
+        undoOfActionId: original.id
+      }
+    });
+    return undoTaskResult(current.id, current.version, updated[0].version, { sourceOrderVersion, destinationOrderVersion });
   }
 
   public async listTasks(ownerId: string, projectId: string, filter: ProjectTaskFilter): Promise<ProjectTaskListSnapshot> {

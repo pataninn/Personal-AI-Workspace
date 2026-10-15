@@ -22,6 +22,14 @@ export class ActionLedgerUndoNotAvailableError extends Error {
   }
 }
 
+/** Participant signal for a guarded target mutation that can no longer be applied. */
+export class ActionLedgerTargetStateConflictError extends Error {
+  public constructor(public readonly reason: string) {
+    super('The target no longer matches the persisted action guard.');
+    this.name = 'ActionLedgerTargetStateConflictError';
+  }
+}
+
 /** Raised when a callback returns versions that do not satisfy its requested guard. */
 export class ActionLedgerMutationResultInvalidError extends Error {
   public constructor() {

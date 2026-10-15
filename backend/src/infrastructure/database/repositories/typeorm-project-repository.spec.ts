@@ -1,6 +1,8 @@
-import type { DataSource } from 'typeorm';
+import type { DataSource, QueryRunner } from 'typeorm';
 
 import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories/typeorm-project-repository';
+import { ActionLedgerTargetStateConflictError } from '@/modules/action-ledger/domain/action-ledger-errors';
+import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
 import type { ProjectStatus } from '@/modules/projects/domain/project-types';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -199,5 +201,123 @@ describe('TypeOrmProjectRepository', () => {
     expect(query.mock.calls[0]?.[0]).toContain('"version" = $4');
     expect(query.mock.calls[0]?.[1]).toEqual(['New objective', OWNER_ID, PROJECT_ID, 2]);
     expect(createQueryRunner).not.toHaveBeenCalled();
+  });
+});
+
+describe('TypeOrmProjectRepository workspace undo participant', () => {
+  const TASK_A = '33333333-3333-4333-8333-333333333333';
+  const TASK_B = '44444444-4444-4444-8444-444444444444';
+  const CREATE_A = '55555555-5555-4555-8555-555555555555';
+  const CREATE_B = '66666666-6666-4666-8666-666666666666';
+  const UNDO_A = '77777777-7777-4777-8777-777777777777';
+  const UNDO_B = '88888888-8888-4888-8888-888888888888';
+  const original: ActionLedgerRecord = {
+    id: '99999999-9999-4999-8999-999999999999', ownerId: OWNER_ID, operationKey: 'workspace-create', requestFingerprint: 'fp',
+    actorKind: 'manual', turnId: null, targetKind: 'workspace', targetId: PROJECT_ID, actionKind: 'workspace.create', expectedVersion: null,
+    preVersion: null, postVersion: 2, reversibleFields: {}, outcome: { targetId: PROJECT_ID, targetVersion: 2 },
+    undoStatus: 'available', undoOfActionId: null, undoActionId: null, createdAt: CREATED_AT
+  };
+  const rowForChild = (input: {
+    readonly id: string;
+    readonly taskId: string;
+    readonly compensationId: string;
+    readonly creationOrderVersion: number;
+    readonly position: number;
+  }) => ({
+    id: input.id, action_kind: 'task.create', target_kind: 'task', target_id: input.taskId,
+    undo_status: 'undone', undo_action_id: input.compensationId, creation_order_version: input.creationOrderVersion,
+    compensation_id: input.compensationId, compensation_kind: 'undo', compensation_undo_status: 'not_reversible',
+    compensation_undo_of: input.id, compensation_target_kind: 'task', compensation_target_id: input.taskId,
+    compensation_target_version: 2, compensation_post_version: 2,
+    task_owner_id: OWNER_ID, task_project_id: PROJECT_ID, task_status: 'archived', task_version: 2, task_position: input.position,
+    created_event_count: 1, created_position: String(input.position), archive_event_count: 1, other_event_count: 0
+  });
+
+  it('archives an unchanged empty workspace after two child creates were compensated newest-first', async () => {
+    const archived = { ...projectRow('archived'), relative_root: null, relative_root_key: null, version: 3 };
+    const children = [
+      rowForChild({ id: CREATE_B, taskId: TASK_B, compensationId: UNDO_B, creationOrderVersion: 3, position: 1 }),
+      rowForChild({ id: CREATE_A, taskId: TASK_A, compensationId: UNDO_A, creationOrderVersion: 2, position: 0 })
+    ];
+    const query = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM "projects"') && sql.includes('FOR UPDATE')) return [{ ...projectRow('active'), relative_root: null, relative_root_key: null, version: 2 }];
+      if (sql.includes('FROM unnest($2::uuid[])')) return children;
+      if (sql.includes('AS "has_content"')) return [{ has_content: false }];
+      if (sql.startsWith('UPDATE "projects"')) return [archived];
+      return [];
+    });
+    const { repository } = fixture(query);
+
+    const result = await repository.undoWorkspaceInTransaction({ query } as unknown as QueryRunner, {
+      ownerId: OWNER_ID, original, completedTaskCreateActionIds: [CREATE_B, CREATE_A]
+    });
+
+    expect(result).toMatchObject({ preVersion: 2, postVersion: 3, outcome: { targetId: PROJECT_ID, targetVersion: 3 } });
+    expect(query.mock.calls.find(([sql]: [string]) => sql.includes('FROM unnest($2::uuid[])'))?.[1]).toEqual([OWNER_ID, [CREATE_B, CREATE_A], PROJECT_ID]);
+    expect(query.mock.calls.some(([sql]: [string]) => sql.startsWith('UPDATE "projects"'))).toBe(true);
+  });
+
+  it('blocks a workspace edit after create before reading child receipts', async () => {
+    const query = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM "projects"') && sql.includes('FOR UPDATE')) return [{ ...projectRow('active'), relative_root: null, relative_root_key: null, version: 3, name: 'Edited after create' }];
+      return [];
+    });
+    const { repository } = fixture(query);
+
+    await expect(repository.undoWorkspaceInTransaction({ query } as unknown as QueryRunner, {
+      ownerId: OWNER_ID, original, completedTaskCreateActionIds: [CREATE_B, CREATE_A]
+    })).rejects.toMatchObject({ reason: 'changed' });
+    expect(query.mock.calls.some(([sql]: [string]) => sql.includes('FROM unnest($2::uuid[])'))).toBe(false);
+    expect(query.mock.calls.some(([sql]: [string]) => sql.startsWith('UPDATE "projects"'))).toBe(false);
+  });
+
+  it('refuses to treat an unrelated or edited child receipt as workspace creation history', async () => {
+    const child = { ...rowForChild({ id: CREATE_A, taskId: TASK_A, compensationId: UNDO_A, creationOrderVersion: 2, position: 0 }),
+      other_event_count: 1 };
+    const query = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM "projects"') && sql.includes('FOR UPDATE')) return [{ ...projectRow('active'), relative_root: null, relative_root_key: null, version: 2 }];
+      if (sql.includes('FROM unnest($2::uuid[])')) return [child];
+      return [];
+    });
+    const { repository } = fixture(query);
+
+    await expect(repository.undoWorkspaceInTransaction({ query } as unknown as QueryRunner, {
+      ownerId: OWNER_ID, original, completedTaskCreateActionIds: [CREATE_A]
+    })).rejects.toMatchObject({ reason: 'workspace_not_empty' });
+    expect(query.mock.calls.some(([sql]: [string]) => sql.includes('AS "has_content"'))).toBe(false);
+    expect(query.mock.calls.some(([sql]: [string]) => sql.startsWith('UPDATE "projects"'))).toBe(false);
+  });
+
+  it('restores workspace name and objective from the recorded before-image at a new version', async () => {
+    const original: ActionLedgerRecord = {
+      id: '99999999-9999-4999-8999-999999999999', ownerId: OWNER_ID, operationKey: 'workspace-update', requestFingerprint: 'fp',
+      actorKind: 'manual', turnId: null, targetKind: 'workspace', targetId: PROJECT_ID, actionKind: 'workspace.update', expectedVersion: 1,
+      preVersion: 1, postVersion: 2,
+      reversibleFields: {
+        name: { before: 'Website', after: 'Launch plan' },
+        objective: { before: null, after: 'Prepare the release' }
+      },
+      outcome: { targetId: PROJECT_ID, targetVersion: 2 }, undoStatus: 'available', undoOfActionId: null,
+      undoActionId: null, createdAt: CREATED_AT
+    };
+    const query = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM "projects"') && sql.includes('FOR UPDATE')) {
+        return [{ ...projectRow('active'), name: 'Launch plan', objective: 'Prepare the release', version: 2 }];
+      }
+      if (sql.startsWith('UPDATE "projects"')) {
+        return [{ ...projectRow('active'), name: 'Website', objective: null, version: 3 }];
+      }
+      return [];
+    });
+    const { repository } = fixture(query);
+
+    const result = await repository.undoWorkspaceInTransaction({ query } as unknown as QueryRunner, {
+      ownerId: OWNER_ID, original, completedTaskCreateActionIds: []
+    });
+
+    const restore = query.mock.calls.find(([sql]: [string]) => sql.startsWith('UPDATE "projects"'));
+    expect(restore?.[0]).toContain('"name" = $1, "objective" = $2');
+    expect(restore?.[1]).toEqual(['Website', null, OWNER_ID, PROJECT_ID, 2]);
+    expect(result).toMatchObject({ preVersion: 2, postVersion: 3, outcome: { targetId: PROJECT_ID, targetVersion: 3 } });
   });
 });

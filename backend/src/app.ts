@@ -28,6 +28,7 @@ import { ChangeSetDomainError } from '@/modules/ai-runs/domain/change-errors';
 import { ProjectFactDomainError } from '@/modules/memory/domain/project-fact-errors';
 import { createProjectFactRouter, type ProjectFactRouterDependencies } from '@/modules/memory';
 import { createGlobalTaskRouter, createProjectTaskRouter, ProjectTaskDomainError, type GlobalTaskRouterDependencies, type ProjectTaskRouterDependencies } from '@/modules/tasks';
+import { createActionUndoRouter, type ActionUndoRouterDependencies } from '@/modules/home-assistant/controllers/action-undo-router';
 
 export interface CreateAppOptions {
   readonly logger: AppLogger;
@@ -44,6 +45,7 @@ export interface CreateAppOptions {
   readonly projectFacts?: ProjectFactRouterDependencies;
   readonly projectTasks?: ProjectTaskRouterDependencies;
   readonly globalTasks?: GlobalTaskRouterDependencies;
+  readonly actionUndo?: ActionUndoRouterDependencies;
 }
 
 const requestIdMiddleware: RequestHandler = (request, response, next) => {
@@ -197,6 +199,9 @@ export function createApp(options: CreateAppOptions): Express {
   }
   if (options.globalTasks) {
     app.use('/api/v1', createGlobalTaskRouter(options.globalTasks));
+  }
+  if (options.actionUndo) {
+    app.use('/api/v1/actions', createActionUndoRouter(options.actionUndo));
   }
 
   if (options.staticDirectory && existsSync(options.staticDirectory)) {
