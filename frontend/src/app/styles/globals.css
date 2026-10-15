@@ -2232,6 +2232,12 @@ textarea:focus-visible {
   flex: 0 0 auto;
 }
 
+.task-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
 .task-detail-fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
@@ -2281,6 +2287,10 @@ textarea:focus-visible {
   .home-inbox-capture-form > .button,
   .task-detail-header > a {
     width: 100%;
+  }
+
+  .task-detail-actions > .button {
+    flex: 1 1 auto;
   }
 }
 

@@ -78,6 +78,151 @@ test('global task reads filter collections, retain stable keyset pages, and reje
   assert.equal(wrongScope.status, 400); assert.equal((await wrongScope.json()).error.code, 'TASK_CURSOR_INVALID');
 });
 
+test('global task edit receipts are safe to reload, replay, and undo only once', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const listed = await fetch(`${origin}/api/v1/tasks?limit=10`, { headers: headers(cookie) });
+  const originalItem = (await listed.json()).data.items[0];
+  const taskId = originalItem.task.id;
+  const updated = await fetch(`${origin}/api/v1/tasks/${taskId}`, {
+    method: 'PATCH', headers: headers(cookie, { 'If-Match': `"${originalItem.task.version}"`, 'Idempotency-Key': 'task-edit-intent-1' }),
+    body: JSON.stringify({ title: 'Edited in preview' })
+  });
+  const updateBody = (await updated.json()).data;
+  assert.equal(updated.status, 200);
+  assert.equal(updated.headers.get('etag'), `"${originalItem.task.version + 1}"`);
+  assert.equal(updateBody.item.task.title, 'Edited in preview');
+  assert.deepEqual(updateBody.receipt, {
+    id: updateBody.receipt.id,
+    actionKind: 'task.update',
+    undoStatus: 'available',
+    outcome: { targetId: taskId, targetVersion: originalItem.task.version + 1, sourceOrderVersion: 1 }
+  });
+
+  const replay = await fetch(`${origin}/api/v1/tasks/${taskId}`, {
+    method: 'PATCH', headers: headers(cookie, { 'If-Match': `"${originalItem.task.version}"`, 'Idempotency-Key': 'task-edit-intent-1' }),
+    body: JSON.stringify({ title: 'Edited in preview' })
+  });
+  assert.equal(replay.status, 200);
+  assert.equal((await replay.json()).data.replayed, true);
+  const changedKeyReuse = await fetch(`${origin}/api/v1/tasks/${taskId}`, {
+    method: 'PATCH', headers: headers(cookie, { 'If-Match': `"${originalItem.task.version}"`, 'Idempotency-Key': 'task-edit-intent-1' }),
+    body: JSON.stringify({ title: 'Different request' })
+  });
+  assert.equal(changedKeyReuse.status, 409);
+  assert.equal((await changedKeyReuse.json()).error.code, 'IDEMPOTENCY_KEY_REUSED');
+
+  const actionId = updateBody.receipt.id;
+  const metadataResponse = await fetch(`${origin}/api/v1/actions/${actionId}`, { headers: headers(cookie) });
+  const metadata = (await metadataResponse.json()).data;
+  assert.equal(metadataResponse.status, 200);
+  assert.deepEqual(Object.keys(metadata).sort(), ['actionKind', 'id', 'postVersion', 'targetId', 'targetKind', 'undoActionId', 'undoStatus'].sort());
+  assert.equal(metadata.targetKind, 'task');
+  assert.equal(metadata.targetId, taskId);
+  assert.equal(metadata.undoStatus, 'available');
+  assert.equal('reversibleFields' in metadata, false);
+
+  const undoUrl = `${origin}/api/v1/actions/${actionId}/undo`;
+  const undo = await fetch(undoUrl, { method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'task-edit-undo-1' }), body: '{}' });
+  const undoBody = (await undo.json()).data;
+  assert.equal(undo.status, 200);
+  assert.equal(undoBody.originalAction.undoStatus, 'undone');
+  assert.equal(undoBody.undoReceipt.actionKind, 'undo');
+  assert.equal(undoBody.target.kind, 'task');
+  assert.equal(undoBody.target.item.task.title, originalItem.task.title);
+  assert.equal(undoBody.target.item.task.version, originalItem.task.version + 2);
+  assert.equal('reversibleFields' in undoBody.undoReceipt, false);
+
+  const afterUndo = (await (await fetch(`${origin}/api/v1/actions/${actionId}`, { headers: headers(cookie) })).json()).data;
+  assert.equal(afterUndo.undoStatus, 'undone');
+  assert.equal(afterUndo.undoActionId, undoBody.undoReceipt.id);
+  const undoReplay = await fetch(undoUrl, { method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'task-edit-undo-1' }), body: '{}' });
+  assert.equal(undoReplay.status, 200);
+  assert.equal((await undoReplay.json()).data.replayed, true);
+  const secondUndo = await fetch(undoUrl, { method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'task-edit-undo-2' }), body: '{}' });
+  assert.equal(secondUndo.status, 409);
+  assert.equal((await secondUndo.json()).data.reason, 'already_undone');
+});
+
+test('moves tasks to a rootless planning workspace and reverses archive without changing the task id', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const planningResponse = await fetch(`${origin}/api/v1/projects`, {
+    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Preview plan', workspaceMode: 'planning', objective: 'Move tasks here' })
+  });
+  const planning = (await planningResponse.json()).data;
+  assert.equal(planningResponse.status, 201);
+  assert.equal(planning.relativeRoot, null);
+  const page = await fetch(`${origin}/api/v1/tasks?limit=10`, { headers: headers(cookie) });
+  const taskItem = (await page.json()).data.items.find((item) => item.workspace?.id === PROJECT_ID);
+  const taskId = taskItem.task.id;
+
+  const move = await fetch(`${origin}/api/v1/tasks/${taskId}/move`, {
+    method: 'POST', headers: headers(cookie, { 'If-Match': `"${taskItem.task.version}"`, 'Idempotency-Key': 'task-move-intent-1' }),
+    body: JSON.stringify({ workspaceId: planning.id, expectedSourceOrderVersion: 1, expectedDestinationOrderVersion: 1 })
+  });
+  const moved = (await move.json()).data;
+  assert.equal(move.status, 200);
+  assert.equal(moved.item.task.id, taskId);
+  assert.equal(moved.item.workspace.id, planning.id);
+  assert.equal(moved.receipt.actionKind, 'task.move');
+  assert.deepEqual(moved.receipt.outcome, { targetId: taskId, targetVersion: taskItem.task.version + 1, sourceOrderVersion: 2, destinationOrderVersion: 2 });
+
+  const moveUndo = await fetch(`${origin}/api/v1/actions/${moved.receipt.id}/undo`, {
+    method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'task-move-undo-1' }), body: '{}'
+  });
+  const restored = (await moveUndo.json()).data;
+  assert.equal(moveUndo.status, 200);
+  assert.equal(restored.target.item.task.id, taskId);
+  assert.equal(restored.target.item.task.projectId, PROJECT_ID);
+  assert.equal(restored.target.item.task.version, taskItem.task.version + 2);
+
+  const archive = await fetch(`${origin}/api/v1/tasks/${taskId}/archive`, {
+    method: 'POST', headers: headers(cookie, { 'If-Match': `"${taskItem.task.version + 2}"`, 'Idempotency-Key': 'task-archive-intent-1' }), body: '{}'
+  });
+  const archived = (await archive.json()).data;
+  assert.equal(archive.status, 200);
+  assert.equal(archived.item.task.id, taskId);
+  assert.equal(archived.item.task.status, 'archived');
+  assert.equal((await fetch(`${origin}/api/v1/tasks/${taskId}`, { headers: headers(cookie) })).status, 404);
+  assert.equal((await fetch(`${origin}/api/v1/tasks/${taskId}?includeArchived=true`, { headers: headers(cookie) })).status, 200);
+
+  const archiveUndo = await fetch(`${origin}/api/v1/actions/${archived.receipt.id}/undo`, {
+    method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'task-archive-undo-1' }), body: '{}'
+  });
+  const unarchived = (await archiveUndo.json()).data;
+  assert.equal(archiveUndo.status, 200);
+  assert.equal(unarchived.target.item.task.id, taskId);
+  assert.equal(unarchived.target.item.task.status, taskItem.task.status);
+  assert.equal(unarchived.target.item.task.version, taskItem.task.version + 4);
+});
+
+test('receipt and undo routes hide unknown action IDs and reject stale undo state', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const unknown = '2a5a518e-d8ec-4cf4-9cbd-18d2d2c4fb5e';
+  const missing = await fetch(`${origin}/api/v1/actions/${unknown}`, { headers: headers(cookie) });
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).error.code, 'ACTION_NOT_FOUND');
+
+  const item = (await (await fetch(`${origin}/api/v1/tasks?limit=10`, { headers: headers(cookie) })).json()).data.items[0];
+  const first = await fetch(`${origin}/api/v1/tasks/${item.task.id}`, {
+    method: 'PATCH', headers: headers(cookie, { 'If-Match': `"${item.task.version}"`, 'Idempotency-Key': 'task-stale-undo-1' }),
+    body: JSON.stringify({ title: 'First edit' })
+  });
+  const firstReceipt = (await first.json()).data.receipt;
+  const second = await fetch(`${origin}/api/v1/tasks/${item.task.id}`, {
+    method: 'PATCH', headers: headers(cookie, { 'If-Match': `"${item.task.version + 1}"`, 'Idempotency-Key': 'task-stale-undo-2' }),
+    body: JSON.stringify({ title: 'Second edit' })
+  });
+  assert.equal(second.status, 200);
+  const undo = await fetch(`${origin}/api/v1/actions/${firstReceipt.id}/undo`, {
+    method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'task-stale-undo-attempt' }), body: '{}'
+  });
+  assert.equal(undo.status, 409);
+  const body = await undo.json();
+  assert.equal(body.error.code, 'ACTION_UNDO_CONFLICT');
+  assert.equal(body.data.reason, 'changed');
+  assert.equal(body.data.target.item.task.title, 'Second edit');
+});
+
 test('task metadata, checklists, completion/reopening and permanent removal use current versions', async () => {
   const { origin } = await startPreview(); const cookie = await signIn(origin);
   const endpoint = `${origin}/api/v1/projects/${PROJECT_ID}/tasks`;

@@ -20,11 +20,12 @@ interface TaskEditorDialogProps {
   readonly target: TaskEditorTarget | null;
   readonly saving: boolean;
   readonly onOpenChange: (open: boolean) => void;
-  readonly onSave: (draft: ProjectTaskDraft, idempotencyKey: string, expectedVersion: number | null) => Promise<TaskEditorSaveResult>;
+  readonly onSave: (draft: ProjectTaskDraft, idempotencyKey: string, expectedVersion: number | null, baseline: ProjectTask | null) => Promise<TaskEditorSaveResult>;
+  readonly onCloseAutoFocus?: React.ComponentProps<typeof DialogContent>['onCloseAutoFocus'];
 }
 
 /** Usage: Open from the project task manager to add, edit, or review one explicitly accepted task draft. */
-export function TaskEditorDialog({ target, saving, onOpenChange, onSave }: TaskEditorDialogProps): React.JSX.Element {
+export function TaskEditorDialog({ target, saving, onOpenChange, onSave, onCloseAutoFocus }: TaskEditorDialogProps): React.JSX.Element {
   const sourceText = target?.kind === 'suggestion' ? target.suggestion.source.label : null;
   const initialTitle = target?.kind === 'task' ? target.task?.title ?? '' : target?.suggestion.title ?? '';
   const initialDetails = target?.kind === 'task' ? target.task?.details ?? '' : target?.suggestion.details ?? '';
@@ -33,6 +34,7 @@ export function TaskEditorDialog({ target, saving, onOpenChange, onSave }: TaskE
   const [details, setDetails] = useState(initialDetails);
   const [metadata, setMetadata] = useState<TaskMetadataDraft>(() => initialMetadata(target));
   const [expectedVersion, setExpectedVersion] = useState(initialVersion);
+  const [baseline, setBaseline] = useState<ProjectTask | null>(target?.kind === 'task' ? target.task : null);
   const [fieldErrors, setFieldErrors] = useState<ProjectTaskFieldErrors>({});
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<ProjectTask | null | undefined>(undefined);
@@ -42,7 +44,10 @@ export function TaskEditorDialog({ target, saving, onOpenChange, onSave }: TaskE
   const titleRef = useRef<HTMLInputElement>(null);
   const originalTitle = target?.kind === 'task' ? target.task?.title ?? '' : target?.suggestion.title ?? '';
   const originalDetails = target?.kind === 'task' ? target.task?.details ?? '' : target?.suggestion.details ?? '';
-  const dirty = title !== originalTitle || details !== originalDetails || JSON.stringify(metadata) !== JSON.stringify(initialMetadata(target));
+  const dirty = baseline
+    ? title.trim() !== baseline.title || (details.trim() || null) !== baseline.details || metadata.importance !== baseline.importance ||
+      (metadata.deadline || null) !== baseline.deadline || !sameSubtasks(metadata.subtasks, baseline.subtasks)
+    : title !== originalTitle || details !== originalDetails || JSON.stringify(metadata) !== JSON.stringify(initialMetadata(target));
   const open = target !== null;
   const titleId = 'project-task-title';
   const detailsId = 'project-task-details';
@@ -79,7 +84,7 @@ export function TaskEditorDialog({ target, saving, onOpenChange, onSave }: TaskE
       focusInvalidField(validation.errors);
       return;
     }
-    const result = await onSave(validation.draft, idempotencyKey, expectedVersion);
+    const result = await onSave(validation.draft, idempotencyKey, expectedVersion, baseline);
     if (result.status === 'saved') {
       onOpenChange(false);
       return;
@@ -100,18 +105,26 @@ export function TaskEditorDialog({ target, saving, onOpenChange, onSave }: TaskE
     setDetails(conflict.details ?? '');
     setMetadata({ importance: conflict.importance, deadline: conflict.deadline ?? '', subtasks: conflict.subtasks });
     setExpectedVersion(conflict.version);
+    setBaseline(conflict);
     setConflict(undefined);
     setFieldErrors({});
     setError(null);
+    setIdempotencyKey(createIntentKey());
     setSaveNotice('The latest task version is loaded. Review it and save your changes.');
   }
 
   function keepDraft(): void {
-    if (!conflict) {
+    if (!conflict || !baseline) {
       return;
     }
+    const rebased = rebaseDraft(baseline, conflict, { title, details, metadata });
+    setTitle(rebased.title);
+    setDetails(rebased.details);
+    setMetadata(rebased.metadata);
     setExpectedVersion(conflict.version);
+    setBaseline(conflict);
     setConflict(undefined);
+    setIdempotencyKey(createIntentKey());
     setSaveNotice('Your draft is preserved. Saving will use the latest task version.');
   }
 
@@ -131,6 +144,7 @@ export function TaskEditorDialog({ target, saving, onOpenChange, onSave }: TaskE
           className="max-h-[85dvh] overflow-y-auto"
           data-testid="project-task-editor-dialog"
           aria-describedby="project-task-editor-description"
+          onCloseAutoFocus={onCloseAutoFocus}
           onOpenAutoFocus={(event) => { event.preventDefault(); titleRef.current?.focus(); }}
         >
           <DialogTitle>{heading}</DialogTitle>
@@ -173,7 +187,7 @@ export function TaskEditorDialog({ target, saving, onOpenChange, onSave }: TaskE
             <TaskMetadataFields value={metadata} disabled={saving} errors={fieldErrors} onChange={(value) => { setMetadata(value); setIdempotencyKey(createIntentKey()); setFieldErrors((current) => ({ title: current.title, details: current.details })); setError(null); }} />
             <div className="dialog-actions">
               <Button type="button" variant="secondary" data-testid="project-task-editor-cancel" disabled={saving} onClick={() => { requestClose(false); }}>Cancel</Button>
-              <Button type="submit" data-testid="project-task-editor-save" disabled={saving || conflict === null} aria-busy={saving || undefined}>{saving ? busyLabel : saveLabel}</Button>
+              <Button type="submit" data-testid="project-task-editor-save" disabled={saving || conflict === null || (target?.kind === 'task' && Boolean(baseline) && !dirty)} aria-busy={saving || undefined}>{saving ? busyLabel : saveLabel}</Button>
             </div>
           </form>
         </DialogContent>
@@ -234,6 +248,29 @@ function initialMetadata(target: TaskEditorTarget | null): TaskMetadataDraft {
     return { importance: target.task.importance, deadline: target.task.deadline ?? '', subtasks: target.task.subtasks };
   }
   return { importance: 'medium', deadline: '', subtasks: target?.kind === 'suggestion' ? target.suggestion.subtasks.map((subtask) => ({ title: subtask.title, completed: false })) : [] };
+}
+
+function rebaseDraft(base: ProjectTask, latest: ProjectTask, draft: { readonly title: string; readonly details: string; readonly metadata: TaskMetadataDraft }): {
+  readonly title: string;
+  readonly details: string;
+  readonly metadata: TaskMetadataDraft;
+} {
+  return {
+    title: draft.title.trim() !== base.title ? draft.title : latest.title,
+    details: (draft.details.trim() || null) !== base.details ? draft.details : latest.details ?? '',
+    metadata: {
+      importance: draft.metadata.importance !== base.importance ? draft.metadata.importance : latest.importance,
+      deadline: (draft.metadata.deadline || null) !== base.deadline ? draft.metadata.deadline : latest.deadline ?? '',
+      subtasks: sameSubtasks(draft.metadata.subtasks, base.subtasks) ? latest.subtasks : draft.metadata.subtasks
+    }
+  };
+}
+
+function sameSubtasks(left: readonly { readonly id?: string; readonly title: string; readonly completed?: boolean }[], right: readonly { readonly id: string; readonly title: string; readonly completed: boolean }[]): boolean {
+  return left.length === right.length && left.every((subtask, index) => {
+    const candidate = right[index];
+    return candidate !== undefined && subtask.id === candidate.id && subtask.title.trim() === candidate.title && (subtask.completed ?? false) === candidate.completed;
+  });
 }
 
 function withoutField(values: ProjectTaskFieldErrors, field: 'title' | 'details'): ProjectTaskFieldErrors {

@@ -91,11 +91,13 @@ function previewSession() {
 export function createPreviewApi() {
   let seed = createPreviewSeed();
   let idempotency = new Map();
+  let actionRecords = new Map();
   const aiRuns = createPreviewAiRuns();
 
   function reset() {
     seed = createPreviewSeed();
     idempotency = new Map();
+    actionRecords = new Map();
     aiRuns.reset();
   }
 
@@ -132,7 +134,7 @@ export function createPreviewApi() {
     if (await aiRuns.handle(request, response, seed, parts, method)) {
       return;
     }
-    if (await handlePreviewGlobalTasks(request, response, seed, idempotency, parts, method, url)) return;
+    if (await handlePreviewGlobalTasks(request, response, seed, idempotency, actionRecords, parts, method, url)) return;
     if (parts[2] === 'projects') {
       if (parts[3] === 'overview' && method === 'GET') { previewOverview(response, seed, url); return; }
       if (await handlePreviewTasks(request, response, seed, idempotency, parts, method, url)) return;

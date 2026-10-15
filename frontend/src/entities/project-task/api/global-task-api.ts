@@ -1,12 +1,39 @@
-import { ApiClientError, getJson, postJson } from '@/shared/api';
+import { ApiClientError, getJson, patchJson, postJson } from '@/shared/api';
 import { normalizeProjectTask } from '@/entities/project-task/api/project-task-api';
-import type { GlobalTaskItem, GlobalTaskQuery, GlobalTaskQueryPage, InboxTaskCount } from '@/entities/project-task/model/types';
+import type { GlobalTaskItem, GlobalTaskQuery, GlobalTaskQueryPage, InboxTaskCount, ProjectTaskDraft } from '@/entities/project-task/model/types';
 
 const TASKS_PATH = '/api/v1/tasks';
 
 export type GlobalTaskQueryOptions = Omit<GlobalTaskQuery, 'cursor'>;
 
 export interface GlobalTaskCreateResult {
+  readonly item: GlobalTaskItem;
+  readonly replayed: boolean;
+}
+
+export type GlobalTaskPatch = Partial<ProjectTaskDraft>;
+export type TaskMutationKind = 'task.update' | 'task.move' | 'task.archive';
+export type TaskUndoStatus = 'available' | 'not_reversible' | 'undone';
+
+export interface TaskActionReceiptMetadata {
+  readonly id: string;
+  readonly actionKind: string;
+  readonly targetKind: 'task' | 'workspace';
+  readonly targetId: string;
+  readonly postVersion: number | null;
+  readonly undoStatus: TaskUndoStatus;
+  readonly undoActionId: string | null;
+}
+
+export interface GlobalTaskMutationResult {
+  readonly item: GlobalTaskItem;
+  readonly receipt: { readonly id: string; readonly actionKind: TaskMutationKind; readonly undoStatus: Exclude<TaskUndoStatus, 'undone'> };
+  readonly replayed: boolean;
+}
+
+export interface TaskUndoResult {
+  readonly originalAction: TaskActionReceiptMetadata;
+  readonly undoReceipt: TaskActionReceiptMetadata;
   readonly item: GlobalTaskItem;
   readonly replayed: boolean;
 }
@@ -52,6 +79,37 @@ export async function createInboxTask(title: string, csrfToken: string, idempote
   return { item: normalizeGlobalTaskItem(response.item), replayed: response.replayed };
 }
 
+export async function updateGlobalTask(taskId: string, patch: GlobalTaskPatch, expectedVersion: number, csrfToken: string, idempotencyKey: string): Promise<GlobalTaskMutationResult> {
+  const response = asRecord(await patchJson<unknown>(`${TASKS_PATH}/${encodeURIComponent(taskId)}`, patch, mutationHeaders(expectedVersion, csrfToken, idempotencyKey)));
+  return normalizeMutationResult(response, 'task.update');
+}
+
+export async function moveGlobalTask(taskId: string, workspaceId: string | null, expectedVersion: number, csrfToken: string, idempotencyKey: string): Promise<GlobalTaskMutationResult> {
+  const response = asRecord(await postJson<unknown>(`${TASKS_PATH}/${encodeURIComponent(taskId)}/move`, { workspaceId }, mutationHeaders(expectedVersion, csrfToken, idempotencyKey)));
+  return normalizeMutationResult(response, 'task.move');
+}
+
+export async function archiveGlobalTask(taskId: string, expectedVersion: number, csrfToken: string, idempotencyKey: string): Promise<GlobalTaskMutationResult> {
+  const response = asRecord(await postJson<unknown>(`${TASKS_PATH}/${encodeURIComponent(taskId)}/archive`, {}, mutationHeaders(expectedVersion, csrfToken, idempotencyKey)));
+  return normalizeMutationResult(response, 'task.archive');
+}
+
+export async function getTaskActionReceipt(actionId: string): Promise<TaskActionReceiptMetadata> {
+  return normalizeActionReceipt(await getJson<unknown>(`/api/v1/actions/${encodeURIComponent(actionId)}`));
+}
+
+export async function undoTaskAction(actionId: string, csrfToken: string, idempotencyKey: string): Promise<TaskUndoResult> {
+  const response = asRecord(await postJson<unknown>(`/api/v1/actions/${encodeURIComponent(actionId)}/undo`, {}, {
+    'X-CSRF-Token': csrfToken,
+    'Idempotency-Key': idempotencyKey
+  }));
+  const originalAction = normalizeActionReceipt(response?.originalAction);
+  const undoReceipt = normalizeActionReceipt(response?.undoReceipt);
+  const target = asRecord(response?.target);
+  if (typeof response?.replayed !== 'boolean' || target?.kind !== 'task') throw invalidResponse();
+  return { originalAction, undoReceipt, item: normalizeGlobalTaskItem(target.item), replayed: response.replayed };
+}
+
 export function normalizeGlobalTaskItem(value: unknown): GlobalTaskItem {
   const record = asRecord(value);
   const task = normalizeProjectTask(record?.task);
@@ -70,6 +128,51 @@ export function normalizeGlobalTaskItem(value: unknown): GlobalTaskItem {
 function readNonNegativeInteger(value: unknown): number {
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value;
   throw invalidResponse();
+}
+
+function normalizeMutationResult(value: Record<string, unknown> | null, actionKind: TaskMutationKind): GlobalTaskMutationResult {
+  const receipt = asRecord(value?.receipt);
+  if (typeof value?.replayed !== 'boolean' || receipt?.actionKind !== actionKind || !isUuid(receipt.id) ||
+      (receipt.undoStatus !== 'available' && receipt.undoStatus !== 'not_reversible')) throw invalidResponse();
+  return {
+    item: normalizeGlobalTaskItem(value.item),
+    receipt: { id: receipt.id, actionKind, undoStatus: receipt.undoStatus },
+    replayed: value.replayed
+  };
+}
+
+function normalizeActionReceipt(value: unknown): TaskActionReceiptMetadata {
+  const record = asRecord(value);
+  if (!record || !isUuid(record.id) || typeof record.actionKind !== 'string' ||
+      (record.targetKind !== 'task' && record.targetKind !== 'workspace') || !isUuid(record.targetId) ||
+      (record.postVersion !== null && !readPositiveInteger(record.postVersion)) ||
+      (record.undoStatus !== 'available' && record.undoStatus !== 'not_reversible' && record.undoStatus !== 'undone') ||
+      (record.undoActionId !== null && !isUuid(record.undoActionId))) throw invalidResponse();
+  return {
+    id: record.id,
+    actionKind: record.actionKind,
+    targetKind: record.targetKind,
+    targetId: record.targetId,
+    postVersion: record.postVersion as number | null,
+    undoStatus: record.undoStatus,
+    undoActionId: record.undoActionId as string | null
+  };
+}
+
+function mutationHeaders(expectedVersion: number, csrfToken: string, idempotencyKey: string): HeadersInit {
+  return {
+    'X-CSRF-Token': csrfToken,
+    'If-Match': `"${expectedVersion}"`,
+    'Idempotency-Key': idempotencyKey
+  };
+}
+
+function readPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
 }
 
 function readNullableString(value: unknown): string | null {
