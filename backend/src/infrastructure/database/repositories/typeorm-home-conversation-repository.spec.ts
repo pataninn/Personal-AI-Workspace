@@ -1,6 +1,7 @@
 import type { DataSource, QueryRunner } from 'typeorm';
 
 import {
+  HomeConversationCursorInvalidError,
   HomeConversationNotFoundError,
   HomeRequestKeyReusedError,
   HomeTurnTransitionInvalidError
@@ -10,6 +11,7 @@ import type {
   HomeMessageRow,
   HomeTurnRow
 } from '@/infrastructure/database/repositories/home-conversation-persistence-mappers';
+import { encodeHomeConversationCursor } from '@/infrastructure/database/repositories/home-conversation-persistence-mappers';
 import { TypeOrmHomeConversationRepository } from '@/infrastructure/database/repositories/typeorm-home-conversation-repository';
 
 const OWNER_ID = 'owner-1';
@@ -22,6 +24,7 @@ const conversationRow: HomeConversationRow = {
   scope: 'home',
   workspace_id: null,
   title: 'Home',
+  last_event_sequence: 0,
   last_activity_at: new Date('2026-10-15T00:00:00.000Z'),
   created_at: new Date('2026-10-15T00:00:00.000Z'),
   updated_at: new Date('2026-10-15T00:00:00.000Z')
@@ -56,7 +59,14 @@ function createRepository(handler: QueryHandler): {
   readonly query: jest.Mock;
   readonly runner: QueryRunner;
 } {
-  const query = jest.fn(async (statement: string, parameters: unknown[] = []) => handler(statement, parameters));
+  let lastEventSequence = 0;
+  const query = jest.fn(async (statement: string, parameters: unknown[] = []) => {
+    if (statement.includes('SET "last_event_sequence"')) {
+      lastEventSequence += 1;
+      return [{ last_event_sequence: lastEventSequence }];
+    }
+    return handler(statement, parameters);
+  });
   const runner = {
     connect: jest.fn().mockResolvedValue(undefined),
     startTransaction: jest.fn().mockResolvedValue(undefined),
@@ -213,13 +223,13 @@ describe('TypeOrmHomeConversationRepository', () => {
     const olderTimestamp = '2026-10-15T12:00:00.123200Z';
     const newerRow = {
       ...conversationRow,
-      id: 'newer-conversation',
+      id: '55555555-5555-4555-8555-555555555555',
       last_activity_at: newerTimestamp,
       cursor_activity_at: newerTimestamp
     };
     const olderRow = {
       ...conversationRow,
-      id: 'older-conversation',
+      id: '66666666-6666-4666-8666-666666666666',
       last_activity_at: olderTimestamp,
       cursor_activity_at: olderTimestamp
     };
@@ -241,11 +251,24 @@ describe('TypeOrmHomeConversationRepository', () => {
       cursor
     });
 
-    expect(firstPage.conversations.map((conversation) => conversation.id)).toEqual(['newer-conversation']);
-    expect(secondPage.conversations.map((conversation) => conversation.id)).toEqual(['older-conversation']);
+    expect(firstPage.conversations.map((conversation) => conversation.id)).toEqual(['55555555-5555-4555-8555-555555555555']);
+    expect(secondPage.conversations.map((conversation) => conversation.id)).toEqual(['66666666-6666-4666-8666-666666666666']);
     const secondQuery = query.mock.calls.find(([, parameters]) => parameters.includes(newerTimestamp));
-    expect(secondQuery?.[1]).toEqual([OWNER_ID, 'home', newerTimestamp, 'newer-conversation', 2]);
+    expect(secondQuery?.[1]).toEqual([OWNER_ID, 'home', newerTimestamp, '55555555-5555-4555-8555-555555555555', 2]);
     expect(String(secondQuery?.[0])).toContain('to_char("last_activity_at" AT TIME ZONE \'UTC\'');
     expect(String(secondQuery?.[0])).toContain('SS.US');
+  });
+
+  it.each([
+    ['an empty cursor', ''],
+    ['a non-UUID id', encodeHomeConversationCursor('2026-10-15T12:00:00.123456Z', 'not-a-uuid')],
+    ['a timestamp without six fractional digits', encodeHomeConversationCursor('2026-10-15T12:00:00.123Z', '55555555-5555-4555-8555-555555555555')],
+    ['an impossible calendar date', encodeHomeConversationCursor('2026-02-30T12:00:00.123456Z', '55555555-5555-4555-8555-555555555555')]
+  ])('rejects a cursor with %s before querying PostgreSQL', async (_description, cursor) => {
+    const { repository, query } = createRepository(() => []);
+
+    await expect(repository.listForOwner({ ownerId: OWNER_ID, scope: { kind: 'home' }, limit: 10, cursor }))
+      .rejects.toBeInstanceOf(HomeConversationCursorInvalidError);
+    expect(query).not.toHaveBeenCalled();
   });
 });

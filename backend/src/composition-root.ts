@@ -14,7 +14,19 @@ import { SystemClock } from '@/infrastructure/auth/system-clock';
 import { TypeOrmSessionRepository, TypeOrmUserRepository } from '@/infrastructure/database/repositories/typeorm-auth-repositories';
 import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories/typeorm-project-repository';
 import { TypeOrmActionLedgerRepository } from '@/infrastructure/database/repositories/typeorm-action-ledger-repository';
+import { TypeOrmHomeConversationRepository } from '@/infrastructure/database/repositories/typeorm-home-conversation-repository';
+import { TypeOrmHomeActionEventRecorder } from '@/infrastructure/database/repositories/typeorm-home-action-event-recorder';
 import { ActionUndoUseCases } from '@/modules/home-assistant/use-cases/action-undo-use-cases';
+import { CreateHomeConversationUseCase } from '@/modules/home-assistant/use-cases/create-home-conversation';
+import { GetHomeConversationUseCase } from '@/modules/home-assistant/use-cases/get-home-conversation';
+import { ListHomeConversationsUseCase } from '@/modules/home-assistant/use-cases/list-home-conversations';
+import { ListHomeTurnsUseCase } from '@/modules/home-assistant/use-cases/list-home-turns';
+import { SubmitHomeTurnUseCase } from '@/modules/home-assistant/use-cases/submit-home-turn';
+import { GetHomeTurnUseCase } from '@/modules/home-assistant/use-cases/get-home-turn';
+import { CancelHomeTurnUseCase } from '@/modules/home-assistant/use-cases/cancel-home-turn';
+import { ListHomeMessagesUseCase } from '@/modules/home-assistant/use-cases/list-home-messages';
+import { ListHomeEventsUseCase } from '@/modules/home-assistant/use-cases/list-home-events';
+import { RecoverInterruptedHomeTurnsUseCase } from '@/modules/home-assistant/use-cases/recover-interrupted-home-turns';
 import { TypeOrmConversationRepository } from '@/infrastructure/database/repositories/typeorm-conversation-repository';
 import { WorkspaceBoundaryAdapter } from '@/infrastructure/workspace/workspace-boundary';
 import { WorkspaceGatewayAdapter } from '@/infrastructure/workspace/workspace-gateway';
@@ -104,7 +116,8 @@ export async function createApplication(
     const userRepository = new TypeOrmUserRepository(dataSource);
     const sessionRepository = new TypeOrmSessionRepository(dataSource);
     const projectRepository = new TypeOrmProjectRepository(dataSource);
-    const actionLedgerRepository = new TypeOrmActionLedgerRepository(dataSource);
+    const homeConversationRepository = new TypeOrmHomeConversationRepository(dataSource);
+    const actionLedgerRepository = new TypeOrmActionLedgerRepository(dataSource, new TypeOrmHomeActionEventRecorder());
     const projectFactRepository = new TypeOrmProjectFactRepository(dataSource);
     const projectTaskRepository = new TypeOrmProjectTaskRepository(dataSource);
     const taskMutationUseCases = new TaskMutationUseCases(actionLedgerRepository, projectTaskRepository, projectTaskRepository);
@@ -114,6 +127,10 @@ export async function createApplication(
     const recoveredRunCount = await new RecoverInterruptedAiRunsUseCase(aiRunRepository).execute();
     if (recoveredRunCount > 0) {
       logger.warn({ recoveredRunCount }, 'Interrupted AI runs require manual review after startup.');
+    }
+    const recoveredHomeTurnCount = await new RecoverInterruptedHomeTurnsUseCase(homeConversationRepository).execute();
+    if (recoveredHomeTurnCount > 0) {
+      logger.warn({ recoveredHomeTurnCount }, 'Interrupted Home turns were marked for review after startup.');
     }
     const projectRemovalRepository = new TypeOrmProjectRemovalRepository(dataSource, new ProjectRecoveryCleaner(config.recoveryRoot));
     await projectRemovalRepository.cleanupPending();
@@ -204,6 +221,20 @@ export async function createApplication(
           createConversation: new CreateConversationUseCase(projectRepository, conversationRepository),
           getConversation: new GetConversationUseCase(projectRepository, conversationRepository),
           addUserMessage: new AddUserMessageUseCase(projectRepository, conversationRepository),
+          appOrigin: config.appOrigin,
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
+        homeConversations: {
+          getSession,
+          listConversations: new ListHomeConversationsUseCase(homeConversationRepository),
+          createConversation: new CreateHomeConversationUseCase(homeConversationRepository),
+          getConversation: new GetHomeConversationUseCase(homeConversationRepository),
+          listTurns: new ListHomeTurnsUseCase(homeConversationRepository),
+          submitTurn: new SubmitHomeTurnUseCase(homeConversationRepository),
+          getTurn: new GetHomeTurnUseCase(homeConversationRepository),
+          cancelTurn: new CancelHomeTurnUseCase(homeConversationRepository),
+          listMessages: new ListHomeMessagesUseCase(homeConversationRepository),
+          listEvents: new ListHomeEventsUseCase(homeConversationRepository),
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },

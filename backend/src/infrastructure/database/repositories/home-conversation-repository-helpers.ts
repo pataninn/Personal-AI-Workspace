@@ -30,10 +30,10 @@ export async function lockIntent(queryRunner: QueryRunner, intent: string): Prom
   await queryRunner.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [intent]);
 }
 
-/** Requires the selected workspace to belong to the requested owner. */
+/** Requires the selected workspace to be active, planning-only, and owned by the requested user. */
 export async function assertWorkspaceOwned(queryRunner: QueryRunner, ownerId: string, workspaceId: string): Promise<void> {
   const rows: readonly { id: string }[] = await queryRunner.query(
-    'SELECT "id" FROM "projects" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1 FOR KEY SHARE',
+    'SELECT "id" FROM "projects" WHERE "owner_id" = $1 AND "id" = $2 AND "status" = \'active\' AND "relative_root" IS NULL LIMIT 1 FOR SHARE',
     [ownerId, workspaceId]
   );
   if (!rows[0]) {
@@ -44,7 +44,7 @@ export async function assertWorkspaceOwned(queryRunner: QueryRunner, ownerId: st
 /** Locks and returns a conversation only when it belongs to the supplied owner. */
 export async function lockConversation(queryRunner: QueryRunner, ownerId: string, conversationId: string): Promise<HomeConversationRow | null> {
   const rows: readonly HomeConversationRow[] = await queryRunner.query(
-    `SELECT "id", "owner_id", "scope", "workspace_id", "title", "last_activity_at", "created_at", "updated_at"
+    `SELECT "id", "owner_id", "scope", "workspace_id", "title", "last_event_sequence", "last_activity_at", "created_at", "updated_at"
      FROM "home_conversations" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1 FOR UPDATE`,
     [ownerId, conversationId]
   );

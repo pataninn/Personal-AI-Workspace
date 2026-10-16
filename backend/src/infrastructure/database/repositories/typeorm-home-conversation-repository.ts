@@ -2,27 +2,35 @@ import type { DataSource, QueryRunner } from 'typeorm';
 
 import {
   HomeConversationNotFoundError,
+  HomeConversationEventInvalidError,
+  HomeEventCursorInvalidError,
   HomeTurnNotFoundError,
+  HomeTurnNotCancellableError,
   HomeTurnTransitionInvalidError
 } from '@/modules/home-assistant/domain/home-conversation-errors';
 import type {
   HomeConversation,
+  HomeConversationEventPage,
   HomeConversationPage,
   HomeMessage,
   HomeMessagePage,
   HomeTurn,
   HomeTurnPage,
+  HomeTurnSubmission,
   PersistedHomeResource
 } from '@/modules/home-assistant/domain/home-conversation-types';
 import { canTransitionHomeTurn } from '@/modules/home-assistant/domain/home-conversation-types';
 import type {
   AppendHomeMessageInput,
+  CancelHomeTurnInput,
   CreateHomeConversationInput,
   CreateHomeTurnInput,
   IHomeConversationRepository,
+  ListHomeEventsInput,
   ListHomeConversationsInput,
   ListHomeMessagesInput,
   ListHomeTurnsInput,
+  SubmitHomeTurnInput,
   UpdateHomeTurnStatusInput
 } from '@/modules/home-assistant/repositories/home-conversation-repository';
 import {
@@ -36,13 +44,16 @@ import {
   decodeHomeConversationCursor,
   encodeHomeConversationCursor,
   toHomeConversation,
+  toHomeConversationEvent,
   toHomeMessage,
   toHomeTurn,
   type HomeConversationListRow,
+  type HomeConversationEventRow,
   type HomeConversationRow,
   type HomeMessageRow,
   type HomeTurnRow
 } from '@/infrastructure/database/repositories/home-conversation-persistence-mappers';
+import { appendHomeConversationEvent } from '@/infrastructure/database/repositories/home-conversation-event-persistence';
 
 interface KeyedRow {
   readonly request_fingerprint: string;
@@ -52,7 +63,34 @@ interface SequenceRow {
   readonly sequence: number | string;
 }
 
+interface InterruptedHomeTurnRow {
+  readonly id: string;
+  readonly owner_id: string;
+  readonly conversation_id: string;
+}
+
+interface HomeConversationEventPageRow {
+  readonly last_event_sequence: number | string;
+  readonly sequence: number | string | null;
+  readonly event_type: string | null;
+  readonly turn_id: string | null;
+  readonly entity_id: string | null;
+  readonly payload: unknown;
+  readonly created_at: Date | string | null;
+}
+
+function hasEventRow(row: HomeConversationEventPageRow): row is HomeConversationEventPageRow & HomeConversationEventRow {
+  return row.sequence !== null && row.event_type !== null && row.created_at !== null;
+}
+
 interface HomeMessageKeyedRow extends HomeMessageRow, KeyedRow {}
+
+/** Normalizes TypeORM PostgreSQL UPDATE RETURNING rows and lightweight test adapters. */
+function returnedRows<T>(result: unknown): readonly T[] {
+  if (!Array.isArray(result)) return [];
+  const rows = Array.isArray(result[0]) ? result[0] : result;
+  return rows as readonly T[];
+}
 
 /** TypeORM adapter for durable Home conversations, turns, and messages. */
 export class TypeOrmHomeConversationRepository implements IHomeConversationRepository {
@@ -67,7 +105,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       scopeFilter = ` AND "workspace_id" = $${parameters.length}`;
     }
     let cursorFilter = '';
-    if (input.cursor) {
+    if (input.cursor !== undefined) {
       const cursor = decodeHomeConversationCursor(input.cursor);
       parameters.push(cursor.lastActivityAt, cursor.id);
       cursorFilter = ` AND ("last_activity_at" < $${parameters.length - 1} OR ("last_activity_at" = $${parameters.length - 1} AND "id" > $${parameters.length}))`;
@@ -75,6 +113,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
     parameters.push(input.limit + 1);
     const rows: readonly HomeConversationListRow[] = await this.dataSource.query(
       `SELECT "id", "owner_id", "scope", "workspace_id", "title", "last_activity_at",
+              "last_event_sequence",
               to_char("last_activity_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "cursor_activity_at",
               "created_at", "updated_at"
        FROM "home_conversations" WHERE "owner_id" = $1 AND "scope" = $2${scopeFilter}${cursorFilter}
@@ -93,7 +132,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
   /** Finds a conversation only when it belongs to the supplied owner. */
   public async findForOwner(ownerId: string, conversationId: string): Promise<HomeConversation | null> {
     const rows: readonly HomeConversationRow[] = await this.dataSource.query(
-      `SELECT "id", "owner_id", "scope", "workspace_id", "title", "last_activity_at", "created_at", "updated_at"
+      `SELECT "id", "owner_id", "scope", "workspace_id", "title", "last_event_sequence", "last_activity_at", "created_at", "updated_at"
        FROM "home_conversations" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1`,
       [ownerId, conversationId]
     );
@@ -116,14 +155,22 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       const rows: readonly HomeConversationRow[] = await queryRunner.query(
         `INSERT INTO "home_conversations" ("owner_id", "scope", "workspace_id", "title", "create_request_key", "create_request_fingerprint")
          VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING "id", "owner_id", "scope", "workspace_id", "title", "last_activity_at", "created_at", "updated_at"`,
+         RETURNING "id", "owner_id", "scope", "workspace_id", "title", "last_event_sequence", "last_activity_at", "created_at", "updated_at"`,
         [input.ownerId, input.scope.kind, workspaceId, input.title, input.requestKey, input.requestFingerprint]
       );
       const row = rows[0];
       if (!row) {
         throw new HomeConversationNotFoundError();
       }
-      return { resource: toHomeConversation(row), replayed: false };
+      const lastEventSequence = await appendHomeConversationEvent(queryRunner, {
+        ownerId: input.ownerId,
+        conversationId: row.id,
+        type: 'conversation.created',
+        turnId: null,
+        entityId: null,
+        payload: { scope: input.scope.kind }
+      });
+      return { resource: toHomeConversation({ ...row, last_event_sequence: lastEventSequence }), replayed: false };
     });
   }
 
@@ -159,8 +206,89 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       if (!row) {
         throw new HomeConversationNotFoundError();
       }
-      await queryRunner.query('UPDATE "home_conversations" SET "last_activity_at" = now(), "updated_at" = now() WHERE "owner_id" = $1 AND "id" = $2', [input.ownerId, input.conversationId]);
+      await appendHomeConversationEvent(queryRunner, {
+        ownerId: input.ownerId,
+        conversationId: input.conversationId,
+        type: 'turn.created',
+        turnId: row.id,
+        entityId: null,
+        payload: { turnSequence: sequence, status: row.status }
+      });
       return { resource: toHomeTurn(row), replayed: false };
+    });
+  }
+
+  /** Persists a turn and its first user message as one idempotent state change. */
+  public async submitTurn(input: SubmitHomeTurnInput): Promise<HomeTurnSubmission> {
+    return withTransaction(this.dataSource, async (queryRunner) => {
+      const conversation = await lockConversation(queryRunner, input.ownerId, input.conversationId);
+      if (!conversation) throw new HomeConversationNotFoundError();
+
+      const existingRows: readonly (HomeTurnRow & KeyedRow)[] = await queryRunner.query(
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
+         FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "request_key" = $3 LIMIT 1`,
+        [input.ownerId, input.conversationId, input.requestKey]
+      );
+      const existing = existingRows[0];
+      if (existing) {
+        assertRequestFingerprint(existing.request_fingerprint, input.requestFingerprint, 'turn');
+        const messageRows: readonly HomeMessageKeyedRow[] = await queryRunner.query(
+          `SELECT "id", "owner_id", "conversation_id", "turn_id", "sequence", "role", "content", "request_key", "request_fingerprint", "created_at"
+           FROM "home_messages" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "turn_id" = $3 AND "request_key" = $4 LIMIT 1`,
+          [input.ownerId, input.conversationId, existing.id, input.requestKey]
+        );
+        const message = messageRows[0];
+        if (!message) throw new HomeConversationEventInvalidError();
+        assertRequestFingerprint(message.request_fingerprint, input.requestFingerprint, 'message');
+        return { turn: toHomeTurn(existing), message: toHomeMessage(message), replayed: true };
+      }
+
+      const turnSequenceRows: readonly SequenceRow[] = await queryRunner.query(
+        'SELECT COALESCE(MAX("sequence"), 0) + 1 AS "sequence" FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2',
+        [input.ownerId, input.conversationId]
+      );
+      const turnSequence = Number(turnSequenceRows[0]?.sequence ?? 1);
+      const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
+        `INSERT INTO "home_turns" ("owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status")
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"`,
+        [input.ownerId, input.conversationId, turnSequence, input.requestKey, input.requestFingerprint, input.initialStatus]
+      );
+      const turnRow = turnRows[0];
+      if (!turnRow) throw new HomeTurnNotFoundError();
+
+      await appendHomeConversationEvent(queryRunner, {
+        ownerId: input.ownerId,
+        conversationId: input.conversationId,
+        type: 'turn.created',
+        turnId: turnRow.id,
+        entityId: null,
+        payload: { turnSequence, status: turnRow.status }
+      });
+
+      const messageSequenceRows: readonly SequenceRow[] = await queryRunner.query(
+        'SELECT COALESCE(MAX("sequence"), 0) + 1 AS "sequence" FROM "home_messages" WHERE "owner_id" = $1 AND "conversation_id" = $2',
+        [input.ownerId, input.conversationId]
+      );
+      const messageSequence = Number(messageSequenceRows[0]?.sequence ?? 1);
+      const messageRows: readonly HomeMessageRow[] = await queryRunner.query(
+        `INSERT INTO "home_messages" ("owner_id", "conversation_id", "turn_id", "sequence", "role", "content", "request_key", "request_fingerprint")
+         VALUES ($1, $2, $3, $4, 'user', $5, $6, $7)
+         RETURNING "id", "owner_id", "conversation_id", "turn_id", "sequence", "role", "content", "created_at"`,
+        [input.ownerId, input.conversationId, turnRow.id, messageSequence, input.message, input.requestKey, input.requestFingerprint]
+      );
+      const messageRow = messageRows[0];
+      if (!messageRow) throw new HomeTurnNotFoundError();
+
+      await appendHomeConversationEvent(queryRunner, {
+        ownerId: input.ownerId,
+        conversationId: input.conversationId,
+        type: 'message.appended',
+        turnId: turnRow.id,
+        entityId: messageRow.id,
+        payload: { messageSequence, role: messageRow.role }
+      });
+      return { turn: toHomeTurn(turnRow), message: toHomeMessage(messageRow), replayed: false };
     });
   }
 
@@ -188,6 +316,56 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
     return { turns: page, nextAfterSequence: hasMore ? page[page.length - 1]?.sequence ?? null : null };
   }
 
+  /** Finds one turn only when both owner and conversation match. */
+  public async findTurnForOwner(ownerId: string, conversationId: string, turnId: string): Promise<HomeTurn | null> {
+    const rows: readonly HomeTurnRow[] = await this.dataSource.query(
+      `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"
+       FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1`,
+      [ownerId, conversationId, turnId]
+    );
+    return rows[0] ? toHomeTurn(rows[0]) : null;
+  }
+
+  /** Persists cancellation intent under the conversation lock and replays repeated requests. */
+  public async cancelTurn(input: CancelHomeTurnInput): Promise<PersistedHomeResource<HomeTurn> | null> {
+    return withTransaction(this.dataSource, async (queryRunner) => {
+      const conversation = await lockConversation(queryRunner, input.ownerId, input.conversationId);
+      if (!conversation) return null;
+
+      const rows: readonly HomeTurnRow[] = await queryRunner.query(
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"
+         FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
+        [input.ownerId, input.conversationId, input.turnId]
+      );
+      const current = rows[0];
+      if (!current) return null;
+      if (current.status === 'cancelled' || current.status === 'cancel_requested') {
+        return { resource: toHomeTurn(current), replayed: true };
+      }
+
+      const status = current.status === 'pending' ? 'cancelled' : current.status === 'running' ? 'cancel_requested' : null;
+      if (!status || !canTransitionHomeTurn(current.status, status)) throw new HomeTurnNotCancellableError();
+
+      const updatedRows = returnedRows<HomeTurnRow>(await queryRunner.query(
+        `UPDATE "home_turns" SET "status" = $4, "updated_at" = now()
+         WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3
+         RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"`,
+        [input.ownerId, input.conversationId, input.turnId, status]
+      ));
+      const updated = updatedRows[0];
+      if (!updated) return null;
+      await appendHomeConversationEvent(queryRunner, {
+        ownerId: input.ownerId,
+        conversationId: input.conversationId,
+        type: 'turn.status_changed',
+        turnId: input.turnId,
+        entityId: null,
+        payload: { status: updated.status }
+      });
+      return { resource: toHomeTurn(updated), replayed: false };
+    });
+  }
+
   /** Updates a turn only within the supplied owner and conversation. */
   public async updateTurnStatus(input: UpdateHomeTurnStatusInput): Promise<HomeTurn | null> {
     return withTransaction(this.dataSource, async (queryRunner) => {
@@ -210,17 +388,24 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       if (current.status === input.status) {
         return toHomeTurn(current);
       }
-      const rows: readonly HomeTurnRow[] = await queryRunner.query(
+      const rows = returnedRows<HomeTurnRow>(await queryRunner.query(
         `UPDATE "home_turns" SET "status" = $4, "updated_at" = now()
          WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3
          RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"`,
         [input.ownerId, input.conversationId, input.turnId, input.status]
-      );
+      ));
       const row = rows[0];
       if (!row) {
         return null;
       }
-      await queryRunner.query('UPDATE "home_conversations" SET "last_activity_at" = now(), "updated_at" = now() WHERE "owner_id" = $1 AND "id" = $2', [input.ownerId, input.conversationId]);
+      await appendHomeConversationEvent(queryRunner, {
+        ownerId: input.ownerId,
+        conversationId: input.conversationId,
+        type: 'turn.status_changed',
+        turnId: row.id,
+        entityId: null,
+        payload: { status: row.status }
+      });
       return toHomeTurn(row);
     });
   }
@@ -264,7 +449,14 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       if (!row) {
         throw new HomeTurnNotFoundError();
       }
-      await queryRunner.query('UPDATE "home_conversations" SET "last_activity_at" = now(), "updated_at" = now() WHERE "owner_id" = $1 AND "id" = $2', [input.ownerId, input.conversationId]);
+      await appendHomeConversationEvent(queryRunner, {
+        ownerId: input.ownerId,
+        conversationId: input.conversationId,
+        type: 'message.appended',
+        turnId: input.turnId,
+        entityId: row.id,
+        payload: { messageSequence: sequence, role: row.role }
+      });
       return { resource: toHomeMessage(row), replayed: false };
     });
   }
@@ -293,9 +485,83 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
     return { messages, nextBeforeSequence: hasMore ? messages[0]?.sequence ?? null : null };
   }
 
+  /** Reads a bounded durable page strictly after the committed conversation cursor. */
+  public async listEventsForOwner(input: ListHomeEventsInput): Promise<HomeConversationEventPage | null> {
+    if (!Number.isSafeInteger(input.afterSequence) || input.afterSequence < 0 || input.afterSequence > 2147483647) {
+      throw new HomeEventCursorInvalidError();
+    }
+    const rows: readonly HomeConversationEventPageRow[] = await this.dataSource.query(
+      `SELECT c."last_event_sequence",
+              e."sequence", e."event_type", e."turn_id", e."entity_id", e."payload", e."created_at"
+       FROM "home_conversations" c
+       LEFT JOIN LATERAL (
+         SELECT "sequence", "event_type", "turn_id", "entity_id", "payload", "created_at"
+         FROM "home_conversation_events"
+         WHERE "owner_id" = c."owner_id" AND "conversation_id" = c."id" AND "sequence" > $3
+         ORDER BY "sequence" ASC LIMIT $4
+       ) e ON true
+       WHERE c."owner_id" = $1 AND c."id" = $2
+       ORDER BY e."sequence" ASC`,
+      [input.ownerId, input.conversationId, input.afterSequence, input.limit + 1]
+    );
+    const conversationRow = rows[0];
+    if (!conversationRow) return null;
+    const eventRows = rows.filter(hasEventRow);
+    const hasMore = eventRows.length > input.limit;
+    const pageRows = hasMore ? eventRows.slice(0, input.limit) : eventRows;
+    const events = pageRows.map(toHomeConversationEvent);
+    return {
+      events,
+      nextAfterSequence: hasMore ? events[events.length - 1]?.sequence ?? null : null,
+      lastEventSequence: Number(conversationRow.last_event_sequence)
+    };
+  }
+
+  /** Marks unresolved turns as review-required without replaying any provider or task writes. */
+  public async reconcileInterruptedTurns(): Promise<number> {
+    const candidates: readonly InterruptedHomeTurnRow[] = await this.dataSource.query(
+      `SELECT "id", "owner_id", "conversation_id" FROM "home_turns"
+       WHERE "status" IN ('pending', 'running', 'cancel_requested')
+       ORDER BY "owner_id" ASC, "conversation_id" ASC, "sequence" ASC`
+    );
+    let reconciled = 0;
+    for (const candidate of candidates) {
+      const changed = await withTransaction(this.dataSource, async (queryRunner) => {
+        const conversation = await lockConversation(queryRunner, candidate.owner_id, candidate.conversation_id);
+        if (!conversation) return false;
+        const rows: readonly HomeTurnRow[] = await queryRunner.query(
+          `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"
+           FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
+          [candidate.owner_id, candidate.conversation_id, candidate.id]
+        );
+        const current = rows[0];
+        if (!current || !['pending', 'running', 'cancel_requested'].includes(current.status)) return false;
+        const updatedRows = returnedRows<HomeTurnRow>(await queryRunner.query(
+          `UPDATE "home_turns" SET "status" = 'unknown', "updated_at" = now()
+           WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3
+           RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"`,
+          [candidate.owner_id, candidate.conversation_id, candidate.id]
+        ));
+        const updated = updatedRows[0];
+        if (!updated) return false;
+        await appendHomeConversationEvent(queryRunner, {
+          ownerId: candidate.owner_id,
+          conversationId: candidate.conversation_id,
+          type: 'turn.status_changed',
+          turnId: candidate.id,
+          entityId: null,
+          payload: { status: updated.status, reason: 'interrupted' }
+        });
+        return true;
+      });
+      if (changed) reconciled += 1;
+    }
+    return reconciled;
+  }
+
   private async findConversationRequest(queryRunner: QueryRunner, ownerId: string, scope: 'home' | 'workspace', workspaceId: string | null, requestKey: string): Promise<(HomeConversationRow & KeyedRow) | null> {
     const rows: readonly (HomeConversationRow & KeyedRow)[] = await queryRunner.query(
-      `SELECT "id", "owner_id", "scope", "workspace_id", "title", "create_request_fingerprint" AS "request_fingerprint", "last_activity_at", "created_at", "updated_at"
+      `SELECT "id", "owner_id", "scope", "workspace_id", "title", "last_event_sequence", "create_request_fingerprint" AS "request_fingerprint", "last_activity_at", "created_at", "updated_at"
        FROM "home_conversations" WHERE "owner_id" = $1 AND "scope" = $2 AND "workspace_id" IS NOT DISTINCT FROM $3 AND "create_request_key" = $4 LIMIT 1`,
       [ownerId, scope, workspaceId, requestKey]
     );

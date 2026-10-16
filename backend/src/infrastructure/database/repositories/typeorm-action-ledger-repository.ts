@@ -15,6 +15,7 @@ import {
   type PersistedActionLedgerRecord
 } from '@/modules/action-ledger/domain/action-ledger-types';
 import type { IActionLedgerRepository } from '@/modules/action-ledger/repositories/action-ledger-repository';
+import type { IActionLedgerEventRecorder } from '@/modules/action-ledger/repositories/action-ledger-event-recorder';
 import type { IActionLedgerUndoRepository } from '@/modules/action-ledger/repositories/action-ledger-undo-repository';
 import { toActionLedgerRecord, type ActionLedgerRow } from '@/infrastructure/database/repositories/action-ledger-persistence-mappers';
 
@@ -24,7 +25,10 @@ const ACTION_LEDGER_COLUMNS = `"id", "owner_id", "operation_key", "request_finge
 
 /** Persists action receipts and runs the target participant on the receipt's transaction. */
 export class TypeOrmActionLedgerRepository implements IActionLedgerRepository<QueryRunner>, IActionLedgerUndoRepository<QueryRunner> {
-  public constructor(private readonly dataSource: DataSource) {}
+  public constructor(
+    private readonly dataSource: DataSource,
+    private readonly eventRecorder?: IActionLedgerEventRecorder<QueryRunner>
+  ) {}
 
   /** Replays or applies one owner-scoped operation with mutation and receipt in one transaction. */
   public async executeAtomically(
@@ -91,7 +95,15 @@ export class TypeOrmActionLedgerRepository implements IActionLedgerRepository<Qu
         }
       }
 
-      return { record: toActionLedgerRecord(row), replayed: false };
+      const record = toActionLedgerRecord(row);
+      if (record.turnId !== null) {
+        if (!this.eventRecorder) {
+          throw new Error('An event recorder is required for assistant action receipts.');
+        }
+        await this.eventRecorder.recordAction(queryRunner, record);
+      }
+
+      return { record, replayed: false };
     });
   }
 

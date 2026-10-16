@@ -1,6 +1,9 @@
-import { HomeConversationCursorInvalidError, HomeConversationScopeInvalidError } from '@/modules/home-assistant/domain/home-conversation-errors';
+import { HomeConversationCursorInvalidError, HomeConversationEventInvalidError, HomeConversationScopeInvalidError } from '@/modules/home-assistant/domain/home-conversation-errors';
 import type {
   HomeConversation,
+  HomeConversationEvent,
+  HomeConversationEventPayload,
+  HomeConversationEventType,
   HomeConversationScope,
   HomeMessage,
   HomeMessageRole,
@@ -16,6 +19,7 @@ export interface HomeConversationRow {
   readonly scope: 'home' | 'workspace';
   readonly workspace_id: string | null;
   readonly title: string;
+  readonly last_event_sequence: number | string;
   readonly last_activity_at: Timestamp;
   readonly created_at: Timestamp;
   readonly updated_at: Timestamp;
@@ -48,6 +52,15 @@ export interface HomeMessageRow {
   readonly created_at: Timestamp;
 }
 
+export interface HomeConversationEventRow {
+  readonly sequence: number | string;
+  readonly event_type: string;
+  readonly turn_id: string | null;
+  readonly entity_id: string | null;
+  readonly payload: unknown;
+  readonly created_at: Timestamp;
+}
+
 function toDate(value: Timestamp): Date {
   return value instanceof Date ? value : new Date(value);
 }
@@ -70,9 +83,25 @@ export function toHomeConversation(row: HomeConversationRow): HomeConversation {
     ownerId: row.owner_id,
     scope: toHomeConversationScope(row.scope, row.workspace_id),
     title: row.title,
+    lastEventSequence: Number(row.last_event_sequence),
     lastActivityAt: toDate(row.last_activity_at),
     createdAt: toDate(row.created_at),
     updatedAt: toDate(row.updated_at)
+  };
+}
+
+/** Maps an allowlisted event row while rejecting unexpected JSON payload shapes. */
+export function toHomeConversationEvent(row: HomeConversationEventRow): HomeConversationEvent {
+  if (!isHomeConversationEventType(row.event_type) || !isScalarRecord(row.payload)) {
+    throw new HomeConversationEventInvalidError();
+  }
+  return {
+    sequence: Number(row.sequence),
+    type: row.event_type,
+    turnId: row.turn_id,
+    entityId: row.entity_id,
+    payload: row.payload,
+    createdAt: toDate(row.created_at)
   };
 }
 
@@ -112,8 +141,13 @@ export function encodeHomeConversationCursor(lastActivityAt: string, id: string)
 /** Decodes and validates a stable activity cursor. */
 export function decodeHomeConversationCursor(cursor: string): { readonly lastActivityAt: string; readonly id: string } {
   try {
-    const value: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
-    if (!isRecord(value) || typeof value.lastActivityAt !== 'string' || Number.isNaN(Date.parse(value.lastActivityAt)) || typeof value.id !== 'string') {
+    const bytes = Buffer.from(cursor, 'base64url');
+    if (bytes.toString('base64url') !== cursor) {
+      throw new Error('invalid cursor encoding');
+    }
+    const value: unknown = JSON.parse(bytes.toString('utf8'));
+    if (!isRecord(value) || typeof value.lastActivityAt !== 'string' || !isCanonicalCursorTimestamp(value.lastActivityAt)
+      || typeof value.id !== 'string' || !isUuid(value.id)) {
       throw new Error('invalid cursor fields');
     }
     return { lastActivityAt: value.lastActivityAt, id: value.id };
@@ -122,6 +156,41 @@ export function decodeHomeConversationCursor(cursor: string): { readonly lastAct
   }
 }
 
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value);
+}
+
+/** Matches the exact UTC microsecond timestamp emitted by the Home list query. */
+function isCanonicalCursorTimestamp(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{6})Z$/u.exec(value);
+  if (!match) return false;
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  if (year < 1 || month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false;
+
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day >= 1 && day <= (daysInMonth[month - 1] ?? 0);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isHomeConversationEventType(value: string): value is HomeConversationEventType {
+  return value === 'conversation.created'
+    || value === 'turn.created'
+    || value === 'turn.status_changed'
+    || value === 'message.appended'
+    || value === 'action.receipt';
+}
+
+function isScalarRecord(value: unknown): value is HomeConversationEventPayload {
+  return isRecord(value) && Object.values(value).every((entry) => entry === null || ['string', 'number', 'boolean'].includes(typeof entry));
 }

@@ -4,7 +4,7 @@ export type HomeConversationScope =
   | { readonly kind: 'workspace'; readonly workspaceId: string };
 
 /** States persisted for a Home assistant turn. */
-export type HomeTurnStatus = 'pending' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'unknown';
+export type HomeTurnStatus = 'pending' | 'running' | 'cancel_requested' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'unknown' | 'unsupported';
 
 /** Roles that can appear in a persisted Home transcript. */
 export type HomeMessageRole = 'user' | 'assistant' | 'system' | 'tool';
@@ -15,6 +15,7 @@ export interface HomeConversation {
   readonly ownerId: string;
   readonly scope: HomeConversationScope;
   readonly title: string;
+  readonly lastEventSequence: number;
   readonly lastActivityAt: Date;
   readonly createdAt: Date;
   readonly updatedAt: Date;
@@ -38,13 +39,15 @@ export function canTransitionHomeTurn(from: HomeTurnStatus, to: HomeTurnStatus):
     return true;
   }
   const allowed: Readonly<Record<HomeTurnStatus, readonly HomeTurnStatus[]>> = {
-    pending: ['running', 'failed', 'cancelled', 'unknown'],
-    running: ['completed', 'partial', 'failed', 'cancelled', 'unknown'],
+    pending: ['running', 'failed', 'cancelled', 'unknown', 'unsupported'],
+    running: ['cancel_requested', 'completed', 'partial', 'failed', 'unknown'],
+    cancel_requested: ['cancelled', 'unknown'],
     completed: [],
     partial: [],
     failed: [],
     cancelled: [],
-    unknown: ['completed', 'partial', 'failed', 'cancelled']
+    unknown: ['completed', 'partial', 'failed', 'cancelled'],
+    unsupported: []
   };
   return allowed[from].includes(to);
 }
@@ -77,6 +80,41 @@ export interface HomeTurnPage {
 export interface HomeMessagePage {
   readonly messages: readonly HomeMessage[];
   readonly nextBeforeSequence: number | null;
+}
+
+/** Event kinds that make durable Home state replayable without timestamp merging. */
+export type HomeConversationEventType =
+  | 'conversation.created'
+  | 'turn.created'
+  | 'turn.status_changed'
+  | 'message.appended'
+  | 'action.receipt';
+
+/** Small scalar-only metadata kept in the replay log; transcript text stays in messages. */
+export type HomeConversationEventPayload = Readonly<Record<string, string | number | boolean | null>>;
+
+/** A committed lifecycle event ordered by a per-conversation sequence. */
+export interface HomeConversationEvent {
+  readonly sequence: number;
+  readonly type: HomeConversationEventType;
+  readonly turnId: string | null;
+  readonly entityId: string | null;
+  readonly payload: HomeConversationEventPayload;
+  readonly createdAt: Date;
+}
+
+/** A bounded page of durable events and the current high-water mark. */
+export interface HomeConversationEventPage {
+  readonly events: readonly HomeConversationEvent[];
+  readonly nextAfterSequence: number | null;
+  readonly lastEventSequence: number;
+}
+
+/** One idempotent submission and its initial user transcript entry. */
+export interface HomeTurnSubmission {
+  readonly turn: HomeTurn;
+  readonly message: HomeMessage;
+  readonly replayed: boolean;
 }
 
 /** A persisted create/append result, including whether it replayed a request. */

@@ -29,6 +29,8 @@ import { ProjectFactDomainError } from '@/modules/memory/domain/project-fact-err
 import { createProjectFactRouter, type ProjectFactRouterDependencies } from '@/modules/memory';
 import { createGlobalTaskRouter, createProjectTaskRouter, ProjectTaskDomainError, type GlobalTaskRouterDependencies, type ProjectTaskRouterDependencies } from '@/modules/tasks';
 import { createActionUndoRouter, type ActionUndoRouterDependencies } from '@/modules/home-assistant/controllers/action-undo-router';
+import { createHomeConversationRouter, type HomeConversationRouterDependencies } from '@/modules/home-assistant/controllers/home-conversation-router';
+import { HomeConversationDomainError } from '@/modules/home-assistant/domain/home-conversation-errors';
 
 export interface CreateAppOptions {
   readonly logger: AppLogger;
@@ -46,6 +48,7 @@ export interface CreateAppOptions {
   readonly projectTasks?: ProjectTaskRouterDependencies;
   readonly globalTasks?: GlobalTaskRouterDependencies;
   readonly actionUndo?: ActionUndoRouterDependencies;
+  readonly homeConversations?: HomeConversationRouterDependencies;
 }
 
 const requestIdMiddleware: RequestHandler = (request, response, next) => {
@@ -121,6 +124,9 @@ function toAppError(error: unknown): AppError | null {
   if (error instanceof ProjectTaskDomainError) {
     return new AppError(error.code, error.statusCode, error.message, error.details);
   }
+  if (error instanceof HomeConversationDomainError) {
+    return new AppError(error.code, error.statusCode, error.message);
+  }
   if (isMalformedJsonError(error)) {
     return new AppError('VALIDATION_ERROR', 400, 'The request body is not valid JSON.');
   }
@@ -178,6 +184,9 @@ export function createApp(options: CreateAppOptions): Express {
   }
   if (options.conversations) {
     app.use('/api/v1', createConversationRouter(options.conversations));
+  }
+  if (options.homeConversations) {
+    app.use('/api/v1', createHomeConversationRouter(options.homeConversations));
   }
   if (options.workspace) {
     app.use('/api/v1/projects/:projectId/files', createWorkspaceRouter(options.workspace));

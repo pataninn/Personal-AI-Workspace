@@ -3,7 +3,7 @@
   "info": {
     "title": "Personal AI Workspace API",
     "version": "0.1.0",
-    "description": "Authenticated REST endpoints for project-scoped conversations, project tasks, owner-wide task queries, durable project facts, and AI runs."
+    "description": "Authenticated REST endpoints for Home and project-scoped conversations, project tasks, owner-wide task queries, durable project facts, and AI runs."
   },
   "servers": [
     {
@@ -34,9 +34,195 @@
     },
     {
       "name": "Action history"
+    },
+    {
+      "name": "Home conversations"
     }
   ],
   "paths": {
+    "/api/v1/home/conversations": {
+      "get": {
+        "tags": ["Home conversations"],
+        "summary": "List conversations in the authenticated Home scope",
+        "operationId": "listHomeConversations",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "scope", "in": "query", "required": true, "schema": { "type": "string", "enum": ["home", "workspace"] } },
+          { "name": "workspaceId", "in": "query", "description": "Required for workspace scope; the workspace must be owned, active, and rootless.", "schema": { "$ref": "#/components/schemas/Uuid" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 } },
+          { "name": "cursor", "in": "query", "schema": { "type": "string", "maxLength": 1024 } }
+        ],
+        "responses": {
+          "200": { "description": "Owner-scoped conversation page.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeConversationListEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "post": {
+        "tags": ["Home conversations"],
+        "summary": "Create or replay a Home conversation",
+        "operationId": "createHomeConversation",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/HomeIdempotencyHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeConversationCreateRequest" } } } },
+        "responses": {
+          "201": { "description": "Conversation created.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeConversationEnvelope" } } } },
+          "200": { "description": "Matching request replayed without a duplicate event.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeConversationEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "Workspace is missing, foreign, archived, or file-backed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "Idempotency key was reused with different input.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/home/conversations/{conversationId}": {
+      "get": {
+        "tags": ["Home conversations"],
+        "summary": "Read one owner-owned Home conversation",
+        "operationId": "getHomeConversation",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/HomeConversationIdPath" }],
+        "responses": {
+          "200": { "description": "Conversation resource.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeConversationEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/ConversationNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/home/conversations/{conversationId}/turns": {
+      "get": {
+        "tags": ["Home conversations"],
+        "summary": "List turns in per-conversation order",
+        "operationId": "listHomeTurns",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/HomeConversationIdPath" },
+          { "name": "afterSequence", "in": "query", "schema": { "type": "integer", "minimum": 0 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 } }
+        ],
+        "responses": {
+          "200": { "description": "Turn page.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeTurnPageEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/ConversationNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "post": {
+        "tags": ["Home conversations"],
+        "summary": "Persist a user message and unsupported-runtime turn atomically",
+        "operationId": "submitHomeTurn",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/HomeConversationIdPath" },
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/HomeIdempotencyHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeTurnSubmissionRequest" } } } },
+        "responses": {
+          "201": { "description": "Turn and initial message saved; no runtime was started.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeTurnSubmissionEnvelope" } } } },
+          "200": { "description": "Matching submission replayed without another message or event.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeTurnSubmissionEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ConversationNotFound" },
+          "409": { "description": "Idempotency key was reused with different input.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/home/conversations/{conversationId}/turns/{turnId}": {
+      "get": {
+        "tags": ["Home conversations"],
+        "summary": "Read one owner-owned turn",
+        "operationId": "getHomeTurn",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/HomeConversationIdPath" },
+          { "$ref": "#/components/parameters/HomeTurnIdPath" }
+        ],
+        "responses": {
+          "200": { "description": "Turn resource.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeTurnEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/ConversationNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/home/conversations/{conversationId}/turns/{turnId}/cancellation": {
+      "post": {
+        "tags": ["Home conversations"],
+        "summary": "Persist cancellation intent under the conversation lock",
+        "operationId": "cancelHomeTurn",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/HomeConversationIdPath" },
+          { "$ref": "#/components/parameters/HomeTurnIdPath" },
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" }
+        ],
+        "responses": {
+          "200": { "description": "Cancellation committed or matching cancellation replayed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeTurnCancellationEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ConversationNotFound" },
+          "409": { "description": "Turn is terminal and cannot be cancelled.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/home/conversations/{conversationId}/messages": {
+      "get": {
+        "tags": ["Home conversations"],
+        "summary": "Read transcript messages in sequence order",
+        "operationId": "listHomeMessages",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/HomeConversationIdPath" },
+          { "name": "beforeSequence", "in": "query", "schema": { "type": "integer", "minimum": 0 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 } }
+        ],
+        "responses": {
+          "200": { "description": "Message page returned in ascending display order.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeMessagePageEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/ConversationNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/home/conversations/{conversationId}/events": {
+      "get": {
+        "tags": ["Home conversations"],
+        "summary": "Replay committed conversation events after a numeric cursor",
+        "operationId": "listHomeEvents",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/HomeConversationIdPath" },
+          { "name": "afterSequence", "in": "query", "schema": { "type": "integer", "minimum": 0, "default": 0 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 } }
+        ],
+        "responses": {
+          "200": { "description": "A bounded ascending event page and high-water mark.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeEventPageEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/ConversationNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
     "/api/v1/actions/{actionId}": {
       "get": {
         "tags": ["Action history"],
@@ -3895,6 +4081,13 @@
       }
     },
     "parameters": {
+      "HomeIdempotencyHeader": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "Stable identity for replaying a Home conversation or turn submission.",
+        "schema": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[A-Za-z0-9._:-]+$" }
+      },
       "ProjectIdPath": {
         "name": "projectId",
         "in": "path",
@@ -3918,6 +4111,18 @@
         "schema": {
           "$ref": "#/components/schemas/Uuid"
         }
+      },
+      "HomeConversationIdPath": {
+        "name": "conversationId",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/Uuid" }
+      },
+      "HomeTurnIdPath": {
+        "name": "turnId",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/Uuid" }
       },
       "AiRunIdPath": {
         "name": "runId",
@@ -9039,6 +9244,202 @@
           "content",
           "expectedHash"
         ],
+        "additionalProperties": false
+      },
+      "HomeConversation": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "scope": {
+            "oneOf": [
+              { "type": "object", "properties": { "kind": { "type": "string", "enum": ["home"] } }, "required": ["kind"], "additionalProperties": false },
+              { "type": "object", "properties": { "kind": { "type": "string", "enum": ["workspace"] }, "workspaceId": { "$ref": "#/components/schemas/Uuid" } }, "required": ["kind", "workspaceId"], "additionalProperties": false }
+            ]
+          },
+          "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "lastEventSequence": { "type": "integer", "minimum": 0 },
+          "lastActivityAt": { "type": "string", "format": "date-time" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "replayed": { "type": "boolean" }
+        },
+        "required": ["id", "scope", "title", "lastEventSequence", "lastActivityAt", "createdAt", "updatedAt"],
+        "additionalProperties": false
+      },
+      "HomeConversationEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": { "$ref": "#/components/schemas/HomeConversation" },
+          "error": { "nullable": true, "type": "object", "description": "Null on success." }
+        },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "HomeConversationCreateRequest": {
+        "type": "object",
+        "properties": {
+          "scope": { "$ref": "#/components/schemas/HomeConversation/properties/scope" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 160 }
+        },
+        "required": ["scope", "title"],
+        "additionalProperties": false
+      },
+      "HomeConversationListEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "conversations": { "type": "array", "items": { "$ref": "#/components/schemas/HomeConversation" } },
+              "nextCursor": { "type": "string", "nullable": true }
+            },
+            "required": ["conversations", "nextCursor"],
+            "additionalProperties": false
+          },
+          "error": { "nullable": true, "type": "object", "description": "Null on success." }
+        },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "HomeTurn": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "conversationId": { "$ref": "#/components/schemas/Uuid" },
+          "sequence": { "type": "integer", "minimum": 1 },
+          "status": { "type": "string", "enum": ["pending", "running", "cancel_requested", "completed", "partial", "failed", "cancelled", "unknown", "unsupported"] },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "conversationId", "sequence", "status", "createdAt", "updatedAt"],
+        "additionalProperties": false
+      },
+      "HomeTurnEnvelope": {
+        "type": "object",
+        "properties": { "data": { "$ref": "#/components/schemas/HomeTurn" }, "error": { "nullable": true, "type": "object" } },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "HomeTurnPageEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "turns": { "type": "array", "items": { "$ref": "#/components/schemas/HomeTurn" } },
+              "nextAfterSequence": { "type": "integer", "minimum": 0, "nullable": true }
+            },
+            "required": ["turns", "nextAfterSequence"],
+            "additionalProperties": false
+          },
+          "error": { "nullable": true, "type": "object" }
+        },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "HomeMessage": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "turnId": { "$ref": "#/components/schemas/Uuid" },
+          "sequence": { "type": "integer", "minimum": 1 },
+          "role": { "type": "string", "enum": ["user", "assistant", "system", "tool"] },
+          "content": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "turnId", "sequence", "role", "content", "createdAt"],
+        "additionalProperties": false
+      },
+      "HomeTurnSubmissionRequest": {
+        "type": "object",
+        "properties": { "message": { "type": "string", "minLength": 1, "maxLength": 20000 } },
+        "required": ["message"],
+        "additionalProperties": false
+      },
+      "HomeTurnSubmissionEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "turn": { "$ref": "#/components/schemas/HomeTurn" },
+              "message": { "$ref": "#/components/schemas/HomeMessage" },
+              "execution": {
+                "type": "object",
+                "properties": { "state": { "type": "string", "enum": ["unsupported"] }, "code": { "type": "string", "enum": ["PLANNING_RUNTIME_UNAVAILABLE"] } },
+                "required": ["state", "code"],
+                "additionalProperties": false
+              },
+              "replayed": { "type": "boolean" }
+            },
+            "required": ["turn", "message", "execution", "replayed"],
+            "additionalProperties": false
+          },
+          "error": { "nullable": true, "type": "object" }
+        },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "HomeTurnCancellationEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": { "turn": { "$ref": "#/components/schemas/HomeTurn" }, "replayed": { "type": "boolean" } },
+            "required": ["turn", "replayed"],
+            "additionalProperties": false
+          },
+          "error": { "nullable": true, "type": "object" }
+        },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "HomeMessagePageEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "messages": { "type": "array", "items": { "$ref": "#/components/schemas/HomeMessage" } },
+              "nextBeforeSequence": { "type": "integer", "minimum": 1, "nullable": true }
+            },
+            "required": ["messages", "nextBeforeSequence"],
+            "additionalProperties": false
+          },
+          "error": { "nullable": true, "type": "object" }
+        },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "HomeEvent": {
+        "type": "object",
+        "properties": {
+          "sequence": { "type": "integer", "minimum": 1 },
+          "type": { "type": "string", "enum": ["conversation.created", "turn.created", "turn.status_changed", "message.appended", "action.receipt"] },
+          "turnId": { "$ref": "#/components/schemas/Uuid", "nullable": true },
+          "entityId": { "$ref": "#/components/schemas/Uuid", "nullable": true },
+          "payload": { "type": "object", "additionalProperties": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }, { "type": "null" }] } },
+          "createdAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["sequence", "type", "turnId", "entityId", "payload", "createdAt"],
+        "additionalProperties": false
+      },
+      "HomeEventPageEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "events": { "type": "array", "items": { "$ref": "#/components/schemas/HomeEvent" } },
+              "nextAfterSequence": { "type": "integer", "minimum": 1, "nullable": true },
+              "lastEventSequence": { "type": "integer", "minimum": 0 }
+            },
+            "required": ["events", "nextAfterSequence", "lastEventSequence"],
+            "additionalProperties": false
+          },
+          "error": { "nullable": true, "type": "object" }
+        },
+        "required": ["data", "error"],
         "additionalProperties": false
       }
     }
