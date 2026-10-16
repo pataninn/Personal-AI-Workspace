@@ -89,7 +89,7 @@ describe('project task validation', () => {
       todo: ['in_progress', 'done'],
       in_progress: ['blocked', 'done'],
       blocked: ['in_progress', 'done'],
-      done: [],
+      done: ['todo'],
       archived: []
     };
 

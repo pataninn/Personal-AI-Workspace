@@ -32,8 +32,8 @@ describe('ProjectContextSettings', () => {
     expect(screen.getByRole('checkbox', { name: /Include recent messages/ })).toBeChecked();
     await user.click(screen.getByRole('checkbox', { name: 'app.ts' }));
     await user.click(screen.getByRole('button', { name: 'Apply to all chats' }));
-    await waitFor(() => expect(updateContextMock).toHaveBeenCalledWith('project-1', { relativePaths: ['README.md', 'app.ts'], includeProjectConversations: true }, 'csrf'));
-    expect(await screen.findByText('Context applied to all chats in this project.')).toBeInTheDocument();
+    await waitFor(() => expect(updateContextMock).toHaveBeenCalledWith('project-1', { relativePaths: ['README.md', 'app.ts'], excludedPaths: [], includeProjectConversations: true }, 'csrf'));
+    expect(await screen.findByText('Context applied to all chats in this project. New supported files will be selected automatically.')).toBeInTheDocument();
   });
   it('keeps the draft selection after a save fails', async () => {
     updateContextMock.mockRejectedValue(new Error('Network failure'));

@@ -59,7 +59,8 @@ describe('WorkspaceMutationGatewayAdapter', () => {
     await expect(fs.readFile(path.join(projectRoot, 'renamed.txt'), 'utf8')).resolves.toBe('rename-before\n');
     await expect(fs.access(path.join(projectRoot, 'rename.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fs.access(path.join(projectRoot, 'delete.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(result.operations.filter((item) => item.backup === 'created')).toHaveLength(2);
+    expect(result.operations.filter((item) => item.backup === 'created')).toHaveLength(3);
+    await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, operations[1]!.operationId, 'edit.txt.bak'), 'utf8')).resolves.toBe('edit-before\n');
     await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, operations[2]!.operationId, 'overwrite.txt.bak'), 'utf8')).resolves.toBe('overwrite-before\n');
     await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, operations[4]!.operationId, 'delete.txt.bak'), 'utf8')).resolves.toBe('delete-before\n');
   });

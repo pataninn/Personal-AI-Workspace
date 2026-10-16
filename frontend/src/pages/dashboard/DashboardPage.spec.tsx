@@ -11,13 +11,13 @@ import type { ProjectOverview } from '@/entities/project/api/project-overview-ap
 import { sessionCleared, userSessionReducer } from '@/entities/user-session';
 import { ApiClientError, registerSessionExpiryHandler } from '@/shared/api';
 
-const { createProjectMock, getProjectMock, listProjectsMock, removeProjectMock, getProjectOverviewMock } = vi.hoisted(() => ({
-  createProjectMock: vi.fn(), getProjectMock: vi.fn(), listProjectsMock: vi.fn(), removeProjectMock: vi.fn(), getProjectOverviewMock: vi.fn()
+const { createProjectMock, getProjectMock, listProjectsMock, getProjectOverviewMock } = vi.hoisted(() => ({
+  createProjectMock: vi.fn(), getProjectMock: vi.fn(), listProjectsMock: vi.fn(), getProjectOverviewMock: vi.fn()
 }));
 
 vi.mock('@/entities/project/api/project-api', () => ({
   createProject: createProjectMock, getProject: getProjectMock, listProjects: listProjectsMock,
-  removeProject: removeProjectMock, updateProjectStatus: vi.fn()
+  updateProjectStatus: vi.fn()
 }));
 vi.mock('@/entities/project/api/project-overview-api', () => ({ getProjectOverview: getProjectOverviewMock }));
 vi.mock('@/widgets/home-chat', () => ({
@@ -50,6 +50,7 @@ function renderDashboard(projectState: ProjectState = PROJECT_STATE, initialEntr
     <Route path="/dashboard" element={<DashboardPage />} />
     <Route path="/projects/:projectId" element={<h1>Selected project</h1>} />
     <Route path="/projects/:projectId/tasks" element={<h1>Project tasks</h1>} />
+    <Route path="/tasks/:taskId" element={<h1>Global task</h1>} />
   </Routes><LocationProbe /></MemoryRouter></Provider>);
   return store;
 }
@@ -58,7 +59,7 @@ describe('DashboardPage chat and task Home', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   beforeEach(() => {
-    createProjectMock.mockReset(); getProjectMock.mockReset(); listProjectsMock.mockReset(); removeProjectMock.mockReset(); getProjectOverviewMock.mockReset();
+    createProjectMock.mockReset(); getProjectMock.mockReset(); listProjectsMock.mockReset(); getProjectOverviewMock.mockReset();
     getProjectOverviewMock.mockResolvedValue(overview());
     listProjectsMock.mockResolvedValue({ projects: [ACTIVE_PROJECT] });
   });
@@ -76,34 +77,31 @@ describe('DashboardPage chat and task Home', () => {
     expect(Boolean(chat.compareDocumentPosition(inboxHeading) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
   });
 
-  it('shows four activity-ranked projects and expands the remaining projects on Home', async () => {
+  it('shows the complete workspace list and opens a selected workspace', async () => {
     const projects = Array.from({ length: 6 }, (_, index) => ({ ...ACTIVE_PROJECT, id: `project-${index}`, name: `Project ${index + 1}`, relativeRoot: `projects/${index + 1}` }));
-    getProjectOverviewMock.mockResolvedValue(overview(projects));
-    renderDashboard();
+    getProjectOverviewMock.mockResolvedValue(overview([]));
+    renderDashboard({ ...PROJECT_STATE, projects });
     const user = userEvent.setup();
-    const recent = await screen.findByRole('region', { name: 'Recent projects' });
-    expect(within(recent).getAllByRole('link').map((link) => link.textContent)).toEqual(projects.slice(0, 4).map((project) => `${project.name}${project.relativeRoot}`));
-    expect(screen.getByRole('link', { name: /Project 5/ })).not.toBeVisible();
-    await user.click(screen.getByText('Other projects (2)'));
-    expect(screen.getByTestId('home-more-projects')).toHaveAttribute('open');
-    expect(screen.getByRole('link', { name: /Project 5/ })).toBeVisible();
-    expect(screen.getByRole('link', { name: /Project 6/ })).toBeVisible();
-    await user.click(screen.getByRole('link', { name: /Project 5/ }));
+    const workspaces = await screen.findByTestId('home-workspace-list');
+    const links = within(workspaces).getAllByRole('link');
+    expect(links).toHaveLength(projects.length);
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(projects.map((project) => `/projects/${project.id}`));
+    await user.click(within(workspaces).getByRole('link', { name: /Project 5/ }));
     expect(screen.getByTestId('location-probe')).toHaveTextContent('/projects/project-4');
   });
 
-  it('shows six combined task links with importance and deadline metadata', async () => {
+  it('shows six global task links with workspace, importance and deadline metadata', async () => {
     const tasks: ProjectOverview['tasks'] = Array.from({ length: 6 }, (_, index) => ({ id: `task-${index}`, projectId: ACTIVE_PROJECT.id, projectName: ACTIVE_PROJECT.name, title: `Next task ${index + 1}`, status: 'todo', importance: index === 0 ? 'urgent' : 'medium', deadline: index === 5 ? null : '2099-10-05', version: 1 }));
     getProjectOverviewMock.mockResolvedValue({ ...overview(), tasks });
     renderDashboard();
     const list = await screen.findByTestId('home-task-list');
     const links = within(list).getAllByRole('link');
     expect(links).toHaveLength(6);
-    expect(links.map((link) => link.getAttribute('href'))).toEqual(tasks.map((task) => `/projects/${task.projectId}/tasks?task=${task.id}`));
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(tasks.map((task) => `/tasks/${task.id}`));
     expect(within(list).getByText('Urgent')).toBeInTheDocument();
     expect(within(list).getByText('No deadline')).toBeInTheDocument();
     await userEvent.setup().click(links[0]);
-    expect(screen.getByTestId('location-probe')).toHaveTextContent(`/projects/${ACTIVE_PROJECT.id}/tasks?task=task-0`);
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('/tasks/task-0');
   });
 
   it('selects a project and shows an empty task state', async () => {
@@ -121,7 +119,7 @@ describe('DashboardPage chat and task Home', () => {
     await waitFor(() => expect(screen.getByTestId('project-create-trigger')).toBeEnabled());
     await user.click(screen.getByTestId('project-create-trigger'));
     await user.type(screen.getByLabelText('Project name'), createdProject.name);
-    await user.type(screen.getByLabelText('Folder inside your workspace'), createdProject.relativeRoot);
+    await user.type(screen.getByLabelText('Root folder'), createdProject.relativeRoot);
     await user.click(screen.getByTestId('project-create-submit'));
     await waitFor(() => expect(screen.getByTestId('location-probe')).toHaveTextContent('/projects/created-project'));
     expect(createProjectMock).toHaveBeenCalledWith({ name: createdProject.name, relativeRoot: createdProject.relativeRoot }, 'csrf-value');
@@ -134,7 +132,7 @@ describe('DashboardPage chat and task Home', () => {
     await waitFor(() => expect(screen.getByTestId('project-create-trigger')).toBeEnabled());
     await user.click(screen.getByTestId('project-create-trigger'));
     await user.type(screen.getByLabelText('Project name'), 'Unsafe project');
-    const rootInput = screen.getByLabelText('Folder inside your workspace');
+    const rootInput = screen.getByLabelText('Root folder');
     await user.type(rootInput, '../outside');
     await user.click(screen.getByTestId('project-create-submit'));
     expect(screen.getByTestId('project-relative-root-error')).toHaveTextContent('relative folder');
@@ -149,56 +147,11 @@ describe('DashboardPage chat and task Home', () => {
     await waitFor(() => expect(screen.getByTestId('project-create-trigger')).toBeEnabled());
     await user.click(screen.getByTestId('project-create-trigger'));
     await user.type(screen.getByLabelText('Project name'), 'Overlapping project');
-    await user.type(screen.getByLabelText('Folder inside your workspace'), 'apps/website-child');
+    await user.type(screen.getByLabelText('Root folder'), 'apps/website-child');
     await user.click(screen.getByTestId('project-create-submit'));
     expect(await screen.findByTestId('project-relative-root-error')).toHaveTextContent('already used by another active project');
     expect(screen.queryByText('internal overlap detail')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Folder inside your workspace')).toHaveFocus();
-  });
-
-  it('removes a project only after confirmation and explicitly keeps its files', async () => {
-    removeProjectMock.mockResolvedValue(undefined);
-    const store = renderDashboard();
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole('button', { name: 'Remove Website' }));
-    const dialog = screen.getByRole('alertdialog', { name: 'Remove Website?' });
-    expect(within(dialog).getByText(/project folder and its files stay on your computer/)).toBeInTheDocument();
-    await user.click(screen.getByTestId('project-remove-cancel'));
-    expect(removeProjectMock).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Remove Website' }));
-    getProjectOverviewMock.mockResolvedValue(overview([])); listProjectsMock.mockResolvedValue({ projects: [] });
-    await user.click(screen.getByTestId('project-remove-confirm'));
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
-    expect(removeProjectMock).toHaveBeenCalledWith(ACTIVE_PROJECT.id, ACTIVE_PROJECT.version, 'csrf-value');
-    expect(await screen.findByTestId('project-empty-state')).toBeInTheDocument();
-    expect(store.getState().project.projects).toEqual([]);
-    expect(screen.queryByText('Archived projects')).not.toBeInTheDocument();
-  });
-
-  it('keeps a failed project removal open for retry', async () => {
-    removeProjectMock.mockRejectedValue(new ApiClientError(409, 'PROJECT_BUSY', 'Stop the active run before removing this project.'));
-    renderDashboard();
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole('button', { name: 'Remove Website' }));
-    await user.click(screen.getByTestId('project-remove-confirm'));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Stop the active run');
-    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
-    expect(screen.getByTestId('project-remove-confirm')).toBeEnabled();
-  });
-
-  it('refreshes removed projects and explains pending backup cleanup without offering deletion again', async () => {
-    removeProjectMock.mockRejectedValue(new ApiClientError(503, 'PROJECT_REMOVAL_CLEANUP_PENDING', 'Cleanup pending'));
-    renderDashboard();
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole('button', { name: 'Remove Website' }));
-    getProjectOverviewMock.mockResolvedValue(overview([]));
-    listProjectsMock.mockResolvedValue({ projects: [] });
-    await user.click(screen.getByTestId('project-remove-confirm'));
-    const dialog = await screen.findByRole('alertdialog', { name: 'Project removed' });
-    expect(within(dialog).getByText(/Restart the app to retry cleanup/)).toBeInTheDocument();
-    expect(screen.queryByTestId('project-remove-confirm')).not.toBeInTheDocument();
-    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
-    expect(await screen.findByTestId('project-empty-state')).toBeInTheDocument();
+    expect(screen.getByLabelText('Root folder')).toHaveFocus();
   });
 
   it('fails closed on workspace boundary errors and retries overview loading', async () => {
@@ -270,7 +223,7 @@ describe('DashboardPage chat and task Home', () => {
     await waitFor(() => expect(screen.getByTestId('project-create-trigger')).toBeEnabled());
     await user.click(screen.getByTestId('project-create-trigger'));
     await user.type(screen.getByLabelText('Project name'), 'Expired project');
-    await user.type(screen.getByLabelText('Folder inside your workspace'), 'expired');
+    await user.type(screen.getByLabelText('Root folder'), 'expired');
     await user.click(screen.getByTestId('project-create-submit'));
     await waitFor(() => expect(store.getState().userSession.status).toBe('unauthenticated'));
     unregister();

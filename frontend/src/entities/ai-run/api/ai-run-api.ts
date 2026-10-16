@@ -238,10 +238,11 @@ function normalizeRunTaskSuggestions(value: unknown, runId: string, projectId: s
 export function normalizeEgressManifest(value: unknown, runId: string, fallbackManifestHash?: string): EgressManifest {
   const record = asRecord(value) ?? {};
   const source = asRecord(record.manifest) ?? record;
+  const status = source.status === undefined ? 'pending_approval' : readStatus(source.status);
   const content = asRecord(source.content);
   const redaction = asRecord(source.redaction);
   const manifestHash = readHash(source.manifestHash) ?? (fallbackManifestHash && readHash(fallbackManifestHash));
-  if (!manifestHash) {
+  if (!manifestHash || !status) {
     throw invalidResponse();
   }
 
@@ -268,7 +269,7 @@ export function normalizeEgressManifest(value: unknown, runId: string, fallbackM
   return {
     runId,
     manifestHash,
-    status: 'pending_approval',
+    status,
     provider,
     providerProfile,
     model,

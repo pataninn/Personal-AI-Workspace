@@ -31,7 +31,7 @@ export async function resolveWorkspaceScope(
 ): Promise<WorkspaceScopePaths> {
   const relativeRoot = await context.run(() => boundary.validateProjectRoot(scope.relativeRoot));
   const canonicalRoot = await safeRealpath(fileSystem, containerRoot, context);
-  const projectPath = path.posix.join(containerRoot, relativeRoot);
+  const projectPath = joinWorkspaceFileSystemPath(containerRoot, relativeRoot);
   const canonicalProjectRoot = await safeRealpath(fileSystem, projectPath, context);
   const isWorkspaceRootProject = relativeRoot === '.';
   const isValidScope = isWorkspaceRootProject
@@ -40,7 +40,7 @@ export async function resolveWorkspaceScope(
   if (!isValidScope) {
     throw new WorkspacePathForbiddenError();
   }
-  WorkspaceRelativePath.parse(path.posix.relative(canonicalRoot, canonicalProjectRoot), {
+  WorkspaceRelativePath.parse(relativeWorkspacePath(canonicalRoot, canonicalProjectRoot), {
     allowEmpty: isWorkspaceRootProject
   });
   return { canonicalRoot, canonicalProjectRoot };
@@ -56,7 +56,7 @@ export async function resolveWorkspaceEntry(
   const parsed = WorkspaceRelativePath.parse(relativePath, { allowEmpty: true, maxLength: maxPathLength });
   let currentPath = scopePaths.canonicalProjectRoot;
   for (const segment of relativePathSegments(parsed.value)) {
-    currentPath = path.posix.join(currentPath, segment);
+    currentPath = joinWorkspaceFileSystemPath(currentPath, segment);
     const stats = await safeLstat(fileSystem, currentPath, context);
     assertInspectableComponent(stats);
   }
@@ -64,7 +64,7 @@ export async function resolveWorkspaceEntry(
   if (!isContained(scopePaths.canonicalProjectRoot, canonicalPath, true)) {
     throw new WorkspacePathForbiddenError();
   }
-  const canonicalRelativePath = path.posix.relative(scopePaths.canonicalProjectRoot, canonicalPath);
+  const canonicalRelativePath = relativeWorkspacePath(scopePaths.canonicalProjectRoot, canonicalPath);
   const validatedCanonicalPath = WorkspaceRelativePath.parse(canonicalRelativePath, {
     allowEmpty: true,
     maxLength: maxPathLength
@@ -73,9 +73,35 @@ export async function resolveWorkspaceEntry(
 }
 
 export function isContained(root: string, target: string, allowRoot = false): boolean {
-  const relative = path.posix.relative(root.toLocaleLowerCase('en-US'), target.toLocaleLowerCase('en-US'));
-  return (allowRoot && relative.length === 0)
-    || (relative.length > 0 && relative !== '..' && !relative.startsWith('../') && !path.posix.isAbsolute(relative));
+  const rootIsWindows = isWindowsFileSystemPath(root);
+  const targetIsWindows = isWindowsFileSystemPath(target);
+  if (rootIsWindows !== targetIsWindows) return false;
+  const normalizedRoot = rootIsWindows ? root.toLocaleLowerCase('en-US') : root;
+  const normalizedTarget = targetIsWindows ? target.toLocaleLowerCase('en-US') : target;
+  const relative = relativeWorkspacePath(normalizedRoot, normalizedTarget);
+  const normalizedRelative = rootIsWindows ? relative.replaceAll('\\', '/') : relative;
+  return (allowRoot && normalizedRelative.length === 0)
+    || (normalizedRelative.length > 0
+      && normalizedRelative !== '..'
+      && !normalizedRelative.startsWith('../')
+      && !path.posix.isAbsolute(normalizedRelative)
+      && !path.win32.isAbsolute(normalizedRelative));
+}
+
+export function joinWorkspaceFileSystemPath(root: string, relativePath: string): string {
+  if (relativePath.length === 0) return root;
+  const pathApi = isWindowsFileSystemPath(root) ? path.win32 : path.posix;
+  return pathApi.join(root, ...relativePath.split('/'));
+}
+
+function relativeWorkspacePath(root: string, target: string): string {
+  return isWindowsFileSystemPath(root) && isWindowsFileSystemPath(target)
+    ? path.win32.relative(root, target).replaceAll('\\', '/')
+    : path.posix.relative(root, target);
+}
+
+function isWindowsFileSystemPath(value: string): boolean {
+  return path.win32.isAbsolute(value) && !path.posix.isAbsolute(value);
 }
 
 export async function safeLstat(

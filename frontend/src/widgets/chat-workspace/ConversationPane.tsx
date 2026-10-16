@@ -62,6 +62,7 @@ export function ConversationPane(props: ConversationPaneProps): React.JSX.Elemen
       <ChatComposer
         projectId={props.projectId}
         conversationId={conversation.id}
+        history={props.history}
         disabled={props.disabled}
         archivedDescriptionId={props.archivedDescriptionId}
         timelineTarget={timelineTarget}

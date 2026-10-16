@@ -105,7 +105,7 @@ function buildApp(): { readonly app: express.Express; readonly staging: FakeStag
     appVersion: 'test',
     aiRuns: {
       projectChatContext: new ProjectChatContextUseCases(projects, contexts, facts, workspace),
-      sendChatMessage: new SendChatMessageUseCase(contexts, facts, createRun, decide, start),
+      sendChatMessage: new SendChatMessageUseCase(contexts, facts, createRun, decide),
       getSession,
       createAiRun: new CreateAiRunUseCase(projects, conversations, workspace, repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b'),
       getAiRun: new GetAiRunUseCase(repository, projects),
@@ -127,7 +127,7 @@ function buildApp(): { readonly app: express.Express; readonly staging: FakeStag
 }
 
 describe('AI runs API (integration)', () => {
-  it('persists project context and sends directly with idempotent provider startup', async () => {
+  it('persists project context and requires explicit consent and start before provider startup', async () => {
     const context = buildApp();
     const headers = { Origin: APP_ORIGIN, Cookie: '__Host-pa_session=test', 'X-CSRF-Token': 'csrf-token' };
     const contextPath = `/api/v1/projects/${PROJECT_ID}/chat-context`;
@@ -136,12 +136,29 @@ describe('AI runs API (integration)', () => {
     await request(context.app).get(contextPath).set(headers).expect(200).expect(({ body }) => expect(body.data).toMatchObject({ relativePaths: ['README.md'], factIds: [], includeProjectConversations: true, availablePaths: ['README.md'], excludedPaths: [], fileSelectionLimited: false }));
     const sent = await request(context.app).post(`/api/v1/projects/${PROJECT_ID}/chat-runs`).set(headers).set('Idempotency-Key', 'direct-chat-test')
       .send({ conversationId: CONVERSATION_ID, request: 'Continue the earlier chat' }).expect(202);
-    expect(sent.body.data.run.decision).toBe('approved');
+    expect(sent.body.data.run).toMatchObject({ decision: 'pending', status: 'pending_approval', conversationId: CONVERSATION_ID });
+    expect(sent.body.data.manifest.status).toBe('pending_approval');
     expect(sent.body.data.manifest.content.relativePaths).toEqual(['README.md']);
     expect(sent.body.data.manifest.content.messageCount).toBe(1);
+    expect(context.staging.staged).toHaveLength(0);
+    expect(context.runtime.createdRuns).toHaveLength(0);
+    expect(context.runtime.startedRuns).toHaveLength(0);
     const replay = await request(context.app).post(`/api/v1/projects/${PROJECT_ID}/chat-runs`).set(headers).set('Idempotency-Key', 'direct-chat-test')
       .send({ conversationId: CONVERSATION_ID, request: 'Continue the earlier chat' }).expect(200);
     expect(replay.body.data.run.runId).toBe(sent.body.data.run.runId);
+
+    const runId = sent.body.data.run.runId as string;
+    const approved = await request(context.app).post(`/api/v1/ai-runs/${runId}/egress-decision`).set(headers).set('Idempotency-Key', 'direct-chat-decision')
+      .send({ manifestHash: sent.body.data.manifest.manifestHash, decision: 'approve' }).expect(200);
+    expect(approved.body.data.run.status).toBe('ready');
+    expect(context.staging.staged).toHaveLength(1);
+    expect(context.runtime.createdRuns).toHaveLength(1);
+    expect(context.runtime.startedRuns).toHaveLength(0);
+
+    await request(context.app).post(`/api/v1/ai-runs/${runId}/start`).set(headers).set('Idempotency-Key', 'direct-chat-start').send({}).expect(202);
+    for (let attempt = 0; attempt < 100 && context.runtime.startedRuns.length === 0; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    }
     expect(context.runtime.startedRuns).toHaveLength(1);
   });
 

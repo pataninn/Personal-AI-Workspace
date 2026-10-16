@@ -11,7 +11,7 @@ export type ProviderTransmissionStatus = 'not_started' | 'not_started_confirmed'
 export interface EgressManifest {
   readonly runId: string;
   readonly manifestHash: string;
-  readonly status: 'pending_approval';
+  readonly status: AiRunStatus;
   readonly provider: string;
   readonly providerProfile: string;
   readonly model: string;

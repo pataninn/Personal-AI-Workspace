@@ -298,7 +298,7 @@ describe('NvidiaHostedNimProvider', () => {
       { type: 'started' },
       { type: 'provider.request_started' },
       { type: 'provider.response_received' },
-      { type: 'failed', message: 'The NVIDIA provider returned an invalid response.' }
+      { type: 'failed', message: 'The NVIDIA response stream ended without its completion marker. No changes from this response were applied.' }
     ]);
   });
 
@@ -313,7 +313,7 @@ describe('NvidiaHostedNimProvider', () => {
       { type: 'started' },
       { type: 'provider.request_started' },
       { type: 'provider.response_received' },
-      { type: 'failed', message: 'The NVIDIA provider returned an invalid response.' }
+      { type: 'failed', message: 'NVIDIA returned a malformed response stream. No changes from this response were applied.' }
     ]);
   });
 

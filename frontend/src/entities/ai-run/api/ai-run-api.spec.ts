@@ -39,7 +39,7 @@ describe('AI run API normalizers', () => {
     }, RUN_ID);
 
     expect(manifest.relativePaths).toEqual(['src/index.ts']);
-    expect(manifest.preConsentNotice).toBe('Nothing has been sent to NVIDIA yet.');
+    expect(manifest.preConsentNotice).toBe('Nothing has been sent to NVIDIA hosted NIM yet.');
     expect(manifest.omissionSummary).toBe('Some selected items were excluded by local safety policy.');
     expect(manifest.model).toBe('nvidia/nemotron-3-super-120b-a12b');
   });
@@ -114,6 +114,24 @@ describe('AI run API normalizers', () => {
     expect(intent.runId).toBe(RUN_ID);
     expect(intent.manifest?.manifestHash).toBe(HASH);
     expect(intent.manifest?.categories).toEqual(['Request']);
+  });
+
+  it('preserves the ready manifest returned for an exact remembered permission', () => {
+    const intent = normalizeAiRunIntent({
+      run: {
+        id: RUN_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID,
+        status: 'ready', phase: 'runtime', decision: 'approved', manifest: { manifestHash: HASH },
+        providerApprovalMode: 'remembered_permission', safeMessage: 'A matching project permission approved this request.'
+      },
+      manifest: {
+        runId: RUN_ID, manifestHash: HASH, status: 'ready', provider: 'NVIDIA hosted NIM',
+        content: { categories: ['Request'], relativePaths: [], itemCount: 0, messageCount: 0 },
+        redaction: { excludedItemCount: 0, omittedItemCount: 0 }
+      }
+    });
+
+    expect(intent.providerApprovalMode).toBe('remembered_permission');
+    expect(intent.manifest?.status).toBe('ready');
   });
 
   it('rejects a non-SHA manifest hash instead of exposing an opaque identifier', () => {

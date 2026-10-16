@@ -202,7 +202,7 @@ describe('AiRunTimeline lifecycle', () => {
     render(<AiRunTimeline snapshot={ready} projectId={PROJECT_ID} conversationId={CONVERSATION_ID} csrfToken="csrf-token" />);
 
     await waitFor(() => expect(screen.getByTestId('ai-run-timeline-error')).toHaveTextContent('The assistant run could not be started'));
-    expect(screen.getByTestId('run-connection-status')).toHaveTextContent('Sending approved context to NVIDIA NIM...');
+    expect(screen.getByTestId('run-connection-status')).toHaveTextContent('Sending approved context to the model provider...');
   });
 
   it('moves focus to the timeline heading once after start, without stealing focus for deltas', async () => {

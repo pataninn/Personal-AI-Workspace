@@ -31,7 +31,7 @@ function fixture(): { app: express.Express; gateway: jest.Mocked<IProjectFileGat
     return { sessionId: 'session', principal: { id: 'owner' }, csrfToken: 'csrf', expiresAt: new Date('2099-01-01') };
   }) } as unknown as GetSessionUseCase;
   const unused = { execute: jest.fn() };
-  const workspace = { getSession, appOrigin: ORIGIN, clearSessionCookie: () => undefined, fileActions: new ProjectFileActions(access, gateway),
+  const workspace = { getSession, appOrigin: ORIGIN, clearSessionCookie: () => undefined, fileActions: new ProjectFileActions(access, gateway, { convert: async ({ bytes }) => bytes }),
     listWorkspaceFiles: unused, treeWorkspaceFiles: unused, readWorkspaceText: unused, searchWorkspaceText: unused } as unknown as WorkspaceRouterDependencies;
   const readiness = new InMemoryReadinessState();
   readiness.markReady();

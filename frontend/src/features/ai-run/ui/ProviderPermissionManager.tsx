@@ -58,9 +58,9 @@ export function ProviderPermissionManager({ projectId, csrfToken, onListStateCha
   }
 
   return (
-    <section className="provider-permission-manager" data-testid="provider-permission-manager" aria-label="Provider permissions">
+    <section id="provider-permission-manager" className="provider-permission-manager" data-testid="provider-permission-manager" aria-label="Provider permissions">
       {activePermissions.length > 0 ? <Alert tone="warning" data-testid="provider-permission-active-notice">
-        <strong>Sensitive permission active.</strong> Clicking Ask AI sends your request and the project context you select without another provider approval when the provider and model match an active permission below. File changes and commands still require separate approval.
+        <strong>Sensitive permission active.</strong> Sending a project chat request sends your request and the project context you select without another provider approval when the provider and model match an active permission below. File changes and commands still require separate approval.
       </Alert> : null}
       <details>
         <summary data-testid="provider-permission-manager-toggle">Provider permissions{activePermissions.length > 0 ? ` (${activePermissions.length} active)` : ''}</summary>

@@ -48,7 +48,7 @@ test('opens the project activity page, filters a run, and expands safe detail', 
     }, error: null }) });
   });
 
-  await page.getByTestId(`project-item`).filter({ hasText: 'Website redesign' }).getByRole('link').click();
+  await page.getByRole('navigation', { name: 'Active projects' }).getByRole('link', { name: 'Website redesign' }).click();
   await page.getByTestId('project-activity-link').click();
   await expect(page.getByTestId('project-activity-page')).toBeVisible();
   await expect(page.getByRole('heading', { name: item.requestPreview })).toBeVisible();

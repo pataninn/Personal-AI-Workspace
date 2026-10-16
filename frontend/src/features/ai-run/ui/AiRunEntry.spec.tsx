@@ -207,7 +207,7 @@ describe('AiRunEntry', () => {
     renderEntry('   ');
 
     expect(screen.getByTestId('ai-run-submit')).toBeDisabled();
-    expect(screen.getByTestId('ai-run-entry')).toHaveTextContent('Ask AI first shows what will be sent to NVIDIA NIM.');
+    expect(screen.getByTestId('ai-run-entry')).toHaveTextContent('Ask AI first shows what will be sent to your model provider.');
     expect(screen.getByTestId('ai-run-request-error')).toHaveTextContent('Enter a request before asking the assistant.');
     expect(createAiRunMock).not.toHaveBeenCalled();
   });
@@ -219,7 +219,7 @@ describe('AiRunEntry', () => {
     await user.click(screen.getByTestId('ai-run-submit'));
 
     expect(await screen.findByTestId('provider-consent-alert-dialog')).toBeInTheDocument();
-    expect(screen.getByTestId('provider-consent-title')).toHaveTextContent('Send selected context to NVIDIA NIM?');
+    expect(screen.getByTestId('provider-consent-title')).toHaveTextContent('Send selected context to NVIDIA hosted NIM?');
     expect(screen.getByTestId('provider-consent-provider')).toHaveTextContent('NVIDIA hosted NIM');
     expect(screen.getByTestId('provider-consent-model')).toHaveTextContent('nvidia/nemotron-3-super-120b-a12b');
     expect(screen.getByTestId('provider-consent-context')).toHaveTextContent('src/index.ts');
@@ -235,7 +235,7 @@ describe('AiRunEntry', () => {
     renderEntry();
     const user = userEvent.setup();
     await user.click(screen.getByTestId('ai-run-submit'));
-    await user.click(await screen.findByTestId('provider-consent-remember-permission'));
+    await user.click(await screen.findByTestId('provider-consent-remember'));
 
     expect(screen.getByTestId('provider-consent-permission-scope')).toHaveTextContent('You, in this signed-in account');
     expect(screen.getByTestId('provider-consent-permission-scope')).toHaveTextContent('This project only');
@@ -335,7 +335,7 @@ describe('AiRunEntry', () => {
     await user.click(await screen.findByTestId('provider-consent-reject'));
 
     await waitFor(() => expect(decideEgressMock).toHaveBeenCalledWith(RUN_ID, { manifestHash: HASH, decision: 'reject' }, 'csrf-token', expect.any(String)));
-    expect(await screen.findByTestId('run-rejected')).toHaveTextContent('No project content was sent to NVIDIA.');
+    expect(await screen.findByTestId('run-rejected')).toHaveTextContent('No project content was sent to the model provider.');
   });
 
   it('treats Escape as the safe rejection path instead of approval', async () => {
@@ -360,7 +360,7 @@ describe('AiRunEntry', () => {
 
     await waitFor(() => expect(decideEgressMock).toHaveBeenCalledWith(RUN_ID, { manifestHash: HASH, decision: 'approve' }, 'csrf-token', expect.any(String)));
     expect(await screen.findByTestId('run-ready')).toHaveTextContent('Provider access approved');
-    expect(screen.getByTestId('run-ready-status')).toHaveTextContent('server-side NVIDIA NIM request');
+    expect(screen.getByTestId('run-ready-status')).toHaveTextContent('server-side model request');
     expect(screen.getByTestId('run-ready-status')).not.toHaveTextContent('Here is your answer');
   });
 
@@ -377,7 +377,7 @@ describe('AiRunEntry', () => {
     expect(screen.getByTestId('provider-consent-refresh')).toHaveTextContent('Refresh disclosure');
   });
 
-  it('fails closed when NVIDIA NIM is unavailable after approval', async () => {
+  it('fails closed when the model provider is unavailable after approval', async () => {
     decideEgressMock.mockRejectedValue(new ApiClientError(503, 'RUNTIME_UNAVAILABLE', 'internal detail'));
     getAiRunMock.mockRejectedValue(new Error('status unavailable'));
     renderEntry();
@@ -385,7 +385,8 @@ describe('AiRunEntry', () => {
     await user.click(screen.getByTestId('ai-run-submit'));
     await user.click(await screen.findByTestId('provider-consent-approve'));
 
-    expect(await screen.findByTestId('run-error')).toHaveTextContent('NVIDIA NIM is unavailable. No provider request was started.');
+    expect(await screen.findByTestId('run-error')).toHaveTextContent('The model provider is unavailable. No provider request was started.');
     expect(screen.getByTestId('run-error')).not.toHaveTextContent('internal detail');
+    expect(startAiRunMock).not.toHaveBeenCalled();
   });
 });

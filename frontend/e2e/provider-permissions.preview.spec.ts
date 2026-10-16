@@ -1,142 +1,109 @@
 import { expect, test } from '@playwright/test';
 
-const PROJECT_ID = '873c096a-bc57-4a0c-85da-10d4febde96b';
-const CONVERSATION_ID = '489541da-57a5-416d-afb6-45b19ad7bc98';
-const OWNER_ID = '116cfd7c-e76f-4de4-bda1-001d6c3fbf16';
-const PERMISSION_ID = 'ac8a4caa-5f69-4f65-aece-5c8d201f9a17';
-const PROVIDER_PROFILE = 'nvidia-hosted-nim';
-const MODEL = 'nvidia/nemotron-3-super-120b-a12b';
+import { CONVERSATION_ID, MODEL, PERMISSION_ID, PROJECT_ID, PROVIDER_PROFILE, readRecord } from './project-chat-security-preview-data';
+import { ProjectChatPreviewFixture, signInToProjectChat } from './project-chat-security-preview-fixture';
 
-test('discloses a remembered permission, auto-uses its exact scope, then revokes it', async ({ page }) => {
-  let permissions: Array<Record<string, unknown>> = [];
-  let firstManifest: Record<string, unknown> | null = null;
-  const snapshots = new Map<string, Record<string, unknown>>();
-  let createCount = 0;
-  let decisionBody: Record<string, unknown> | null = null;
-  let revokeHeaders: Record<string, string> | null = null;
+test('denies without starting, remembers only the exact project grant, and requests consent again after revocation', async ({ page }, testInfo) => {
+  const fixture = new ProjectChatPreviewFixture(page, 'permissions');
+  await fixture.install();
+  try {
+    await openConversation(page);
+    await page.getByTestId('message-input').fill('Keep this first request local.');
+    await page.getByTestId('ai-run-submit').click();
 
-  await page.route(`**/api/v1/projects/${PROJECT_ID}/provider-permissions**`, async (route) => {
-    if (route.request().method() === 'GET') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { permissions }, error: null }) });
-      return;
-    }
-    if (route.request().method() === 'DELETE') {
-      revokeHeaders = await route.request().allHeaders();
-      permissions = permissions.map((permission) => ({ ...permission, revokedAt: '2026-09-30T00:00:00.000Z' }));
-      await route.fulfill({ status: 204, body: '' });
-      return;
-    }
-    await route.fallback();
-  });
+    const firstConsent = page.getByTestId('provider-consent-alert-dialog');
+    await expect(firstConsent).toBeVisible();
+    await expect(firstConsent.getByTestId('provider-consent-manifest')).toContainText(MODEL);
+    await expect(firstConsent.getByTestId('provider-consent-no-staging-notice')).toContainText('Nothing has been sent to NVIDIA hosted NIM yet.');
+    await expect(firstConsent.getByTestId('provider-consent-remember')).not.toBeChecked();
+    expect(fixture.starts).toHaveLength(0);
+    await fixture.screenshot(testInfo, 'project-chat-pending-consent.png');
+    const desktopViewport = page.viewportSize() ?? { width: 1280, height: 720 };
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileWidths = await page.evaluate(() => ({ viewport: window.innerWidth, document: document.documentElement.scrollWidth }));
+    expect(mobileWidths.document).toBeLessThanOrEqual(mobileWidths.viewport);
+    await expect(firstConsent.getByTestId('provider-consent-reject')).toBeVisible();
+    await expect(firstConsent.getByTestId('provider-consent-approve')).toBeVisible();
+    await fixture.screenshot(testInfo, 'project-chat-mobile-consent.png');
 
-  await page.route(`**/api/v1/projects/${PROJECT_ID}/ai-runs`, async (route) => {
-    createCount += 1;
-    const previewResponse = await route.fetch();
-    const payload = await previewResponse.json() as { data: { run: Record<string, unknown>; manifest: Record<string, unknown> } };
-    if (createCount === 1) {
-      firstManifest = payload.data.manifest;
-      snapshots.set(String(payload.data.run.runId), payload.data.run);
-      await route.fulfill({ response: previewResponse });
-      return;
-    }
+    await page.setViewportSize(desktopViewport);
+    await firstConsent.getByTestId('provider-consent-reject').focus();
+    await page.keyboard.press('Enter');
+    await expect(firstConsent).toBeHidden();
+    await expect(page.getByTestId('message-input')).toHaveValue('Keep this first request local.');
+    await expect(page.getByTestId('conversation-history').getByTestId('message-item')).toHaveCount(1);
+    await expect(page.getByTestId('conversation-history').getByTestId('message-content')).toHaveText('Keep this first request local.');
+    expect(fixture.starts).toHaveLength(0);
+    expect(readRecord(fixture.decisions[0]?.body)?.decision).toBe('reject');
+    await fixture.screenshot(testInfo, 'project-chat-denied-draft-retained.png');
 
-    const runId = 'b7fa23e0-9a91-4b77-9c0c-7a310b40576f';
-    const manifestHash = 'a'.repeat(64);
-    const manifest = { ...firstManifest, runId, manifestHash };
-    const run = {
-      ...payload.data.run,
-      runId,
-      manifestHash,
-      status: 'ready',
-      phase: 'runtime',
-      decision: 'approved',
-      providerApprovalMode: 'remembered_permission',
-      safeMessage: 'A matching project permission approved this request.'
-    };
-    snapshots.set(runId, run);
-    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ data: { run, manifest }, error: null }) });
-  });
+    await page.getByTestId('message-input').fill('Approve this separate request for the project.');
+    await page.getByTestId('ai-run-submit').click();
+    const rememberedConsent = page.getByTestId('provider-consent-alert-dialog');
+    await expect(rememberedConsent).toBeVisible();
+    await expect(rememberedConsent.getByTestId('provider-consent-remember')).not.toBeChecked();
+    expect(fixture.starts).toHaveLength(0);
+    await rememberedConsent.getByTestId('provider-consent-remember').check();
+    await expect(rememberedConsent.getByTestId('provider-consent-permission-scope')).toContainText('This project only');
+    await expect(rememberedConsent.getByTestId('provider-consent-permission-scope')).toContainText('Until revoked');
+    await fixture.screenshot(testInfo, 'project-chat-exact-permission-scope.png');
+    await rememberedConsent.getByTestId('provider-consent-approve').click();
+    await expect(rememberedConsent).toBeHidden();
+    await expect(page.getByTestId('provider-permission-active-notice')).toBeVisible();
+    await expect.poll(() => fixture.starts.length).toBe(1);
+    const grant = readRecord(fixture.decisions[1]?.body);
+    expect(grant?.decision).toBe('approve');
+    expect(grant?.rememberProviderPermission).toBe(true);
 
-  await page.route('**/api/v1/ai-runs/**', async (route) => {
-    const url = new URL(route.request().url());
-    const parts = url.pathname.split('/').filter(Boolean);
-    const runId = parts[3];
-    const suffix = parts.slice(4).join('/');
-    const current = snapshots.get(runId);
-    if (route.request().method() === 'GET' && suffix === '' && current) {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: current, error: null }) });
-      return;
-    }
-    if (route.request().method() === 'POST' && suffix === 'start' && current) {
-      const complete = {
-        ...current,
-        status: 'succeeded',
-        phase: 'terminal',
-        decision: 'approved',
-        safeMessage: 'Preview run completed.',
-        cleanup: 'complete',
-        providerTransmission: 'transmitted_confirmed',
-        assistant: { complete: true, contentLength: 0 }
-      };
-      snapshots.set(runId, complete);
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: complete, error: null }) });
-      return;
-    }
-    await route.fallback();
-  });
+    await page.getByTestId('message-input').fill('Use the exact saved permission for this request.');
+    await page.getByTestId('ai-run-submit').click();
+    await expect(page.getByTestId('provider-consent-alert-dialog')).toHaveCount(0);
+    await expect(page.getByTestId('ai-run-remembered-permission-notice')).toContainText('Using saved provider permission');
+    await expect.poll(() => fixture.starts.length).toBe(2);
+    expect(fixture.createdRunIds).toHaveLength(3);
 
-  await page.route('**/api/v1/ai-runs/*/egress-decision', async (route) => {
-    decisionBody = route.request().postDataJSON() as Record<string, unknown>;
-    if (decisionBody.rememberProviderPermission === true) {
-      permissions = [{
-        id: PERMISSION_ID,
-        subject: { ownerId: OWNER_ID },
-        projectId: PROJECT_ID,
-        providerProfile: PROVIDER_PROFILE,
-        model: MODEL,
-        capability: 'send_selected_context',
-        persistence: 'until_revoked',
-        expiresAt: null,
-        createdAt: '2026-09-30T00:00:00.000Z',
-        revokedAt: null
-      }];
-    }
-    await route.continue();
-  });
+    await page.getByTestId('provider-permission-manager-toggle').click();
+    const permissionItem = page.getByTestId('provider-permission-item');
+    await expect(permissionItem).toContainText(MODEL);
+    await permissionItem.getByTestId('provider-permission-revoke').click();
+    await expect(permissionItem).toContainText('Revoked');
+    const permissionPath = `/api/v1/projects/${PROJECT_ID}/provider-permissions`;
+    const deletePath = `${permissionPath}/${PERMISSION_ID}`;
+    const deleteResponseIndex = fixture.evidence.lifecycle.findIndex((entry) => entry.step === 'response'
+      && entry.method === 'DELETE' && entry.path === deletePath && entry.status === 204);
+    const refreshedPermissionIndex = fixture.evidence.lifecycle.findIndex((entry, index) => index > deleteResponseIndex
+      && entry.step === 'response' && entry.method === 'GET' && entry.path === permissionPath && entry.status === 200);
+    expect(deleteResponseIndex).toBeGreaterThan(-1);
+    expect(refreshedPermissionIndex).toBeGreaterThan(deleteResponseIndex);
+    expect(fixture.providerPermissionsRevoked).toHaveLength(1);
 
-  await page.goto('/login');
-  await page.getByTestId('login-password-input').fill('preview-e2e-only');
-  await page.getByTestId('login-submit-button').click();
+    await page.getByTestId('message-input').fill('Ask me again after the grant is revoked.');
+    await page.getByTestId('ai-run-submit').click();
+    const revokedConsent = page.getByTestId('provider-consent-alert-dialog');
+    await expect(revokedConsent).toBeVisible();
+    expect(fixture.starts).toHaveLength(2);
+    await fixture.screenshot(testInfo, 'project-chat-consent-after-revocation.png');
+    await revokedConsent.getByTestId('provider-consent-reject').click();
+    await expect(revokedConsent).toBeHidden();
+    expect(fixture.starts).toHaveLength(2);
+
+    expect(fixture.submissionsCreated).toHaveLength(4);
+    expect(fixture.submissionsCreated.every((request) => request.path === `/api/v1/projects/${PROJECT_ID}/chat-runs`
+      && request.csrfToken === 'preview-only-csrf-token' && Boolean(request.idempotencyKey)
+      && readRecord(request.body)?.conversationId === CONVERSATION_ID)).toBe(true);
+    expect(new Set(fixture.submissionsCreated.map((request) => request.idempotencyKey)).size).toBe(4);
+    expect(fixture.unhandledApiCalls).toEqual([]);
+    expect(fixture.evidence.blockedExternalRequests).toEqual([]);
+  } finally {
+    await fixture.saveEvidence(testInfo, 'provider-permissions');
+  }
+});
+
+async function openConversation(page: import('@playwright/test').Page): Promise<void> {
+  await signInToProjectChat(page);
   await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);
   await page.goto(`/projects/${PROJECT_ID}/conversations/${CONVERSATION_ID}`);
   await expect(page.getByTestId('provider-permission-manager')).toBeVisible();
-  await page.getByTestId('message-input').fill('Summarize the current project request.');
-  await expect(page.getByTestId('ai-run-submit')).toBeEnabled();
-  await page.getByTestId('ai-run-submit').click();
-  const consent = page.getByTestId('provider-consent-alert-dialog');
-  await expect(consent).toBeVisible();
-  await expect(consent.getByTestId('provider-consent-sensitive-classification')).toContainText('Sensitive action');
-  await expect(consent.getByText('Nothing has been sent to NVIDIA yet.')).toBeVisible();
-  await expect(consent.getByTestId('provider-consent-remember-permission')).not.toBeChecked();
-  await consent.getByTestId('provider-consent-remember-permission').check();
-  await expect(consent.getByTestId('provider-consent-permission-scope')).toContainText('This project only');
-  await expect(consent.getByTestId('provider-consent-permission-scope')).toContainText('Until revoked');
-  await consent.getByTestId('provider-consent-approve').click();
-  await expect(consent).toBeHidden();
-  await expect.poll(() => decisionBody?.rememberProviderPermission).toBe(true);
-  await expect(page.getByTestId('provider-permission-active-notice')).toContainText('Sensitive permission active');
-
-  await page.getByTestId('ai-run-submit').click();
-  await expect(page.getByTestId('provider-consent-alert-dialog')).toHaveCount(0);
-  await expect(page.getByTestId('ai-run-remembered-permission-notice')).toContainText('saved project permission');
-  expect(createCount).toBe(2);
-
-  await page.getByTestId('provider-permission-manager-toggle').click();
-  const permissionItem = page.getByTestId('provider-permission-item');
-  await expect(permissionItem).toContainText(MODEL);
-  await permissionItem.getByTestId('provider-permission-revoke').click();
-  await expect(permissionItem).toContainText('Revoked');
-  await expect.poll(() => revokeHeaders?.['x-csrf-token']).toBeTruthy();
-  expect(revokeHeaders?.origin).toMatch(/^https?:\/\//u);
-  await expect(page.getByTestId('provider-permission-revocation-note')).toContainText('cannot be recalled');
-});
+  await expect(page.getByTestId('message-input')).toBeEnabled();
+  await expect(page.getByTestId('ai-run-submit')).toBeDisabled();
+}

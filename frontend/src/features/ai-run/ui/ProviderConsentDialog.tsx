@@ -11,6 +11,7 @@ interface ProviderConsentDialogProps {
   readonly decisionOutcomeUnknown: boolean;
   readonly approveEnabled: boolean;
   readonly rememberProviderPermission: boolean;
+  readonly showFactContent?: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onApprove: () => void;
   readonly onRememberProviderPermissionChange: (checked: boolean) => void;
@@ -29,6 +30,7 @@ export function ProviderConsentDialog({
   decisionOutcomeUnknown,
   approveEnabled,
   rememberProviderPermission,
+  showFactContent = true,
   onOpenChange,
   onApprove,
   onRememberProviderPermissionChange,
@@ -135,7 +137,7 @@ export function ProviderConsentDialog({
                 <h4>{fact.title}</h4>
                 <p><strong>Source:</strong> {fact.source.label}</p>
                 <p><strong>Review status:</strong> {fact.verificationStatus === 'verified' ? 'Verified by you' : 'Needs review'}</p>
-                <p className="memory-fact-value" data-testid="provider-consent-fact-content">{fact.content}</p>
+                {showFactContent ? <p className="memory-fact-value" data-testid="provider-consent-fact-content">{fact.content}</p> : null}
               </li>)}
             </ol>
           </section> : null}
@@ -151,7 +153,7 @@ export function ProviderConsentDialog({
           <label className="provider-permission-check">
             <input
               type="checkbox"
-              data-testid="provider-consent-remember-permission"
+              data-testid="provider-consent-remember"
               checked={rememberProviderPermission}
               onChange={(event) => onRememberProviderPermissionChange(event.currentTarget.checked)}
               disabled={actionsDisabled}

@@ -61,7 +61,7 @@ test('opens file history from activity, shows all outcomes, and filters applied 
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { projectId: PROJECT_ID, path, outcome, items: rows, nextCursor: null }, error: null }) });
   });
 
-  await page.getByTestId('project-item').filter({ hasText: 'Website redesign' }).getByRole('link').click();
+  await page.getByRole('navigation', { name: 'Active projects' }).getByRole('link', { name: 'Website redesign' }).click();
   await page.getByTestId('project-activity-link').click();
   await page.getByTestId(`activity-details-${RUN_ID}`).click();
   await page.getByRole('link', { name: 'View file history for src/new.ts' }).click();

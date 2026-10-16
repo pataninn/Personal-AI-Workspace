@@ -45,12 +45,17 @@ describe('foundation health endpoints (integration)', () => {
       .expect(({ headers }: { headers: Record<string, string | undefined> }) => {
         const policy = headers['content-security-policy'];
         expect(policy).toBeDefined();
-        expect(policy).toContain("default-src 'self'");
-        expect(policy).toContain("script-src 'self'");
-        expect(policy).toContain("style-src 'self'");
-        expect(policy).toContain("connect-src 'self'");
-        expect(policy).toContain("object-src 'none'");
-        expect(policy).not.toContain("'unsafe-inline'");
+        const directives = Object.fromEntries((policy ?? '').split(';').map((directive) => {
+          const [name, ...values] = directive.trim().split(/\s+/u);
+          return [name, values];
+        }));
+        expect(directives['default-src']).toEqual(["'self'"]);
+        expect(directives['script-src']).toEqual(["'self'"]);
+        expect(directives['script-src-attr']).toEqual(["'none'"]);
+        expect(directives['style-src']).toEqual(["'self'"]);
+        expect(directives['style-src-attr']).toEqual(["'unsafe-inline'"]);
+        expect(directives['connect-src']).toEqual(["'self'"]);
+        expect(directives['object-src']).toEqual(["'none'"]);
       });
   });
 

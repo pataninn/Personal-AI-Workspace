@@ -130,7 +130,7 @@ describe('ChatWorkspace', () => {
     getConversationMock.mockResolvedValue(emptyHistory);
     renderWorkspace();
 
-    expect(await screen.findByTestId('conversation-history-empty')).toHaveTextContent('No messages yet');
+    expect(await screen.findByTestId('conversation-history-empty')).toHaveTextContent('Let’s get started');
     expect(screen.getByTestId('message-input')).toBeEnabled();
   });
 
@@ -191,7 +191,7 @@ describe('ChatWorkspace', () => {
     createConversationMock.mockResolvedValue(firstConversation);
     renderWorkspace(activeProject, '');
     const user = userEvent.setup();
-    expect(await screen.findByRole('heading', { name: 'Start your first conversation' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Get started' })).toBeInTheDocument();
     expect(screen.queryByText('Choose a conversation')).not.toBeInTheDocument();
     expect(screen.getAllByTestId('conversation-create-trigger')).toHaveLength(1);
     await user.click(await screen.findByTestId('conversation-create-trigger'));
@@ -219,7 +219,7 @@ describe('ChatWorkspace', () => {
     expect(screen.getByTestId('conversation-create-trigger')).toHaveAttribute('aria-describedby', 'project-archived-message');
     expect(await screen.findByTestId('message-input')).toBeDisabled();
     expect(screen.getByTestId('message-input')).toHaveAttribute('aria-describedby', expect.stringContaining('project-archived-message'));
-    expect(screen.getByTestId('chat-send')).toHaveAttribute('aria-describedby', 'project-archived-message');
+    expect(screen.getByTestId('ai-run-submit')).toHaveAttribute('aria-describedby', 'project-archived-message');
     expect(screen.getAllByTestId('project-archived-message').length).toBeGreaterThan(0);
   });
 

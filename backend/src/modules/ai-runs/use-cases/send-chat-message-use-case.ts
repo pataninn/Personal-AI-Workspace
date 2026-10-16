@@ -1,7 +1,7 @@
 import type { IProjectChatContextRepository } from '@/modules/ai-runs/repositories/project-chat-context-repository';
 import type { IProjectFactRepository } from '@/modules/memory/repositories/project-fact-repository';
+import { AiRunProviderPermissionRevokedError } from '@/modules/ai-runs/domain/ai-run-errors';
 import type { CreateAiRunUseCase, DecideEgressUseCase, CreateAiRunOutput } from '@/modules/ai-runs/use-cases/ai-run-use-cases';
-import type { StartAiRunUseCase } from '@/modules/ai-runs/use-cases/start-ai-run-use-case';
 
 export interface SendChatMessageInput {
   readonly ownerId: string;
@@ -16,8 +16,7 @@ export class SendChatMessageUseCase {
     private readonly contexts: Pick<IProjectChatContextRepository, 'get'>,
     private readonly facts: IProjectFactRepository,
     private readonly createRun: Pick<CreateAiRunUseCase, 'execute'>,
-    private readonly decideEgress: Pick<DecideEgressUseCase, 'execute'>,
-    private readonly startRun: Pick<StartAiRunUseCase, 'execute'>
+    private readonly decideEgress: Pick<DecideEgressUseCase, 'approveWithRememberedPermission'>
   ) {}
 
   public async execute(input: SendChatMessageInput): Promise<CreateAiRunOutput> {
@@ -30,12 +29,12 @@ export class SendChatMessageUseCase {
     });
     let run = created.resource;
     if (run.decision === 'pending' && run.status === 'pending_approval') {
-      // Sending a chat message authorizes transmission of the project's saved context.
-      run = await this.decideEgress.execute({ ownerId: input.ownerId, runId: run.id, manifestHash: run.manifest.manifestHash,
-        decision: 'approve', idempotencyKey: `chat-approve-${run.id}` });
-    }
-    if (run.status === 'ready') {
-      run = (await this.startRun.execute({ ownerId: input.ownerId, runId: run.id, idempotencyKey: `chat-start-${run.id}` })).resource;
+      try {
+        run = await this.decideEgress.approveWithRememberedPermission({ ownerId: input.ownerId, runId: run.id }) ?? run;
+      } catch (error: unknown) {
+        // A grant revoked between exact-scope lookup and decision stays pending for explicit review.
+        if (!(error instanceof AiRunProviderPermissionRevokedError)) throw error;
+      }
     }
     return { resource: run, replayed: created.replayed };
   }

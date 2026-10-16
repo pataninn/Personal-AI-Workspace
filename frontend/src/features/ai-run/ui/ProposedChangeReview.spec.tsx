@@ -53,7 +53,7 @@ describe('ProposedChangeReview', () => {
     getProposedChangeSetMock.mockResolvedValueOnce(fullSet);
     renderReview();
 
-    expect(await screen.findByTestId('change-review-fake-mode-notice')).toHaveTextContent('Development preview - fake runtime. These proposed changes are simulated; live OpenShell, Hermes, and NVIDIA NIM provenance is not verified.');
+    expect(await screen.findByTestId('change-review-fake-mode-notice')).toHaveTextContent('Development preview - fake runtime. These proposed changes are simulated; live OpenShell, Hermes, and model provider provenance is not verified.');
     expect(screen.getByTestId('change-set-summary')).toHaveTextContent('Recovery snapshots required');
     expect(screen.getByTestId('change-proposal-freshness')).toHaveTextContent('Source versions are rechecked before applying.');
     expect(screen.queryByTestId('change-proposal-version')).not.toBeInTheDocument();

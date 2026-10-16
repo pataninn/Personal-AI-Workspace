@@ -1,4 +1,5 @@
 import { InMemoryAiRunRepository } from '@/infrastructure/ai-runs/in-memory-ai-run-repository';
+import { AiRunProviderPermissionRevokedError } from '@/modules/ai-runs/domain/ai-run-errors';
 import { SendChatMessageUseCase } from '@/modules/ai-runs/use-cases/send-chat-message-use-case';
 import type { IProjectFactRepository } from '@/modules/memory/repositories/project-fact-repository';
 import type { ProjectFact } from '@/modules/memory/domain/project-fact';
@@ -12,8 +13,7 @@ const input = { ownerId: 'owner', projectId: 'project', conversationId: 'convers
 async function fixture(): Promise<{
   readonly useCase: SendChatMessageUseCase;
   readonly create: jest.Mock;
-  readonly decide: jest.Mock;
-  readonly start: jest.Mock;
+  readonly approveWithRememberedPermission: jest.Mock;
   readonly facts: jest.Mocked<IProjectFactRepository>;
   readonly run: Awaited<ReturnType<InMemoryAiRunRepository['create']>>['resource'];
 }> {
@@ -23,33 +23,55 @@ async function fixture(): Promise<{
   const facts: jest.Mocked<IProjectFactRepository> = { findActiveByIds: jest.fn().mockResolvedValue([{ id: 'selected' } satisfies Pick<ProjectFact, 'id'>]),
     listActiveByProject: jest.fn(), findActiveById: jest.fn(), create: jest.fn(), update: jest.fn(), verify: jest.fn(), softDelete: jest.fn() };
   const create = jest.fn().mockResolvedValue({ resource: run, replayed: false });
-  const decide = jest.fn().mockResolvedValue({ ...run, decision: 'approved', status: 'ready' });
-  const start = jest.fn().mockResolvedValue({ resource: { ...run, decision: 'approved', status: 'queued' }, replayed: false });
-  return { useCase: new SendChatMessageUseCase(contexts, facts, { execute: create }, { execute: decide }, { execute: start }), create, decide, start, facts, run };
+  const approveWithRememberedPermission = jest.fn().mockResolvedValue(null);
+  return {
+    useCase: new SendChatMessageUseCase(contexts, facts, { execute: create }, { approveWithRememberedPermission }),
+    create,
+    approveWithRememberedPermission,
+    facts,
+    run
+  };
 }
 
 describe('SendChatMessageUseCase', () => {
-  it('uses project-wide context, skips deleted facts, approves and starts the run in one action', async () => {
-    const { useCase, create, decide, start, facts, run } = await fixture();
+  it('preserves project context and conversation binding while returning pending consent without an exact remembered permission', async () => {
+    const { useCase, create, approveWithRememberedPermission, facts, run } = await fixture();
+
     const result = await useCase.execute(input);
+
     expect(create).toHaveBeenCalledWith({ ...input, relativePaths: ['README.md'], factIds: ['selected'], includeRecentMessages: true, includeProjectConversations: true });
     expect(facts.findActiveByIds).toHaveBeenCalledWith('owner', 'project', ['selected', 'deleted']);
-    expect(decide).toHaveBeenCalledWith({ ownerId: 'owner', runId: run.id, manifestHash: manifest.manifestHash, decision: 'approve', idempotencyKey: `chat-approve-${run.id}` });
-    expect(start).toHaveBeenCalledWith({ ownerId: 'owner', runId: run.id, idempotencyKey: `chat-start-${run.id}` });
-    expect(result.resource).toMatchObject({ status: 'queued', decision: 'approved' });
+    expect(approveWithRememberedPermission).toHaveBeenCalledWith({ ownerId: 'owner', runId: run.id });
+    expect(result).toMatchObject({ replayed: false, resource: { id: run.id, conversationId: input.conversationId, status: 'pending_approval', decision: 'pending' } });
   });
 
-  it('returns an existing running request without approving or starting duplicate inference', async () => {
-    const { useCase, create, decide, start, run } = await fixture();
+  it('applies an exact remembered permission and leaves the ready run for the existing explicit start route', async () => {
+    const { useCase, approveWithRememberedPermission, run } = await fixture();
+    approveWithRememberedPermission.mockResolvedValue({ ...run, decision: 'approved', status: 'ready' });
+
+    await expect(useCase.execute(input)).resolves.toMatchObject({ resource: { id: run.id, conversationId: input.conversationId, status: 'ready', decision: 'approved' } });
+    expect(approveWithRememberedPermission).toHaveBeenCalledWith({ ownerId: input.ownerId, runId: run.id });
+  });
+
+  it('keeps consent pending if a remembered permission is revoked during exact-scope approval', async () => {
+    const { useCase, approveWithRememberedPermission, run } = await fixture();
+    approveWithRememberedPermission.mockRejectedValue(new AiRunProviderPermissionRevokedError());
+
+    await expect(useCase.execute(input)).resolves.toMatchObject({ resource: { id: run.id, status: 'pending_approval', decision: 'pending' } });
+  });
+
+  it('returns an existing running request without rechecking permission or creating a second run', async () => {
+    const { useCase, create, approveWithRememberedPermission, run } = await fixture();
     create.mockResolvedValue({ resource: { ...run, status: 'running', decision: 'approved' }, replayed: true });
+
     await expect(useCase.execute(input)).resolves.toMatchObject({ replayed: true, resource: { status: 'running' } });
-    expect(decide).not.toHaveBeenCalled(); expect(start).not.toHaveBeenCalled();
+    expect(approveWithRememberedPermission).not.toHaveBeenCalled();
   });
 
-  it('does not send to the provider when approval preparation fails', async () => {
-    const { useCase, decide, start } = await fixture();
-    decide.mockRejectedValue(new Error('Context changed'));
+  it('propagates failures while preparing an exact remembered-permission approval', async () => {
+    const { useCase, approveWithRememberedPermission } = await fixture();
+    approveWithRememberedPermission.mockRejectedValue(new Error('Context changed'));
+
     await expect(useCase.execute(input)).rejects.toThrow('Context changed');
-    expect(start).not.toHaveBeenCalled();
   });
 });
