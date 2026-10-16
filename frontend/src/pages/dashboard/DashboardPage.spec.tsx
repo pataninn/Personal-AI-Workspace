@@ -20,6 +20,10 @@ vi.mock('@/entities/project/api/project-api', () => ({
   removeProject: removeProjectMock, updateProjectStatus: vi.fn()
 }));
 vi.mock('@/entities/project/api/project-overview-api', () => ({ getProjectOverview: getProjectOverviewMock }));
+vi.mock('@/widgets/home-chat', () => ({
+  HomeChatWidget: ({ scope, scopeLabel }: { readonly scope: { readonly kind: string }; readonly scopeLabel: string }) =>
+    <section data-testid="home-chat-widget" data-scope={scope.kind} aria-label={scopeLabel} />
+}));
 
 const ACTIVE_PROJECT: ProjectSnapshot = {
   id: '11111111-1111-4111-8111-111111111111', name: 'Website', slug: 'website', relativeRoot: 'apps/website', status: 'active', version: 1,
@@ -55,6 +59,19 @@ describe('DashboardPage chat and task Home', () => {
     createProjectMock.mockReset(); getProjectMock.mockReset(); listProjectsMock.mockReset(); removeProjectMock.mockReset(); getProjectOverviewMock.mockReset();
     getProjectOverviewMock.mockResolvedValue(overview());
     listProjectsMock.mockResolvedValue({ projects: [ACTIVE_PROJECT] });
+  });
+
+  it('places the Home conversation immediately after the hero and before Inbox capture', async () => {
+    renderDashboard();
+
+    const chat = await screen.findByTestId('home-chat-widget');
+    const hero = screen.getByRole('heading', { name: 'Home' }).closest('header');
+    const inboxHeading = screen.getByRole('heading', { name: 'Inbox' });
+
+    expect(chat).toHaveAttribute('data-scope', 'home');
+    expect(chat).toHaveAttribute('aria-label', 'Home');
+    expect(hero?.nextElementSibling).toBe(chat);
+    expect(Boolean(chat.compareDocumentPosition(inboxHeading) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
   });
 
   it('shows four activity-ranked projects and expands the remaining projects on Home', async () => {

@@ -201,7 +201,9 @@ export class HomeChangeProposalUseCases implements HomeProposalDraftCreator {
         workspaceIds[index] = workspaceId;
         command = { action: 'workspace.create', workspaceId, name: identity.name, objective: normalizeObjective(row.objective) };
       } else if (row.action === 'task.create') {
-        const workspaceId = await this.resolveWorkspaceId(ownerId, scope, row.workspaceId, index, workspaceIds);
+        const workspaceId = row.workspaceId === undefined && scope.kind === 'workspace'
+          ? scope.workspaceId
+          : await this.resolveWorkspaceId(ownerId, scope, row.workspaceId, index, workspaceIds);
         const taskId = this.createId();
         command = {
           action: 'task.create', taskId,

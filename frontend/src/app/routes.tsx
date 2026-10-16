@@ -9,6 +9,7 @@ import { ProjectContextPage } from '@/pages/project-context';
 import { ProjectTasksPage } from '@/pages/project-tasks';
 import { ProjectActivityPage } from '@/pages/project-activity';
 import { ProjectFileHistoryPage } from '@/pages/project-file-history';
+import { WorkspacePlanningChatPage } from '@/pages/workspace-planning-chat';
 import { AllTasksPage } from '@/pages/all-tasks';
 import { TaskDetailPage } from '@/pages/task-detail';
 import { LoginPage } from '@/pages/login';
@@ -63,6 +64,7 @@ export const router = createBrowserRouter([
               { path: 'projects/:projectId/tasks', element: <ProjectTasksPage /> },
               { path: 'projects/:projectId/activity', element: <ProjectActivityPage /> },
               { path: 'projects/:projectId/file-history', element: <ProjectFileHistoryPage /> },
+              { path: 'projects/:projectId/planning-chat', element: <WorkspacePlanningChatPage /> },
               { path: 'projects/:projectId/conversations', element: <ProjectWorkspacePage /> },
               { path: 'projects/:projectId/conversations/:conversationId', element: <ProjectWorkspacePage /> },
               { path: '*', element: <NotFoundPage /> }

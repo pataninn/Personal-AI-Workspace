@@ -5,6 +5,7 @@ import { formatTaskDeadline, isTaskOverdue, TASK_IMPORTANCE_LABELS } from '@/ent
 import { CreateProjectDialog, useProjectListLoader } from '@/features/project-management';
 import { HomeInboxCapture } from '@/features/task-capture';
 import { Alert, Button, Card, ErrorState, Icon, Skeleton } from '@/shared/ui';
+import { HomeChatWidget } from '@/widgets/home-chat';
 import { ProjectList } from '@/widgets/project-list';
 
 /** Home focuses on recent project activity and six upcoming tasks across projects. */
@@ -26,6 +27,7 @@ export function DashboardPage(): React.JSX.Element {
 
   return <div className="projects-page home-page">
     <header className="projects-page-header home-hero"><div><p className="product-label">Home · {new Date().toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' })}</p><h1 aria-label="Home">Pick up a <span>project</span> or<br className="hero-break" /> choose your <span>next task</span>.</h1></div><Button type="button" data-testid="project-create-trigger" disabled={home.status !== 'success' || boundaryUnavailable} onClick={() => { setCreateOpen(true); }}><Icon name="plus" size={18} />New project</Button></header>
+    <HomeChatWidget scope={{ kind: 'home' }} scopeLabel="Home" />
     {home.status === 'loading' ? <div aria-busy="true" data-testid="project-list-loading"><p role="status">Loading your workspace...</p><Skeleton className="project-card-skeleton" /></div> : null}
     {home.status === 'error' ? boundaryUnavailable ? <Alert tone="error" data-testid="workspace-boundary-error" role="alert"><strong>The authoritative workspace is unavailable.</strong><p>Project actions are disabled until the local workspace setup is available.</p><Button type="button" variant="secondary" data-testid="workspace-boundary-retry-button" onClick={refresh}>Try again</Button></Alert> : <ErrorState title="Workspace could not be loaded" detail="Try again to reload your projects and tasks." testId="project-list-error" action={<Button type="button" variant="secondary" data-testid="project-retry-button" onClick={refresh}>Try again</Button>} /> : null}
     <HomeInboxCapture onCreated={refresh} />

@@ -58,7 +58,9 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
       case 'home_reuse_workspace':
         return this.readResolution(input.scope, await this.reuseWorkspace(input.ownerId, input.scope, args));
       case 'home_create_task': {
-        const workspaceId = (args.workspaceId as string | null | undefined) ?? null;
+        const workspaceId = args.workspaceId === undefined && input.scope.kind === 'workspace'
+          ? input.scope.workspaceId
+          : (args.workspaceId as string | null | undefined) ?? null;
         await this.assertTaskWorkspace(input.ownerId, input.scope, workspaceId);
         const receipt = await this.dependencies.taskMutations.create({
           ownerId: input.ownerId,

@@ -4,7 +4,7 @@ import { Provider } from 'react-redux';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 
-import { ProtectedRoute } from '@/app/routes';
+import { ProtectedRoute, router } from '@/app/routes';
 import { userSessionReducer } from '@/entities/user-session';
 import { SignInForm } from '@/features/auth/ui/SignInForm';
 
@@ -12,6 +12,20 @@ function LocationProbe(): React.JSX.Element {
   const location = useLocation();
   return <output data-testid="route-location">{`${location.pathname}${location.search}`}</output>;
 }
+
+function routePaths(routes: typeof router.routes): string[] {
+  return routes.flatMap((route) => [route.path ?? '', ...routePaths(route.children ?? [])]);
+}
+
+describe('application route registration', () => {
+  it('adds planning chat while keeping existing project conversation routes', () => {
+    const paths = routePaths(router.routes);
+
+    expect(paths).toContain('projects/:projectId/planning-chat');
+    expect(paths).toContain('projects/:projectId/conversations');
+    expect(paths).toContain('projects/:projectId/conversations/:conversationId');
+  });
+});
 
 describe('ProtectedRoute', () => {
   it('redirects an expired session with a safe return path and visible notice', async () => {
