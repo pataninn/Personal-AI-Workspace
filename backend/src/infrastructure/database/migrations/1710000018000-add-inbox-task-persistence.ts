@@ -36,7 +36,6 @@ export class AddInboxTaskPersistence1710000018000 implements MigrationInterface 
       throw new Error('Cannot apply Inbox task persistence while existing task or order-state ownership is inconsistent. Review the affected records before retrying.');
     }
 
-    await queryRunner.query('ALTER TABLE "projects" ADD CONSTRAINT "UQ_projects_owner_id" UNIQUE ("owner_id", "id")');
     await queryRunner.query(`ALTER TABLE "project_tasks"
       ADD COLUMN "source_suggestion_project_id" uuid NULL,
       ADD COLUMN "source_run_id" uuid NULL,
@@ -175,6 +174,5 @@ export class AddInboxTaskPersistence1710000018000 implements MigrationInterface 
       DROP COLUMN "source_conversation_id",
       DROP COLUMN "source_run_id",
       DROP COLUMN "source_suggestion_project_id"`);
-    await queryRunner.query('ALTER TABLE "projects" DROP CONSTRAINT "UQ_projects_owner_id"');
   }
 }

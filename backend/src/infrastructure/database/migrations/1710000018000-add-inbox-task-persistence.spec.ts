@@ -29,7 +29,7 @@ describe('AddInboxTaskPersistence migration', () => {
     const sql = queries.join('\n');
 
     expect(sql).toContain('WHERE t."owner_id" <> p."owner_id"');
-    expect(sql).toContain('ADD CONSTRAINT "UQ_projects_owner_id" UNIQUE ("owner_id", "id")');
+    expect(sql).not.toContain('UQ_projects_owner_id');
     expect(sql).toContain('"source_suggestion_project_id" = s."project_id"');
     expect(sql).toContain('"source_run_id" = s."run_id"');
     expect(sql).toContain('"source_conversation_id" = s."conversation_id"');
@@ -65,7 +65,7 @@ describe('AddInboxTaskPersistence migration', () => {
     expect(sql).toContain('ADD CONSTRAINT "FK_project_task_events_task"');
     expect(sql).toContain('ADD CONSTRAINT "FK_project_tasks_source_suggestion"');
     expect(sql).toContain('DROP COLUMN "source_accepted_at"');
-    expect(queries[queries.length - 1]).toContain('DROP CONSTRAINT "UQ_projects_owner_id"');
+    expect(sql).not.toContain('UQ_projects_owner_id');
   });
 
   it('refuses a destructive rollback before dropping any constraints when Inbox data exists', async () => {
