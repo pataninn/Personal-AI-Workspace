@@ -22,9 +22,12 @@ import type {
 export interface TaskMutationCreateInput {
   readonly ownerId: string;
   readonly projectId?: string | null;
+  /** Trusted stable target ID for a sealed Home proposal item. */
+  readonly taskId?: string;
   readonly operationKey: string;
   readonly actorKind?: ActionLedgerActorKind;
   readonly turnId?: string | null;
+  readonly eventContext?: unknown;
   readonly expectedOrderVersion?: number;
   readonly title: unknown;
   readonly details?: unknown;
@@ -50,6 +53,7 @@ export interface TaskMutationUpdateInput extends TaskPatchInput {
   readonly operationKey?: string;
   readonly actorKind?: ActionLedgerActorKind;
   readonly turnId?: string | null;
+  readonly eventContext?: unknown;
 }
 
 export interface TaskMutationMoveInput {
@@ -62,6 +66,7 @@ export interface TaskMutationMoveInput {
   readonly operationKey?: string;
   readonly actorKind?: ActionLedgerActorKind;
   readonly turnId?: string | null;
+  readonly eventContext?: unknown;
 }
 
 export interface TaskMutationArchiveInput {
@@ -73,6 +78,7 @@ export interface TaskMutationArchiveInput {
   readonly operationKey?: string;
   readonly actorKind?: ActionLedgerActorKind;
   readonly turnId?: string | null;
+  readonly eventContext?: unknown;
 }
 
 export interface TaskMutationCommandResult {
@@ -222,6 +228,46 @@ function commandFingerprint(input: {
   });
 }
 
+/** Canonical assistant-action fingerprint shared with Home's sealed proposal recorder. */
+export function taskMutationFingerprint(
+  action: 'task.create' | 'task.update' | 'task.move' | 'task.archive',
+  input: TaskMutationCreateInput | TaskMutationUpdateInput | TaskMutationMoveInput | TaskMutationArchiveInput
+): string {
+  const actorKind = input.actorKind ?? 'manual';
+  if (action === 'task.create') {
+    const create = input as TaskMutationCreateInput;
+    const normalized = normalizeCreate(create);
+    return commandFingerprint({
+      ownerId: create.ownerId, actionKind: action, actorKind, expectedVersion: null,
+      request: { projectId: create.projectId ?? null, expectedOrderVersion: create.expectedOrderVersion ?? null, ...normalized.request }
+    });
+  }
+  if (action === 'task.update') {
+    const update = input as TaskMutationUpdateInput;
+    const normalized = normalizePatch(update);
+    return commandFingerprint({
+      ownerId: update.ownerId, actionKind: action, actorKind, targetId: update.taskId, expectedVersion: update.expectedVersion,
+      request: { expectedProjectId: update.expectedProjectId ?? null, ...normalized.request }
+    });
+  }
+  if (action === 'task.move') {
+    const move = input as TaskMutationMoveInput;
+    return commandFingerprint({
+      ownerId: move.ownerId, actionKind: action, actorKind, targetId: move.taskId, expectedVersion: move.expectedVersion,
+      request: {
+        workspaceId: move.workspaceId,
+        expectedSourceOrderVersion: move.expectedSourceOrderVersion ?? null,
+        expectedDestinationOrderVersion: move.expectedDestinationOrderVersion ?? null
+      }
+    });
+  }
+  const archive = input as TaskMutationArchiveInput;
+  return commandFingerprint({
+    ownerId: archive.ownerId, actionKind: action, actorKind, targetId: archive.taskId, expectedVersion: archive.expectedVersion,
+    request: { expectedProjectId: archive.expectedProjectId ?? null, expectedOrderVersion: archive.expectedOrderVersion ?? null }
+  });
+}
+
 function executionInput(input: {
   readonly ownerId: string;
   readonly operationKey: string;
@@ -273,14 +319,8 @@ export class TaskMutationUseCases<TTransaction> implements ITaskMutationCommands
     const normalized = normalizeCreate(input);
     const projectId = input.projectId ?? null;
     const actorKind = input.actorKind ?? 'manual';
-    const requestFingerprint = commandFingerprint({
-      ownerId: input.ownerId,
-      actionKind: 'task.create',
-      actorKind,
-      expectedVersion: null,
-      request: { projectId, expectedOrderVersion: input.expectedOrderVersion ?? null, ...normalized.request }
-    });
-    const taskId = randomUUID();
+    const requestFingerprint = taskMutationFingerprint('task.create', input);
+    const taskId = input.taskId ?? randomUUID();
     const command = executionInput({
       ownerId: input.ownerId,
       operationKey: operationKey(input.operationKey, requestFingerprint),
@@ -301,7 +341,7 @@ export class TaskMutationUseCases<TTransaction> implements ITaskMutationCommands
         ...normalizedFields,
         actorKind,
         ...(input.expectedOrderVersion === undefined ? {} : { expectedOrderVersion: input.expectedOrderVersion })
-      })));
+      })), input.eventContext);
     } catch (error: unknown) {
       ledgerError(error);
     }
@@ -309,16 +349,9 @@ export class TaskMutationUseCases<TTransaction> implements ITaskMutationCommands
   }
 
   public async update(input: TaskMutationUpdateInput): Promise<TaskMutationCommandResult> {
-    const { patch, request } = normalizePatch(input);
+    const { patch } = normalizePatch(input);
     const actorKind = input.actorKind ?? 'manual';
-    const requestFingerprint = commandFingerprint({
-      ownerId: input.ownerId,
-      actionKind: 'task.update',
-      actorKind,
-      targetId: input.taskId,
-      expectedVersion: input.expectedVersion,
-      request: { expectedProjectId: input.expectedProjectId ?? null, ...request }
-    });
+    const requestFingerprint = taskMutationFingerprint('task.update', input);
     const command = executionInput({
       ownerId: input.ownerId,
       operationKey: operationKey(input.operationKey, requestFingerprint),
@@ -338,7 +371,7 @@ export class TaskMutationUseCases<TTransaction> implements ITaskMutationCommands
         ...(input.expectedProjectId ? { expectedProjectId: input.expectedProjectId } : {}),
         ...patch,
         actorKind
-      })));
+      })), input.eventContext);
     } catch (error: unknown) {
       ledgerError(error);
     }
@@ -347,18 +380,7 @@ export class TaskMutationUseCases<TTransaction> implements ITaskMutationCommands
 
   public async move(input: TaskMutationMoveInput): Promise<TaskMutationCommandResult> {
     const actorKind = input.actorKind ?? 'manual';
-    const requestFingerprint = commandFingerprint({
-      ownerId: input.ownerId,
-      actionKind: 'task.move',
-      actorKind,
-      targetId: input.taskId,
-      expectedVersion: input.expectedVersion,
-      request: {
-        workspaceId: input.workspaceId,
-        expectedSourceOrderVersion: input.expectedSourceOrderVersion ?? null,
-        expectedDestinationOrderVersion: input.expectedDestinationOrderVersion ?? null
-      }
-    });
+    const requestFingerprint = taskMutationFingerprint('task.move', input);
     const command = executionInput({
       ownerId: input.ownerId,
       operationKey: operationKey(input.operationKey, requestFingerprint),
@@ -379,7 +401,7 @@ export class TaskMutationUseCases<TTransaction> implements ITaskMutationCommands
         ...(input.expectedSourceOrderVersion === undefined ? {} : { expectedSourceOrderVersion: input.expectedSourceOrderVersion }),
         ...(input.expectedDestinationOrderVersion === undefined ? {} : { expectedDestinationOrderVersion: input.expectedDestinationOrderVersion }),
         actorKind
-      })));
+      })), input.eventContext);
     } catch (error: unknown) {
       ledgerError(error);
     }
@@ -388,17 +410,7 @@ export class TaskMutationUseCases<TTransaction> implements ITaskMutationCommands
 
   public async archive(input: TaskMutationArchiveInput): Promise<TaskMutationCommandResult> {
     const actorKind = input.actorKind ?? 'manual';
-    const requestFingerprint = commandFingerprint({
-      ownerId: input.ownerId,
-      actionKind: 'task.archive',
-      actorKind,
-      targetId: input.taskId,
-      expectedVersion: input.expectedVersion,
-      request: {
-        expectedProjectId: input.expectedProjectId ?? null,
-        expectedOrderVersion: input.expectedOrderVersion ?? null
-      }
-    });
+    const requestFingerprint = taskMutationFingerprint('task.archive', input);
     const command = executionInput({
       ownerId: input.ownerId,
       operationKey: operationKey(input.operationKey, requestFingerprint),
@@ -418,7 +430,7 @@ export class TaskMutationUseCases<TTransaction> implements ITaskMutationCommands
         ...(input.expectedProjectId ? { expectedProjectId: input.expectedProjectId } : {}),
         ...(input.expectedOrderVersion === undefined ? {} : { expectedOrderVersion: input.expectedOrderVersion }),
         actorKind
-      })));
+      })), input.eventContext);
     } catch (error: unknown) {
       ledgerError(error);
     }

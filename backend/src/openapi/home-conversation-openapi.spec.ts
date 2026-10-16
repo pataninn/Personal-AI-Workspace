@@ -41,7 +41,11 @@ describe('Home conversation OpenAPI contract', () => {
     const event = record(schemas.HomeEvent, 'HomeEvent schema');
     const eventProperties = record(event.properties, 'HomeEvent properties');
     const eventType = record(eventProperties.type, 'HomeEvent.type');
-    expect(eventType.enum).toEqual(['conversation.created', 'turn.created', 'turn.status_changed', 'message.appended', 'action.receipt', 'consent.requested', 'consent.decided']);
+    expect(eventType.enum).toEqual([
+      'conversation.created', 'turn.created', 'turn.status_changed', 'message.appended', 'action.receipt',
+      'consent.requested', 'consent.decided', 'proposal.created', 'proposal.updated', 'proposal.accepted',
+      'proposal.cancelled', 'proposal.item_status_changed'
+    ]);
 
     const submission = record(schemas.HomeTurnSubmissionEnvelope, 'HomeTurnSubmissionEnvelope');
     const data = record(record(submission.properties, 'submission properties').data, 'submission data');

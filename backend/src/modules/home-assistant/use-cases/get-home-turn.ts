@@ -158,13 +158,19 @@ export class GetHomeTurnUseCase {
             const candidate = await this.toolRequestHandler.resolve({
               ownerId, conversationId, turnId, requestId: event.requestId, name: event.name, args: event.args, scope
             });
-            if (candidate) {
+            if (candidate?.kind === 'consented') {
+              const { candidate: resultCandidate } = candidate;
               await this.toolResults.request({
                 ownerId, conversationId, turnId, requestId: event.requestId,
-                scope: candidate.scope, categories: candidate.categories, itemCount: candidate.itemCount, data: candidate.data
+                scope: resultCandidate.scope, categories: resultCandidate.categories, itemCount: resultCandidate.itemCount, data: resultCandidate.data
               });
               state.lastEventSequence = lastSequence;
               return 'consent-required';
+            }
+            if (candidate?.kind === 'immediate') {
+              const sent = await this.runtime?.sendToolResult({ turnId, requestId: event.requestId, result: candidate.result });
+              if (!sent?.accepted) return 'invalid';
+              continue;
             }
           } catch {
             return 'invalid';

@@ -19,7 +19,11 @@ export interface HomePlanningToolResultCandidate {
   readonly data: Readonly<Record<string, unknown>>;
 }
 
+export type HomePlanningToolResolution =
+  | { readonly kind: 'consented'; readonly candidate: HomePlanningToolResultCandidate }
+  | { readonly kind: 'immediate'; readonly result: { readonly outcome: 'shared'; readonly data: Readonly<Record<string, unknown>> } };
+
 /** Optional application boundary for registered Home tools; no handler means deny all requests. */
 export interface IHomePlanningToolRequestHandler {
-  resolve(input: HomePlanningToolRequest): Promise<HomePlanningToolResultCandidate | null>;
+  resolve(input: HomePlanningToolRequest): Promise<HomePlanningToolResolution | null>;
 }

@@ -10,6 +10,7 @@ export interface IActionLedgerUndoRepository<TTransaction> {
   findActionByIdForOwner(ownerId: string, actionId: string): Promise<ActionLedgerRecord | null>;
   executeAtomically(
     input: ActionLedgerExecutionInput,
-    mutate: (transaction: TTransaction) => Promise<ActionLedgerMutationResult>
+    mutate: (transaction: TTransaction) => Promise<ActionLedgerMutationResult>,
+    eventContext?: unknown
   ): Promise<PersistedActionLedgerRecord>;
 }

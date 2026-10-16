@@ -18,6 +18,8 @@ import acp
 import planning_lifecycle
 import server
 from common import BridgeError
+from runtime import home_tools as home_tool_transport
+from runtime.home_tool_schemas import HOME_TOOL_DEFINITIONS, HOME_TOOL_NAMES
 
 
 TURN_ID = 'c38135b6-f877-4e9c-899a-4c0e53864854'
@@ -46,7 +48,7 @@ class FakeState:
     def __init__(self):
         self.events = []
         self.cancelled = threading.Event()
-        self.home_tool_names = frozenset({'planning_fixture_read'})
+        self.home_tool_names = frozenset(HOME_TOOL_NAMES)
         self.is_planning = True
 
     def push(self, event):
@@ -271,7 +273,7 @@ class PlanningLifecycleTests(unittest.TestCase):
 
 
 class PlanningRunnerPolicyTests(unittest.TestCase):
-    def run_runner(self, fixture=False, project_root=False, nonempty=False, max_tokens='64'):
+    def run_runner(self, project_root=False, nonempty=False, max_tokens='64'):
         runtime_root = BRIDGE_ROOT / 'runtime'
         runner = runtime_root / 'planning_acp_runner.py'
         with tempfile.TemporaryDirectory() as temporary:
@@ -306,14 +308,8 @@ class PlanningRunnerPolicyTests(unittest.TestCase):
             run_agent = types.ModuleType('run_agent')
             run_agent.AIAgent = Agent
             home_tools = types.ModuleType('home_tools')
-            home_tools.FIXTURE_NAME = 'planning_fixture_read'
-            home_tools.register_synthetic_read_only_fixture = lambda target: target.register(
-                name=home_tools.FIXTURE_NAME,
-                toolset='home_planning',
-                schema={'name': home_tools.FIXTURE_NAME, 'parameters': {'type': 'object', 'additionalProperties': False}},
-                handler=lambda *_args, **_kwargs: 'synthetic-result',
-                check_fn=lambda: True,
-            )
+            home_tools.HOME_TOOL_NAMES = HOME_TOOL_NAMES
+            home_tools.register_home_tools = home_tool_transport.register_home_tools
             acp_adapter = types.ModuleType('acp_adapter')
             acp_adapter.__path__ = []
             permissions = types.ModuleType('acp_adapter.permissions')
@@ -336,8 +332,6 @@ class PlanningRunnerPolicyTests(unittest.TestCase):
                 'PAI_MODEL': 'synthetic-model',
                 'PAI_PLANNING_MAX_TOKENS': max_tokens,
             }
-            if fixture:
-                environment['PAI_PLANNING_FIXTURE'] = '1'
             if project_root:
                 environment['PAI_PROJECT_ROOT'] = str(cwd)
             previous_path = list(sys.path)
@@ -345,8 +339,6 @@ class PlanningRunnerPolicyTests(unittest.TestCase):
             with patch.dict(os.environ, environment, clear=True), patch.dict(sys.modules, fake_modules), \
                     patch.dict('os.environ', {'HERMES_ACP_SKIP_CONFIGURED_MCP': ''}):
                 os.environ.pop('PAI_PROJECT_ROOT', None) if not project_root else None
-                if not fixture:
-                    os.environ.pop('PAI_PLANNING_FIXTURE', None)
                 try:
                     runpy.run_path(str(runner))
                     agent = Agent()
@@ -354,40 +346,117 @@ class PlanningRunnerPolicyTests(unittest.TestCase):
                         'agent': agent.received,
                         'registered': registry.registered,
                         'blocked_dispatch': registry.dispatch('terminal', {}),
-                        'allowed_dispatch': registry.dispatch('planning_fixture_read', {}),
+                        'allowed_dispatch': registry.dispatch('home_list_tasks', {'limit': 10}),
                         'dispatch_calls': registry.called,
                     }
                 finally:
                     os.chdir(previous_cwd)
                     sys.path[:] = previous_path
 
-    def test_runner_has_no_tools_or_project_context_by_default(self):
+    def test_runner_registers_only_the_fixed_typed_home_tools_and_no_project_context(self):
         result = self.run_runner()
-        self.assertEqual(result['agent']['enabled_toolsets'], [])
+        self.assertEqual(result['agent']['enabled_toolsets'], ['home_planning'])
         self.assertEqual(result['agent']['api_mode'], 'chat_completions')
         self.assertEqual(result['agent']['max_tokens'], 64)
         self.assertTrue(result['agent']['skip_context_files'])
         self.assertTrue(result['agent']['skip_memory'])
         self.assertTrue(result['agent']['skip_background_review'])
         self.assertEqual(result['agent']['fallback_model'], [])
-        self.assertEqual(result['registered'], [])
-        self.assertEqual(result['dispatch_calls'], [])
-        self.assertIn('error', result['blocked_dispatch'])
-
-    def test_fixture_mode_registers_only_the_synthetic_home_tool(self):
-        result = self.run_runner(fixture=True)
-        self.assertEqual(result['agent']['enabled_toolsets'], ['home_planning'])
-        self.assertEqual([tool['name'] for tool in result['registered']], ['planning_fixture_read'])
-        self.assertEqual(result['agent']['api_mode'], 'chat_completions')
-        self.assertEqual(result['agent']['max_tokens'], 64)
+        self.assertEqual([tool['name'] for tool in result['registered']], list(HOME_TOOL_NAMES))
+        self.assertEqual(result['dispatch_calls'], ['home_list_tasks'])
         self.assertIn('error', result['blocked_dispatch'])
         self.assertEqual(result['allowed_dispatch'], 'synthetic-dispatch')
-        self.assertEqual(result['dispatch_calls'], ['planning_fixture_read'])
+
+    def test_fixed_schema_catalog_matches_lifecycle_allowlist_and_is_strict_at_every_object(self):
+        self.assertEqual(tuple(tool['name'] for tool in HOME_TOOL_DEFINITIONS), HOME_TOOL_NAMES)
+        self.assertEqual(planning_lifecycle.PLANNING_TOOL_NAMES, frozenset(HOME_TOOL_NAMES))
+
+        def assert_strict(schema):
+            if schema.get('type') == 'object':
+                self.assertIs(schema.get('additionalProperties'), False)
+                for nested in schema.get('properties', {}).values():
+                    assert_strict(nested)
+            for key in ('anyOf', 'oneOf', 'allOf'):
+                for nested in schema.get(key, []):
+                    assert_strict(nested)
+            if 'items' in schema:
+                assert_strict(schema['items'])
+
+        for definition in HOME_TOOL_DEFINITIONS:
+            assert_strict(definition['parameters'])
+        self.assertNotIn('planning_fixture_read', HOME_TOOL_NAMES)
+        direct_create = next(tool for tool in HOME_TOOL_DEFINITIONS if tool['name'] == 'home_create_task')['parameters']
+        deadline = direct_create['properties']['deadline']
+        self.assertEqual([branch['properties']['kind']['enum'][0] for branch in deadline['anyOf'][0]['anyOf']], ['date', 'days_from_today'])
+        self.assertNotIn('workspaceRef', json.dumps(direct_create))
+
+        bulk = next(tool for tool in HOME_TOOL_DEFINITIONS if tool['name'] == 'home_propose_bulk_changes')['parameters']
+        item_schemas = bulk['properties']['items']['items']['anyOf']
+        workspace_ref_actions = set()
+        for schema in item_schemas:
+            for branch in schema.get('anyOf', [schema]):
+                action_schema = branch.get('properties', {}).get('action', {})
+                action = (action_schema.get('enum') or [None])[0]
+                target = branch.get('properties', {}).get('workspaceId', {})
+                for target_branch in target.get('anyOf', []):
+                    if 'workspaceRef' in target_branch.get('properties', {}):
+                        workspace_ref_actions.add(action)
+                        self.assertEqual(target_branch['properties']['workspaceRef']['maximum'], 20)
+        self.assertEqual(workspace_ref_actions, {'task.create', 'task.move'})
 
     def test_runner_refuses_project_root_nonempty_cwd_and_unbounded_token_config(self):
         for kwargs in ({'project_root': True}, {'nonempty': True}, {'max_tokens': '513'}, {'max_tokens': 'invalid'}):
             with self.subTest(kwargs=kwargs), self.assertRaises(RuntimeError):
                 self.run_runner(**kwargs)
+
+
+class HomeToolRegistryTests(unittest.TestCase):
+    def test_registers_exact_catalog_and_forwards_name_and_args_through_typed_acp(self):
+        class Registry:
+            def __init__(self):
+                self.tools = []
+
+            def register(self, **definition):
+                self.tools.append(definition)
+
+        registry = Registry()
+        home_tool_transport.register_home_tools(registry)
+        self.assertEqual([tool['name'] for tool in registry.tools], list(HOME_TOOL_NAMES))
+        self.assertTrue(all(tool['toolset'] == 'home_planning' for tool in registry.tools))
+
+        client = Mock()
+        client.ext_method.return_value = object()
+        future = Mock()
+        future.result.return_value = {'outcome': 'shared', 'data': {'items': [], 'nextCursor': None}}
+        with patch.object(home_tool_transport, 'CLIENT', client), \
+                patch.object(home_tool_transport, 'LOOP', object()), \
+                patch.object(home_tool_transport, 'SESSION', 'session-1'), \
+                patch.object(home_tool_transport.asyncio, 'run_coroutine_threadsafe', return_value=future) as submit:
+            result = registry.tools[0]['handler']({'limit': 10})
+
+        self.assertEqual(json.loads(result), {'items': [], 'nextCursor': None})
+        client.ext_method.assert_called_once_with('pai/home_tools', {
+            'sessionId': 'session-1', 'name': 'home_list_tasks', 'args': {'limit': 10}
+        })
+        submit.assert_called_once()
+
+    def test_denial_and_unavailable_transport_do_not_disclose_any_tool_result(self):
+        future = Mock()
+        future.result.return_value = {'outcome': 'denied', 'code': 'CONSENT_DENIED'}
+        client = Mock()
+        client.ext_method.return_value = object()
+        with patch.object(home_tool_transport, 'CLIENT', client), \
+                patch.object(home_tool_transport, 'LOOP', object()), \
+                patch.object(home_tool_transport, 'SESSION', 'session-1'), \
+                patch.object(home_tool_transport.asyncio, 'run_coroutine_threadsafe', return_value=future):
+            self.assertEqual(
+                json.loads(home_tool_transport.call_home_tool('home_get_task', {'taskId': '00000000-0000-0000-0000-000000000001'})),
+                {'outcome': 'denied', 'code': 'CONSENT_DENIED'},
+            )
+
+        self.assertIn('error', json.loads(home_tool_transport.call_home_tool('terminal', {})))
+        with patch.object(home_tool_transport, 'CLIENT', None):
+            self.assertIn('error', json.loads(home_tool_transport.call_home_tool('home_list_tasks', {})))
 
 
 class AcpHomeToolTransportTests(unittest.TestCase):
@@ -405,14 +474,14 @@ class AcpHomeToolTransportTests(unittest.TestCase):
         session = self.new_session()
         session._home_tool_request({
             'jsonrpc': '2.0', 'id': 7, 'method': '_pai/home_tools',
-            'params': {'sessionId': 'session-1', 'name': 'planning_fixture_read', 'args': {}},
+            'params': {'sessionId': 'session-1', 'name': 'home_list_tasks', 'args': {'limit': 10}},
         })
         self.assertEqual(session.state.events[0]['type'], 'home-tool-request')
         self.assertEqual(session.state.events[0]['id'], '7')
-        session.home_tool_result('7', {'outcome': 'shared', 'data': {'fixture': 'synthetic-read-only'}})
+        session.home_tool_result('7', {'outcome': 'shared', 'data': {'items': [], 'nextCursor': None}})
         session.send.assert_called_once_with({
             'jsonrpc': '2.0', 'id': 7,
-            'result': {'outcome': 'shared', 'data': {'fixture': 'synthetic-read-only'}},
+            'result': {'outcome': 'shared', 'data': {'items': [], 'nextCursor': None}},
         })
 
     def test_unknown_tool_duplicate_late_and_cancelled_results_are_rejected(self):
@@ -421,7 +490,7 @@ class AcpHomeToolTransportTests(unittest.TestCase):
         self.assertEqual(session.state.events, [])
         self.assertEqual(session.send.call_args.args[0]['result']['error'], 'The typed Home tool request is unavailable.')
         session.send.reset_mock()
-        request = {'id': 2, 'method': '_pai/home_tools', 'params': {'sessionId': 'session-1', 'name': 'planning_fixture_read', 'args': {}}}
+        request = {'id': 2, 'method': '_pai/home_tools', 'params': {'sessionId': 'session-1', 'name': 'home_list_tasks', 'args': {'limit': 10}}}
         session._home_tool_request(request)
         session._home_tool_request(request)
         self.assertEqual(session.home_tool_request_count, 1)
@@ -431,7 +500,7 @@ class AcpHomeToolTransportTests(unittest.TestCase):
 
     def test_denial_is_content_free_and_result_bound_is_enforced(self):
         session = self.new_session()
-        session._home_tool_request({'id': 'req_1', 'method': '_pai/home_tools', 'params': {'sessionId': 'session-1', 'name': 'planning_fixture_read', 'args': {}}})
+        session._home_tool_request({'id': 'req_1', 'method': '_pai/home_tools', 'params': {'sessionId': 'session-1', 'name': 'home_list_tasks', 'args': {'limit': 10}}})
         session.home_tool_result('req_1', {'outcome': 'denied', 'code': 'CONSENT_DENIED'})
         self.assertEqual(session.send.call_args.args[0]['result'], {'outcome': 'denied', 'code': 'CONSENT_DENIED'})
         with self.assertRaises(BridgeError):
@@ -446,12 +515,12 @@ class AcpHomeToolTransportTests(unittest.TestCase):
 
     def test_tool_request_event_and_request_count_are_bounded(self):
         session = self.new_session()
-        session._home_tool_request({'id': 1, 'method': '_pai/home_tools', 'params': {'sessionId': 'session-1', 'name': 'planning_fixture_read', 'args': {'value': 'x' * (256 * 1024)}}})
+        session._home_tool_request({'id': 1, 'method': '_pai/home_tools', 'params': {'sessionId': 'session-1', 'name': 'home_list_tasks', 'args': {'q': 'x' * (256 * 1024)}}})
         self.assertEqual(session.state.events, [])
         self.assertEqual(session.home_tool_request_count, 0)
         for index in range(acp.MAX_HOME_TOOL_REQUESTS):
-            session._home_tool_request({'id': index + 10, 'method': '_pai/home_tools', 'params': {'sessionId': 'session-1', 'name': 'planning_fixture_read', 'args': {}}})
-        session._home_tool_request({'id': 1000, 'method': '_pai/home_tools', 'params': {'sessionId': 'session-1', 'name': 'planning_fixture_read', 'args': {}}})
+            session._home_tool_request({'id': index + 10, 'method': '_pai/home_tools', 'params': {'sessionId': 'session-1', 'name': 'home_list_tasks', 'args': {'limit': 10}}})
+        session._home_tool_request({'id': 1000, 'method': '_pai/home_tools', 'params': {'sessionId': 'session-1', 'name': 'home_list_tasks', 'args': {'limit': 10}}})
         self.assertEqual(session.home_tool_request_count, acp.MAX_HOME_TOOL_REQUESTS)
         self.assertEqual(len(session.state.events), acp.MAX_HOME_TOOL_REQUESTS)
 

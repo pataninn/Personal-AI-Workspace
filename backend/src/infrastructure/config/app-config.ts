@@ -63,6 +63,7 @@ const appEnvironmentSchema = z.object({
   NIM_PROFILE: z.enum([NVIDIA_PROVIDER_PROFILE, NEBIUS_PROVIDER_PROFILE]).default(NVIDIA_PROVIDER_PROFILE),
   NIM_ENDPOINT: z.string().url().default('https://integrate.api.nvidia.com/v1'),
   NIM_MODEL: z.string().default(EXPECTED_NIM_MODEL),
+  HOME_PLANNING_TIME_ZONE: z.string().min(1).optional(),
   AGENT_RUNTIME_MODE: z.enum(['fake', 'direct', 'openshell', 'hermes']).default('direct'),
   HERMES_BRIDGE_ENDPOINT: z.string().url().optional(),
   HERMES_BRIDGE_CA_FILE: z.string().optional(),
@@ -112,6 +113,7 @@ export interface AppConfig {
   readonly nimProfile: string;
   readonly nimEndpoint: string;
   readonly nimModel: string;
+  readonly homePlanningTimeZone?: string;
   readonly agentRuntimeMode: 'fake' | 'direct' | 'openshell' | 'hermes';
   readonly hermesBridgeEndpoint?: string;
   readonly hermesBridgeCaFile?: string;
@@ -133,6 +135,13 @@ function configurationDetails(error: z.ZodError): readonly ErrorDetail[] {
 function validateCrossFieldConfiguration(value: z.infer<typeof appEnvironmentSchema>): readonly ErrorDetail[] {
   const details: ErrorDetail[] = [];
   const appOrigin = new URL(value.APP_ORIGIN);
+  if (value.HOME_PLANNING_TIME_ZONE) {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: value.HOME_PLANNING_TIME_ZONE });
+    } catch {
+      details.push({ field: 'HOME_PLANNING_TIME_ZONE', message: 'Use a valid IANA timezone identifier.' });
+    }
+  }
   if (value.WORKSPACE_ROOT !== '/workspace') {
     details.push({ field: 'WORKSPACE_ROOT', message: 'WORKSPACE_ROOT must be exactly /workspace' });
   }
@@ -272,6 +281,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     nimProfile: parsed.data.NIM_PROFILE,
     nimEndpoint: parsed.data.NIM_ENDPOINT,
     nimModel: parsed.data.NIM_MODEL,
+    ...(parsed.data.HOME_PLANNING_TIME_ZONE ? { homePlanningTimeZone: parsed.data.HOME_PLANNING_TIME_ZONE } : {}),
     agentRuntimeMode: parsed.data.AGENT_RUNTIME_MODE,
     ...(parsed.data.HERMES_BRIDGE_ENDPOINT ? { hermesBridgeEndpoint: parsed.data.HERMES_BRIDGE_ENDPOINT } : {}),
     ...(parsed.data.HERMES_BRIDGE_CA_FILE ? { hermesBridgeCaFile: parsed.data.HERMES_BRIDGE_CA_FILE } : {}),

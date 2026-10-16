@@ -10,7 +10,8 @@ export interface IActionLedgerRepository<TTransaction> {
   /** Serializes an operation key and commits mutation plus receipt in one transaction. */
   executeAtomically(
     input: ActionLedgerExecutionInput,
-    mutate: (transaction: TTransaction) => Promise<ActionLedgerMutationResult>
+    mutate: (transaction: TTransaction) => Promise<ActionLedgerMutationResult>,
+    eventContext?: unknown
   ): Promise<PersistedActionLedgerRecord>;
 
   /** Finds an operation only when it belongs to the supplied owner. */

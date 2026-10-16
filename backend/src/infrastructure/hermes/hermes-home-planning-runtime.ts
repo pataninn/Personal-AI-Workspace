@@ -29,12 +29,26 @@ const MAX_HOME_TOOL_RESULT_BYTES = 256 * 1024;
 const MAX_HOME_TOOL_EVENT_BYTES = 256 * 1024;
 const TURN_ID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
-const HOME_TOOL_NAMES = new Set(['planning_fixture_read']);
-const NO_HOME_TOOL_NAMES = new Set<string>();
+export const HOME_PLANNING_TOOL_NAMES = [
+  'home_list_tasks',
+  'home_get_task',
+  'home_create_task',
+  'home_update_task',
+  'home_move_task',
+  'home_archive_task',
+  'home_search_workspaces',
+  'home_reuse_workspace',
+  'home_create_workspace',
+  'home_update_workspace_objective',
+  'home_undo_action',
+  'home_propose_bulk_changes'
+] as const;
+export type HomePlanningToolName = typeof HOME_PLANNING_TOOL_NAMES[number];
+const ALLOWED_HOME_TOOL_NAMES: ReadonlySet<string> = new Set(HOME_PLANNING_TOOL_NAMES);
 
-export interface HermesHomePlanningRuntimeTestOptions {
-  /** Enables only the fixed read-only fixture for isolated server-side tests. */
-  readonly testOnlyEnableSyntheticFixture?: boolean;
+export interface HermesHomePlanningRuntimeOptions {
+  /** Names explicitly registered by trusted server composition; absent means deny-all. */
+  readonly registeredToolNames?: readonly HomePlanningToolName[];
 }
 
 interface ActivePlanningRun {
@@ -54,9 +68,15 @@ export class HermesHomePlanningRuntime implements IHomePlanningRuntime {
   public constructor(
     private readonly bridge: HermesBridgeClient,
     private readonly provider: HomePlanningProvider,
-    testOptions: HermesHomePlanningRuntimeTestOptions = {}
+    options: HermesHomePlanningRuntimeOptions = {}
   ) {
-    this.homeToolNames = testOptions.testOnlyEnableSyntheticFixture === true ? HOME_TOOL_NAMES : NO_HOME_TOOL_NAMES;
+    const registeredToolNames = options.registeredToolNames ?? [];
+    if (!Array.isArray(registeredToolNames)
+      || registeredToolNames.some((name) => typeof name !== 'string' || !ALLOWED_HOME_TOOL_NAMES.has(name))
+      || new Set(registeredToolNames).size !== registeredToolNames.length) {
+      throw new TypeError('The Home planning tool registration is invalid.');
+    }
+    this.homeToolNames = new Set(registeredToolNames);
   }
 
   public async start(input: StartHomePlanningRunInput): Promise<StartHomePlanningRunResult> {

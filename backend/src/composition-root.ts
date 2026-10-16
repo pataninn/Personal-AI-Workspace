@@ -16,6 +16,7 @@ import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories
 import { TypeOrmActionLedgerRepository } from '@/infrastructure/database/repositories/typeorm-action-ledger-repository';
 import { TypeOrmHomeConversationRepository } from '@/infrastructure/database/repositories/typeorm-home-conversation-repository';
 import { TypeOrmHomeActionEventRecorder } from '@/infrastructure/database/repositories/typeorm-home-action-event-recorder';
+import { TypeOrmHomeChangeProposalRepository } from '@/infrastructure/database/repositories/typeorm-home-change-proposal-repository';
 import { ActionUndoUseCases } from '@/modules/home-assistant/use-cases/action-undo-use-cases';
 import { CreateHomeConversationUseCase } from '@/modules/home-assistant/use-cases/create-home-conversation';
 import { GetHomeConversationUseCase } from '@/modules/home-assistant/use-cases/get-home-conversation';
@@ -25,6 +26,8 @@ import { SubmitHomeTurnUseCase } from '@/modules/home-assistant/use-cases/submit
 import { DecideHomeConsentUseCase } from '@/modules/home-assistant/use-cases/decide-home-consent';
 import { HomeToolResultConsentGate } from '@/modules/home-assistant/use-cases/home-tool-result-consent-gate';
 import { GetHomeTurnUseCase } from '@/modules/home-assistant/use-cases/get-home-turn';
+import { HomePlanningToolRequestHandler } from '@/modules/home-assistant/use-cases/home-planning-tool-request-handler';
+import { HomeChangeProposalUseCases } from '@/modules/home-assistant/use-cases/home-change-proposal-use-cases';
 import { CancelHomeTurnUseCase } from '@/modules/home-assistant/use-cases/cancel-home-turn';
 import { ListHomeMessagesUseCase } from '@/modules/home-assistant/use-cases/list-home-messages';
 import { ListHomeEventsUseCase } from '@/modules/home-assistant/use-cases/list-home-events';
@@ -37,7 +40,7 @@ import { NvidiaHostedNimProvider } from '@/infrastructure/ai-provider/nvidia-hos
 import { DirectProviderAgentRuntime } from '@/infrastructure/ai-provider/direct-provider-agent-runtime';
 import { HermesAgentRuntime } from '@/infrastructure/hermes/hermes-agent-runtime';
 import { HermesBridgeClient } from '@/infrastructure/hermes/hermes-bridge-client';
-import { HermesHomePlanningRuntime } from '@/infrastructure/hermes/hermes-home-planning-runtime';
+import { HermesHomePlanningRuntime, HOME_PLANNING_TOOL_NAMES } from '@/infrastructure/hermes/hermes-home-planning-runtime';
 import { ApprovedContextReader } from '@/infrastructure/hermes/approved-context-reader';
 import { HermesProjectTaskTools } from '@/infrastructure/hermes/hermes-project-task-tools';
 import type { IModelProvider } from '@/modules/ai-runs/repositories/model-provider';
@@ -121,6 +124,7 @@ export async function createApplication(
     const sessionRepository = new TypeOrmSessionRepository(dataSource);
     const projectRepository = new TypeOrmProjectRepository(dataSource);
     const homeConversationRepository = new TypeOrmHomeConversationRepository(dataSource);
+    const homeChangeProposalRepository = new TypeOrmHomeChangeProposalRepository(dataSource);
     const actionLedgerRepository = new TypeOrmActionLedgerRepository(dataSource, new TypeOrmHomeActionEventRecorder());
     const projectFactRepository = new TypeOrmProjectFactRepository(dataSource);
     const projectTaskRepository = new TypeOrmProjectTaskRepository(dataSource);
@@ -147,6 +151,7 @@ export async function createApplication(
       identityFile: config.workspaceIdentityFile,
       expectedIdentity: config.workspaceIdentity
     });
+    const workspacePlanning = new WorkspacePlanningUseCases(projectRepository, projectRepository, actionLedgerRepository, workspaceBoundary);
     const workspaceGateway = new WorkspaceGatewayAdapter({
       containerRoot: config.workspaceRoot,
       workspaceBoundary,
@@ -161,9 +166,23 @@ export async function createApplication(
     const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository, logger, taskTools);
     const homePlanningProvider: HomePlanningProvider = { profile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint };
     const homePlanningRuntime = config.agentRuntimeMode === 'hermes'
-      ? new HermesHomePlanningRuntime(createHermesBridge(config), homePlanningProvider)
+      ? new HermesHomePlanningRuntime(createHermesBridge(config), homePlanningProvider, { registeredToolNames: HOME_PLANNING_TOOL_NAMES })
       : undefined;
     const homeToolResultConsentGate = new HomeToolResultConsentGate(homeConversationRepository, homePlanningProvider);
+    const homeChangeProposals = new HomeChangeProposalUseCases(
+      homeConversationRepository, homeChangeProposalRepository, new GetGlobalTaskUseCase(projectTaskRepository),
+      taskMutationUseCases, workspacePlanning, actionLedgerRepository, config.homePlanningTimeZone
+    );
+    const homePlanningToolHandler = new HomePlanningToolRequestHandler({
+      conversations: homeConversationRepository,
+      listTasks: new ListGlobalTasksUseCase(projectTaskRepository),
+      getTask: new GetGlobalTaskUseCase(projectTaskRepository),
+      taskMutations: taskMutationUseCases,
+      workspaces: workspacePlanning,
+      undo: new ActionUndoUseCases(actionLedgerRepository, projectTaskRepository, projectRepository),
+      proposals: homeChangeProposals,
+      ...(config.homePlanningTimeZone ? { timeZone: config.homePlanningTimeZone } : {})
+    });
     const stagingGateway = config.agentRuntimeMode === 'openshell'
       ? new LocalStagingGateway({ stagingRoot: config.stagingRoot })
       : undefined;
@@ -220,7 +239,7 @@ export async function createApplication(
           listProjects: new ListProjectsUseCase(projectRepository),
           getProject: new GetProjectUseCase(projectRepository),
           updateProjectStatus: new UpdateProjectStatusUseCase(projectRepository, workspaceBoundary),
-          workspacePlanning: new WorkspacePlanningUseCases(projectRepository, projectRepository, actionLedgerRepository, workspaceBoundary),
+          workspacePlanning,
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },
@@ -245,10 +264,16 @@ export async function createApplication(
             ...(homePlanningRuntime ? { runtime: homePlanningRuntime } : {})
           }),
           decideConsent: new DecideHomeConsentUseCase(homeConversationRepository, homePlanningRuntime, homePlanningProvider, homeToolResultConsentGate),
-          getTurn: new GetHomeTurnUseCase(homeConversationRepository, homePlanningRuntime, homeToolResultConsentGate),
+          getTurn: new GetHomeTurnUseCase(homeConversationRepository, homePlanningRuntime, homeToolResultConsentGate, homePlanningToolHandler),
           cancelTurn: new CancelHomeTurnUseCase(homeConversationRepository, homePlanningRuntime),
           listMessages: new ListHomeMessagesUseCase(homeConversationRepository),
           listEvents: new ListHomeEventsUseCase(homeConversationRepository),
+          appOrigin: config.appOrigin,
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
+        homeProposals: {
+          getSession,
+          proposals: homeChangeProposals,
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },

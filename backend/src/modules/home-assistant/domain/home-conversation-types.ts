@@ -90,7 +90,12 @@ export type HomeConversationEventType =
   | 'message.appended'
   | 'action.receipt'
   | 'consent.requested'
-  | 'consent.decided';
+  | 'consent.decided'
+  | 'proposal.created'
+  | 'proposal.updated'
+  | 'proposal.accepted'
+  | 'proposal.cancelled'
+  | 'proposal.item_status_changed';
 
 /** Small metadata kept in the replay log; transcript text stays in messages. */
 export type HomeConversationEventPayload = Readonly<Record<string, string | number | boolean | null | readonly string[]>>;

@@ -33,7 +33,8 @@ export class TypeOrmActionLedgerRepository implements IActionLedgerRepository<Qu
   /** Replays or applies one owner-scoped operation with mutation and receipt in one transaction. */
   public async executeAtomically(
     input: ActionLedgerExecutionInput,
-    mutate: (transaction: QueryRunner) => Promise<ActionLedgerMutationResult>
+    mutate: (transaction: QueryRunner) => Promise<ActionLedgerMutationResult>,
+    eventContext?: unknown
   ): Promise<PersistedActionLedgerRecord> {
     assertActionLedgerExecutionInput(input);
     return this.withTransaction(async (queryRunner) => {
@@ -100,7 +101,7 @@ export class TypeOrmActionLedgerRepository implements IActionLedgerRepository<Qu
         if (!this.eventRecorder) {
           throw new Error('An event recorder is required for assistant action receipts.');
         }
-        await this.eventRecorder.recordAction(queryRunner, record);
+        await this.eventRecorder.recordAction(queryRunner, record, eventContext);
       }
 
       return { record, replayed: false };

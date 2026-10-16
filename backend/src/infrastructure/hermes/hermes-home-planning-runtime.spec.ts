@@ -2,7 +2,11 @@ import type { IHomePlanningRuntime, HomePlanningProvider } from '@/modules/home-
 import { AiRunRuntimeUnavailableError } from '@/modules/ai-runs/domain/ai-run-errors';
 
 import { HermesBridgeCallError, HermesBridgeClient } from '@/infrastructure/hermes/hermes-bridge-client';
-import { HermesHomePlanningRuntime } from '@/infrastructure/hermes/hermes-home-planning-runtime';
+import {
+  HermesHomePlanningRuntime,
+  HOME_PLANNING_TOOL_NAMES,
+  type HomePlanningToolName
+} from '@/infrastructure/hermes/hermes-home-planning-runtime';
 
 const turnId = 'c38135b6-f877-4e9c-899a-4c0e53864854';
 const provider: HomePlanningProvider = {
@@ -11,11 +15,11 @@ const provider: HomePlanningProvider = {
   endpoint: 'https://api.tokenfactory.nebius.com/v1'
 };
 
-function runtimeWith(bridgeCall: jest.Mock, enableSyntheticFixture = false): IHomePlanningRuntime {
+function runtimeWith(bridgeCall: jest.Mock, registeredToolNames: readonly HomePlanningToolName[] = []): IHomePlanningRuntime {
   return new HermesHomePlanningRuntime(
     { call: bridgeCall } as unknown as HermesBridgeClient,
     provider,
-    { testOnlyEnableSyntheticFixture: enableSyntheticFixture }
+    { registeredToolNames }
   );
 }
 
@@ -33,7 +37,7 @@ describe('HermesHomePlanningRuntime', () => {
     ]);
   });
 
-  it('rejects a changed retry, unsupported profile, or oversized prompt without bridge egress', async () => {
+  it('rejects changed retries, unsupported profiles, and oversized prompts without bridge egress', async () => {
     const call = jest.fn().mockResolvedValue({ status: 'preparing' });
     const runtime = runtimeWith(call);
     const initial = { turnId, prompt: 'First prompt.', provider };
@@ -56,7 +60,7 @@ describe('HermesHomePlanningRuntime', () => {
     await expect(uncertain.poll({ turnId, cursor: 0 })).resolves.toMatchObject({ status: 'unknown' });
   });
 
-  it('normalizes bounded assistant and typed Home tool events with ascending cursors', async () => {
+  it('normalizes bounded assistant and registered typed Home tool events with ascending cursors', async () => {
     const call = jest.fn()
       .mockResolvedValueOnce({ status: 'preparing' })
       .mockResolvedValueOnce({
@@ -64,17 +68,17 @@ describe('HermesHomePlanningRuntime', () => {
         events: [
           { sequence: 1, type: 'started' },
           { sequence: 2, type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hello.' } } },
-          { sequence: 3, type: 'home-tool-request', id: '17', params: { sessionId: 'session-1', name: 'planning_fixture_read', args: {} } }
+          { sequence: 3, type: 'home-tool-request', id: '17', params: { sessionId: 'session-1', name: 'home_list_tasks', args: { limit: 10 } } }
         ]
       });
-    const runtime = runtimeWith(call, true);
+    const runtime = runtimeWith(call, ['home_list_tasks']);
     await runtime.start({ turnId, prompt: 'Synthetic prompt.', provider });
 
     await expect(runtime.poll({ turnId, cursor: 0 })).resolves.toEqual({
       status: 'running',
       events: [
         { sequence: 2, type: 'assistant.delta', text: 'Hello.' },
-        { sequence: 3, type: 'home.tool.requested', requestId: '17', sessionId: 'session-1', name: 'planning_fixture_read', args: {} }
+        { sequence: 3, type: 'home.tool.requested', requestId: '17', sessionId: 'session-1', name: 'home_list_tasks', args: { limit: 10 } }
       ],
       nextCursor: 3,
       hasMore: false,
@@ -82,36 +86,57 @@ describe('HermesHomePlanningRuntime', () => {
     });
   });
 
+  it('defaults to deny-all, bounds registration to the fixed twelve names, and rejects unregistered events', async () => {
+    expect(HOME_PLANNING_TOOL_NAMES).toHaveLength(12);
+    expect(() => new HermesHomePlanningRuntime(
+      {} as HermesBridgeClient,
+      provider,
+      { registeredToolNames: ['terminal'] as never }
+    )).toThrow(TypeError);
+
+    const makeCall = () => jest.fn()
+      .mockResolvedValueOnce({ status: 'preparing' })
+      .mockResolvedValueOnce({ status: 'running', hasMore: false, events: [{
+        sequence: 1, type: 'home-tool-request', id: '17',
+        params: { sessionId: 'session-1', name: 'home_list_tasks', args: { limit: 10 } }
+      }] });
+    const denied = runtimeWith(makeCall());
+    await denied.start({ turnId, prompt: 'Synthetic prompt.', provider });
+    await expect(denied.poll({ turnId, cursor: 0 })).resolves.toMatchObject({ status: 'unknown', events: [] });
+
+    const enabled = runtimeWith(makeCall(), ['home_list_tasks']);
+    const enabledTurnId = 'a02c3482-76b2-41f8-82b8-8879ef27c460';
+    await enabled.start({ turnId: enabledTurnId, prompt: 'Synthetic prompt.', provider });
+    await expect(enabled.poll({ turnId: enabledTurnId, cursor: 0 }))
+      .resolves.toMatchObject({ status: 'running', events: [{ name: 'home_list_tasks', args: { limit: 10 } }] });
+
+    const wrongNameCall = jest.fn()
+      .mockResolvedValueOnce({ status: 'preparing' })
+      .mockResolvedValueOnce({ status: 'running', hasMore: false, events: [{
+        sequence: 1, type: 'home-tool-request', id: '18',
+        params: { sessionId: 'session-1', name: 'home_get_task', args: { taskId: 'x' } }
+      }] });
+    const onlyList = runtimeWith(wrongNameCall, ['home_list_tasks']);
+    const otherTurnId = 'b4bef17e-e3fc-4d0c-a3e8-a48f71091a42';
+    await onlyList.start({ turnId: otherTurnId, prompt: 'Synthetic prompt.', provider });
+    await expect(onlyList.poll({ turnId: otherTurnId, cursor: 0 })).resolves.toMatchObject({ status: 'unknown', events: [] });
+  });
+
   it('maps malformed or oversized event pages to unknown without exposing raw content', async () => {
     const call = jest.fn()
       .mockResolvedValueOnce({ status: 'preparing' })
       .mockResolvedValueOnce({ status: 'running', hasMore: false, events: [{ sequence: 1, type: 'home-tool-request', id: '1', params: { sessionId: 's', name: 'terminal', args: {} } }] });
-    const runtime = runtimeWith(call);
+    const runtime = runtimeWith(call, ['home_list_tasks']);
     await runtime.start({ turnId, prompt: 'Synthetic prompt.', provider });
     await expect(runtime.poll({ turnId, cursor: 0 })).resolves.toMatchObject({ status: 'unknown', events: [], code: 'PLANNING_RUNTIME_OUTCOME_UNKNOWN' });
   });
 
-  it('keeps the synthetic fixture disabled unless a server-side test explicitly enables it', async () => {
-    const call = jest.fn()
-      .mockResolvedValueOnce({ status: 'preparing' })
-      .mockResolvedValueOnce({ status: 'running', hasMore: false, events: [{
-        sequence: 1, type: 'home-tool-request', id: '17',
-        params: { sessionId: 'session-1', name: 'planning_fixture_read', args: {} }
-      }] });
-    const runtime = runtimeWith(call);
-    await runtime.start({ turnId, prompt: 'Synthetic prompt.', provider });
-
-    await expect(runtime.poll({ turnId, cursor: 0 })).resolves.toMatchObject({
-      status: 'unknown', events: [], code: 'PLANNING_RUNTIME_OUTCOME_UNKNOWN'
-    });
-  });
-
-  it('sends only bounded typed results and keeps denial content-free', async () => {
+  it('sends bounded typed results and keeps denial content-free', async () => {
     const call = jest.fn().mockResolvedValueOnce({ status: 'preparing' }).mockResolvedValue({ accepted: true });
     const runtime = runtimeWith(call);
     await runtime.start({ turnId, prompt: 'Synthetic prompt.', provider });
 
-    await expect(runtime.sendToolResult({ turnId, requestId: '17', result: { outcome: 'shared', data: { fixture: 'synthetic-read-only' } } }))
+    await expect(runtime.sendToolResult({ turnId, requestId: '17', result: { outcome: 'shared', data: { items: [], nextCursor: null } } }))
       .resolves.toEqual({ accepted: true });
     await expect(runtime.sendToolResult({ turnId, requestId: '18', result: { outcome: 'denied', code: 'CONSENT_DENIED' } }))
       .resolves.toEqual({ accepted: true });
@@ -133,7 +158,7 @@ describe('HermesHomePlanningRuntime', () => {
       .rejects.toBeInstanceOf(AiRunRuntimeUnavailableError);
   });
 
-  it('keeps cancellation unknown when the bridge does not confirm and makes delete idempotent for absent runs', async () => {
+  it('keeps cancellation unknown when unconfirmed and makes delete idempotent for absent runs', async () => {
     const call = jest.fn().mockResolvedValueOnce({ status: 'preparing' }).mockResolvedValueOnce({ outcome: 'unknown' });
     const runtime = runtimeWith(call);
     await runtime.start({ turnId, prompt: 'Synthetic prompt.', provider });

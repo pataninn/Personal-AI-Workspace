@@ -16,23 +16,21 @@ if 'PAI_PROJECT_ROOT' in os.environ or not PLANNING_CWD.is_dir() or any(PLANNING
     raise RuntimeError('The isolated planning working directory is not empty.')
 os.chdir(PLANNING_CWD)
 
-FIXTURE_ENABLED = os.environ.get('PAI_PLANNING_FIXTURE') == '1'
-ALLOWED = {home_tools.FIXTURE_NAME} if FIXTURE_ENABLED else set()
+ALLOWED = frozenset(home_tools.HOME_TOOL_NAMES)
 try:
     MAX_OUTPUT_TOKENS = int(os.environ.get('PAI_PLANNING_MAX_TOKENS', '512'))
 except ValueError:
     raise RuntimeError('The planning output token limit is invalid.') from None
 if not 1 <= MAX_OUTPUT_TOKENS <= 512:
     raise RuntimeError('The planning output token limit is outside its bound.')
-if FIXTURE_ENABLED:
-    home_tools.register_synthetic_read_only_fixture(registry)
+home_tools.register_home_tools(registry)
 
 _dispatch = registry.dispatch
 _init = AIAgent.__init__
 
 
 def dispatch(name, args, **kwargs):
-    if name not in ALLOWED:
+    if name not in ALLOWED or not isinstance(args, dict):
         return '{"error":"This typed Home tool is not enabled for this run."}'
     return _dispatch(name, args, **kwargs)
 
@@ -40,7 +38,7 @@ def dispatch(name, args, **kwargs):
 def agent_init(self, *args, **kwargs):
     kwargs['model'] = os.environ['PAI_MODEL']
     kwargs['api_mode'] = 'chat_completions'
-    kwargs['enabled_toolsets'] = ['home_planning'] if FIXTURE_ENABLED else []
+    kwargs['enabled_toolsets'] = ['home_planning']
     kwargs['max_iterations'] = 12
     kwargs['max_tokens'] = MAX_OUTPUT_TOKENS
     kwargs['skip_context_files'] = True

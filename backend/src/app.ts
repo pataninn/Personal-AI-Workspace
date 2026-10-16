@@ -30,6 +30,7 @@ import { createProjectFactRouter, type ProjectFactRouterDependencies } from '@/m
 import { createGlobalTaskRouter, createProjectTaskRouter, ProjectTaskDomainError, type GlobalTaskRouterDependencies, type ProjectTaskRouterDependencies } from '@/modules/tasks';
 import { createActionUndoRouter, type ActionUndoRouterDependencies } from '@/modules/home-assistant/controllers/action-undo-router';
 import { createHomeConversationRouter, type HomeConversationRouterDependencies } from '@/modules/home-assistant/controllers/home-conversation-router';
+import { createHomeProposalRouter, type HomeProposalRouterDependencies } from '@/modules/home-assistant/controllers/home-proposal-router';
 import { HomeConversationDomainError } from '@/modules/home-assistant/domain/home-conversation-errors';
 
 export interface CreateAppOptions {
@@ -49,6 +50,7 @@ export interface CreateAppOptions {
   readonly globalTasks?: GlobalTaskRouterDependencies;
   readonly actionUndo?: ActionUndoRouterDependencies;
   readonly homeConversations?: HomeConversationRouterDependencies;
+  readonly homeProposals?: HomeProposalRouterDependencies;
 }
 
 const requestIdMiddleware: RequestHandler = (request, response, next) => {
@@ -187,6 +189,9 @@ export function createApp(options: CreateAppOptions): Express {
   }
   if (options.homeConversations) {
     app.use('/api/v1', createHomeConversationRouter(options.homeConversations));
+  }
+  if (options.homeProposals) {
+    app.use('/api/v1', createHomeProposalRouter(options.homeProposals));
   }
   if (options.workspace) {
     app.use('/api/v1/projects/:projectId/files', createWorkspaceRouter(options.workspace));

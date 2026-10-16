@@ -38,7 +38,7 @@ function setup(options: { readonly pollStatus?: 'preparing' | 'running' | 'compl
       status: options.pollStatus ?? 'completed',
       events: [
         { sequence: 1, type: 'assistant.delta' as const, text: 'Plan: password=secret-value' },
-        { sequence: 2, type: 'home.tool.requested' as const, requestId: 'fixture-request-1', sessionId: 'fixture-session', name: 'planning_fixture_read', args: options.fixtureRequest ? {} : { detail: 'private' } }
+        { sequence: 2, type: 'home.tool.requested' as const, requestId: 'fixture-request-1', sessionId: 'fixture-session', name: 'home_list_tasks', args: options.fixtureRequest ? { limit: 1 } : { detail: 'private' } }
       ],
       nextCursor: 2, hasMore: false
     })),
@@ -53,8 +53,8 @@ function setup(options: { readonly pollStatus?: 'preparing' | 'running' | 'compl
   const toolResults = { request: jest.fn(async () => disclosure) };
   const toolRequestHandler = {
     resolve: jest.fn(async (input: { readonly name: string; readonly args: Readonly<Record<string, unknown>> }) => (
-      options.fixtureRequest && input.name === 'planning_fixture_read' && Object.keys(input.args).length === 0
-        ? { scope: { kind: 'home' as const }, categories: ['task_metadata' as const], itemCount: 1, data: { fixture: 'synthetic-read-only' } }
+      options.fixtureRequest && input.name === 'home_list_tasks' && input.args.limit === 1
+        ? { kind: 'consented' as const, candidate: { scope: { kind: 'home' as const }, categories: ['task_metadata' as const], itemCount: 1, data: { fixture: 'synthetic-read-only' } } }
         : null
     ))
   };
@@ -95,7 +95,7 @@ describe('GetHomeTurnUseCase', () => {
     expect(runtime.delete).not.toHaveBeenCalled();
   });
 
-  it('persists a disclosure for the one synthetic fixture and pauses polling before any result egress', async () => {
+  it('persists a disclosure for a bounded task result and pauses polling before any result egress', async () => {
     const { useCase, conversations, runtime, toolResults, toolRequestHandler } = setup({ pollStatus: 'running', fixtureRequest: true, injectHandler: true });
 
     const result = await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
@@ -106,7 +106,7 @@ describe('GetHomeTurnUseCase', () => {
     });
     expect(toolRequestHandler.resolve).toHaveBeenCalledWith({
       ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN, requestId: 'fixture-request-1',
-      name: 'planning_fixture_read', args: {}, scope: { kind: 'home' }
+      name: 'home_list_tasks', args: { limit: 1 }, scope: { kind: 'home' }
     });
     expect(runtime.sendToolResult).not.toHaveBeenCalled();
     expect(conversations.completeTurnWithAssistant).not.toHaveBeenCalled();

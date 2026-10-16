@@ -190,7 +190,12 @@ function isHomeConversationEventType(value: string): value is HomeConversationEv
     || value === 'message.appended'
     || value === 'action.receipt'
     || value === 'consent.requested'
-    || value === 'consent.decided';
+    || value === 'consent.decided'
+    || value === 'proposal.created'
+    || value === 'proposal.updated'
+    || value === 'proposal.accepted'
+    || value === 'proposal.cancelled'
+    || value === 'proposal.item_status_changed';
 }
 
 function isValidEventPayload(value: unknown, eventType: HomeConversationEventType): value is HomeConversationEventPayload {

@@ -247,6 +247,167 @@
         }
       }
     },
+    "/api/v1/home/conversations/{conversationId}/proposals": {
+      "get": {
+        "tags": ["Home conversations"],
+        "summary": "List owner-owned Home change proposals",
+        "operationId": "listHomeProposals",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/HomeConversationIdPath" },
+          { "name": "state", "in": "query", "schema": { "$ref": "#/components/schemas/HomeProposalState" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 } },
+          { "name": "cursor", "in": "query", "schema": { "type": "string", "maxLength": 1024 } }
+        ],
+        "responses": {
+          "200": { "description": "Owner-scoped proposal page.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalListEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/ConversationNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/home/conversations/{conversationId}/proposals/{proposalId}": {
+      "get": {
+        "tags": ["Home conversations"],
+        "summary": "Read one owner-owned Home change proposal",
+        "operationId": "getHomeProposal",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/HomeConversationIdPath" },
+          { "$ref": "#/components/parameters/HomeProposalIdPath" }
+        ],
+        "responses": {
+          "200": { "description": "Proposal and its safe canonical command preview.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/ProposalNotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/items/{itemId}": {
+      "patch": {
+        "tags": ["Home conversations"],
+        "summary": "Edit one item in a reviewable Home proposal",
+        "operationId": "editHomeProposalItem",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/HomeConversationIdPath" },
+          { "$ref": "#/components/parameters/HomeProposalIdPath" },
+          { "$ref": "#/components/parameters/HomeProposalItemIdPath" },
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalEditRequest" } } } },
+        "responses": {
+          "200": { "description": "Edited item and incremented proposal revision.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProposalNotFound" },
+          "409": { "$ref": "#/components/responses/ProposalConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "delete": {
+        "tags": ["Home conversations"],
+        "summary": "Remove one item from a reviewable Home proposal",
+        "operationId": "removeHomeProposalItem",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/HomeConversationIdPath" },
+          { "$ref": "#/components/parameters/HomeProposalIdPath" },
+          { "$ref": "#/components/parameters/HomeProposalItemIdPath" },
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/HomeProposalIfMatchHeader" }
+        ],
+        "responses": {
+          "200": { "description": "Proposal without the removed item.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProposalNotFound" },
+          "409": { "$ref": "#/components/responses/ProposalConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/acceptance": {
+      "post": {
+        "tags": ["Home conversations"],
+        "summary": "Seal and synchronously execute the displayed Home proposal revision",
+        "operationId": "acceptHomeProposal",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/HomeConversationIdPath" },
+          { "$ref": "#/components/parameters/HomeProposalIdPath" },
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalRevisionRequest" } } } },
+        "responses": {
+          "201": { "description": "Proposal accepted and execution started.", "headers": { "Location": { "$ref": "#/components/headers/Location" }, "ETag": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalAcceptanceEnvelope" } } } },
+          "200": { "description": "Matching acceptance replay or current persisted outcome.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalAcceptanceEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProposalNotFound" },
+          "409": { "$ref": "#/components/responses/ProposalConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/execution": {
+      "post": {
+        "tags": ["Home conversations"],
+        "summary": "Explicitly reconcile and resume unresolved accepted proposal items",
+        "operationId": "executeHomeProposal",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/HomeConversationIdPath" },
+          { "$ref": "#/components/parameters/HomeProposalIdPath" },
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" }
+        ],
+        "requestBody": { "required": false, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false } } } },
+        "responses": {
+          "200": { "description": "Current proposal outcome after explicit receipt reconciliation.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalExecutionEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProposalNotFound" },
+          "409": { "$ref": "#/components/responses/ProposalConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/cancellation": {
+      "post": {
+        "tags": ["Home conversations"],
+        "summary": "Cancel a Home proposal and block subsequent item writes",
+        "operationId": "cancelHomeProposal",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/HomeConversationIdPath" },
+          { "$ref": "#/components/parameters/HomeProposalIdPath" },
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalRevisionRequest" } } } },
+        "responses": {
+          "200": { "description": "Cancellation committed or replayed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProposalNotFound" },
+          "409": { "$ref": "#/components/responses/ProposalConflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
     "/api/v1/actions/{actionId}": {
       "get": {
         "tags": ["Action history"],
@@ -4148,6 +4309,25 @@
         "required": true,
         "schema": { "$ref": "#/components/schemas/Uuid" }
       },
+      "HomeProposalIdPath": {
+        "name": "proposalId",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/Uuid" }
+      },
+      "HomeProposalItemIdPath": {
+        "name": "itemId",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/Uuid" }
+      },
+      "HomeProposalIfMatchHeader": {
+        "name": "If-Match",
+        "in": "header",
+        "required": true,
+        "description": "Current positive proposal revision, with or without surrounding quotes.",
+        "schema": { "type": "string", "pattern": "^\"?([1-9][0-9]*)\"?$" }
+      },
       "AiRunIdPath": {
         "name": "runId",
         "in": "path",
@@ -4561,6 +4741,14 @@
             }
           }
         }
+      },
+      "ProposalNotFound": {
+        "description": "The Home proposal is missing or is not owned by the caller in this conversation.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "ProposalConflict": {
+        "description": "The proposal revision or execution state changed, the item is no longer editable, or its dependencies conflict.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
       },
       "MutationConflict": {
         "description": "The project is archived, a required file root is unavailable, or an idempotency key was reused with different content.",
@@ -9493,7 +9681,7 @@
         "type": "object",
         "properties": {
           "sequence": { "type": "integer", "minimum": 1 },
-          "type": { "type": "string", "enum": ["conversation.created", "turn.created", "turn.status_changed", "message.appended", "action.receipt", "consent.requested", "consent.decided"] },
+          "type": { "type": "string", "enum": ["conversation.created", "turn.created", "turn.status_changed", "message.appended", "action.receipt", "consent.requested", "consent.decided", "proposal.created", "proposal.updated", "proposal.accepted", "proposal.cancelled", "proposal.item_status_changed"] },
           "turnId": { "$ref": "#/components/schemas/Uuid", "nullable": true },
           "entityId": { "$ref": "#/components/schemas/Uuid", "nullable": true },
           "payload": { "type": "object", "additionalProperties": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }, { "type": "null" }, { "type": "array", "maxItems": 4, "items": { "type": "string" } }] } },
@@ -9519,6 +9707,125 @@
         },
         "required": ["data", "error"],
         "additionalProperties": false
+      },
+      "HomeProposalState": {
+        "type": "string",
+        "enum": ["review_required", "accepted", "executing", "partial", "completed", "cancelled", "unknown"]
+      },
+      "HomeProposalItemState": {
+        "type": "string",
+        "enum": ["ready", "executing", "saved", "failed", "conflicted", "blocked", "cancelled", "unknown"]
+      },
+      "HomeProposalAction": {
+        "type": "string",
+        "enum": ["task.create", "task.update", "task.move", "task.archive", "workspace.create", "workspace.update_objective"]
+      },
+      "HomeProposalSummary": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "sourceTurnId": { "$ref": "#/components/schemas/Uuid" },
+          "state": { "$ref": "#/components/schemas/HomeProposalState" },
+          "revision": { "type": "integer", "minimum": 1 },
+          "itemCount": { "type": "integer", "minimum": 0, "maximum": 20 },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "sourceTurnId", "state", "revision", "itemCount", "createdAt", "updatedAt"],
+        "additionalProperties": false
+      },
+      "HomeProposalItem": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "position": { "type": "integer", "minimum": 0, "maximum": 19 },
+          "action": { "$ref": "#/components/schemas/HomeProposalAction" },
+          "command": { "type": "object", "description": "Canonical Home task/workspace metadata command; sealed and read-only after acceptance.", "additionalProperties": true },
+          "state": { "$ref": "#/components/schemas/HomeProposalItemState" },
+          "receiptId": { "$ref": "#/components/schemas/Uuid", "nullable": true },
+          "resultCode": { "type": "string", "maxLength": 80, "nullable": true }
+        },
+        "required": ["id", "position", "action", "command", "state", "receiptId", "resultCode"],
+        "additionalProperties": false
+      },
+      "HomeChangeProposal": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "sourceTurnId": { "$ref": "#/components/schemas/Uuid" },
+          "scope": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["home", "workspace"] }, "workspaceId": { "$ref": "#/components/schemas/Uuid" } }, "required": ["kind"], "additionalProperties": false },
+          "state": { "$ref": "#/components/schemas/HomeProposalState" },
+          "revision": { "type": "integer", "minimum": 1 },
+          "acceptedRevision": { "type": "integer", "minimum": 1, "nullable": true },
+          "acceptanceId": { "$ref": "#/components/schemas/Uuid", "nullable": true },
+          "itemCount": { "type": "integer", "minimum": 0, "maximum": 20 },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "items": { "type": "array", "maxItems": 20, "items": { "$ref": "#/components/schemas/HomeProposalItem" } }
+        },
+        "required": ["id", "sourceTurnId", "scope", "state", "revision", "acceptedRevision", "acceptanceId", "itemCount", "createdAt", "updatedAt", "items"],
+        "additionalProperties": false
+      },
+      "HomeProposalExecution": {
+        "type": "object",
+        "properties": {
+          "state": { "type": "string", "enum": ["completed", "partial", "unknown", "cancelled"] },
+          "items": { "type": "array", "maxItems": 20, "items": { "type": "object", "properties": {
+            "itemId": { "$ref": "#/components/schemas/Uuid" },
+            "state": { "$ref": "#/components/schemas/HomeProposalItemState" },
+            "receiptId": { "$ref": "#/components/schemas/Uuid", "nullable": true },
+            "resultCode": { "type": "string", "maxLength": 80, "nullable": true }
+          }, "required": ["itemId", "state", "receiptId", "resultCode"], "additionalProperties": false } }
+        },
+        "required": ["state", "items"],
+        "additionalProperties": false
+      },
+      "HomeProposalRevisionRequest": {
+        "type": "object",
+        "properties": { "expectedRevision": { "type": "integer", "minimum": 1, "maximum": 2147483647 } },
+        "required": ["expectedRevision"],
+        "additionalProperties": false
+      },
+      "HomeProposalEditRequest": {
+        "type": "object",
+        "properties": {
+          "expectedRevision": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+          "changes": { "type": "object", "minProperties": 1, "description": "Only editable fields for the stored action may be supplied; action kind and server IDs are immutable.", "additionalProperties": true }
+        },
+        "required": ["expectedRevision", "changes"],
+        "additionalProperties": false
+      },
+      "HomeProposalListEnvelope": {
+        "type": "object",
+        "properties": { "data": { "type": "object", "properties": {
+          "proposals": { "type": "array", "items": { "$ref": "#/components/schemas/HomeProposalSummary" } },
+          "nextCursor": { "type": "string", "nullable": true }
+        }, "required": ["proposals", "nextCursor"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
+        "required": ["data", "error"], "additionalProperties": false
+      },
+      "HomeProposalEnvelope": {
+        "type": "object",
+        "properties": { "data": { "type": "object", "properties": { "proposal": { "$ref": "#/components/schemas/HomeChangeProposal" } }, "required": ["proposal"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
+        "required": ["data", "error"], "additionalProperties": false
+      },
+      "HomeProposalAcceptanceEnvelope": {
+        "type": "object",
+        "properties": { "data": { "type": "object", "properties": {
+          "proposal": { "$ref": "#/components/schemas/HomeChangeProposal" },
+          "acceptance": { "type": "object", "properties": { "id": { "$ref": "#/components/schemas/Uuid", "nullable": true }, "revision": { "type": "integer", "minimum": 1, "nullable": true } }, "required": ["id", "revision"], "additionalProperties": false },
+          "execution": { "$ref": "#/components/schemas/HomeProposalExecution" },
+          "replayed": { "type": "boolean" }
+        }, "required": ["proposal", "acceptance", "execution", "replayed"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
+        "required": ["data", "error"], "additionalProperties": false
+      },
+      "HomeProposalExecutionEnvelope": {
+        "type": "object",
+        "properties": { "data": { "type": "object", "properties": {
+          "proposal": { "$ref": "#/components/schemas/HomeChangeProposal" },
+          "execution": { "$ref": "#/components/schemas/HomeProposalExecution" },
+          "replayed": { "type": "boolean" }
+        }, "required": ["proposal", "execution", "replayed"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
+        "required": ["data", "error"], "additionalProperties": false
       }
     }
   }

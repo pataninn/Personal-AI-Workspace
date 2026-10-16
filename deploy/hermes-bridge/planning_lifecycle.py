@@ -12,6 +12,7 @@ from pathlib import Path
 from acp import AcpSession
 from common import BridgeError, CLI, GATEWAY, MAX_BODY, STATE, inventory, profile, run_cli, run_id, write_private
 from provider import assert_route
+from runtime.home_tool_schemas import HOME_TOOL_NAMES
 
 MAX_PLANNING_PROMPT = 256 * 1024
 MAX_POLL_PAGE = 256 * 1024
@@ -19,7 +20,7 @@ MAX_EVENT_HISTORY = 4 * MAX_BODY
 MAX_EVENT_COUNT = 2000
 INFERENCE_TIMEOUT_SECONDS = 15 * 60
 MAX_PLANNING_OUTPUT_TOKENS = 512
-PLANNING_TOOL_NAMES = frozenset({'planning_fixture_read'})
+PLANNING_TOOL_NAMES = frozenset(HOME_TOOL_NAMES)
 
 
 def planning_sandbox_name(identity):
@@ -45,7 +46,7 @@ class PlanningRun:
         self.sequence = 0
         self.event_bytes = 0
         self.payload = payload
-        self.home_tool_names = PLANNING_TOOL_NAMES if os.environ.get('PAI_PLANNING_FIXTURE') == '1' else frozenset()
+        self.home_tool_names = PLANNING_TOOL_NAMES
         self.is_planning = True
 
     @classmethod
@@ -123,7 +124,6 @@ class PlanningRun:
                 'PAI_PLANNING_CWD=' + self.remote_work,
                 'PAI_MODEL=' + self.payload['model'],
                 'PAI_PLANNING_MAX_TOKENS=' + str(max_tokens),
-                *(('PAI_PLANNING_FIXTURE=1',) if os.environ.get('PAI_PLANNING_FIXTURE') == '1' else ()),
                 '/opt/hermes/.venv/bin/python',
                 '/opt/pai/planning_acp_runner.py',
             )

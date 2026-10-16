@@ -563,7 +563,9 @@ async function compactCollectionTaskPositions(queryRunner: QueryRunner, ownerId:
   const maxPosition = await maxCollectionTaskPosition(queryRunner, ownerId, projectId);
   const count = await countCollectionTasks(queryRunner, ownerId, projectId);
   const offset = maxPosition + count + 2;
-  const predicate = collectionPredicate(projectId, 't', 3);
+  // The collection key is always the second bind value when present; the
+  // subsequent values are the offset and removed position.
+  const predicate = collectionPredicate(projectId, 't', 2);
   const values = projectId === null ? [ownerId, offset] : [ownerId, projectId, offset];
   const offsetParameter = projectId === null ? '$2' : '$3';
   const removedParameter = projectId === null ? '$3' : '$4';
@@ -682,7 +684,9 @@ async function insertActiveTaskAtPosition(queryRunner: QueryRunner, ownerId: str
   if (!Number.isSafeInteger(position) || position < 0 || position > count) throw new ActionLedgerTargetStateConflictError('changed');
   const maxPosition = await maxCollectionTaskPosition(queryRunner, ownerId, projectId);
   const offset = maxPosition + count + 2;
-  const predicate = collectionPredicate(projectId, 't', 3);
+  // The collection key is always the second bind value when present; the
+  // subsequent values are the offset and insertion position.
+  const predicate = collectionPredicate(projectId, 't', 2);
   const offsetParameter = projectId === null ? '$2' : '$3';
   const positionParameter = projectId === null ? '$3' : '$4';
   const firstValues = projectId === null ? [ownerId, offset, position] : [ownerId, projectId, offset, position];
@@ -694,7 +698,7 @@ async function insertActiveTaskAtPosition(queryRunner: QueryRunner, ownerId: str
   const secondValues = projectId === null ? [ownerId, offset, position] : [ownerId, projectId, offset, position];
   await queryRunner.query(
     `UPDATE "project_tasks" t SET "position" = t."position" - ${offsetParameter} + 1
-     WHERE t."owner_id" = $1 AND ${predicate} AND t."status" <> 'archived' AND t."position" >= (${offsetParameter} + ${positionParameter})`,
+     WHERE t."owner_id" = $1 AND ${predicate} AND t."status" <> 'archived' AND t."position" >= (${offsetParameter}::integer + ${positionParameter}::integer)`,
     secondValues
   );
 }

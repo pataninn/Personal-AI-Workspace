@@ -1,11 +1,16 @@
-"""Typed, run-scoped Home tool transport used only by the synthetic test fixture."""
+"""Typed, run-scoped transport for the fixed Home planning tool registry."""
 import asyncio
+import copy
 import json
+
+try:
+    from .home_tool_schemas import HOME_TOOL_DEFINITIONS, HOME_TOOL_NAMES
+except ImportError:
+    from home_tool_schemas import HOME_TOOL_DEFINITIONS, HOME_TOOL_NAMES
 
 CLIENT = None
 LOOP = None
 SESSION = None
-FIXTURE_NAME = 'planning_fixture_read'
 
 
 def connect(client, loop, session):
@@ -13,14 +18,16 @@ def connect(client, loop, session):
     CLIENT, LOOP, SESSION = client, loop, session
 
 
-def call_fixture():
+def call_home_tool(name, args):
+    if name not in HOME_TOOL_NAMES or not isinstance(args, dict):
+        return json.dumps({'error': 'The Home tool request is unavailable.'})
     if CLIENT is None or LOOP is None or SESSION is None:
         return json.dumps({'error': 'The Home tool connection is unavailable.'})
     future = asyncio.run_coroutine_threadsafe(
         CLIENT.ext_method('pai/home_tools', {
             'sessionId': SESSION,
-            'name': FIXTURE_NAME,
-            'args': {},
+            'name': name,
+            'args': args,
         }),
         LOOP,
     )
@@ -34,25 +41,22 @@ def call_fixture():
     if result.get('outcome') == 'shared' and isinstance(result.get('data'), dict):
         return json.dumps(result['data'], separators=(',', ':'))
     if result.get('outcome') == 'denied' and result.get('code') == 'CONSENT_DENIED':
-        return json.dumps({'error': 'CONSENT_DENIED'})
+        return json.dumps({'outcome': 'denied', 'code': 'CONSENT_DENIED'})
     return json.dumps({'error': 'The Home tool result could not be validated.'})
 
 
-def register_synthetic_read_only_fixture(registry):
-    """Register no production Home tools; this fixed-value fixture is opt-in for tests."""
-    registry.register(
-        name=FIXTURE_NAME,
-        toolset='home_planning',
-        schema={
-            'name': FIXTURE_NAME,
-            'description': 'Read a fixed synthetic value for isolated transport tests. This is not Home data.',
-            'parameters': {
-                'type': 'object',
-                'properties': {},
-                'required': [],
-                'additionalProperties': False,
+def register_home_tools(registry):
+    """Register only the fixed production planning tools, with no user-controlled switches."""
+    for definition in HOME_TOOL_DEFINITIONS:
+        name = definition['name']
+        registry.register(
+            name=name,
+            toolset='home_planning',
+            schema={
+                'name': name,
+                'description': definition['description'],
+                'parameters': copy.deepcopy(definition['parameters']),
             },
-        },
-        handler=lambda args, **kwargs: call_fixture(),
-        check_fn=lambda: True,
-    )
+            handler=lambda args, _name=name, **kwargs: call_home_tool(_name, args),
+            check_fn=lambda: True,
+        )

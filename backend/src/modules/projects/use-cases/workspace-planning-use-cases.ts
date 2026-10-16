@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { ActionLedgerOperationKeyReusedError } from '@/modules/action-ledger/domain/action-ledger-errors';
 import type {
+  ActionLedgerActorKind,
   ActionLedgerRecord,
   ActionLedgerReversibleFields,
   PersistedActionLedgerRecord
@@ -45,6 +46,11 @@ export interface CreatePlanningProjectInput {
   readonly operationKey: unknown;
   readonly name: unknown;
   readonly objective?: unknown;
+  /** Trusted internal target identity for a sealed accepted Home proposal. */
+  readonly projectId?: string;
+  readonly actorKind?: ActionLedgerActorKind;
+  readonly turnId?: string | null;
+  readonly eventContext?: unknown;
 }
 
 export interface UpdateProjectObjectiveInput {
@@ -53,6 +59,10 @@ export interface UpdateProjectObjectiveInput {
   readonly expectedVersion: number;
   readonly operationKey: unknown;
   readonly objective: unknown;
+  /** Trusted Home attribution; HTTP callers leave these unset. */
+  readonly actorKind?: ActionLedgerActorKind;
+  readonly turnId?: string | null;
+  readonly eventContext?: unknown;
 }
 
 export interface AttachInitialProjectRootInput {
@@ -107,13 +117,14 @@ export class WorkspacePlanningUseCases<TTransaction> implements IWorkspacePlanni
     const operationKey = this.operationKey(input.operationKey);
     const identity = normalizeProjectName(input.name);
     const objective = normalizeObjective(input.objective);
-    const projectId = this.createId();
+    const projectId = input.projectId === undefined ? this.createId() : requiredUuid(input.projectId);
+    const actorKind = input.actorKind ?? 'manual';
     const persisted = await this.runLedger(() => this.ledger.executeAtomically({
       ownerId: input.ownerId,
       operationKey,
       requestFingerprint: fingerprint({ action: 'workspace.create', name: identity.name, slug: identity.slug, objective }),
-      actorKind: 'manual',
-      turnId: null,
+      actorKind,
+      turnId: input.turnId ?? null,
       targetKind: 'workspace',
       targetId: projectId,
       actionKind: 'workspace.create',
@@ -135,19 +146,20 @@ export class WorkspacePlanningUseCases<TTransaction> implements IWorkspacePlanni
         outcome: { targetId: project.id, targetVersion: project.version },
         undoStatus: 'available'
       };
-    }));
+    }, input.eventContext));
     return this.resultForReceipt(input.ownerId, persisted);
   }
 
   public async updateObjective(input: UpdateProjectObjectiveInput): Promise<ProjectActionResult> {
     const operationKey = this.operationKey(input.operationKey);
     const objective = normalizeObjective(input.objective);
+    const actorKind = input.actorKind ?? 'manual';
     const persisted = await this.runLedger(() => this.ledger.executeAtomically({
       ownerId: input.ownerId,
       operationKey,
       requestFingerprint: fingerprint({ action: 'workspace.update.objective', projectId: input.projectId, expectedVersion: input.expectedVersion, objective }),
-      actorKind: 'manual',
-      turnId: null,
+      actorKind,
+      turnId: input.turnId ?? null,
       targetKind: 'workspace',
       targetId: input.projectId,
       actionKind: 'workspace.update',
@@ -173,7 +185,7 @@ export class WorkspacePlanningUseCases<TTransaction> implements IWorkspacePlanni
         outcome: { targetId: updated.id, targetVersion: updated.version },
         undoStatus: 'available'
       };
-    }));
+    }, input.eventContext));
     return this.resultForReceipt(input.ownerId, persisted);
   }
 
@@ -259,4 +271,27 @@ function normalizeObjective(value: unknown): string | null {
 
 function fingerprint(value: object): string {
   return createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex');
+}
+
+/** Canonical workspace receipt fingerprint shared with Home's sealed proposal recorder. */
+export function workspacePlanningFingerprint(
+  action: 'workspace.create' | 'workspace.update',
+  input: CreatePlanningProjectInput | UpdateProjectObjectiveInput
+): string {
+  if (action === 'workspace.create') {
+    const create = input as CreatePlanningProjectInput;
+    const identity = normalizeProjectName(create.name);
+    const objective = normalizeObjective(create.objective);
+    return fingerprint({ action, name: identity.name, slug: identity.slug, objective });
+  }
+  const update = input as UpdateProjectObjectiveInput;
+  const objective = normalizeObjective(update.objective);
+  return fingerprint({ action: 'workspace.update.objective', projectId: update.projectId, expectedVersion: update.expectedVersion, objective });
+}
+
+function requiredUuid(value: string): string {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)) {
+    throw new ProjectIdempotencyKeyInvalidError();
+  }
+  return value;
 }

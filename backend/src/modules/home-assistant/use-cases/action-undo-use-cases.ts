@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { ActionLedgerExecutionInput, ActionLedgerRecord, PersistedActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
+import type { ActionLedgerActorKind, ActionLedgerExecutionInput, ActionLedgerRecord, PersistedActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
 import {
   ActionLedgerOperationKeyReusedError,
   ActionLedgerTargetStateConflictError,
@@ -34,6 +34,10 @@ export interface UndoActionInput {
   readonly actionId: string;
   readonly operationKey: unknown;
   readonly completedTaskCreateActionIds?: readonly unknown[];
+  /** Trusted Home-only attribution; the HTTP router does not expose these fields. */
+  readonly actorKind?: ActionLedgerActorKind;
+  readonly turnId?: string | null;
+  readonly eventContext?: unknown;
 }
 
 export interface ActionUndoCommandResult {
@@ -78,14 +82,16 @@ export class ActionUndoUseCases<TTransaction> implements IActionUndoUseCases {
     const requestFingerprint = digest({
       ownerId: input.ownerId,
       actionId: original.id,
-      completedTaskCreateActionIds: childIds
+      completedTaskCreateActionIds: childIds,
+      actorKind: input.actorKind ?? 'manual',
+      turnId: input.turnId ?? null
     });
     const execution: ActionLedgerExecutionInput = {
       ownerId: input.ownerId,
       operationKey,
       requestFingerprint,
-      actorKind: 'manual',
-      turnId: null,
+      actorKind: input.actorKind ?? 'manual',
+      turnId: input.turnId ?? null,
       targetKind: original.targetKind,
       targetId: original.targetId,
       actionKind: 'undo',
@@ -108,7 +114,7 @@ export class ActionUndoUseCases<TTransaction> implements IActionUndoUseCases {
           original,
           completedTaskCreateActionIds: childIds
         });
-      });
+      }, input.eventContext);
     } catch (error: unknown) {
       if (error instanceof ActionLedgerOperationKeyReusedError) throw new ActionUndoOperationKeyReusedError();
       if (error instanceof ActionLedgerTargetStateConflictError) {

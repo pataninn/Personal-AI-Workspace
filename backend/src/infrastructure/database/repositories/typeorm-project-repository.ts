@@ -56,6 +56,13 @@ function isUniqueViolation(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === '23505';
 }
 
+function asRows<T>(result: unknown): readonly T[] {
+  if (!Array.isArray(result)) throw new Error('The project repository returned an unexpected query result.');
+  // TypeORM returns [rows, rowCount] for UPDATE ... RETURNING via QueryRunner.
+  if (result.length === 2 && Array.isArray(result[0]) && typeof result[1] === 'number') return result[0] as readonly T[];
+  return result as readonly T[];
+}
+
 function workspaceUndoResult(projectId: string, preVersion: number, postVersion: number): ActionLedgerMutationResult {
   return {
     preVersion,
@@ -257,12 +264,12 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
         assignments.push(`"${fieldName}" = $${values.length}`);
       }
       values.push(ownerId, current.id, original.postVersion);
-      const updatedRows: readonly ProjectRow[] = await transaction.query(
+      const updatedRows = asRows<ProjectRow>(await transaction.query(
         `UPDATE "projects" SET ${assignments.join(', ')}, "version" = "version" + 1, "updated_at" = now()
          WHERE "owner_id" = $${values.length - 2} AND "id" = $${values.length - 1} AND "version" = $${values.length} AND "status" = 'active'
          RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"`,
         values
-      );
+      ));
       const updated = updatedRows[0];
       if (!updated) throw new ActionLedgerTargetStateConflictError('changed');
       return workspaceUndoResult(current.id, current.version, updated.version);
@@ -272,12 +279,12 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
     if (Object.keys(original.reversibleFields).length > 0) throw new ActionLedgerTargetStateConflictError('unsupported_action');
     if (current.relativeRoot !== null) throw new ActionLedgerTargetStateConflictError('folder_attached');
     await this.assertWorkspaceEmptyExceptUndoneChildren(transaction, ownerId, current.id, completedTaskCreateActionIds);
-    const archivedRows: readonly ProjectRow[] = await transaction.query(
+    const archivedRows = asRows<ProjectRow>(await transaction.query(
       `UPDATE "projects" SET "status" = 'archived', "version" = "version" + 1, "updated_at" = now()
        WHERE "owner_id" = $1 AND "id" = $2 AND "status" = 'active' AND "version" = $3 AND "relative_root" IS NULL
        RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"`,
       [ownerId, current.id, original.postVersion]
-    );
+    ));
     const archived = archivedRows[0];
     if (!archived) throw new ActionLedgerTargetStateConflictError('changed');
     return workspaceUndoResult(current.id, current.version, archived.version);
