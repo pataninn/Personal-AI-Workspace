@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { HomeConversationCursorInvalidError, HomeConversationInputInvalidError, HomeConversationNotFoundError, HomeTurnNotFoundError } from '@/modules/home-assistant/domain/home-conversation-errors';
 import { HomeProposalDependencyConflictError, HomePlanningScopeConflictError, HomeProposalNotAcceptableError, HomeProposalNotEditableError, HomeProposalNotFoundError, HomeProposalRevisionConflictError } from '@/modules/home-assistant/domain/home-planning-errors';
-import type { HomeChangeProposal, HomeProposalCommand, HomeProposalItemState } from '@/modules/home-assistant/domain/home-change-proposal-types';
+import type { HomeChangeProposal, HomeProposalCommand, HomeProposalDeadlineResolution, HomeProposalItemState } from '@/modules/home-assistant/domain/home-change-proposal-types';
 import type { HomeConversationScope } from '@/modules/home-assistant/domain/home-conversation-types';
 import type { IActionLedgerRepository } from '@/modules/action-ledger/repositories/action-ledger-repository';
 import type { IHomeConversationRepository } from '@/modules/home-assistant/repositories/home-conversation-repository';
@@ -16,7 +16,7 @@ import { workspacePlanningFingerprint } from '@/modules/projects/use-cases/works
 import { normalizeProjectName } from '@/modules/projects/domain/project-root-policy';
 import type { Project } from '@/modules/projects/domain/project-types';
 import type { HomePlanningToolRequest } from '@/modules/home-assistant/repositories/home-planning-tool-request-handler';
-import { parseProposalToolArgs, resolveDeadline, stableJson } from '@/modules/home-assistant/use-cases/home-planning-command-validation';
+import { isCalendarDate, parseProposalToolArgs, resolveDeadlineWithProvenance, stableJson } from '@/modules/home-assistant/use-cases/home-planning-command-validation';
 import type { HomeProposalDraftCreator } from '@/modules/home-assistant/use-cases/home-planning-tool-request-handler';
 import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
 
@@ -108,16 +108,17 @@ export class HomeChangeProposalUseCases implements HomeProposalDraftCreator {
     if (proposal.revision !== input.expectedRevision) throw new HomeProposalRevisionConflictError();
     const item = proposal.items.find((entry) => entry.id === input.itemId);
     if (!item) throw new HomeProposalNotFoundError();
-    const command = await this.applyEdit(proposal, item.command, input.changes);
+    const edited = await this.applyEdit(proposal, item.command, item.deadlineResolution, input.changes);
+    const { command, deadlineResolution } = edited;
     const identity = targetIdentity(command);
-    const newItems = proposal.items.map((entry) => entry.id === item.id ? { ...entry, command, ...identity } : entry);
+    const newItems = proposal.items.map((entry) => entry.id === item.id ? { ...entry, command, deadlineResolution, ...identity } : entry);
     assertUniqueTargets(newItems);
     const commandBytes = Buffer.byteLength(stableJson(newItems.map((entry) => entry.command)), 'utf8');
     if (commandBytes < 1 || commandBytes > MAX_PROPOSAL_BYTES) throw new HomeConversationInputInvalidError('The Home proposal exceeds the 128 KiB command limit.');
     const updated = await this.proposals.editItem({
       ownerId: input.ownerId, conversationId: input.conversationId, proposalId: input.proposalId, itemId: input.itemId,
       expectedRevision: input.expectedRevision, command, targetKind: identity.targetKind, targetId: identity.targetId,
-      expectedVersion: identity.expectedVersion, commandBytes
+      expectedVersion: identity.expectedVersion, commandBytes, deadlineResolution
     });
     if (!updated) throw new HomeProposalNotFoundError();
     return updated;
@@ -145,13 +146,13 @@ export class HomeChangeProposalUseCases implements HomeProposalDraftCreator {
     if (proposal.items.length === 0) throw new HomeProposalNotAcceptableError();
     const acceptanceId = this.createId();
     const createdWorkspaceIds = new Set<string>();
-    const sealed: { readonly itemId: string; readonly operationKey: string; readonly requestFingerprint: string; readonly command: HomeProposalCommand }[] = [];
+    const sealed: { readonly itemId: string; readonly operationKey: string; readonly requestFingerprint: string; readonly command: HomeProposalCommand; readonly deadlineResolution: HomeProposalDeadlineResolution | null }[] = [];
     try {
       await this.assertScopeResource(input.ownerId, proposal.scope);
       for (const item of proposal.items) {
         const command = await this.revalidateForAcceptance(input.ownerId, proposal.scope, item.command, createdWorkspaceIds);
         const identity = await this.canonicalIdentity(input.ownerId, proposal.scope, proposal.id, acceptanceId, proposal.sourceTurnId, item.id, command);
-        sealed.push({ itemId: item.id, operationKey: identity.operationKey, requestFingerprint: identity.requestFingerprint, command });
+        sealed.push({ itemId: item.id, operationKey: identity.operationKey, requestFingerprint: identity.requestFingerprint, command, deadlineResolution: item.deadlineResolution });
         if (command.action === 'workspace.create') createdWorkspaceIds.add(command.workspaceId);
       }
     } catch (error) {
@@ -194,6 +195,7 @@ export class HomeChangeProposalUseCases implements HomeProposalDraftCreator {
       const row = raw as Record<string, unknown>;
       const itemId = this.createId();
       let command: HomeProposalCommand;
+      let deadlineResolution: HomeProposalDeadlineResolution | null = null;
       if (row.action === 'workspace.create') {
         if (scope.kind !== 'home') throw new HomePlanningScopeConflictError();
         const identity = normalizeProjectName(row.name);
@@ -205,10 +207,12 @@ export class HomeChangeProposalUseCases implements HomeProposalDraftCreator {
           ? scope.workspaceId
           : await this.resolveWorkspaceId(ownerId, scope, row.workspaceId, index, workspaceIds);
         const taskId = this.createId();
+        const deadline = resolveDeadlineWithProvenance(row.deadline ?? null, this.timeZone);
+        deadlineResolution = deadline.deadlineResolution;
         command = {
           action: 'task.create', taskId,
           title: String(row.title).trim(), details: normalizeOptionalText(row.details), workspaceId,
-          importance: String(row.importance ?? 'medium'), deadline: resolveDeadline(row.deadline ?? null, this.timeZone),
+          importance: String(row.importance ?? 'medium'), deadline: deadline.deadline,
           subtasks: normalizeCreateSubtasks(row.subtasks),
           ...(row.expectedOrderVersion === undefined ? {} : { expectedOrderVersion: row.expectedOrderVersion as number })
         };
@@ -216,13 +220,15 @@ export class HomeChangeProposalUseCases implements HomeProposalDraftCreator {
         const taskId = row.taskId as string;
         const current = await this.scopedTask(ownerId, scope, taskId);
         assertExpectedVersion(current.task.version, row.expectedVersion as number);
+        const deadline = row.deadline === undefined ? null : resolveDeadlineWithProvenance(row.deadline, this.timeZone);
+        deadlineResolution = deadline?.deadlineResolution ?? null;
         command = {
           action: 'task.update', taskId, expectedVersion: row.expectedVersion as number,
           ...(row.title === undefined ? {} : { title: String(row.title).trim() }),
           ...(row.details === undefined ? {} : { details: normalizeOptionalText(row.details) }),
           ...(row.status === undefined ? {} : { status: row.status as string }),
           ...(row.importance === undefined ? {} : { importance: row.importance as string }),
-          ...(row.deadline === undefined ? {} : { deadline: resolveDeadline(row.deadline, this.timeZone) }),
+          ...(deadline === null ? {} : { deadline: deadline.deadline }),
           ...(row.subtasks === undefined ? {} : { subtasks: normalizePatchSubtasks(row.subtasks, current.task.subtasks.map((subtask) => subtask.id)) })
         };
       } else if (row.action === 'task.move') {
@@ -245,7 +251,7 @@ export class HomeChangeProposalUseCases implements HomeProposalDraftCreator {
         throw new HomeConversationInputInvalidError('The Home proposal action is invalid.');
       }
       const identity = targetIdentity(command);
-      items.push({ id: itemId, position: index, action: command.action, targetKind: identity.targetKind, targetId: identity.targetId, expectedVersion: identity.expectedVersion, command });
+      items.push({ id: itemId, position: index, action: command.action, targetKind: identity.targetKind, targetId: identity.targetId, expectedVersion: identity.expectedVersion, command, deadlineResolution });
     }
     return items;
   }
@@ -436,45 +442,48 @@ export class HomeChangeProposalUseCases implements HomeProposalDraftCreator {
     };
   }
 
-  private async applyEdit(proposal: HomeChangeProposal, current: HomeProposalCommand, changes: unknown): Promise<HomeProposalCommand> {
+  private async applyEdit(proposal: HomeChangeProposal, current: HomeProposalCommand, currentDeadlineResolution: HomeProposalDeadlineResolution | null, changes: unknown): Promise<{ readonly command: HomeProposalCommand; readonly deadlineResolution: HomeProposalDeadlineResolution | null }> {
     if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new HomeConversationInputInvalidError('Proposal changes must be an object.');
     const entries = Object.entries(changes as Record<string, unknown>);
     if (entries.length === 0) throw new HomeConversationInputInvalidError('Provide at least one proposal field to edit.');
     const allowed = editableFields(current.action);
     if (entries.some(([key]) => !allowed.has(key))) throw new HomeConversationInputInvalidError('One or more fields cannot be edited for this proposal item.');
+    const hasDeadlineChange = entries.some(([key]) => key === 'deadline');
     const candidate = { ...current, ...(changes as Record<string, unknown>) } as HomeProposalCommand;
     if (candidate.action === 'task.create') {
       const ws = await this.resolveWorkspaceId(proposal.ownerId, proposal.scope, candidate.workspaceId, currentPosition(proposal, current), proposal.items.map((entry) => entry.command.action === 'workspace.create' ? entry.targetId : ''), true);
-      const command: HomeProposalCommand = { ...candidate, title: String(candidate.title).trim(), details: normalizeOptionalText(candidate.details), workspaceId: ws, deadline: typeof candidate.deadline === 'string' || candidate.deadline === null ? candidate.deadline : resolveDeadline(candidate.deadline, this.timeZone), subtasks: normalizeCreateSubtasks(candidate.subtasks) };
+      const deadline = hasDeadlineChange ? resolveEditedDeadline(candidate.deadline, this.timeZone) : { deadline: candidate.deadline, deadlineResolution: currentDeadlineResolution };
+      const command: HomeProposalCommand = { ...candidate, title: String(candidate.title).trim(), details: normalizeOptionalText(candidate.details), workspaceId: ws, deadline: deadline.deadline, subtasks: normalizeCreateSubtasks(candidate.subtasks) };
       if (ws) await this.scopedWorkspace(proposal.ownerId, proposal.scope, ws);
       else if (proposal.scope.kind === 'workspace') throw new HomePlanningScopeConflictError();
-      return command;
+      return { command, deadlineResolution: deadline.deadlineResolution };
     }
     if (candidate.action === 'task.update') {
       if (candidate.status !== undefined && [candidate.title, candidate.details, candidate.importance, candidate.deadline, candidate.subtasks].some((field) => field !== undefined)) throw new HomeConversationInputInvalidError('Status must be the only update field.');
       const currentTask = await this.scopedTask(proposal.ownerId, proposal.scope, candidate.taskId);
       assertExpectedVersion(currentTask.task.version, candidate.expectedVersion);
-      const command: HomeProposalCommand = { ...candidate, ...(candidate.title === undefined ? {} : { title: candidate.title.trim() }), ...(candidate.details === undefined ? {} : { details: normalizeOptionalText(candidate.details) }), ...(candidate.deadline === undefined ? {} : { deadline: typeof candidate.deadline === 'string' || candidate.deadline === null ? candidate.deadline : resolveDeadline(candidate.deadline, this.timeZone) }), ...(candidate.subtasks === undefined ? {} : { subtasks: normalizePatchSubtasks(candidate.subtasks, currentTask.task.subtasks.map((subtask) => subtask.id)) }) };
-      return command;
+      const deadline = hasDeadlineChange ? resolveEditedDeadline(candidate.deadline, this.timeZone) : { deadline: candidate.deadline, deadlineResolution: currentDeadlineResolution };
+      const command: HomeProposalCommand = { ...candidate, ...(candidate.title === undefined ? {} : { title: candidate.title.trim() }), ...(candidate.details === undefined ? {} : { details: normalizeOptionalText(candidate.details) }), ...(hasDeadlineChange ? { deadline: deadline.deadline } : {}), ...(candidate.subtasks === undefined ? {} : { subtasks: normalizePatchSubtasks(candidate.subtasks, currentTask.task.subtasks.map((subtask) => subtask.id)) }) };
+      return { command, deadlineResolution: deadline.deadlineResolution };
     }
     if (candidate.action === 'task.move') {
       const currentTask = await this.scopedTask(proposal.ownerId, proposal.scope, candidate.taskId);
       assertExpectedVersion(currentTask.task.version, candidate.expectedVersion);
       const workspaceId = await this.resolveWorkspaceId(proposal.ownerId, proposal.scope, candidate.workspaceId, currentPosition(proposal, current), proposal.items.map((entry) => entry.command.action === 'workspace.create' ? entry.targetId : ''), true);
-      return { ...candidate, workspaceId };
+      return { command: { ...candidate, workspaceId }, deadlineResolution: null };
     }
     if (candidate.action === 'task.archive') {
       const currentTask = await this.scopedTask(proposal.ownerId, proposal.scope, candidate.taskId);
       assertExpectedVersion(currentTask.task.version, candidate.expectedVersion);
-      return candidate;
+      return { command: candidate, deadlineResolution: null };
     }
     if (candidate.action === 'workspace.create') {
       const identity = normalizeProjectName(candidate.name);
-      return { ...candidate, name: identity.name, objective: normalizeObjective(candidate.objective) };
+      return { command: { ...candidate, name: identity.name, objective: normalizeObjective(candidate.objective) }, deadlineResolution: null };
     }
     const workspace = await this.scopedWorkspace(proposal.ownerId, proposal.scope, candidate.workspaceId);
     assertExpectedVersion(workspace.version, candidate.expectedVersion);
-    return { ...candidate, objective: normalizeObjective(candidate.objective) };
+    return { command: { ...candidate, objective: normalizeObjective(candidate.objective) }, deadlineResolution: null };
   }
 }
 
@@ -503,6 +512,12 @@ function normalizeOptionalText(value: unknown): string | null {
   if (typeof value !== 'string') throw new HomeConversationInputInvalidError('The task or workspace text is invalid.');
   const normalized = value.trim();
   return normalized || null;
+}
+
+function resolveEditedDeadline(value: unknown, timeZone: string | undefined): { readonly deadline: string | null; readonly deadlineResolution: HomeProposalDeadlineResolution | null } {
+  if (typeof value !== 'string') return resolveDeadlineWithProvenance(value, timeZone);
+  if (!isCalendarDate(value)) throw new HomeConversationInputInvalidError('Choose a valid calendar date.');
+  return { deadline: value, deadlineResolution: null };
 }
 
 function normalizeObjective(value: unknown): string | null {

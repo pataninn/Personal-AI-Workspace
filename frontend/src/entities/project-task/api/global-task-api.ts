@@ -1,6 +1,6 @@
 import { ApiClientError, getJson, patchJson, postJson } from '@/shared/api';
 import { normalizeProjectTask } from '@/entities/project-task/api/project-task-api';
-import type { GlobalTaskItem, GlobalTaskQuery, GlobalTaskQueryPage, InboxTaskCount, ProjectTaskDraft } from '@/entities/project-task/model/types';
+import type { GlobalTaskItem, GlobalTaskQuery, GlobalTaskQueryPage, GlobalTaskWorkspace, InboxTaskCount, ProjectTaskDraft } from '@/entities/project-task/model/types';
 
 const TASKS_PATH = '/api/v1/tasks';
 
@@ -34,9 +34,14 @@ export interface GlobalTaskMutationResult {
 export interface TaskUndoResult {
   readonly originalAction: TaskActionReceiptMetadata;
   readonly undoReceipt: TaskActionReceiptMetadata;
-  readonly item: GlobalTaskItem;
+  readonly target: TaskUndoTarget;
   readonly replayed: boolean;
 }
+
+export type TaskUndoTarget =
+  | { readonly kind: 'task'; readonly item: GlobalTaskItem }
+  | { readonly kind: 'workspace'; readonly workspace: GlobalTaskWorkspace }
+  | null;
 
 export async function listGlobalTasks(query: GlobalTaskQueryOptions = {}, cursor?: string): Promise<GlobalTaskQueryPage> {
   const params = new URLSearchParams();
@@ -105,9 +110,8 @@ export async function undoTaskAction(actionId: string, csrfToken: string, idempo
   }));
   const originalAction = normalizeActionReceipt(response?.originalAction);
   const undoReceipt = normalizeActionReceipt(response?.undoReceipt);
-  const target = asRecord(response?.target);
-  if (typeof response?.replayed !== 'boolean' || target?.kind !== 'task') throw invalidResponse();
-  return { originalAction, undoReceipt, item: normalizeGlobalTaskItem(target.item), replayed: response.replayed };
+  if (typeof response?.replayed !== 'boolean') throw invalidResponse();
+  return { originalAction, undoReceipt, target: normalizeUndoTarget(response.target), replayed: response.replayed };
 }
 
 export function normalizeGlobalTaskItem(value: unknown): GlobalTaskItem {
@@ -157,6 +161,22 @@ function normalizeActionReceipt(value: unknown): TaskActionReceiptMetadata {
     undoStatus: record.undoStatus,
     undoActionId: record.undoActionId as string | null
   };
+}
+
+function normalizeUndoTarget(value: unknown): TaskUndoTarget {
+  if (value === null) return null;
+  const target = asRecord(value);
+  if (target?.kind === 'task') return { kind: 'task', item: normalizeGlobalTaskItem(target.item) };
+  if (target?.kind === 'workspace') {
+    const workspace = asRecord(target.workspace);
+    if (!workspace || !isUuid(workspace.id) || typeof workspace.name !== 'string' || workspace.name.length === 0 ||
+        (workspace.status !== 'active' && workspace.status !== 'archived')) throw invalidResponse();
+    return {
+      kind: 'workspace',
+      workspace: { id: workspace.id, name: workspace.name, status: workspace.status }
+    };
+  }
+  throw invalidResponse();
 }
 
 function mutationHeaders(expectedVersion: number, csrfToken: string, idempotencyKey: string): HeadersInit {

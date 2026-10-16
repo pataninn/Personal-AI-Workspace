@@ -25,6 +25,20 @@ describe('getJson', () => {
     );
   });
 
+  it('preserves structured response data for callers that need a safe conflict reason', async () => {
+    const conflictData = { reason: 'workspace_not_empty', originalAction: { id: 'action-id' }, target: null };
+    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      JSON.stringify({ data: conflictData, error: { code: 'ACTION_UNDO_CONFLICT', message: 'The target changed.' } }),
+      { status: 409, headers: { 'Content-Type': 'application/json' } }
+    ));
+
+    await expect(getJson('/actions/action-id', fetchImplementation)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'ACTION_UNDO_CONFLICT',
+      responseData: conflictData
+    });
+  });
+
   it('maps an invalid non-JSON response to a safe client error', async () => {
     const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
       new Response('upstream failure', { status: 502, headers: { 'Content-Type': 'text/plain' } })

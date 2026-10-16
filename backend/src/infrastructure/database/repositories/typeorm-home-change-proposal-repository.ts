@@ -2,7 +2,7 @@ import type { DataSource, QueryRunner } from 'typeorm';
 
 import { HomeProposalCancelledError, HomeProposalDependencyConflictError, HomeProposalNotAcceptableError, HomeProposalNotEditableError, HomeProposalNotFoundError, HomeProposalRequestKeyReusedError, HomeProposalRevisionConflictError } from '@/modules/home-assistant/domain/home-planning-errors';
 import { HomeTurnNotActiveError, HomeTurnNotFoundError } from '@/modules/home-assistant/domain/home-conversation-errors';
-import type { HomeChangeProposal, HomeChangeProposalItem, HomeProposalAction, HomeProposalCommand, HomeProposalItemState, HomeProposalState } from '@/modules/home-assistant/domain/home-change-proposal-types';
+import type { HomeChangeProposal, HomeChangeProposalItem, HomeProposalAction, HomeProposalCommand, HomeProposalDeadlineResolution, HomeProposalItemState, HomeProposalState } from '@/modules/home-assistant/domain/home-change-proposal-types';
 import type { HomeConversationScope } from '@/modules/home-assistant/domain/home-conversation-types';
 import { appendHomeConversationEvent } from '@/infrastructure/database/repositories/home-conversation-event-persistence';
 import { lockConversation } from '@/infrastructure/database/repositories/home-conversation-repository-helpers';
@@ -58,7 +58,32 @@ function command(value: HomeProposalCommand | string): HomeProposalCommand {
   return result as HomeProposalCommand;
 }
 
+function storedCommand(value: HomeProposalCommand | string): { readonly command: HomeProposalCommand; readonly deadlineResolution: HomeProposalDeadlineResolution | null } {
+  const result = typeof value === 'string' ? JSON.parse(value) as unknown : value;
+  if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('The persisted proposal command is invalid.');
+  if (!('command' in result)) return { command: command(result as HomeProposalCommand), deadlineResolution: null };
+  const envelope = result as { readonly command: unknown; readonly deadlineResolution?: unknown };
+  const deadlineResolution = envelope.deadlineResolution;
+  if (deadlineResolution === undefined || deadlineResolution === null) return { command: command(envelope.command as HomeProposalCommand), deadlineResolution: null };
+  if (typeof deadlineResolution !== 'object' || Array.isArray(deadlineResolution)) throw new Error('The persisted proposal deadline resolution is invalid.');
+  const resolution = deadlineResolution as Record<string, unknown>;
+  if (typeof resolution.timeZone !== 'string' || resolution.timeZone.length === 0 || resolution.timeZone.length > 255
+    || (resolution.source !== 'configured' && resolution.source !== 'utc-fallback')
+    || (resolution.source === 'utc-fallback' && resolution.timeZone !== 'UTC')) {
+    throw new Error('The persisted proposal deadline resolution is invalid.');
+  }
+  return {
+    command: command(envelope.command as HomeProposalCommand),
+    deadlineResolution: { timeZone: resolution.timeZone, source: resolution.source }
+  };
+}
+
+function storedCommandJson(commandValue: HomeProposalCommand, deadlineResolution: HomeProposalDeadlineResolution | null): string {
+  return JSON.stringify({ command: commandValue, deadlineResolution });
+}
+
 function toItem(row: ProposalItemRow): HomeChangeProposalItem {
+  const stored = storedCommand(row.command);
   return {
     id: row.id,
     position: Number(row.position),
@@ -71,7 +96,8 @@ function toItem(row: ProposalItemRow): HomeChangeProposalItem {
     requestFingerprint: row.request_fingerprint,
     receiptId: row.receipt_id,
     resultCode: row.result_code,
-    command: command(row.command)
+    command: stored.command,
+    deadlineResolution: stored.deadlineResolution
   };
 }
 
@@ -138,7 +164,7 @@ export class TypeOrmHomeChangeProposalRepository implements IHomeChangeProposalR
         await transaction.query(
           `INSERT INTO "home_change_proposal_items" ("id", "owner_id", "conversation_id", "proposal_id", "position", "action_kind", "target_kind", "target_id", "expected_version", "command")
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)`,
-          [item.id, input.ownerId, input.conversationId, input.id, item.position, item.action, item.targetKind, item.targetId, item.expectedVersion, JSON.stringify(item.command)]
+          [item.id, input.ownerId, input.conversationId, input.id, item.position, item.action, item.targetKind, item.targetId, item.expectedVersion, storedCommandJson(item.command, item.deadlineResolution)]
         );
       }
       await appendHomeConversationEvent(transaction, {
@@ -218,7 +244,7 @@ export class TypeOrmHomeChangeProposalRepository implements IHomeChangeProposalR
       await transaction.query(
         `UPDATE "home_change_proposal_items" SET "target_kind" = $5, "target_id" = $6, "expected_version" = $7, "command" = $8::jsonb, "updated_at" = now()
          WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "proposal_id" = $3 AND "id" = $4`,
-        [input.ownerId, input.conversationId, input.proposalId, input.itemId, input.targetKind, input.targetId, input.expectedVersion, JSON.stringify(input.command)]
+        [input.ownerId, input.conversationId, input.proposalId, input.itemId, input.targetKind, input.targetId, input.expectedVersion, storedCommandJson(input.command, input.deadlineResolution)]
       );
       const updated = await this.updateHeaderAfterEdit(transaction, input.ownerId, input.conversationId, input.proposalId, input.commandBytes);
       await appendHomeConversationEvent(transaction, {
@@ -240,7 +266,7 @@ export class TypeOrmHomeChangeProposalRepository implements IHomeChangeProposalR
       if (!item) throw new HomeProposalNotFoundError();
       if (item.action_kind === 'workspace.create') {
         const dependents: readonly { readonly id: string }[] = await transaction.query(
-          `SELECT "id" FROM "home_change_proposal_items" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "proposal_id" = $3 AND "id" <> $4 AND "action_kind" IN ('task.create', 'task.move') AND "command"->>'workspaceId' = $5 LIMIT 1`,
+          `SELECT "id" FROM "home_change_proposal_items" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "proposal_id" = $3 AND "id" <> $4 AND "action_kind" IN ('task.create', 'task.move') AND COALESCE("command"->'command'->>'workspaceId', "command"->>'workspaceId') = $5 LIMIT 1`,
           [input.ownerId, input.conversationId, input.proposalId, input.itemId, item.target_id]
         );
         if (dependents[0]) throw new HomeProposalDependencyConflictError();
@@ -282,14 +308,20 @@ export class TypeOrmHomeChangeProposalRepository implements IHomeChangeProposalR
         `SELECT "id", "command" FROM "home_change_proposal_items" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "proposal_id" = $3 ORDER BY "position" ASC FOR UPDATE`,
         [input.ownerId, input.conversationId, input.proposalId]
       );
-      if (storedRows.length !== input.items.length || storedRows.some((row, index) => row.id !== input.items[index]?.itemId || stableJson(command(row.command)) !== stableJson(input.items[index]?.command))) {
+      if (storedRows.length !== input.items.length || storedRows.some((row, index) => {
+        const sealedItem = input.items[index];
+        if (row.id !== sealedItem?.itemId || !sealedItem) return true;
+        const stored = storedCommand(row.command);
+        return stableJson(stored.command) !== stableJson(sealedItem.command)
+          || stableJson(stored.deadlineResolution) !== stableJson(sealedItem.deadlineResolution);
+      })) {
         throw new HomeProposalRevisionConflictError();
       }
       for (const item of input.items) {
         await transaction.query(
           `UPDATE "home_change_proposal_items" SET "command" = $5::jsonb, "operation_key" = $6, "request_fingerprint" = $7, "state" = 'ready', "updated_at" = now()
            WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "proposal_id" = $3 AND "id" = $4`,
-          [input.ownerId, input.conversationId, input.proposalId, item.itemId, JSON.stringify(item.command), item.operationKey, item.requestFingerprint]
+          [input.ownerId, input.conversationId, input.proposalId, item.itemId, storedCommandJson(item.command, item.deadlineResolution), item.operationKey, item.requestFingerprint]
         );
       }
       await transaction.query(

@@ -10,6 +10,30 @@ export {
   listHomeTurns,
   submitHomeTurn
 } from '@/entities/home-conversation/api/home-conversation-api';
+export {
+  acceptHomeProposal,
+  cancelHomeProposal,
+  editHomeProposalItem,
+  getHomeProposal,
+  listHomeProposals,
+  removeHomeProposalItem,
+  resumeHomeProposal
+} from '@/entities/home-conversation/api/home-proposal-api';
+export type {
+  HomeProposal,
+  HomeProposalAcceptanceResult,
+  HomeProposalAction,
+  HomeProposalCommand,
+  HomeProposalDescriptor,
+  HomeProposalDeadlineResolution,
+  HomeProposalExecution,
+  HomeProposalImportance,
+  HomeProposalItem,
+  HomeProposalItemState,
+  HomeProposalMutationResult,
+  HomeProposalPage,
+  HomeProposalState
+} from '@/entities/home-conversation/api/home-proposal-api';
 export type {
   HomeConsentCategory,
   HomeConsentDecisionResult,

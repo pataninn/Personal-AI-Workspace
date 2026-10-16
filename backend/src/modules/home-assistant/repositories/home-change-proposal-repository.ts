@@ -1,5 +1,5 @@
 import type { HomeConversationScope } from '@/modules/home-assistant/domain/home-conversation-types';
-import type { HomeChangeProposal, HomeProposalCommand, HomeProposalItemState, HomeProposalState } from '@/modules/home-assistant/domain/home-change-proposal-types';
+import type { HomeChangeProposal, HomeProposalCommand, HomeProposalDeadlineResolution, HomeProposalItemState, HomeProposalState } from '@/modules/home-assistant/domain/home-change-proposal-types';
 
 export interface NewHomeProposalItem {
   readonly id: string;
@@ -9,6 +9,7 @@ export interface NewHomeProposalItem {
   readonly targetId: string;
   readonly expectedVersion: number | null;
   readonly command: HomeProposalCommand;
+  readonly deadlineResolution: HomeProposalDeadlineResolution | null;
 }
 
 export interface CreateHomeProposalInput {
@@ -48,6 +49,7 @@ export interface SealHomeProposalInput {
     readonly operationKey: string;
     readonly requestFingerprint: string;
     readonly command: HomeProposalCommand;
+    readonly deadlineResolution: HomeProposalDeadlineResolution | null;
   }[];
 }
 
@@ -62,6 +64,7 @@ export interface UpdateHomeProposalItemInput {
   readonly targetId: string;
   readonly expectedVersion: number | null;
   readonly commandBytes: number;
+  readonly deadlineResolution: HomeProposalDeadlineResolution | null;
 }
 
 export interface IHomeChangeProposalRepository {

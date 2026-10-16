@@ -44,6 +44,17 @@ describe('Home proposal OpenAPI contract', () => {
     expect(schemas.HomeProposalState).toBeDefined();
     expect(schemas.HomeProposalItemState).toBeDefined();
     expect(schemas.HomeProposalItem).toBeDefined();
+    const proposalItem = record(schemas.HomeProposalItem, 'HomeProposalItem');
+    const itemProperties = record(proposalItem.properties, 'HomeProposalItem properties');
+    const deadlineResolution = record(itemProperties.deadlineResolution, 'HomeProposalItem deadlineResolution');
+    const deadlineProperties = record(deadlineResolution.properties, 'deadlineResolution properties');
+    const resolutionRequired = Array.isArray(deadlineResolution.required) ? deadlineResolution.required : [];
+    const proposalItemRequired = Array.isArray(proposalItem.required) ? proposalItem.required : [];
+    expect(deadlineResolution).toMatchObject({ type: 'object', nullable: true, additionalProperties: false });
+    expect(deadlineProperties.timeZone).toEqual({ type: 'string' });
+    expect(deadlineProperties.source).toEqual({ type: 'string', enum: ['configured', 'utc-fallback'] });
+    expect(resolutionRequired).toEqual(expect.arrayContaining(['timeZone', 'source']));
+    expect(proposalItemRequired).toContain('deadlineResolution');
     expect(schemas.HomeChangeProposal).toBeDefined();
     expect(schemas.HomeProposalExecution).toBeDefined();
     expect(schemas.HomeProposalRevisionRequest).toBeDefined();

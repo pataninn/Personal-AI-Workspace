@@ -8,9 +8,10 @@ import { TypeOrmHomeConversationRepository } from '@/infrastructure/database/rep
 import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories/typeorm-project-repository';
 import { TypeOrmProjectTaskRepository } from '@/infrastructure/database/repositories/typeorm-project-task-repository';
 import { WorkspaceBoundaryAdapter } from '@/infrastructure/workspace/workspace-boundary';
+import { HomeConversationInputInvalidError } from '@/modules/home-assistant/domain/home-conversation-errors';
+import { HomeProposalRevisionConflictError } from '@/modules/home-assistant/domain/home-planning-errors';
 import { ActionUndoUseCases } from '@/modules/home-assistant/use-cases/action-undo-use-cases';
 import { HomeChangeProposalUseCases } from '@/modules/home-assistant/use-cases/home-change-proposal-use-cases';
-import { HomeProposalRevisionConflictError } from '@/modules/home-assistant/domain/home-planning-errors';
 import { HomePlanningToolRequestHandler } from '@/modules/home-assistant/use-cases/home-planning-tool-request-handler';
 import { WorkspacePlanningUseCases } from '@/modules/projects/use-cases/workspace-planning-use-cases';
 import { GetGlobalTaskUseCase, ListGlobalTasksUseCase } from '@/modules/tasks/use-cases/global-task-query-use-cases';
@@ -153,7 +154,7 @@ describeDatabase('Home accepted proposal PostgreSQL integration', () => {
       requestId: 'bulk-proposal-request', name: 'home_propose_bulk_changes', args: {
         items: [
           { action: 'workspace.create', name: 'Synthetic accepted workspace', objective: 'Isolated test only.' },
-          { action: 'task.create', title: 'Synthetic accepted task', workspaceId: { workspaceRef: 1 }, importance: 'medium' }
+          { action: 'task.create', title: 'Synthetic accepted task', workspaceId: { workspaceRef: 1 }, importance: 'medium', deadline: { kind: 'days_from_today', days: 1 } }
         ]
       }
     });
@@ -164,15 +165,19 @@ describeDatabase('Home accepted proposal PostgreSQL integration', () => {
     const draft = await proposals.findRequest(OWNER_ID, runningTurn.id, 'bulk-proposal-request');
     expect(draft).toMatchObject({ state: 'review_required', itemCount: 2, items: [
       { position: 0, action: 'workspace.create', state: 'ready' },
-      { position: 1, action: 'task.create', state: 'ready' }
+      { position: 1, action: 'task.create', state: 'ready', command: { deadline: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/u) }, deadlineResolution: { timeZone: 'UTC', source: 'utc-fallback' } }
     ] });
     expect(JSON.stringify(draft)).not.toContain('/workspace');
+    await expect(proposalUseCases.removeItem({
+      ownerId: OWNER_ID, conversationId: conversation.id, proposalId: draft!.id,
+      itemId: draft!.items[0]!.id, expectedRevision: draft!.revision
+    })).rejects.toMatchObject({ code: 'HOME_PROPOSAL_DEPENDENCY_CONFLICT' });
 
     const cancellationAck = await handler.resolve({
       ownerId: OWNER_ID, conversationId: conversation.id, turnId: runningTurn.id, scope: { kind: 'home' },
       requestId: 'cancelable-proposal-request', name: 'home_propose_bulk_changes', args: {
         items: [
-          { action: 'task.create', title: 'Editable synthetic task A' },
+          { action: 'task.create', title: 'Editable synthetic task A', deadline: { kind: 'days_from_today', days: 1 } },
           { action: 'task.create', title: 'Removable synthetic task B' }
         ]
       }
@@ -180,22 +185,42 @@ describeDatabase('Home accepted proposal PostgreSQL integration', () => {
     expect(cancellationAck?.kind).toBe('immediate');
     const cancelable = await proposals.findRequest(OWNER_ID, runningTurn.id, 'cancelable-proposal-request');
     if (!cancelable) throw new Error('The synthetic editable proposal was not persisted.');
+    expect(cancelable.items[0]?.deadlineResolution).toEqual({ timeZone: 'UTC', source: 'utc-fallback' });
+    await expect(proposalUseCases.editItem({
+      ownerId: OWNER_ID, conversationId: conversation.id, proposalId: cancelable.id,
+      itemId: cancelable.items[0]!.id, expectedRevision: cancelable.revision,
+      changes: { deadlineResolution: { timeZone: 'Pacific/Honolulu', source: 'configured' } }
+    })).rejects.toBeInstanceOf(HomeConversationInputInvalidError);
     const edited = await proposalUseCases.editItem({
       ownerId: OWNER_ID, conversationId: conversation.id, proposalId: cancelable.id,
       itemId: cancelable.items[0]!.id, expectedRevision: cancelable.revision, changes: { title: 'Edited synthetic task A' }
     });
     expect(edited).toMatchObject({ revision: 2, items: [
-      { command: { title: 'Edited synthetic task A' } }, { command: { title: 'Removable synthetic task B' } }
+      { command: { title: 'Edited synthetic task A' }, deadlineResolution: { timeZone: 'UTC', source: 'utc-fallback' } }, { command: { title: 'Removable synthetic task B' } }
     ] });
+    const editedExactDate = await proposalUseCases.editItem({
+      ownerId: OWNER_ID, conversationId: conversation.id, proposalId: cancelable.id,
+      itemId: cancelable.items[0]!.id, expectedRevision: edited.revision, changes: { deadline: '2026-10-20' }
+    });
+    expect(editedExactDate).toMatchObject({ revision: 3, items: [
+      { command: { deadline: '2026-10-20' }, deadlineResolution: null }, { command: { title: 'Removable synthetic task B' } }
+    ] });
+    await dataSource.query(
+      `UPDATE "home_change_proposal_items" SET "command" = "command"->'command'
+       WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "proposal_id" = $3 AND "id" = $4`,
+      [OWNER_ID, conversation.id, cancelable.id, cancelable.items[0]!.id]
+    );
+    const legacyRead = await proposals.getForOwner(OWNER_ID, conversation.id, cancelable.id);
+    expect(legacyRead?.items[0]).toMatchObject({ command: { deadline: '2026-10-20' }, deadlineResolution: null });
     await expect(proposalUseCases.editItem({
       ownerId: OWNER_ID, conversationId: conversation.id, proposalId: cancelable.id,
       itemId: cancelable.items[0]!.id, expectedRevision: 1, changes: { title: 'Stale edit must fail' }
     })).rejects.toBeInstanceOf(HomeProposalRevisionConflictError);
     const reduced = await proposalUseCases.removeItem({
       ownerId: OWNER_ID, conversationId: conversation.id, proposalId: cancelable.id,
-      itemId: cancelable.items[1]!.id, expectedRevision: edited.revision
+      itemId: cancelable.items[1]!.id, expectedRevision: editedExactDate.revision
     });
-    expect(reduced).toMatchObject({ revision: 3, itemCount: 1, items: [{ command: { title: 'Edited synthetic task A' } }] });
+    expect(reduced).toMatchObject({ revision: 4, itemCount: 1, items: [{ command: { title: 'Edited synthetic task A', deadline: '2026-10-20' }, deadlineResolution: null }] });
     const cancelled = await proposalUseCases.cancel({
       ownerId: OWNER_ID, conversationId: conversation.id, proposalId: cancelable.id, expectedRevision: reduced.revision
     });
@@ -227,7 +252,7 @@ describeDatabase('Home accepted proposal PostgreSQL integration', () => {
     expect(acceptanceReplays[0]?.value.proposal.acceptanceId).toBe(afterLostResponse?.acceptanceId);
     expect(afterLostResponse?.acceptanceId).not.toBeNull();
     expect(afterLostResponse).toMatchObject({ state: 'executing', items: [
-      { action: 'workspace.create', state: 'saved' }, { action: 'task.create', state: 'saved' }
+      { action: 'workspace.create', state: 'saved' }, { action: 'task.create', state: 'saved', deadlineResolution: { timeZone: 'UTC', source: 'utc-fallback' } }
     ] });
     const receiptCountAfterFirstAttempt: readonly { count: string }[] = await dataSource.query(
       'SELECT COUNT(*)::text AS "count" FROM "action_ledger_records" WHERE "owner_id" = $1 AND "turn_id" = $2',

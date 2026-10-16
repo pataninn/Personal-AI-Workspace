@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DashboardPage } from '@/pages/dashboard/DashboardPage';
 import { projectReducer, type ProjectSnapshot, type ProjectState } from '@/entities/project';
@@ -21,8 +21,8 @@ vi.mock('@/entities/project/api/project-api', () => ({
 }));
 vi.mock('@/entities/project/api/project-overview-api', () => ({ getProjectOverview: getProjectOverviewMock }));
 vi.mock('@/widgets/home-chat', () => ({
-  HomeChatWidget: ({ scope, scopeLabel }: { readonly scope: { readonly kind: string }; readonly scopeLabel: string }) =>
-    <section data-testid="home-chat-widget" data-scope={scope.kind} aria-label={scopeLabel} />
+  HomeChatWidget: ({ scope, scopeLabel, onSummaryRefreshRequested }: { readonly scope: { readonly kind: string }; readonly scopeLabel: string; readonly onSummaryRefreshRequested?: () => void }) =>
+    <section data-testid="home-chat-widget" data-scope={scope.kind} aria-label={scopeLabel}><button type="button" data-testid="simulate-confirmed-home-action" onClick={onSummaryRefreshRequested}>Simulate confirmed action</button></section>
 }));
 
 const ACTIVE_PROJECT: ProjectSnapshot = {
@@ -55,6 +55,8 @@ function renderDashboard(projectState: ProjectState = PROJECT_STATE, initialEntr
 }
 
 describe('DashboardPage chat and task Home', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   beforeEach(() => {
     createProjectMock.mockReset(); getProjectMock.mockReset(); listProjectsMock.mockReset(); removeProjectMock.mockReset(); getProjectOverviewMock.mockReset();
     getProjectOverviewMock.mockResolvedValue(overview());
@@ -203,21 +205,53 @@ describe('DashboardPage chat and task Home', () => {
     getProjectOverviewMock.mockRejectedValue(new ApiClientError(503, 'WORKSPACE_BOUNDARY_UNAVAILABLE', 'absolute host detail'));
     renderDashboard();
     expect(await screen.findByTestId('workspace-boundary-error')).toHaveTextContent('authoritative workspace is unavailable');
+    expect(screen.getByTestId('home-up-next-error')).toHaveTextContent('Up next is unavailable.');
+    expect(screen.getByTestId(`home-workspace-link-${ACTIVE_PROJECT.id}`)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'All tasks' })).toHaveAttribute('href', '/tasks');
     expect(screen.getByTestId('project-create-trigger')).toBeDisabled();
     expect(screen.queryByTestId('project-empty-state')).not.toBeInTheDocument();
     expect(screen.queryByText('absolute host detail')).not.toBeInTheDocument();
     getProjectOverviewMock.mockResolvedValue(overview());
     await userEvent.setup().click(screen.getByTestId('workspace-boundary-retry-button'));
-    expect(await screen.findByRole('region', { name: 'Recent projects' })).toBeInTheDocument();
+    expect(await screen.findByTestId('home-tasks-empty')).toHaveTextContent('No open tasks yet.');
+    expect(screen.getByTestId(`home-workspace-link-${ACTIVE_PROJECT.id}`)).toBeInTheDocument();
     expect(getProjectOverviewMock).toHaveBeenCalledTimes(2);
   });
 
   it('shows a generic retryable overview error without internal details', async () => {
     getProjectOverviewMock.mockRejectedValue(new ApiClientError(503, 'INTERNAL_ERROR', 'internal detail'));
     renderDashboard();
-    expect(await screen.findByTestId('project-list-error')).toHaveTextContent('Workspace could not be loaded');
+    expect(await screen.findByTestId('home-up-next-error')).toHaveTextContent('Up next is unavailable.');
+    expect(screen.getByTestId('home-up-next-retry')).toBeEnabled();
+    expect(screen.getByTestId(`home-workspace-link-${ACTIVE_PROJECT.id}`)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'All tasks' })).toHaveAttribute('href', '/tasks');
     expect(screen.queryByText('internal detail')).not.toBeInTheDocument();
     expect(screen.getByTestId('project-create-trigger')).toBeDisabled();
+  });
+
+  it('keeps the independent workspace summary visible when Up next fails', async () => {
+    getProjectOverviewMock.mockRejectedValue(new ApiClientError(503, 'INTERNAL_ERROR', 'internal detail'));
+    renderDashboard({ ...PROJECT_STATE, projects: [ACTIVE_PROJECT, { ...ACTIVE_PROJECT, id: 'archived-project', name: 'Archived notes', status: 'archived' }] });
+
+    expect(await screen.findByTestId('home-up-next-error')).toHaveTextContent('Up next is unavailable.');
+    expect(screen.getByTestId(`home-workspace-link-${ACTIVE_PROJECT.id}`)).toBeInTheDocument();
+    expect(screen.getByTestId('home-workspace-link-archived-project')).toHaveTextContent('Archived');
+    expect(screen.getByRole('link', { name: 'All tasks' })).toHaveAttribute('href', '/tasks');
+    expect(screen.queryByText('internal detail')).not.toBeInTheDocument();
+  });
+
+  it('refreshes the bounded overview, complete workspace list and Inbox count after a confirmed chat action', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ data: { count: 2 }, error: null }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    renderDashboard();
+    await screen.findByTestId('home-chat-widget');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await userEvent.setup().click(screen.getByTestId('simulate-confirmed-home-action'));
+
+    await waitFor(() => expect(getProjectOverviewMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(listProjectsMock).toHaveBeenCalledOnce());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock.mock.calls.every(([url]) => String(url) === '/api/v1/tasks/inbox/count')).toBe(true);
   });
 
   it('clears the session when project list loading returns 401', async () => {

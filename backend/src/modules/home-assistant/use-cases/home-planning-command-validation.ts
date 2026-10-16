@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { HomeConversationInputInvalidError } from '@/modules/home-assistant/domain/home-conversation-errors';
 import { HomeProposalInputInvalidError } from '@/modules/home-assistant/domain/home-planning-errors';
+import type { HomeProposalDeadlineResolution } from '@/modules/home-assistant/domain/home-change-proposal-types';
 import type { HomePlanningToolRequest } from '@/modules/home-assistant/repositories/home-planning-tool-request-handler';
 
 const UUID = z.string().uuid();
@@ -106,13 +107,13 @@ export function parseProposalToolArgs(value: unknown): z.infer<typeof proposeBul
   return parsed.data;
 }
 
-export function resolveDeadline(value: unknown, timeZone: string | undefined, now = new Date()): string | null {
-  if (value === null) return null;
+export function resolveDeadlineWithProvenance(value: unknown, timeZone: string | undefined, now = new Date()): { readonly deadline: string | null; readonly deadlineResolution: HomeProposalDeadlineResolution | null } {
+  if (value === null) return { deadline: null, deadlineResolution: null };
   const parsed = DEADLINE.safeParse(value);
   if (!parsed.success) throw new HomeConversationInputInvalidError('The task deadline is invalid.');
   if (parsed.data.kind === 'date') {
     if (!isCalendarDate(parsed.data.value)) throw new HomeConversationInputInvalidError('Choose a valid calendar date.');
-    return parsed.data.value;
+    return { deadline: parsed.data.value, deadlineResolution: null };
   }
   const zone = timeZone ?? 'UTC';
   let parts: readonly Intl.DateTimeFormatPart[];
@@ -123,7 +124,14 @@ export function resolveDeadline(value: unknown, timeZone: string | undefined, no
   }
   const numberPart = (type: string) => Number(parts.find((part) => part.type === type)?.value);
   const today = new Date(Date.UTC(numberPart('year'), numberPart('month') - 1, numberPart('day') + parsed.data.days));
-  return today.toISOString().slice(0, 10);
+  return {
+    deadline: today.toISOString().slice(0, 10),
+    deadlineResolution: { timeZone: zone, source: timeZone === undefined ? 'utc-fallback' : 'configured' }
+  };
+}
+
+export function resolveDeadline(value: unknown, timeZone: string | undefined, now = new Date()): string | null {
+  return resolveDeadlineWithProvenance(value, timeZone, now).deadline;
 }
 
 export function isCalendarDate(value: string): boolean {

@@ -1,16 +1,19 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import type { HomeConversationScope } from '@/entities/home-conversation';
 import { Alert, Button, DialogContent, DialogDescription, DialogRoot, DialogTitle, Icon, Label, MarkdownContent, Skeleton, Spinner, Textarea } from '@/shared/ui';
 
+import { useHomePlanningRecords } from '../model/use-home-planning-records';
 import { useHomeChat } from '../model/use-home-chat';
+import { HomePlanningRecords, UnattachedHomePlanningRecords } from './HomePlanningRecords';
 
 interface HomeChatProps {
   readonly scope: HomeConversationScope;
   readonly scopeLabel: string;
   readonly disabled?: boolean;
   readonly disabledReason?: string;
+  readonly onSummaryRefreshRequested?: () => void;
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -20,9 +23,17 @@ const CATEGORY_LABELS: Record<string, string> = {
   workspace_metadata: 'Workspace metadata'
 };
 
-export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason }: HomeChatProps): React.JSX.Element {
+export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason, onSummaryRefreshRequested }: HomeChatProps): React.JSX.Element {
   const chat = useHomeChat({ scope, disabled });
+  const planningRecords = useHomePlanningRecords({
+    conversationId: chat.selectedConversationId,
+    events: chat.events,
+    eventsConversationId: chat.eventsConversationId,
+    refreshEvents: chat.refreshEvents,
+    onSummaryRefreshRequested
+  });
   const [historyOpen, setHistoryOpen] = useState(false);
+  const notifiedReceiptEvents = useRef(new Set<string>());
   const archivedId = 'home-chat-archived-description';
   const isWorkspace = scope.kind === 'workspace';
   const currentTitle = chat.isNewConversation ? 'New conversation' : chat.selectedConversation?.title ?? 'Assistant conversation';
@@ -34,6 +45,15 @@ export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason }
   const currentDisclosurePhase = currentTurnDecisionIsPrivate
     ? chat.events.find((event) => event.type === 'consent.requested' && event.entityId === currentTurnDecision.entityId)?.payload.phase
     : undefined;
+
+  useEffect(() => {
+    if (chat.eventsConversationId !== chat.selectedConversationId) return;
+    const freshReceipts = chat.events.filter((event) => event.type === 'action.receipt' && event.entityId &&
+      !notifiedReceiptEvents.current.has(`${chat.selectedConversationId ?? ''}:${event.entityId}`));
+    if (!freshReceipts.length) return;
+    for (const event of freshReceipts) notifiedReceiptEvents.current.add(`${chat.selectedConversationId ?? ''}:${event.entityId}`);
+    onSummaryRefreshRequested?.();
+  }, [chat.events, chat.eventsConversationId, chat.selectedConversationId, onSummaryRefreshRequested]);
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>): void {
     event.preventDefault();
@@ -82,9 +102,11 @@ export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason }
                 <span className="home-chat-message-role">{message.role === 'user' ? 'You' : 'Assistant'}</span>
                 <div className="home-chat-message-body">{message.role === 'assistant' ? <MarkdownContent content={message.content} /> : <p>{message.content}</p>}</div>
                 {status ? <span className={`home-chat-turn-status home-chat-turn-status-${statusClass(status)}`} data-turn-id={message.turnId}>{status}</span> : null}
+                {message.role === 'assistant' ? <HomePlanningRecords records={planningRecords} turnId={message.turnId} scope={scope} /> : null}
               </li>;
             })}
           </ol>
+          <UnattachedHomePlanningRecords records={planningRecords} scope={scope} displayedTurnIds={new Set(chat.messages.filter((message) => message.role === 'assistant').map((message) => message.turnId))} />
         </> : null}
         {chat.historyStatus === 'idle' && (!chat.selectedConversationId && (chat.isNewConversation || chat.listStatus === 'success')) ? <div className="home-chat-empty" data-testid="home-chat-empty"><strong>{isWorkspace ? 'Start planning for this workspace.' : 'Start with a question or a task you want to plan.'}</strong>{!isWorkspace ? <p>Your saved messages will appear here.</p> : null}</div> : null}
 

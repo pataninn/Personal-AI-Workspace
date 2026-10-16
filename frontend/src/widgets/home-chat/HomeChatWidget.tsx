@@ -6,6 +6,7 @@ interface HomeChatWidgetProps {
   readonly scopeLabel: string;
   readonly disabled?: boolean;
   readonly disabledReason?: string;
+  readonly onSummaryRefreshRequested?: () => void;
 }
 
 /** Compose the Home-only planning conversation surface for Home and rootless workspaces. */

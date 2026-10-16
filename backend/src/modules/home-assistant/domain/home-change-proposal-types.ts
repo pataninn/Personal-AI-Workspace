@@ -4,6 +4,11 @@ export type HomeProposalState = 'review_required' | 'accepted' | 'executing' | '
 export type HomeProposalItemState = 'ready' | 'executing' | 'saved' | 'failed' | 'conflicted' | 'blocked' | 'cancelled' | 'unknown';
 export type HomeProposalAction = 'task.create' | 'task.update' | 'task.move' | 'task.archive' | 'workspace.create' | 'workspace.update_objective';
 
+export interface HomeProposalDeadlineResolution {
+  readonly timeZone: string;
+  readonly source: 'configured' | 'utc-fallback';
+}
+
 export type HomeProposalCommand =
   | { readonly action: 'task.create'; readonly taskId: string; readonly title: string; readonly details: string | null; readonly workspaceId: string | null; readonly importance: string; readonly deadline: string | null; readonly subtasks: readonly { readonly id?: string; readonly title: string; readonly completed?: boolean }[]; readonly expectedOrderVersion?: number }
   | { readonly action: 'task.update'; readonly taskId: string; readonly expectedVersion: number; readonly title?: string; readonly details?: string | null; readonly status?: string; readonly importance?: string; readonly deadline?: string | null; readonly subtasks?: readonly { readonly id: string; readonly title: string; readonly completed: boolean }[] }
@@ -25,6 +30,7 @@ export interface HomeChangeProposalItem {
   readonly receiptId: string | null;
   readonly resultCode: string | null;
   readonly command: HomeProposalCommand;
+  readonly deadlineResolution: HomeProposalDeadlineResolution | null;
 }
 
 export interface HomeChangeProposal {

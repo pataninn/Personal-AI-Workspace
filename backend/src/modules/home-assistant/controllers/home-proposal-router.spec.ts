@@ -34,7 +34,8 @@ const proposal: HomeChangeProposal = {
   items: [{
     id: ITEM_ID, position: 0, action: 'task.create', targetKind: 'task', targetId: '77777777-7777-4777-8777-777777777777',
     expectedVersion: null, state: 'ready', operationKey: null, requestFingerprint: null, receiptId: null, resultCode: null,
-    command: { action: 'task.create', taskId: '77777777-7777-4777-8777-777777777777', title: 'Review a plan', details: null, workspaceId: null, importance: 'medium', deadline: null, subtasks: [] }
+    command: { action: 'task.create', taskId: '77777777-7777-4777-8777-777777777777', title: 'Review a plan', details: null, workspaceId: null, importance: 'medium', deadline: '2026-10-20', subtasks: [] },
+    deadlineResolution: { timeZone: 'America/Los_Angeles', source: 'configured' }
   }]
 };
 
@@ -89,6 +90,7 @@ describe('Home proposal routes', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.data.proposal).toMatchObject({ id: PROPOSAL_ID, sourceTurnId: TURN_ID, state: 'review_required', items: [{ id: ITEM_ID }] });
+    expect(response.body.data.proposal.items[0]).toMatchObject({ command: { deadline: '2026-10-20' }, deadlineResolution: { timeZone: 'America/Los_Angeles', source: 'configured' } });
     expect(response.body.data.proposal).not.toHaveProperty('ownerId');
     expect(get).toHaveBeenCalledWith(OWNER_ID, CONVERSATION_ID, PROPOSAL_ID);
   });

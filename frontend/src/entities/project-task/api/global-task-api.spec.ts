@@ -97,7 +97,7 @@ describe('global task API', () => {
 
     fetchMock.mockResolvedValueOnce(envelope({ originalAction: { ...safeReceipt, undoStatus: 'undone', undoActionId: ACTION_ID },
       undoReceipt: { ...safeReceipt, actionKind: 'undo', undoStatus: 'not_reversible' }, target: { kind: 'task', item: inboxItem }, replayed: false }));
-    await expect(undoTaskAction(ACTION_ID, 'csrf', 'undo-key')).resolves.toMatchObject({ item: inboxItem, replayed: false, originalAction: { undoStatus: 'undone' } });
+    await expect(undoTaskAction(ACTION_ID, 'csrf', 'undo-key')).resolves.toMatchObject({ target: { kind: 'task', item: inboxItem }, replayed: false, originalAction: { undoStatus: 'undone' } });
     const [undoPath, undoRequest] = fetchMock.mock.calls[1] ?? [];
     expect(undoPath).toBe(`/api/v1/actions/${ACTION_ID}/undo`);
     expect(JSON.parse(String(undoRequest?.body))).toEqual({});
@@ -106,6 +106,21 @@ describe('global task API', () => {
 
     fetchMock.mockResolvedValueOnce(envelope({ ...safeReceipt, targetId: 'not-a-task-id' }));
     await expect(getTaskActionReceipt(ACTION_ID)).rejects.toBeInstanceOf(ApiClientError);
+  });
+
+  it('accepts workspace and unavailable undo targets without exposing folder metadata as a task', async () => {
+    const safeReceipt = { id: ACTION_ID, actionKind: 'workspace.update', targetKind: 'workspace', targetId: WORKSPACE_ID, postVersion: 4, undoStatus: 'undone', undoActionId: ACTION_ID };
+    const workspace = { id: WORKSPACE_ID, name: 'Planning', slug: 'planning', relativeRoot: null, objective: null, status: 'active', version: 4, createdAt: '2026-10-16T08:00:00.000Z', updatedAt: '2026-10-16T08:00:00.000Z' };
+    fetchMock.mockResolvedValueOnce(envelope({ originalAction: safeReceipt, undoReceipt: { ...safeReceipt, actionKind: 'undo', undoStatus: 'not_reversible' }, target: { kind: 'workspace', workspace }, replayed: false }));
+    await expect(undoTaskAction(ACTION_ID, 'csrf', 'workspace-undo-key')).resolves.toEqual({
+      originalAction: safeReceipt,
+      undoReceipt: { ...safeReceipt, actionKind: 'undo', undoStatus: 'not_reversible' },
+      target: { kind: 'workspace', workspace: { id: WORKSPACE_ID, name: 'Planning', status: 'active' } },
+      replayed: false
+    });
+
+    fetchMock.mockResolvedValueOnce(envelope({ originalAction: safeReceipt, undoReceipt: { ...safeReceipt, actionKind: 'undo', undoStatus: 'not_reversible' }, target: null, replayed: true }));
+    await expect(undoTaskAction(ACTION_ID, 'csrf', 'workspace-undo-key')).resolves.toMatchObject({ target: null, replayed: true });
   });
 });
 

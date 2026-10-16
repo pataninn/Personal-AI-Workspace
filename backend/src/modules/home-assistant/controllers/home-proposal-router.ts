@@ -87,6 +87,7 @@ function serializeProposal(value: HomeChangeProposal): Record<string, unknown> {
       position: item.position,
       action: item.action,
       command: item.command,
+      deadlineResolution: item.deadlineResolution,
       state: item.state,
       receiptId: item.receiptId,
       resultCode: item.resultCode

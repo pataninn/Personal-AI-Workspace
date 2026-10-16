@@ -269,7 +269,8 @@ export function TaskDetailPage(): React.JSX.Element {
       undoIntent.current = null;
       setReceipt(result.originalAction);
       setReceiptOwnerId(ownerId);
-      setCanonicalItem(result.item);
+      if (result.target?.kind === 'task') setCanonicalItem(result.target.item);
+      else setLoadAttempt((value) => value + 1);
       setAnnouncement('Undo completed. The task is restored to its saved state.');
       setReceiptReloadAttempt((value) => value + 1);
       void refreshCommittedViews();

@@ -189,6 +189,7 @@ export interface HomeChatController {
   readonly messages: readonly HomeMessageSnapshot[];
   readonly turns: readonly HomeTurnSnapshot[];
   readonly events: readonly HomeConversationEvent[];
+  readonly eventsConversationId: string | null;
   readonly lastProcessedEventSequence: number;
   readonly historyStatus: LoadStatus;
   readonly historyError: string | null;
@@ -219,6 +220,7 @@ export interface HomeChatController {
   readonly checkTurnStatus: () => Promise<void>;
   readonly reconnecting: boolean;
   readonly refreshConversation: () => void;
+  readonly refreshEvents: () => Promise<void>;
   readonly loadStatus: (turnId: string) => string | null;
   readonly wasKeptPrivate: (turnId: string) => boolean;
 }
@@ -256,6 +258,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
   const [messageCursor, setMessageCursor] = useState<number | null>(null);
   const [turns, setTurns] = useState<readonly HomeTurnSnapshot[]>([]);
   const [events, setEvents] = useState<readonly HomeConversationEvent[]>([]);
+  const [loadedEventsConversationId, setLoadedEventsConversationId] = useState<string | null>(null);
   const [lastProcessedEventSequence, setLastProcessedEventSequence] = useState(0);
   const eventsRef = useRef<readonly HomeConversationEvent[]>([]);
   const eventCursorRef = useRef(0);
@@ -368,6 +371,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
       eventsRef.current = [];
       eventCursorRef.current = 0;
       setEvents([]);
+      setLoadedEventsConversationId(null);
       setLastProcessedEventSequence(0);
       setPendingDisclosure(null);
       setHistoryStatus('idle');
@@ -379,6 +383,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     eventCursorRef.current = 0;
     eventsRef.current = [];
     setEvents([]);
+    setLoadedEventsConversationId(null);
     setLastProcessedEventSequence(0);
     setLoadedForKey(null);
     setLoadedConversation(null);
@@ -404,6 +409,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
       const sortedEvents = mergeEvents(eventsRef.current, loadedEvents);
       eventsRef.current = sortedEvents;
       setEvents(sortedEvents);
+      setLoadedEventsConversationId(selectedConversationId);
       const cursor = Math.max(eventCursorRef.current, sortedEvents.at(-1)?.sequence ?? 0);
       eventCursorRef.current = cursor;
       setLastProcessedEventSequence(cursor);
@@ -479,6 +485,12 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     setReconnecting(false);
     setRefreshAttempt((value) => value + 1);
   }, []);
+
+  const refreshEvents = useCallback(async (): Promise<void> => {
+    if (!selectedConversationId) return;
+    const requestKey = selectedViewKey;
+    await refreshEventFeed(selectedConversationId, requestKey);
+  }, [refreshEventFeed, selectedConversationId, selectedViewKey]);
 
   const retryConversationList = useCallback((): void => setListAttempt((value) => value + 1), []);
 
@@ -892,14 +904,15 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     hasMoreConversations: Boolean(listCursor), loadMoreConversations, retryConversationList,
     selectedConversation, selectedConversationId, isNewConversation,
     startNewConversation, navigationLocked,
-    messages: visibleMessages, turns, events, lastProcessedEventSequence, historyStatus, historyError,
+    messages: visibleMessages, turns, events, eventsConversationId: loadedEventsConversationId === selectedConversationId ? selectedConversationId : null,
+    lastProcessedEventSequence, historyStatus, historyError,
     hasEarlierMessages: messageCursor !== null, loadEarlierMessages,
     draft, setDraft, send, retryCreate, checkSubmission, retrySameSubmission,
     sendStatus, createNeedsRetry, submitCanRetry, sendError,
     clearSendError: () => setSendError(null),
     busy: sendBusy || decisionPending || cancelPending,
     canSend, runtimeUnavailable, activeTurn, pendingDisclosure, decisionPending, decide,
-    cancelPending, cancelNeedsCheck, statusCheckPending, cancel, checkTurnStatus, reconnecting, refreshConversation,
+    cancelPending, cancelNeedsCheck, statusCheckPending, cancel, checkTurnStatus, reconnecting, refreshConversation, refreshEvents,
     loadStatus, wasKeptPrivate
   };
 }

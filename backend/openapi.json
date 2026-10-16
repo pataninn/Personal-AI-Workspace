@@ -9743,9 +9743,19 @@
           "command": { "type": "object", "description": "Canonical Home task/workspace metadata command; sealed and read-only after acceptance.", "additionalProperties": true },
           "state": { "$ref": "#/components/schemas/HomeProposalItemState" },
           "receiptId": { "$ref": "#/components/schemas/Uuid", "nullable": true },
-          "resultCode": { "type": "string", "maxLength": 80, "nullable": true }
+          "resultCode": { "type": "string", "maxLength": 80, "nullable": true },
+          "deadlineResolution": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "timeZone": { "type": "string" },
+              "source": { "type": "string", "enum": ["configured", "utc-fallback"] }
+            },
+            "required": ["timeZone", "source"],
+            "additionalProperties": false
+          }
         },
-        "required": ["id", "position", "action", "command", "state", "receiptId", "resultCode"],
+        "required": ["id", "position", "action", "command", "state", "receiptId", "resultCode", "deadlineResolution"],
         "additionalProperties": false
       },
       "HomeChangeProposal": {

@@ -1,6 +1,6 @@
 import { HomeConversationInputInvalidError } from '@/modules/home-assistant/domain/home-conversation-errors';
 import { HomeProposalInputInvalidError } from '@/modules/home-assistant/domain/home-planning-errors';
-import { parseHomePlanningToolArgs, parseProposalToolArgs, resolveDeadline } from '@/modules/home-assistant/use-cases/home-planning-command-validation';
+import { parseHomePlanningToolArgs, parseProposalToolArgs, resolveDeadline, resolveDeadlineWithProvenance } from '@/modules/home-assistant/use-cases/home-planning-command-validation';
 import type { HomePlanningToolRequest } from '@/modules/home-assistant/repositories/home-planning-tool-request-handler';
 
 function request(name: string, args: Readonly<Record<string, unknown>>): HomePlanningToolRequest {
@@ -35,6 +35,18 @@ describe('Home planning command validation', () => {
     expect(resolveDeadline({ kind: 'days_from_today', days: 1 }, undefined, instant)).toBe('2026-01-02');
     expect(() => resolveDeadline({ kind: 'days_from_today', days: 1 }, 'Not/A_Timezone', instant))
       .toThrow(HomeConversationInputInvalidError);
+  });
+
+  it('retains only server-owned timezone provenance for relative dates', () => {
+    const instant = new Date('2026-01-01T01:00:00.000Z');
+    expect(resolveDeadlineWithProvenance({ kind: 'days_from_today', days: 1 }, 'America/Los_Angeles', instant))
+      .toEqual({ deadline: '2026-01-01', deadlineResolution: { timeZone: 'America/Los_Angeles', source: 'configured' } });
+    expect(resolveDeadlineWithProvenance({ kind: 'days_from_today', days: 1 }, undefined, instant))
+      .toEqual({ deadline: '2026-01-02', deadlineResolution: { timeZone: 'UTC', source: 'utc-fallback' } });
+    expect(resolveDeadlineWithProvenance({ kind: 'date', value: '2026-10-16' }, undefined, instant))
+      .toEqual({ deadline: '2026-10-16', deadlineResolution: null });
+    expect(resolveDeadlineWithProvenance(null, undefined, instant))
+      .toEqual({ deadline: null, deadlineResolution: null });
   });
 
   it('allows workspace references only inside bounded bulk commands', () => {

@@ -5,13 +5,15 @@ export class ApiClientError extends Error {
   public readonly statusCode: number;
   public readonly code: string;
   public readonly details: readonly ApiErrorDetail[];
+  public readonly responseData: unknown;
 
-  public constructor(statusCode: number, code: string, message: string, details: readonly ApiErrorDetail[] = []) {
+  public constructor(statusCode: number, code: string, message: string, details: readonly ApiErrorDetail[] = [], responseData: unknown = undefined) {
     super(message);
     this.name = 'ApiClientError';
     this.statusCode = statusCode;
     this.code = code;
     this.details = details;
+    this.responseData = responseData;
   }
 }
 
@@ -73,7 +75,8 @@ export async function requestJson<T>(
       response.status,
       body?.error?.code ?? 'HTTP_ERROR',
       body?.error?.message ?? 'The request failed.',
-      body?.error?.details ?? []
+      body?.error?.details ?? [],
+      body?.data ?? undefined
     );
     notifySessionExpiry(clientError.statusCode, clientError.code, clientError);
     throw clientError;
@@ -136,7 +139,8 @@ async function requestNoContent(
       response.status,
       body?.error?.code ?? 'HTTP_ERROR',
       body?.error?.message ?? 'The request failed.',
-      body?.error?.details ?? []
+      body?.error?.details ?? [],
+      body?.data ?? undefined
     );
     notifySessionExpiry(clientError.statusCode, clientError.code, clientError);
     throw clientError;

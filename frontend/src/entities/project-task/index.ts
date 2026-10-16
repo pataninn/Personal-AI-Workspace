@@ -11,7 +11,7 @@ export {
   updateProjectTask
 } from '@/entities/project-task/api/project-task-api';
 export { archiveGlobalTask, createInboxTask, getGlobalTask, getInboxTaskCount, getTaskActionReceipt, listGlobalTasks, moveGlobalTask, undoTaskAction, updateGlobalTask } from '@/entities/project-task/api/global-task-api';
-export type { GlobalTaskCreateResult, GlobalTaskMutationResult, GlobalTaskPatch, GlobalTaskQueryOptions, TaskActionReceiptMetadata, TaskMutationKind, TaskUndoResult, TaskUndoStatus } from '@/entities/project-task/api/global-task-api';
+export type { GlobalTaskCreateResult, GlobalTaskMutationResult, GlobalTaskPatch, GlobalTaskQueryOptions, TaskActionReceiptMetadata, TaskMutationKind, TaskUndoResult, TaskUndoStatus, TaskUndoTarget } from '@/entities/project-task/api/global-task-api';
 export { useProjectTasks, type ProjectTaskLoadStatus } from '@/entities/project-task/model/use-project-tasks';
 export { useGlobalTaskQuery, type GlobalTaskQueryStatus } from '@/entities/project-task/model/use-global-task-query';
 export { useProjectTaskSuggestions, type ProjectTaskSuggestionLoadStatus } from '@/entities/project-task/model/use-project-task-suggestions';

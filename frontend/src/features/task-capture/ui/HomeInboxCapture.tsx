@@ -9,6 +9,7 @@ import { Alert, Button, Card, Input, Label } from '@/shared/ui';
 
 interface HomeInboxCaptureProps {
   readonly onCreated?: () => void;
+  readonly summaryRefreshKey?: number;
 }
 
 interface CaptureIntent {
@@ -16,7 +17,7 @@ interface CaptureIntent {
   readonly idempotencyKey: string;
 }
 
-export function HomeInboxCapture({ onCreated }: HomeInboxCaptureProps): React.JSX.Element {
+export function HomeInboxCapture({ onCreated, summaryRefreshKey = 0 }: HomeInboxCaptureProps): React.JSX.Element {
   const csrfToken = useAppSelector(selectCsrfToken);
   const titleRef = useRef<HTMLInputElement>(null);
   const intentRef = useRef<CaptureIntent | null>(null);
@@ -40,7 +41,7 @@ export function HomeInboxCapture({ onCreated }: HomeInboxCaptureProps): React.JS
     }
   }, []);
 
-  useEffect(() => { void refreshCount(); }, [countAttempt, refreshCount]);
+  useEffect(() => { void refreshCount(); }, [countAttempt, refreshCount, summaryRefreshKey]);
   useEffect(() => { if (savedTaskId) titleRef.current?.focus(); }, [savedTaskId]);
 
   async function submit(event?: FormEvent<HTMLFormElement>): Promise<void> {
@@ -86,7 +87,7 @@ export function HomeInboxCapture({ onCreated }: HomeInboxCaptureProps): React.JS
       </span>
     </header>
     {countStatus === 'loading' ? <p className="sr-only" role="status">Loading Inbox count</p> : null}
-    {countStatus === 'error' ? <p className="supporting-copy" data-testid="home-inbox-count-error">Count unavailable. <button type="button" className="text-link" onClick={() => { setCountAttempt((value) => value + 1); }}>Try again</button></p> : null}
+    {countStatus === 'error' ? <p className="supporting-copy" data-testid="home-inbox-count-error">Inbox count unavailable. <button type="button" className="text-link" data-testid="home-inbox-count-retry" onClick={() => { setCountAttempt((value) => value + 1); }}>Try again</button></p> : null}
     {countStatus === 'ready' ? <p className="supporting-copy"><Link to="/tasks?inboxOnly=true">View Inbox</Link> or <Link to="/tasks">All tasks</Link></p> : <p className="supporting-copy"><Link to="/tasks">All tasks</Link></p>}
     <form className="home-inbox-capture-form" onSubmit={(event) => { void submit(event); }} noValidate>
       <div className="min-w-0 flex-1">

@@ -16,6 +16,13 @@ const api = vi.hoisted(() => ({
   decideHomeConsent: vi.fn(),
   getHomeConversation: vi.fn(),
   getHomeTurn: vi.fn(),
+  acceptHomeProposal: vi.fn(),
+  cancelHomeProposal: vi.fn(),
+  editHomeProposalItem: vi.fn(),
+  getHomeProposal: vi.fn(),
+  listHomeProposals: vi.fn(),
+  removeHomeProposalItem: vi.fn(),
+  resumeHomeProposal: vi.fn(),
   listHomeConversations: vi.fn(),
   listHomeEvents: vi.fn(),
   listHomeMessages: vi.fn(),
@@ -127,6 +134,8 @@ beforeEach(() => {
   api.decideHomeConsent.mockReset().mockResolvedValue({ turn: { ...pendingTurn, status: 'cancelled' }, disclosureId: DISCLOSURE_ID, decision: 'deny', execution: { state: 'cancelled' }, replayed: false });
   api.getHomeConversation.mockReset().mockResolvedValue(conversation);
   api.getHomeTurn.mockReset().mockImplementation(async (_conversationId: string, turnId: string) => ({ ...pendingTurn, id: turnId, status: 'running' }));
+  api.listHomeProposals.mockReset().mockResolvedValue({ proposals: [], nextCursor: null });
+  api.getHomeProposal.mockReset();
   api.listHomeConversations.mockReset().mockResolvedValue({ conversations: [], nextCursor: null });
   api.listHomeEvents.mockReset().mockResolvedValue({ events: [], nextAfterSequence: null, lastEventSequence: 0 });
   api.listHomeMessages.mockReset().mockResolvedValue({ messages: [], nextBeforeSequence: null });
