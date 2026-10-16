@@ -4,6 +4,7 @@ import request from 'supertest';
 
 import { HomeConversationCursorInvalidError, HomeConversationDomainError } from '@/modules/home-assistant/domain/home-conversation-errors';
 import type { HomeConversationEventPage, HomeMessage, HomeTurn, HomeTurnSubmission } from '@/modules/home-assistant/domain/home-conversation-types';
+import type { HomeConsentDecisionResponse } from '@/modules/home-assistant/use-cases/decide-home-consent';
 import { createHomeConversationRouter, type HomeConversationRouterDependencies } from '@/modules/home-assistant/controllers/home-conversation-router';
 import { AppError } from '@/shared/errors/app-error';
 
@@ -28,9 +29,21 @@ function buildApp(): {
   readonly submitTurn: jest.Mock;
   readonly listEvents: jest.Mock;
   readonly listConversations: jest.Mock;
+  readonly decideConsent: jest.Mock;
 } {
   const submitTurn = jest.fn(async (): Promise<HomeTurnSubmission> => ({ turn, message, replayed: false }));
   const listConversations = jest.fn();
+  const decideConsent = jest.fn(async (): Promise<HomeConsentDecisionResponse> => ({
+    turn: { ...turn, status: 'running' },
+    disclosure: {
+      disclosureId: '55555555-5555-4555-8555-555555555555', ownerId: OWNER_ID, conversationId: CONVERSATION_ID, turnId: TURN_ID,
+      phase: 'initial', providerProfile: 'nvidia-hosted-nim', providerName: 'NVIDIA hosted NIM', model: 'test-model', scope: { kind: 'home' },
+      categories: ['current_message'], itemCount: 1, byteLimit: 262144, runtimeRequestId: null, resultFingerprint: null, decision: 'allow', deliveryState: 'accepted',
+      createdAt: NOW, updatedAt: NOW
+    },
+    replayed: false,
+    execution: { state: 'running' }
+  }));
   const listEvents = jest.fn(async (): Promise<HomeConversationEventPage> => ({
     events: [{ sequence: 2, type: 'message.appended', turnId: TURN_ID, entityId: MESSAGE_ID, payload: { role: 'user', messageSequence: 1 }, createdAt: NOW }],
     nextAfterSequence: null,
@@ -45,6 +58,7 @@ function buildApp(): {
     getConversation: { execute: jest.fn() },
     listTurns: { execute: jest.fn() },
     submitTurn: { execute: submitTurn },
+    decideConsent: { execute: decideConsent },
     getTurn: { execute: jest.fn() },
     cancelTurn: { execute: jest.fn() },
     listMessages: { execute: jest.fn() },
@@ -64,7 +78,7 @@ function buildApp(): {
     const appError = error instanceof AppError ? error : new AppError('INTERNAL_ERROR', 500, 'Internal server error.');
     response.status(appError.statusCode).json({ data: null, error: { code: appError.code, message: appError.message } });
   });
-  return { app, submitTurn, listEvents, listConversations };
+  return { app, submitTurn, listEvents, listConversations, decideConsent };
 }
 
 function mutationHeaders(): Record<string, string> {
@@ -111,6 +125,78 @@ describe('Home conversation routes', () => {
 
     expect(invalid.status).toBe(400);
     expect(submitTurn).not.toHaveBeenCalled();
+  });
+
+  it('returns the initial disclosure before provider context is sent', async () => {
+    const { app, submitTurn } = buildApp();
+    submitTurn.mockResolvedValueOnce({
+      turn: { ...turn, status: 'pending' },
+      message,
+      execution: {
+        state: 'consent_required',
+        disclosure: {
+          disclosureId: '55555555-5555-4555-8555-555555555555',
+          phase: 'initial',
+          provider: { profile: 'nvidia-hosted-nim', name: 'NVIDIA hosted NIM', model: 'test-model' },
+          scope: { kind: 'home' },
+          categories: ['current_message'],
+          itemCount: 1,
+          byteLimit: 262144
+        }
+      },
+      disclosure: {
+        disclosureId: '55555555-5555-4555-8555-555555555555', ownerId: OWNER_ID, conversationId: CONVERSATION_ID, turnId: TURN_ID,
+        phase: 'initial', providerProfile: 'nvidia-hosted-nim', providerName: 'NVIDIA hosted NIM', model: 'test-model', scope: { kind: 'home' },
+        categories: ['current_message'], itemCount: 1, byteLimit: 262144, runtimeRequestId: null, resultFingerprint: null, decision: null, deliveryState: 'awaiting_decision',
+        createdAt: NOW, updatedAt: NOW
+      },
+      replayed: false
+    });
+
+    const response = await request(app)
+      .post(`/api/v1/home/conversations/${CONVERSATION_ID}/turns`)
+      .set(mutationHeaders())
+      .send({ message: 'Make a plan.' });
+
+    expect(response.status).toBe(201);
+    expect(response.body.data).toMatchObject({
+      turn: { id: TURN_ID, status: 'pending' },
+      execution: {
+        state: 'consent_required',
+        disclosure: {
+          disclosureId: '55555555-5555-4555-8555-555555555555',
+          phase: 'initial',
+          provider: { profile: 'nvidia-hosted-nim', model: 'test-model' },
+          categories: ['current_message'],
+          itemCount: 1,
+          byteLimit: 262144
+        }
+      },
+      replayed: false
+    });
+    expect(response.body.data.execution).not.toHaveProperty('prompt');
+    expect(submitTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it('records one owner-scoped consent decision behind origin and CSRF checks', async () => {
+    const { app, decideConsent } = buildApp();
+    const response = await request(app)
+      .post(`/api/v1/home/conversations/${CONVERSATION_ID}/turns/${TURN_ID}/consent-decisions`)
+      .set(mutationHeaders())
+      .send({ disclosureId: '55555555-5555-4555-8555-555555555555', decision: 'allow' });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({
+      turn: { id: TURN_ID, status: 'running' },
+      disclosureId: '55555555-5555-4555-8555-555555555555',
+      decision: 'allow',
+      execution: { state: 'running' },
+      replayed: false
+    });
+    expect(decideConsent).toHaveBeenCalledWith({
+      ownerId: OWNER_ID, conversationId: CONVERSATION_ID, turnId: TURN_ID,
+      disclosureId: '55555555-5555-4555-8555-555555555555', decision: 'allow'
+    });
   });
 
   it('returns a validation response for an invalid activity cursor', async () => {

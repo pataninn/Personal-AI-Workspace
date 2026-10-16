@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { HomeConversationNotFoundError, HomeTurnNotFoundError } from '@/modules/home-assistant/domain/home-conversation-errors';
 import type { HomeConversation, HomeConversationEvent, HomeMessage, HomeTurn, HomeTurnSubmission } from '@/modules/home-assistant/domain/home-conversation-types';
+import type { HomeConsentDecisionResponse, DecideHomeConsentUseCase } from '@/modules/home-assistant/use-cases/decide-home-consent';
 import type { CreateHomeConversationUseCase } from '@/modules/home-assistant/use-cases/create-home-conversation';
 import type { GetHomeConversationUseCase } from '@/modules/home-assistant/use-cases/get-home-conversation';
 import type { ListHomeConversationsUseCase } from '@/modules/home-assistant/use-cases/list-home-conversations';
@@ -27,6 +28,7 @@ const createConversationBody = z.object({
   title: z.string().min(1).max(160)
 }).strict();
 const submitTurnBody = z.object({ message: z.string().min(1).max(20000) }).strict();
+const consentDecisionBody = z.object({ disclosureId: UUID, decision: z.enum(['allow', 'deny']) }).strict();
 
 export interface HomeConversationRouterDependencies {
   readonly getSession: GetSessionUseCase;
@@ -35,6 +37,7 @@ export interface HomeConversationRouterDependencies {
   readonly getConversation: GetHomeConversationUseCase;
   readonly listTurns: ListHomeTurnsUseCase;
   readonly submitTurn: SubmitHomeTurnUseCase;
+  readonly decideConsent: DecideHomeConsentUseCase;
   readonly getTurn: GetHomeTurnUseCase;
   readonly cancelTurn: CancelHomeTurnUseCase;
   readonly listMessages: ListHomeMessagesUseCase;
@@ -143,6 +146,18 @@ function serializeEvent(value: HomeConversationEvent): Record<string, unknown> {
   };
 }
 
+function serializeConsentDisclosure(value: NonNullable<HomeTurnSubmission['disclosure']>): Record<string, unknown> {
+  return {
+    disclosureId: value.disclosureId,
+    phase: value.phase,
+    provider: { profile: value.providerProfile, name: value.providerName, model: value.model },
+    scope: value.scope,
+    categories: value.categories,
+    itemCount: value.itemCount,
+    byteLimit: value.byteLimit
+  };
+}
+
 function route(handler: (request: Request, response: Response) => Promise<void>): RequestHandler {
   return (request, response, next): void => {
     void handler(request, response).catch(next);
@@ -201,7 +216,9 @@ export function createHomeConversationRouter(dependencies: HomeConversationRoute
     sendData(response, {
       turn: serializeTurn(result.turn),
       message: serializeMessage(result.message),
-      execution: { state: 'unsupported', code: 'PLANNING_RUNTIME_UNAVAILABLE' },
+      execution: result.execution?.state === 'consent_required' && result.disclosure
+        ? { state: 'consent_required', disclosure: serializeConsentDisclosure(result.disclosure) }
+        : result.execution ?? { state: 'unsupported', code: 'PLANNING_RUNTIME_UNAVAILABLE' },
       replayed: result.replayed
     }, result.replayed ? 200 : 201);
   }));
@@ -218,6 +235,22 @@ export function createHomeConversationRouter(dependencies: HomeConversationRoute
     const turnId = parseUuid(request.params.turnId, new HomeTurnNotFoundError());
     const result = await dependencies.cancelTurn.execute({ ownerId: ownerId(request), conversationId, turnId });
     sendData(response, { turn: serializeTurn(result.resource), replayed: result.replayed });
+  }));
+
+  router.post('/home/conversations/:conversationId/turns/:turnId/consent-decisions', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, route(async (request, response) => {
+    const conversationId = parseUuid(request.params.conversationId, new HomeConversationNotFoundError());
+    const turnId = parseUuid(request.params.turnId, new HomeTurnNotFoundError());
+    const body = parseBody(consentDecisionBody, request.body, 'The Home consent decision is invalid.');
+    const result: HomeConsentDecisionResponse = await dependencies.decideConsent.execute({
+      ownerId: ownerId(request), conversationId, turnId, ...body
+    });
+    sendData(response, {
+      turn: serializeTurn(result.turn),
+      disclosureId: result.disclosure.disclosureId,
+      decision: result.disclosure.decision,
+      execution: result.execution,
+      replayed: result.replayed
+    });
   }));
 
   router.get('/home/conversations/:conversationId/messages', authenticate, route(async (request, response) => {

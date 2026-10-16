@@ -92,7 +92,7 @@ export function toHomeConversation(row: HomeConversationRow): HomeConversation {
 
 /** Maps an allowlisted event row while rejecting unexpected JSON payload shapes. */
 export function toHomeConversationEvent(row: HomeConversationEventRow): HomeConversationEvent {
-  if (!isHomeConversationEventType(row.event_type) || !isScalarRecord(row.payload)) {
+  if (!isHomeConversationEventType(row.event_type) || !isValidEventPayload(row.payload, row.event_type)) {
     throw new HomeConversationEventInvalidError();
   }
   return {
@@ -188,9 +188,34 @@ function isHomeConversationEventType(value: string): value is HomeConversationEv
     || value === 'turn.created'
     || value === 'turn.status_changed'
     || value === 'message.appended'
-    || value === 'action.receipt';
+    || value === 'action.receipt'
+    || value === 'consent.requested'
+    || value === 'consent.decided';
 }
 
-function isScalarRecord(value: unknown): value is HomeConversationEventPayload {
-  return isRecord(value) && Object.values(value).every((entry) => entry === null || ['string', 'number', 'boolean'].includes(typeof entry));
+function isValidEventPayload(value: unknown, eventType: HomeConversationEventType): value is HomeConversationEventPayload {
+  if (!isRecord(value)) return false;
+  const hasOnlyBoundedValues = Object.entries(value).every(([key, entry]) => entry === null
+    || ['string', 'number', 'boolean'].includes(typeof entry)
+    || (eventType.startsWith('consent.') && key === 'categories' && isConsentCategories(entry)));
+  if (!hasOnlyBoundedValues) return false;
+  if (eventType !== 'consent.requested' && eventType !== 'consent.decided') return true;
+  const expectedKeys = eventType === 'consent.requested'
+    ? ['phase', 'categories', 'providerProfile', 'model', 'scopeKind', 'scopeId', 'itemCount', 'byteLimit']
+    : ['phase', 'categories', 'providerProfile', 'model', 'scopeKind', 'scopeId', 'itemCount', 'byteLimit', 'decision'];
+  if (Object.keys(value).length !== expectedKeys.length || !expectedKeys.every((key) => key in value)) return false;
+  return isConsentCategories(value.categories) && (value.phase === 'initial' || value.phase === 'tool_result')
+    && typeof value.providerProfile === 'string' && value.providerProfile.length > 0 && value.providerProfile.length <= 80
+    && typeof value.model === 'string' && value.model.length > 0 && value.model.length <= 160
+    && (value.scopeKind === 'home' || value.scopeKind === 'workspace')
+    && (value.scopeKind === 'home' ? value.scopeId === null : typeof value.scopeId === 'string')
+    && typeof value.itemCount === 'number' && Number.isSafeInteger(value.itemCount) && value.itemCount >= 1 && value.itemCount <= 100000
+    && typeof value.byteLimit === 'number' && Number.isSafeInteger(value.byteLimit) && value.byteLimit >= 1 && value.byteLimit <= 262144
+    && (eventType === 'consent.requested' || value.decision === 'allow' || value.decision === 'deny');
+}
+
+function isConsentCategories(value: unknown): value is readonly string[] {
+  const categories = ['current_message', 'bounded_home_history', 'task_metadata', 'workspace_metadata'];
+  return Array.isArray(value) && value.length >= 1 && value.length <= 4
+    && value.every((item) => typeof item === 'string' && categories.includes(item));
 }

@@ -3,6 +3,11 @@ import type {
   HomeConversationEventPage,
   HomeConversationPage,
   HomeConversationScope,
+  HomeConsentDecision,
+  HomeConsentDecisionResult,
+  HomeConsentDisclosureDraft,
+  HomeConsentDisclosureResult,
+  HomeConsentDisclosureRecord,
   HomeMessage,
   HomeMessagePage,
   HomeMessageRole,
@@ -10,6 +15,7 @@ import type {
   HomeTurnPage,
   HomeTurnSubmission,
   HomeTurnStatus,
+  HomeToolResultDisclosureDraft,
   PersistedHomeResource
 } from '@/modules/home-assistant/domain/home-conversation-types';
 
@@ -42,6 +48,7 @@ export interface SubmitHomeTurnInput {
   readonly requestFingerprint: string;
   readonly message: string;
   readonly initialStatus: HomeTurnStatus;
+  readonly initialDisclosure?: HomeConsentDisclosureDraft;
 }
 
 export interface ListHomeTurnsInput {
@@ -56,6 +63,14 @@ export interface UpdateHomeTurnStatusInput {
   readonly conversationId: string;
   readonly turnId: string;
   readonly status: HomeTurnStatus;
+}
+
+export interface CompleteHomeTurnWithAssistantInput {
+  readonly ownerId: string;
+  readonly conversationId: string;
+  readonly turnId: string;
+  readonly content: string;
+  readonly status: 'completed' | 'partial';
 }
 
 export interface AppendHomeMessageInput {
@@ -73,6 +88,7 @@ export interface ListHomeMessagesInput {
   readonly conversationId: string;
   readonly limit: number;
   readonly beforeSequence?: number;
+  readonly transcriptOnly?: boolean;
 }
 
 export interface CancelHomeTurnInput {
@@ -86,6 +102,37 @@ export interface ListHomeEventsInput {
   readonly conversationId: string;
   readonly afterSequence: number;
   readonly limit: number;
+}
+
+export interface DecideHomeConsentInput {
+  readonly ownerId: string;
+  readonly conversationId: string;
+  readonly turnId: string;
+  readonly disclosureId: string;
+  readonly decision: HomeConsentDecision;
+}
+
+export interface UpdateHomeConsentDeliveryInput {
+  readonly ownerId: string;
+  readonly conversationId: string;
+  readonly turnId: string;
+  readonly disclosureId: string;
+  readonly deliveryState: 'accepted' | 'unavailable' | 'unknown';
+}
+
+export interface CreateHomeToolResultDisclosureInput {
+  readonly ownerId: string;
+  readonly conversationId: string;
+  readonly turnId: string;
+  readonly draft: HomeToolResultDisclosureDraft;
+}
+
+export interface UpdateHomeToolResultDeliveryInput {
+  readonly ownerId: string;
+  readonly conversationId: string;
+  readonly turnId: string;
+  readonly disclosureId: string;
+  readonly deliveryState: 'accepted' | 'unknown';
 }
 
 /** Persistence contract for owner-scoped Home history. */
@@ -105,11 +152,32 @@ export interface IHomeConversationRepository {
   /** Atomically creates/replays a turn, its initial user message, and their replay events. */
   submitTurn(input: SubmitHomeTurnInput): Promise<HomeTurnSubmission>;
 
+  /** Applies one owner-scoped decision and its event under the conversation lock. */
+  decideConsent(input: DecideHomeConsentInput): Promise<HomeConsentDecisionResult | null>;
+
+  /** Creates one bounded pending disclosure for a typed runtime result without persisting result data. */
+  createToolResultDisclosure(input: CreateHomeToolResultDisclosureInput): Promise<HomeConsentDisclosureResult | null>;
+
+  /** Records bridge acceptance/uncertainty together with the corresponding turn transition. */
+  updateConsentDelivery(input: UpdateHomeConsentDeliveryInput): Promise<HomeTurn | null>;
+
+  /** Marks the dynamic result exchange accepted or uncertain; uncertainty makes an active turn unknown. */
+  updateToolResultDelivery(input: UpdateHomeToolResultDeliveryInput): Promise<HomeTurn | null>;
+
+  /** Rechecks a persisted one-turn disclosure before provider or ACP egress. */
+  findConsentDisclosure(ownerId: string, conversationId: string, turnId: string, disclosureId: string): Promise<HomeConsentDisclosureRecord | null>;
+
+  /** Reads only the current turn's user message for the initial provider prompt. */
+  findUserMessageForTurn(ownerId: string, conversationId: string, turnId: string): Promise<HomeMessage | null>;
+
   /** Lists a conversation's turns in sequence order. */
   listTurnsForOwner(input: ListHomeTurnsInput): Promise<HomeTurnPage | null>;
 
   /** Updates a turn that belongs to the supplied owner and conversation. */
   updateTurnStatus(input: UpdateHomeTurnStatusInput): Promise<HomeTurn | null>;
+
+  /** Commits the bounded assistant reply and terminal turn status only while the turn is active. */
+  completeTurnWithAssistant(input: CompleteHomeTurnWithAssistantInput): Promise<HomeTurn | null>;
 
   /** Persists cancellation intent idempotently before the runtime is signalled. */
   cancelTurn(input: CancelHomeTurnInput): Promise<PersistedHomeResource<HomeTurn> | null>;

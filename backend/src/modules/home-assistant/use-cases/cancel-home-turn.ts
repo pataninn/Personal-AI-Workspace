@@ -1,14 +1,29 @@
 import { HomeTurnNotFoundError } from '@/modules/home-assistant/domain/home-conversation-errors';
 import type { HomeTurn, PersistedHomeResource } from '@/modules/home-assistant/domain/home-conversation-types';
 import type { IHomeConversationRepository } from '@/modules/home-assistant/repositories/home-conversation-repository';
+import type { IHomePlanningRuntime } from '@/modules/home-assistant/repositories/home-planning-runtime';
 
 /** Persists cancellation intent under the conversation lock before a runtime can be signalled. */
 export class CancelHomeTurnUseCase {
-  public constructor(private readonly conversations: IHomeConversationRepository) {}
+  public constructor(private readonly conversations: IHomeConversationRepository, private readonly runtime?: IHomePlanningRuntime) {}
 
   public async execute(input: { readonly ownerId: string; readonly conversationId: string; readonly turnId: string }): Promise<PersistedHomeResource<HomeTurn>> {
-    const result = await this.conversations.cancelTurn(input);
+    let result = await this.conversations.cancelTurn(input);
     if (!result) throw new HomeTurnNotFoundError();
+    if (!result.replayed && result.resource.status === 'cancel_requested') {
+      let confirmed = false;
+      try {
+        confirmed = (await this.runtime?.cancel(input.turnId))?.outcome === 'confirmed';
+      } catch {
+        confirmed = false;
+      }
+      const resource = await this.conversations.updateTurnStatus({
+        ...input,
+        status: confirmed ? 'cancelled' : 'unknown'
+      });
+      if (!resource) throw new HomeTurnNotFoundError();
+      result = { resource, replayed: false };
+    }
     return result;
   }
 }

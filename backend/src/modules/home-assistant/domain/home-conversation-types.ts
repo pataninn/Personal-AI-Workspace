@@ -39,8 +39,8 @@ export function canTransitionHomeTurn(from: HomeTurnStatus, to: HomeTurnStatus):
     return true;
   }
   const allowed: Readonly<Record<HomeTurnStatus, readonly HomeTurnStatus[]>> = {
-    pending: ['running', 'failed', 'cancelled', 'unknown', 'unsupported'],
-    running: ['cancel_requested', 'completed', 'partial', 'failed', 'unknown'],
+    pending: ['running', 'cancel_requested', 'failed', 'cancelled', 'unknown', 'unsupported'],
+    running: ['cancel_requested', 'completed', 'partial', 'failed', 'cancelled', 'unknown'],
     cancel_requested: ['cancelled', 'unknown'],
     completed: [],
     partial: [],
@@ -88,10 +88,54 @@ export type HomeConversationEventType =
   | 'turn.created'
   | 'turn.status_changed'
   | 'message.appended'
-  | 'action.receipt';
+  | 'action.receipt'
+  | 'consent.requested'
+  | 'consent.decided';
 
-/** Small scalar-only metadata kept in the replay log; transcript text stays in messages. */
-export type HomeConversationEventPayload = Readonly<Record<string, string | number | boolean | null>>;
+/** Small metadata kept in the replay log; transcript text stays in messages. */
+export type HomeConversationEventPayload = Readonly<Record<string, string | number | boolean | null | readonly string[]>>;
+
+export type HomeConsentCategory = 'current_message' | 'bounded_home_history' | 'task_metadata' | 'workspace_metadata';
+export type HomeConsentPhase = 'initial' | 'tool_result';
+export type HomeConsentDecision = 'allow' | 'deny';
+export type HomeConsentDeliveryState = 'awaiting_decision' | 'starting' | 'accepted' | 'unavailable' | 'unknown' | 'not_required';
+
+/** Safe consent facts returned to the browser and stored in the Home event feed. */
+export interface HomeConsentDisclosureDescriptor {
+  readonly disclosureId: string;
+  readonly phase: HomeConsentPhase;
+  readonly provider: { readonly profile: string; readonly name: string; readonly model: string };
+  readonly scope: HomeConversationScope;
+  readonly categories: readonly HomeConsentCategory[];
+  readonly itemCount: number;
+  readonly byteLimit: number;
+}
+
+/** Persisted disclosure state; no prompt, tool arguments, or result contents are stored here. */
+export interface HomeConsentDisclosureRecord {
+  readonly disclosureId: string;
+  readonly ownerId: string;
+  readonly conversationId: string;
+  readonly turnId: string;
+  readonly phase: HomeConsentPhase;
+  readonly providerProfile: string;
+  readonly providerName: string;
+  readonly model: string;
+  readonly scope: HomeConversationScope;
+  readonly categories: readonly HomeConsentCategory[];
+  readonly itemCount: number;
+  readonly byteLimit: number;
+  readonly runtimeRequestId: string | null;
+  readonly resultFingerprint: string | null;
+  readonly decision: HomeConsentDecision | null;
+  readonly deliveryState: HomeConsentDeliveryState;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+}
+
+export type HomeTurnExecution =
+  | { readonly state: 'consent_required'; readonly disclosure: HomeConsentDisclosureDescriptor }
+  | { readonly state: 'running' | 'resumed' | 'cancelled' | 'unsupported' | 'unknown'; readonly code?: string };
 
 /** A committed lifecycle event ordered by a per-conversation sequence. */
 export interface HomeConversationEvent {
@@ -114,6 +158,36 @@ export interface HomeConversationEventPage {
 export interface HomeTurnSubmission {
   readonly turn: HomeTurn;
   readonly message: HomeMessage;
+  readonly execution?: HomeTurnExecution;
+  readonly disclosure?: HomeConsentDisclosureRecord;
+  readonly replayed: boolean;
+}
+
+/** Safe initial consent metadata used when a pending turn is persisted. */
+export interface HomeConsentDisclosureDraft {
+  readonly disclosureId: string;
+  readonly phase: 'initial';
+  readonly provider: { readonly profile: string; readonly name: string; readonly model: string };
+  readonly scope: HomeConversationScope;
+  readonly categories: readonly HomeConsentCategory[];
+  readonly itemCount: number;
+  readonly byteLimit: number;
+}
+
+export interface HomeToolResultDisclosureDraft extends Omit<HomeConsentDisclosureDraft, 'phase'> {
+  readonly phase: 'tool_result';
+  readonly runtimeRequestId: string;
+  readonly resultFingerprint: string;
+}
+
+export interface HomeConsentDisclosureResult {
+  readonly disclosure: HomeConsentDisclosureRecord;
+  readonly replayed: boolean;
+}
+
+export interface HomeConsentDecisionResult {
+  readonly turn: HomeTurn;
+  readonly disclosure: HomeConsentDisclosureRecord;
   readonly replayed: boolean;
 }
 

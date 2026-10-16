@@ -22,6 +22,8 @@ import { GetHomeConversationUseCase } from '@/modules/home-assistant/use-cases/g
 import { ListHomeConversationsUseCase } from '@/modules/home-assistant/use-cases/list-home-conversations';
 import { ListHomeTurnsUseCase } from '@/modules/home-assistant/use-cases/list-home-turns';
 import { SubmitHomeTurnUseCase } from '@/modules/home-assistant/use-cases/submit-home-turn';
+import { DecideHomeConsentUseCase } from '@/modules/home-assistant/use-cases/decide-home-consent';
+import { HomeToolResultConsentGate } from '@/modules/home-assistant/use-cases/home-tool-result-consent-gate';
 import { GetHomeTurnUseCase } from '@/modules/home-assistant/use-cases/get-home-turn';
 import { CancelHomeTurnUseCase } from '@/modules/home-assistant/use-cases/cancel-home-turn';
 import { ListHomeMessagesUseCase } from '@/modules/home-assistant/use-cases/list-home-messages';
@@ -35,10 +37,12 @@ import { NvidiaHostedNimProvider } from '@/infrastructure/ai-provider/nvidia-hos
 import { DirectProviderAgentRuntime } from '@/infrastructure/ai-provider/direct-provider-agent-runtime';
 import { HermesAgentRuntime } from '@/infrastructure/hermes/hermes-agent-runtime';
 import { HermesBridgeClient } from '@/infrastructure/hermes/hermes-bridge-client';
+import { HermesHomePlanningRuntime } from '@/infrastructure/hermes/hermes-home-planning-runtime';
 import { ApprovedContextReader } from '@/infrastructure/hermes/approved-context-reader';
 import { HermesProjectTaskTools } from '@/infrastructure/hermes/hermes-project-task-tools';
 import type { IModelProvider } from '@/modules/ai-runs/repositories/model-provider';
 import type { IAgentRuntime } from '@/modules/ai-runs/repositories/agent-runtime';
+import type { HomePlanningProvider } from '@/modules/home-assistant/repositories/home-planning-runtime';
 import { OpenShellGatewayClient } from '@/infrastructure/sandbox/openshell-gateway-client';
 import { FakeAgentRuntime } from '@/infrastructure/sandbox/fake-agent-runtime';
 import { UnsupportedOpenShellAgentRuntime } from '@/infrastructure/sandbox/unsupported-openshell-agent-runtime';
@@ -155,6 +159,11 @@ export async function createApplication(
     });
     const taskTools = new HermesProjectTaskTools({ runs: aiRunRepository, list: new ListProjectTasksUseCase(projectRepository, projectTaskRepository), create: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases), update: new UpdateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases) });
     const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository, logger, taskTools);
+    const homePlanningProvider: HomePlanningProvider = { profile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint };
+    const homePlanningRuntime = config.agentRuntimeMode === 'hermes'
+      ? new HermesHomePlanningRuntime(createHermesBridge(config), homePlanningProvider)
+      : undefined;
+    const homeToolResultConsentGate = new HomeToolResultConsentGate(homeConversationRepository, homePlanningProvider);
     const stagingGateway = config.agentRuntimeMode === 'openshell'
       ? new LocalStagingGateway({ stagingRoot: config.stagingRoot })
       : undefined;
@@ -230,9 +239,14 @@ export async function createApplication(
           createConversation: new CreateHomeConversationUseCase(homeConversationRepository),
           getConversation: new GetHomeConversationUseCase(homeConversationRepository),
           listTurns: new ListHomeTurnsUseCase(homeConversationRepository),
-          submitTurn: new SubmitHomeTurnUseCase(homeConversationRepository),
-          getTurn: new GetHomeTurnUseCase(homeConversationRepository),
-          cancelTurn: new CancelHomeTurnUseCase(homeConversationRepository),
+          submitTurn: new SubmitHomeTurnUseCase(homeConversationRepository, {
+            mode: config.agentRuntimeMode,
+            provider: homePlanningProvider,
+            ...(homePlanningRuntime ? { runtime: homePlanningRuntime } : {})
+          }),
+          decideConsent: new DecideHomeConsentUseCase(homeConversationRepository, homePlanningRuntime, homePlanningProvider, homeToolResultConsentGate),
+          getTurn: new GetHomeTurnUseCase(homeConversationRepository, homePlanningRuntime, homeToolResultConsentGate),
+          cancelTurn: new CancelHomeTurnUseCase(homeConversationRepository, homePlanningRuntime),
           listMessages: new ListHomeMessagesUseCase(homeConversationRepository),
           listEvents: new ListHomeEventsUseCase(homeConversationRepository),
           appOrigin: config.appOrigin,

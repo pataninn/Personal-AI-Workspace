@@ -10,9 +10,11 @@ from pathlib import Path
 
 from common import BridgeError, CLI, MAX_BODY, STATE, profile, run_cli, run_id, sandbox_name
 from lifecycle import Run
+from planning_lifecycle import MAX_PLANNING_PROMPT, PlanningRun
 from provider import assert_route
 
 RUNS = {}
+PLANNING_RUNS = {}
 LOCK = threading.Lock()
 
 
@@ -28,6 +30,9 @@ def recover_runs():
         run.error = 'The bridge restarted. This run was interrupted; no changes can be exported.'
         run.finished.set()
         RUNS[identity] = run
+    for ledger in (STATE / 'planning-runs').glob('pai-h-*/ledger.json'):
+        run = PlanningRun.recover(ledger)
+        PLANNING_RUNS[run.identity] = run
 
 
 def dispatch(body):
@@ -39,6 +44,8 @@ def dispatch(body):
         run_cli(['whoami', '--output', 'json'])
         assert_route(p, body.get('payload', {}))
         return {'ready': True, 'profile': p}
+    if isinstance(operation, str) and operation.startswith('planning-'):
+        return dispatch_planning(operation, body)
     identity = run_id(body.get('runId'))
     capability = body.get('capability', '')
     if not isinstance(capability, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', capability):
@@ -47,9 +54,9 @@ def dispatch(body):
     with LOCK:
         run = RUNS.get(identity)
         if operation == 'create':
-            if run:
+            if run or identity in PLANNING_RUNS:
                 raise BridgeError('This run was already created')
-            if len(RUNS) >= 4:
+            if len(RUNS) + len(PLANNING_RUNS) >= 4:
                 raise BridgeError('The local Hermes concurrency limit was reached')
             assert_route(profile(), payload)
             if not isinstance(payload.get('prompt'), str) or len(payload['prompt'].encode()) > 256 * 1024:
@@ -84,6 +91,99 @@ def dispatch(body):
             RUNS.pop(identity, None)
         return {'deleted': True}
     raise BridgeError('Unsupported bridge operation')
+
+
+def dispatch_planning(operation, body):
+    identity = run_id(body.get('runId'))
+    capability = body.get('capability', '')
+    if not isinstance(capability, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', capability):
+        raise BridgeError('Invalid planning run capability')
+    payload = body.get('payload', {})
+    if not isinstance(payload, dict):
+        raise BridgeError('Invalid planning operation payload')
+    with LOCK:
+        run = PLANNING_RUNS.get(identity)
+        if operation == 'planning-create':
+            if run:
+                if not hmac.compare_digest(run.capability, capability):
+                    raise BridgeError('The planning run capability does not match')
+                if run.status == 'unknown':
+                    return {'status': 'unknown', 'code': 'PLANNING_RUNTIME_OUTCOME_UNKNOWN'}
+                if operation == 'planning-create' and run.payload != payload:
+                    raise BridgeError('This planning run identity already has a different request')
+                return {'status': run.status}
+            if identity in RUNS:
+                raise BridgeError('This identity already belongs to a project run')
+            if len(RUNS) + len(PLANNING_RUNS) >= 4:
+                raise BridgeError('The local Hermes concurrency limit was reached')
+            if set(payload) != {'prompt', 'providerProfile', 'model', 'endpoint'}:
+                raise BridgeError('Invalid planning create payload')
+            prompt = payload.get('prompt')
+            if not isinstance(prompt, str):
+                raise BridgeError('Invalid planning prompt')
+            try:
+                prompt_size = len(prompt.encode('utf-8', errors='strict'))
+            except UnicodeEncodeError:
+                raise BridgeError('Invalid planning prompt') from None
+            if not prompt or prompt_size > MAX_PLANNING_PROMPT:
+                raise BridgeError('Invalid planning prompt')
+            assert_route(profile(), payload)
+            run = PlanningRun(identity, capability, payload)
+            PLANNING_RUNS[identity] = run
+            try:
+                threading.Thread(target=run.work, daemon=True).start()
+            except Exception:
+                PLANNING_RUNS.pop(identity, None)
+                raise BridgeError('The planning run could not be started') from None
+            return {'status': 'preparing'}
+        if run and not hmac.compare_digest(run.capability, capability):
+            raise BridgeError('The planning run capability does not match')
+    if not run:
+        if operation == 'planning-poll':
+            if set(payload) != {'cursor'}:
+                raise BridgeError('Invalid planning event cursor')
+            cursor = payload.get('cursor')
+            if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+                raise BridgeError('Invalid planning event cursor')
+            return {'status': 'unknown', 'code': 'PLANNING_RUNTIME_OUTCOME_UNKNOWN', 'events': [], 'hasMore': False, 'stopReason': None}
+        if operation == 'planning-delete':
+            if payload:
+                raise BridgeError('Invalid planning delete payload')
+            return {'deleted': True}
+        if operation == 'planning-cancel':
+            if payload:
+                raise BridgeError('Invalid planning cancel payload')
+            return {'outcome': 'unknown'}
+        raise BridgeError('The planning run is not available')
+    if operation == 'planning-poll':
+        if set(payload) != {'cursor'}:
+            raise BridgeError('Invalid planning event cursor')
+        return run.poll(payload.get('cursor', 0))
+    if operation == 'planning-home-tool-result':
+        if (set(payload) != {'requestId', 'result'} or not isinstance(payload.get('requestId'), str)
+                or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', payload['requestId'])):
+            raise BridgeError('Invalid planning tool result request')
+        if len(payload['requestId']) > 128 or run.status != 'running' or not run.acp or run.cancelled.is_set():
+            raise BridgeError('The planning run cannot accept this tool result')
+        run.acp.home_tool_result(payload['requestId'], payload['result'])
+        return {'accepted': True}
+    if operation == 'planning-cancel':
+        if payload:
+            raise BridgeError('Invalid planning cancel payload')
+        run.close()
+        with LOCK:
+            if PLANNING_RUNS.get(identity) is run:
+                PLANNING_RUNS.pop(identity, None)
+        return {'outcome': 'confirmed'}
+    if operation == 'planning-delete':
+        if payload:
+            raise BridgeError('Invalid planning delete payload')
+        run.delete()
+        with LOCK:
+            if PLANNING_RUNS.get(identity) is run:
+                PLANNING_RUNS.pop(identity, None)
+        return {'deleted': True}
+    raise BridgeError('Unsupported planning bridge operation')
 
 
 class Handler(BaseHTTPRequestHandler):

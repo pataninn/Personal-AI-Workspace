@@ -38,6 +38,23 @@ describe('egress redaction', () => {
     expect(redacted).not.toContain('third-value');
   });
 
+  it('redacts authorization headers, cookie headers, session identifiers, and standalone bearer values', () => {
+    const value = 'Authorization: Bearer eyJhbGciOiJub25lIn0.secret\nCookie: session_id=cookie-secret; theme=dark\nsessionID=another-secret Bearer raw-token';
+
+    const redacted = redactEgressText(value);
+
+    expect(redacted).toContain('Authorization: Bearer [REDACTED]');
+    expect(redacted).toContain('Cookie: [REDACTED]');
+    expect(redacted).toContain('sessionID=[REDACTED]');
+    expect(redacted).toContain('Bearer [REDACTED]');
+    expect(redacted).not.toContain('eyJhbGci');
+    expect(redacted).not.toContain('cookie-secret');
+    expect(redacted).not.toContain('another-secret');
+    expect(redacted).not.toContain('raw-token');
+    expect(containsPotentialSecret(value)).toBe(true);
+    expect(redactEgressText('A Bearer token is used for authorization.')).toBe('A Bearer token is used for authorization.');
+  });
+
   it('keeps project-relative paths in ordinary requests', () => {
     expect(containsPotentialSecret('Please edit src/app.ts')).toBe(false);
     expect(redactEgressText('Please edit src/app.ts')).toBe('Please edit src/app.ts');

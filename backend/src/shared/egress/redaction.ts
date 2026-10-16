@@ -1,6 +1,9 @@
 import { containsProposalCredential } from '@/shared/egress/proposal-credential-check';
 
-const SECRET_VALUE_PATTERN = /((?:api[_-]?key|access[_-]?(?:key|token)(?:[_-]?id)?|refresh[_-]?token|password|passwd|secret(?:[_-]?key)?|credential|token|private[_-]?key|(?:gcp|google)[_-]?service[_-]?account(?:[_-]?key)?|service[_-]?account(?:[_-]?key)?|(?:aws|azure|nvidia)[_-]?(?:access[_-]?)?(?:key|token|secret))\s*[:=]\s*["']?)([^\s"'`,;}]+)/giu;
+const SECRET_VALUE_PATTERN = /((?:api[_-]?key|access[_-]?(?:key|token)(?:[_-]?id)?|refresh[_-]?token|password|passwd|secret(?:[_-]?key)?|credential|token|cookie|set[_-]?cookie|session[_-]?(?:id|token|key|cookie|secret|credential)|private[_-]?key|(?:gcp|google)[_-]?service[_-]?account(?:[_-]?key)?|service[_-]?account(?:[_-]?key)?|(?:aws|azure|nvidia)[_-]?(?:access[_-]?)?(?:key|token|secret))\s*[:=]\s*["']?)([^\s"'`,;}]+)/giu;
+const AUTHORIZATION_HEADER_PATTERN = /(\b(?:proxy-)?authorization\s*:\s*)(?:(bearer|basic)\s+)?[^\s,;"']+/giu;
+const COOKIE_HEADER_PATTERN = /(\b(?:set-cookie|cookie)\s*:\s*)[^\r\n]*/giu;
+const BEARER_TOKEN_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/-]{8,}=*/giu;
 const ENV_VALUE_PATTERN = /((?:^|\s)[A-Z_][A-Z0-9_]*\s*=\s*["']?)([^\s"'`,;}]+)/gu;
 const GENERIC_ENV_VALUE_PATTERN = /((?:^|\s)[A-Za-z_][A-Za-z0-9_]*\s*=\s*["']?)([^\s"'`,;}]+)/gu;
 const ABSOLUTE_PATH_PATTERN = /(?<![A-Za-z0-9])(?:[a-z]:[\\/]|file:\/{2,3})[^\s"'`,;}<>]+|(?<![A-Za-z0-9._<:*\/-])\/{1,2}(?![\s/*])[^\s"'`,;}<>]+/giu;
@@ -10,7 +13,12 @@ export function redactEgressText(text: string): string {
   return text.replace(PRIVATE_KEY_PATTERN, (privateKey) => {
     const lineBreaks = privateKey.match(/\r\n|\r|\n/gu)?.join('') ?? '';
     return `[REDACTED PRIVATE KEY]${lineBreaks}`;
-  }).replace(SECRET_VALUE_PATTERN, '$1[REDACTED]').replace(ENV_VALUE_PATTERN, '$1[REDACTED]').replace(ABSOLUTE_PATH_PATTERN, redactAbsolutePath);
+  }).replace(AUTHORIZATION_HEADER_PATTERN, (_match, prefix: string, scheme?: string) => `${prefix}${scheme ? `${scheme} ` : ''}[REDACTED]`)
+    .replace(COOKIE_HEADER_PATTERN, '$1[REDACTED]')
+    .replace(BEARER_TOKEN_PATTERN, 'Bearer [REDACTED]')
+    .replace(SECRET_VALUE_PATTERN, '$1[REDACTED]')
+    .replace(ENV_VALUE_PATTERN, '$1[REDACTED]')
+    .replace(ABSOLUTE_PATH_PATTERN, redactAbsolutePath);
 }
 
 function redactAbsolutePath(value: string, offset: number, source: string): string {

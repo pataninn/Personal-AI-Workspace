@@ -1,14 +1,23 @@
+import { createHash } from 'node:crypto';
 import type { DataSource, QueryRunner } from 'typeorm';
 
 import {
   HomeConversationNotFoundError,
   HomeConversationEventInvalidError,
+  HomeConsentDecisionStaleError,
+  HomeConversationInputInvalidError,
   HomeEventCursorInvalidError,
   HomeTurnNotFoundError,
+  HomeTurnNotActiveError,
   HomeTurnNotCancellableError,
   HomeTurnTransitionInvalidError
 } from '@/modules/home-assistant/domain/home-conversation-errors';
 import type {
+  HomeConsentDecisionResult,
+  HomeConsentDisclosureResult,
+  HomeConsentDisclosureRecord,
+  HomeConsentDisclosureDraft,
+  HomeTurnExecution,
   HomeConversation,
   HomeConversationEventPage,
   HomeConversationPage,
@@ -22,15 +31,20 @@ import type {
 import { canTransitionHomeTurn } from '@/modules/home-assistant/domain/home-conversation-types';
 import type {
   AppendHomeMessageInput,
+  CompleteHomeTurnWithAssistantInput,
   CancelHomeTurnInput,
+  DecideHomeConsentInput,
   CreateHomeConversationInput,
   CreateHomeTurnInput,
+  CreateHomeToolResultDisclosureInput,
   IHomeConversationRepository,
   ListHomeEventsInput,
   ListHomeConversationsInput,
   ListHomeMessagesInput,
   ListHomeTurnsInput,
   SubmitHomeTurnInput,
+  UpdateHomeConsentDeliveryInput,
+  UpdateHomeToolResultDeliveryInput,
   UpdateHomeTurnStatusInput
 } from '@/modules/home-assistant/repositories/home-conversation-repository';
 import {
@@ -54,6 +68,8 @@ import {
   type HomeTurnRow
 } from '@/infrastructure/database/repositories/home-conversation-persistence-mappers';
 import { appendHomeConversationEvent } from '@/infrastructure/database/repositories/home-conversation-event-persistence';
+import { toHomeConsentDisclosure, type HomeConsentDisclosureRow } from '@/infrastructure/database/repositories/home-consent-persistence-mappers';
+import { buildHomePlanningContext, HOME_PLANNING_CONTEXT_LIMITS } from '@/modules/home-assistant/domain/home-planning-context';
 
 interface KeyedRow {
   readonly request_fingerprint: string;
@@ -85,11 +101,95 @@ function hasEventRow(row: HomeConversationEventPageRow): row is HomeConversation
 
 interface HomeMessageKeyedRow extends HomeMessageRow, KeyedRow {}
 
+interface HomePlanningHistoryRow {
+  readonly role: 'user' | 'assistant';
+  readonly content: string;
+}
+
 /** Normalizes TypeORM PostgreSQL UPDATE RETURNING rows and lightweight test adapters. */
 function returnedRows<T>(result: unknown): readonly T[] {
   if (!Array.isArray(result)) return [];
   const rows = Array.isArray(result[0]) ? result[0] : result;
   return rows as readonly T[];
+}
+
+const CONSENT_DISCLOSURE_COLUMNS = `"disclosure_id", "owner_id", "conversation_id", "turn_id", "phase", "provider_profile", "provider_name", "model",
+  "scope_kind", "scope_id", "categories", "item_count", "byte_limit", "runtime_request_id", "result_fingerprint", "decision", "delivery_state", "created_at", "updated_at"`;
+
+function consentEventPayload(disclosure: HomeConsentDisclosureRecord): Readonly<Record<string, string | number | boolean | null | readonly string[]>> {
+  return {
+    phase: disclosure.phase,
+    categories: disclosure.categories,
+    providerProfile: disclosure.providerProfile,
+    model: disclosure.model,
+    scopeKind: disclosure.scope.kind,
+    scopeId: disclosure.scope.kind === 'workspace' ? disclosure.scope.workspaceId : null,
+    itemCount: disclosure.itemCount,
+    byteLimit: disclosure.byteLimit
+  };
+}
+
+function assertToolResultScope(conversation: HomeConversationRow, draft: { readonly scope: HomeConversation['scope'] }): void {
+  if (draft.scope.kind !== conversation.scope
+    || (draft.scope.kind === 'workspace' && draft.scope.workspaceId !== conversation.workspace_id)) {
+    throw new HomeConsentDecisionStaleError();
+  }
+}
+
+function executionForSubmission(turn: HomeTurn, disclosure: HomeConsentDisclosureRecord): HomeTurnExecution {
+  if (turn.status === 'pending' && disclosure.deliveryState === 'awaiting_decision') {
+    return {
+      state: 'consent_required',
+      disclosure: {
+        disclosureId: disclosure.disclosureId,
+        phase: disclosure.phase,
+        provider: { profile: disclosure.providerProfile, name: disclosure.providerName, model: disclosure.model },
+        scope: disclosure.scope,
+        categories: disclosure.categories,
+        itemCount: disclosure.itemCount,
+        byteLimit: disclosure.byteLimit
+      }
+    };
+  }
+  if (turn.status === 'running') return { state: 'running' };
+  return executionForStatus(turn.status);
+}
+
+function executionForStatus(status: HomeTurn['status']): HomeTurnExecution {
+  if (status === 'running') return { state: 'running' };
+  if (status === 'cancelled' || status === 'cancel_requested') return { state: 'cancelled' };
+  if (status === 'unsupported') return { state: 'unsupported', code: 'PLANNING_RUNTIME_UNAVAILABLE' };
+  if (status === 'unknown') return { state: 'unknown', code: 'PLANNING_RUNTIME_OUTCOME_UNKNOWN' };
+  return { state: 'unknown', code: 'PLANNING_RUNTIME_OUTCOME_UNKNOWN' };
+}
+
+function consentDeliveryTurnStatus(current: HomeTurn['status'], delivery: UpdateHomeConsentDeliveryInput['deliveryState']): HomeTurn['status'] | null {
+  if (delivery === 'accepted') return current === 'pending' ? 'running' : null;
+  if (delivery === 'unavailable') {
+    if (current === 'pending') return 'unsupported';
+    if (current === 'cancel_requested') return 'cancelled';
+  }
+  if (delivery === 'unknown' && (current === 'pending' || current === 'cancel_requested')) return 'unknown';
+  return null;
+}
+
+async function boundedInitialDisclosureDraft(
+  queryRunner: QueryRunner,
+  ownerId: string,
+  conversationId: string,
+  currentMessageSequence: number,
+  currentMessage: string,
+  draft: HomeConsentDisclosureDraft
+): Promise<HomeConsentDisclosureDraft> {
+  const rows: readonly HomePlanningHistoryRow[] = await queryRunner.query(
+    `SELECT "role", "content" FROM "home_messages"
+     WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "sequence" < $3
+       AND "role" IN ('user', 'assistant')
+     ORDER BY "sequence" DESC LIMIT $4`,
+    [ownerId, conversationId, currentMessageSequence, HOME_PLANNING_CONTEXT_LIMITS.priorMessages]
+  );
+  const context = buildHomePlanningContext({ currentMessage, priorMessages: [...rows].reverse() });
+  return { ...draft, categories: context.categories, itemCount: context.itemCount };
 }
 
 /** TypeORM adapter for durable Home conversations, turns, and messages. */
@@ -240,7 +340,26 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         const message = messageRows[0];
         if (!message) throw new HomeConversationEventInvalidError();
         assertRequestFingerprint(message.request_fingerprint, input.requestFingerprint, 'message');
-        return { turn: toHomeTurn(existing), message: toHomeMessage(message), replayed: true };
+        const disclosure = await this.findInitialDisclosure(queryRunner, input.ownerId, input.conversationId, existing.id);
+        const turn = toHomeTurn(existing);
+        return {
+          turn,
+          message: toHomeMessage(message),
+          ...(disclosure ? { disclosure, execution: executionForSubmission(turn, disclosure) } : { execution: executionForStatus(turn.status) }),
+          replayed: true
+        };
+      }
+
+      if (input.initialDisclosure) {
+        if (input.initialStatus !== 'pending'
+          || input.initialDisclosure.scope.kind !== conversation.scope
+          || (conversation.scope === 'workspace' && input.initialDisclosure.scope.kind === 'workspace'
+            && input.initialDisclosure.scope.workspaceId !== conversation.workspace_id)) {
+          throw new HomeConversationEventInvalidError();
+        }
+        if (conversation.scope === 'workspace' && conversation.workspace_id) {
+          await assertWorkspaceOwned(queryRunner, input.ownerId, conversation.workspace_id);
+        }
       }
 
       const turnSequenceRows: readonly SequenceRow[] = await queryRunner.query(
@@ -271,6 +390,9 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         [input.ownerId, input.conversationId]
       );
       const messageSequence = Number(messageSequenceRows[0]?.sequence ?? 1);
+      const initialDisclosure = input.initialDisclosure
+        ? await boundedInitialDisclosureDraft(queryRunner, input.ownerId, input.conversationId, messageSequence, input.message, input.initialDisclosure)
+        : null;
       const messageRows: readonly HomeMessageRow[] = await queryRunner.query(
         `INSERT INTO "home_messages" ("owner_id", "conversation_id", "turn_id", "sequence", "role", "content", "request_key", "request_fingerprint")
          VALUES ($1, $2, $3, $4, 'user', $5, $6, $7)
@@ -288,8 +410,213 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         entityId: messageRow.id,
         payload: { messageSequence, role: messageRow.role }
       });
-      return { turn: toHomeTurn(turnRow), message: toHomeMessage(messageRow), replayed: false };
+      const disclosure = initialDisclosure
+        ? await this.insertInitialDisclosure(queryRunner, input.ownerId, input.conversationId, turnRow.id, initialDisclosure)
+        : null;
+      if (disclosure) {
+        await appendHomeConversationEvent(queryRunner, {
+          ownerId: input.ownerId,
+          conversationId: input.conversationId,
+          type: 'consent.requested',
+          turnId: turnRow.id,
+          entityId: disclosure.disclosureId,
+          payload: consentEventPayload(disclosure)
+        });
+      }
+      const turn = toHomeTurn(turnRow);
+      return {
+        turn,
+        message: toHomeMessage(messageRow),
+        ...(disclosure ? { disclosure, execution: executionForSubmission(turn, disclosure) } : { execution: executionForStatus(turn.status) }),
+        replayed: false
+      };
     });
+  }
+
+  /** Locks the turn and disclosure before applying a one-turn consent decision. */
+  public async decideConsent(input: DecideHomeConsentInput): Promise<HomeConsentDecisionResult | null> {
+    return withTransaction(this.dataSource, async (queryRunner) => {
+      if (!await lockConversation(queryRunner, input.ownerId, input.conversationId)) return null;
+      const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
+         FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
+        [input.ownerId, input.conversationId, input.turnId]
+      );
+      const disclosure = await this.findConsentDisclosureInTransaction(queryRunner, input.ownerId, input.conversationId, input.turnId, input.disclosureId, true);
+      const turnRow = turnRows[0];
+      if (!turnRow || !disclosure) return null;
+      if (disclosure.decision !== null) {
+        if (disclosure.decision !== input.decision) throw new HomeConsentDecisionStaleError();
+        return { turn: toHomeTurn(turnRow), disclosure, replayed: true };
+      }
+      const expectedStatus = disclosure.phase === 'initial' ? 'pending' : 'running';
+      if (disclosure.deliveryState !== 'awaiting_decision' || turnRow.status !== expectedStatus) throw new HomeConsentDecisionStaleError();
+
+      const deliveryState = input.decision === 'allow' ? 'starting' : 'not_required';
+      const updatedDisclosureRows = returnedRows<HomeConsentDisclosureRow>(await queryRunner.query(
+        `UPDATE "home_turn_consent_disclosures" SET "decision" = $5, "delivery_state" = $6, "updated_at" = now()
+         WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "turn_id" = $3 AND "disclosure_id" = $4
+         RETURNING ${CONSENT_DISCLOSURE_COLUMNS}`,
+        [input.ownerId, input.conversationId, input.turnId, input.disclosureId, input.decision, deliveryState]
+      ));
+      const updatedDisclosure = updatedDisclosureRows[0];
+      if (!updatedDisclosure) throw new HomeConsentDecisionStaleError();
+      const mappedDisclosure = toHomeConsentDisclosure(updatedDisclosure);
+      await appendHomeConversationEvent(queryRunner, {
+        ownerId: input.ownerId,
+        conversationId: input.conversationId,
+        type: 'consent.decided',
+        turnId: input.turnId,
+        entityId: input.disclosureId,
+        payload: { ...consentEventPayload(mappedDisclosure), decision: input.decision }
+      });
+
+      let currentTurn = toHomeTurn(turnRow);
+      if (input.decision === 'deny' && disclosure.phase === 'initial') {
+        currentTurn = await this.changeTurnStatus(queryRunner, input.ownerId, input.conversationId, turnRow, 'cancelled');
+      }
+      return { turn: currentTurn, disclosure: mappedDisclosure, replayed: false };
+    });
+  }
+
+  /** Persists only safe metadata for a dynamic result and leaves the result in application memory. */
+  public async createToolResultDisclosure(input: CreateHomeToolResultDisclosureInput): Promise<HomeConsentDisclosureResult | null> {
+    return withTransaction(this.dataSource, async (queryRunner) => {
+      const conversation = await lockConversation(queryRunner, input.ownerId, input.conversationId);
+      if (!conversation) return null;
+      const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
+         FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
+        [input.ownerId, input.conversationId, input.turnId]
+      );
+      const turn = turnRows[0];
+      if (!turn || turn.status !== 'running') throw new HomeTurnNotActiveError();
+      assertToolResultScope(conversation, input.draft);
+      const initialDisclosure = await this.findInitialDisclosure(queryRunner, input.ownerId, input.conversationId, input.turnId);
+      if (!initialDisclosure || initialDisclosure.decision !== 'allow' || initialDisclosure.deliveryState !== 'accepted'
+        || initialDisclosure.providerProfile !== input.draft.provider.profile || initialDisclosure.providerName !== input.draft.provider.name
+        || initialDisclosure.model !== input.draft.provider.model) throw new HomeConsentDecisionStaleError();
+
+      const existingRows: readonly HomeConsentDisclosureRow[] = await queryRunner.query(
+        `SELECT ${CONSENT_DISCLOSURE_COLUMNS} FROM "home_turn_consent_disclosures"
+         WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "turn_id" = $3 AND "runtime_request_id" = $4 LIMIT 1 FOR UPDATE`,
+        [input.ownerId, input.conversationId, input.turnId, input.draft.runtimeRequestId]
+      );
+      const existing = existingRows[0];
+      if (existing) {
+        const disclosure = toHomeConsentDisclosure(existing);
+        if (disclosure.resultFingerprint !== input.draft.resultFingerprint
+          || disclosure.providerProfile !== input.draft.provider.profile
+          || disclosure.providerName !== input.draft.provider.name
+          || disclosure.model !== input.draft.provider.model
+          || JSON.stringify(disclosure.scope) !== JSON.stringify(input.draft.scope)
+          || JSON.stringify(disclosure.categories) !== JSON.stringify(input.draft.categories)
+          || disclosure.itemCount !== input.draft.itemCount || disclosure.byteLimit !== input.draft.byteLimit) {
+          throw new HomeConsentDecisionStaleError();
+        }
+        return { disclosure, replayed: true };
+      }
+
+      const countRows: readonly { readonly disclosure_count: number | string }[] = await queryRunner.query(
+        `SELECT COUNT(*) AS "disclosure_count" FROM "home_turn_consent_disclosures"
+         WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "turn_id" = $3 AND "phase" = 'tool_result'`,
+        [input.ownerId, input.conversationId, input.turnId]
+      );
+      if (Number(countRows[0]?.disclosure_count ?? 0) >= 50) throw new HomeConversationInputInvalidError('The Home planning run exceeded its consent request limit.');
+
+      const disclosure = await this.insertToolResultDisclosure(queryRunner, input);
+      await appendHomeConversationEvent(queryRunner, {
+        ownerId: input.ownerId,
+        conversationId: input.conversationId,
+        type: 'consent.requested',
+        turnId: input.turnId,
+        entityId: disclosure.disclosureId,
+        payload: consentEventPayload(disclosure)
+      });
+      return { disclosure, replayed: false };
+    });
+  }
+
+  /** Applies a bridge start outcome only if the decision still owns this pending turn. */
+  public async updateConsentDelivery(input: UpdateHomeConsentDeliveryInput): Promise<HomeTurn | null> {
+    return withTransaction(this.dataSource, async (queryRunner) => {
+      if (!await lockConversation(queryRunner, input.ownerId, input.conversationId)) return null;
+      const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
+         FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
+        [input.ownerId, input.conversationId, input.turnId]
+      );
+      const current = turnRows[0];
+      const disclosure = await this.findConsentDisclosureInTransaction(queryRunner, input.ownerId, input.conversationId, input.turnId, input.disclosureId, true);
+      if (!current || !disclosure) return null;
+      if (disclosure.phase !== 'initial') throw new HomeConsentDecisionStaleError();
+      if (disclosure.deliveryState === input.deliveryState) return toHomeTurn(current);
+      if (disclosure.decision !== 'allow' || disclosure.deliveryState !== 'starting') throw new HomeConsentDecisionStaleError();
+
+      const updatedDisclosureRows = returnedRows<HomeConsentDisclosureRow>(await queryRunner.query(
+        `UPDATE "home_turn_consent_disclosures" SET "delivery_state" = $5, "updated_at" = now()
+         WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "turn_id" = $3 AND "disclosure_id" = $4
+         RETURNING ${CONSENT_DISCLOSURE_COLUMNS}`,
+        [input.ownerId, input.conversationId, input.turnId, input.disclosureId, input.deliveryState]
+      ));
+      if (!updatedDisclosureRows[0]) throw new HomeConsentDecisionStaleError();
+
+      const nextStatus = consentDeliveryTurnStatus(current.status, input.deliveryState);
+      return nextStatus && nextStatus !== current.status
+        ? this.changeTurnStatus(queryRunner, input.ownerId, input.conversationId, current, nextStatus)
+        : toHomeTurn(current);
+    });
+  }
+
+  /** Records dynamic tool-result delivery and fails the turn closed when delivery is uncertain. */
+  public async updateToolResultDelivery(input: UpdateHomeToolResultDeliveryInput): Promise<HomeTurn | null> {
+    return withTransaction(this.dataSource, async (queryRunner) => {
+      if (!await lockConversation(queryRunner, input.ownerId, input.conversationId)) return null;
+      const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
+         FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
+        [input.ownerId, input.conversationId, input.turnId]
+      );
+      const current = turnRows[0];
+      const disclosure = await this.findConsentDisclosureInTransaction(queryRunner, input.ownerId, input.conversationId, input.turnId, input.disclosureId, true);
+      if (!current || !disclosure) return null;
+      if (disclosure.phase !== 'tool_result' || disclosure.decision === null) throw new HomeConsentDecisionStaleError();
+      if (disclosure.deliveryState === input.deliveryState) return toHomeTurn(current);
+      if (!['starting', 'not_required'].includes(disclosure.deliveryState)) throw new HomeConsentDecisionStaleError();
+
+      const updatedDisclosure = returnedRows<HomeConsentDisclosureRow>(await queryRunner.query(
+        `UPDATE "home_turn_consent_disclosures" SET "delivery_state" = $5, "updated_at" = now()
+         WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "turn_id" = $3 AND "disclosure_id" = $4
+         RETURNING ${CONSENT_DISCLOSURE_COLUMNS}`,
+        [input.ownerId, input.conversationId, input.turnId, input.disclosureId, input.deliveryState]
+      ));
+      if (!updatedDisclosure[0]) throw new HomeConsentDecisionStaleError();
+      if (input.deliveryState === 'unknown' && (current.status === 'running' || current.status === 'cancel_requested')) {
+        return this.changeTurnStatus(queryRunner, input.ownerId, input.conversationId, current, 'unknown');
+      }
+      return toHomeTurn(current);
+    });
+  }
+
+  /** Reads one disclosure through all four Home ownership keys. */
+  public async findConsentDisclosure(ownerId: string, conversationId: string, turnId: string, disclosureId: string): Promise<HomeConsentDisclosureRecord | null> {
+    const rows: readonly HomeConsentDisclosureRow[] = await this.dataSource.query(
+      `SELECT ${CONSENT_DISCLOSURE_COLUMNS} FROM "home_turn_consent_disclosures"
+       WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "turn_id" = $3 AND "disclosure_id" = $4 LIMIT 1`,
+      [ownerId, conversationId, turnId, disclosureId]
+    );
+    return rows[0] ? toHomeConsentDisclosure(rows[0]) : null;
+  }
+
+  /** Reads the user text attached to a single owner-scoped turn. */
+  public async findUserMessageForTurn(ownerId: string, conversationId: string, turnId: string): Promise<HomeMessage | null> {
+    const rows: readonly HomeMessageRow[] = await this.dataSource.query(
+      `SELECT "id", "owner_id", "conversation_id", "turn_id", "sequence", "role", "content", "created_at"
+       FROM "home_messages" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "turn_id" = $3 AND "role" = 'user'
+       ORDER BY "sequence" ASC LIMIT 1`,
+      [ownerId, conversationId, turnId]
+    );
+    return rows[0] ? toHomeMessage(rows[0]) : null;
   }
 
   /** Lists a conversation's turns in ascending sequence order. */
@@ -343,7 +670,12 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         return { resource: toHomeTurn(current), replayed: true };
       }
 
-      const status = current.status === 'pending' ? 'cancelled' : current.status === 'running' ? 'cancel_requested' : null;
+      const initialDisclosure = current.status === 'pending'
+        ? await this.findInitialDisclosure(queryRunner, input.ownerId, input.conversationId, input.turnId)
+        : null;
+      const status = current.status === 'pending'
+        ? initialDisclosure?.deliveryState === 'starting' ? 'cancel_requested' : 'cancelled'
+        : current.status === 'running' ? 'cancel_requested' : null;
       if (!status || !canTransitionHomeTurn(current.status, status)) throw new HomeTurnNotCancellableError();
 
       const updatedRows = returnedRows<HomeTurnRow>(await queryRunner.query(
@@ -410,6 +742,25 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
     });
   }
 
+  /** Commits the final assistant transcript entry and runtime status under one active-turn lock. */
+  public async completeTurnWithAssistant(input: CompleteHomeTurnWithAssistantInput): Promise<HomeTurn | null> {
+    if (Buffer.byteLength(input.content, 'utf8') > 262144) throw new HomeConversationEventInvalidError();
+    return withTransaction(this.dataSource, async (queryRunner) => {
+      if (!await lockConversation(queryRunner, input.ownerId, input.conversationId)) return null;
+      const rows: readonly HomeTurnRow[] = await queryRunner.query(
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
+         FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
+        [input.ownerId, input.conversationId, input.turnId]
+      );
+      const current = rows[0];
+      if (!current) return null;
+      if (current.status !== 'running') return toHomeTurn(current);
+
+      if (input.content.length > 0) await this.insertAssistantMessage(queryRunner, input);
+      return this.changeTurnStatus(queryRunner, input.ownerId, input.conversationId, current, input.status);
+    });
+  }
+
   /** Appends a sequenced message or replays its matching request. */
   public async appendMessage(input: AppendHomeMessageInput): Promise<PersistedHomeResource<HomeMessage>> {
     return withTransaction(this.dataSource, async (queryRunner) => {
@@ -469,13 +820,14 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
     }
     const parameters: unknown[] = [input.ownerId, input.conversationId];
     const beforeFilter = input.beforeSequence === undefined ? '' : ' AND "sequence" < $3';
+    const transcriptFilter = input.transcriptOnly ? ' AND "role" IN (\'user\', \'assistant\')' : '';
     if (input.beforeSequence !== undefined) {
       parameters.push(input.beforeSequence);
     }
     parameters.push(input.limit + 1);
     const rows: readonly HomeMessageRow[] = await this.dataSource.query(
       `SELECT "id", "owner_id", "conversation_id", "turn_id", "sequence", "role", "content", "created_at"
-       FROM "home_messages" WHERE "owner_id" = $1 AND "conversation_id" = $2${beforeFilter}
+       FROM "home_messages" WHERE "owner_id" = $1 AND "conversation_id" = $2${beforeFilter}${transcriptFilter}
        ORDER BY "sequence" DESC LIMIT $${parameters.length}`,
       parameters
     );
@@ -557,6 +909,123 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       if (changed) reconciled += 1;
     }
     return reconciled;
+  }
+
+  private async insertInitialDisclosure(
+    queryRunner: QueryRunner,
+    ownerId: string,
+    conversationId: string,
+    turnId: string,
+    draft: NonNullable<SubmitHomeTurnInput['initialDisclosure']>
+  ): Promise<HomeConsentDisclosureRecord> {
+    const scopeKind = draft.scope.kind;
+    const scopeId = draft.scope.kind === 'workspace' ? draft.scope.workspaceId : null;
+    const rows: readonly HomeConsentDisclosureRow[] = await queryRunner.query(
+      `INSERT INTO "home_turn_consent_disclosures" (
+         "disclosure_id", "owner_id", "conversation_id", "turn_id", "phase", "provider_profile", "provider_name", "model",
+         "scope_kind", "scope_id", "categories", "item_count", "byte_limit", "delivery_state"
+       ) VALUES ($1, $2, $3, $4, 'initial', $5, $6, $7, $8, $9, $10::jsonb, $11, $12, 'awaiting_decision')
+       RETURNING ${CONSENT_DISCLOSURE_COLUMNS}`,
+      [draft.disclosureId, ownerId, conversationId, turnId, draft.provider.profile, draft.provider.name, draft.provider.model,
+        scopeKind, scopeId, JSON.stringify(draft.categories), draft.itemCount, draft.byteLimit]
+    );
+    const row = rows[0];
+    if (!row) throw new HomeConversationEventInvalidError();
+    return toHomeConsentDisclosure(row);
+  }
+
+  private async insertToolResultDisclosure(queryRunner: QueryRunner, input: CreateHomeToolResultDisclosureInput): Promise<HomeConsentDisclosureRecord> {
+    const scopeId = input.draft.scope.kind === 'workspace' ? input.draft.scope.workspaceId : null;
+    const rows: readonly HomeConsentDisclosureRow[] = await queryRunner.query(
+      `INSERT INTO "home_turn_consent_disclosures" (
+         "owner_id", "conversation_id", "turn_id", "phase", "provider_profile", "provider_name", "model", "scope_kind", "scope_id",
+         "categories", "item_count", "byte_limit", "runtime_request_id", "result_fingerprint"
+       ) VALUES ($1, $2, $3, 'tool_result', $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13)
+       RETURNING ${CONSENT_DISCLOSURE_COLUMNS}`,
+      [input.ownerId, input.conversationId, input.turnId, input.draft.provider.profile, input.draft.provider.name,
+        input.draft.provider.model, input.draft.scope.kind, scopeId, JSON.stringify(input.draft.categories),
+        input.draft.itemCount, input.draft.byteLimit, input.draft.runtimeRequestId, input.draft.resultFingerprint]
+    );
+    const row = rows[0];
+    if (!row) throw new HomeConversationEventInvalidError();
+    return toHomeConsentDisclosure(row);
+  }
+
+  private async insertAssistantMessage(queryRunner: QueryRunner, input: CompleteHomeTurnWithAssistantInput): Promise<void> {
+    const sequenceRows: readonly SequenceRow[] = await queryRunner.query(
+      'SELECT COALESCE(MAX("sequence"), 0) + 1 AS "sequence" FROM "home_messages" WHERE "owner_id" = $1 AND "conversation_id" = $2',
+      [input.ownerId, input.conversationId]
+    );
+    const sequence = Number(sequenceRows[0]?.sequence ?? 1);
+    const requestFingerprint = createHash('sha256').update(input.content, 'utf8').digest('hex');
+    const rows: readonly HomeMessageRow[] = await queryRunner.query(
+      `INSERT INTO "home_messages" ("owner_id", "conversation_id", "turn_id", "sequence", "role", "content", "request_key", "request_fingerprint")
+       VALUES ($1, $2, $3, $4, 'assistant', $5, 'planning-assistant', $6)
+       RETURNING "id", "owner_id", "conversation_id", "turn_id", "sequence", "role", "content", "created_at"`,
+      [input.ownerId, input.conversationId, input.turnId, sequence, input.content, requestFingerprint]
+    );
+    const message = rows[0];
+    if (!message) throw new HomeConversationEventInvalidError();
+    await appendHomeConversationEvent(queryRunner, {
+      ownerId: input.ownerId,
+      conversationId: input.conversationId,
+      type: 'message.appended',
+      turnId: input.turnId,
+      entityId: message.id,
+      payload: { messageSequence: sequence, role: 'assistant' }
+    });
+  }
+
+  private async findInitialDisclosure(queryRunner: QueryRunner, ownerId: string, conversationId: string, turnId: string): Promise<HomeConsentDisclosureRecord | null> {
+    const rows: readonly HomeConsentDisclosureRow[] = await queryRunner.query(
+      `SELECT ${CONSENT_DISCLOSURE_COLUMNS} FROM "home_turn_consent_disclosures"
+       WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "turn_id" = $3 AND "phase" = 'initial' LIMIT 1`,
+      [ownerId, conversationId, turnId]
+    );
+    return rows[0] ? toHomeConsentDisclosure(rows[0]) : null;
+  }
+
+  private async findConsentDisclosureInTransaction(
+    queryRunner: QueryRunner,
+    ownerId: string,
+    conversationId: string,
+    turnId: string,
+    disclosureId: string,
+    forUpdate = false
+  ): Promise<HomeConsentDisclosureRecord | null> {
+    const rows: readonly HomeConsentDisclosureRow[] = await queryRunner.query(
+      `SELECT ${CONSENT_DISCLOSURE_COLUMNS} FROM "home_turn_consent_disclosures"
+       WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "turn_id" = $3 AND "disclosure_id" = $4 LIMIT 1${forUpdate ? ' FOR UPDATE' : ''}`,
+      [ownerId, conversationId, turnId, disclosureId]
+    );
+    return rows[0] ? toHomeConsentDisclosure(rows[0]) : null;
+  }
+
+  private async changeTurnStatus(
+    queryRunner: QueryRunner,
+    ownerId: string,
+    conversationId: string,
+    current: HomeTurnRow,
+    status: HomeTurn['status']
+  ): Promise<HomeTurn> {
+    if (!canTransitionHomeTurn(current.status, status)) throw new HomeTurnTransitionInvalidError(current.status, status);
+    const rows = returnedRows<HomeTurnRow>(await queryRunner.query(
+      `UPDATE "home_turns" SET "status" = $4, "updated_at" = now()
+       WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3
+       RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"`,
+      [ownerId, conversationId, current.id, status]
+    ));
+    const updated = rows[0];
+    if (!updated) throw new HomeTurnNotFoundError();
+    await appendHomeConversationEvent(queryRunner, {
+      ownerId,
+      conversationId,
+      type: 'turn.status_changed',
+      turnId: current.id,
+      entityId: null,
+      payload: { status: updated.status }
+    });
+    return toHomeTurn(updated);
   }
 
   private async findConversationRequest(queryRunner: QueryRunner, ownerId: string, scope: 'home' | 'workspace', workspaceId: string | null, requestKey: string): Promise<(HomeConversationRow & KeyedRow) | null> {

@@ -3,6 +3,16 @@ import https from 'node:https';
 
 import { AiRunRuntimeUnavailableError } from '@/modules/ai-runs/domain/ai-run-errors';
 
+export type HermesBridgeAcceptance = 'not-sent' | 'rejected' | 'unknown';
+
+/** Adds only the bridge-call certainty needed to avoid retrying an accepted Home turn. */
+export class HermesBridgeCallError extends AiRunRuntimeUnavailableError {
+  public constructor(public readonly acceptance: HermesBridgeAcceptance) {
+    super();
+    this.name = 'HermesBridgeCallError';
+  }
+}
+
 export interface HermesBridgeOptions {
   readonly endpoint: string;
   readonly caFile: string;
@@ -15,11 +25,23 @@ export class HermesBridgeClient {
   public constructor(private readonly options: HermesBridgeOptions) {}
 
   public async call(operation: string, runId = 'run-probe', capability = '', payload: unknown = {}): Promise<Record<string, unknown>> {
-    const [ca, cert, key] = await Promise.all([fs.readFile(this.options.caFile), fs.readFile(this.options.certFile), fs.readFile(this.options.keyFile)]);
+    let ca: Buffer;
+    let cert: Buffer;
+    let key: Buffer;
+    try {
+      [ca, cert, key] = await Promise.all([fs.readFile(this.options.caFile), fs.readFile(this.options.certFile), fs.readFile(this.options.keyFile)]);
+    } catch {
+      throw new HermesBridgeCallError('not-sent');
+    }
     const body = JSON.stringify({ operation, runId, capability, payload });
-    if (Buffer.byteLength(body) > 1024 * 1024) throw new AiRunRuntimeUnavailableError();
-    const endpoint = new URL('/v1/runtime', this.options.endpoint);
-    if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password) throw new AiRunRuntimeUnavailableError();
+    if (Buffer.byteLength(body) > 1024 * 1024) throw new HermesBridgeCallError('not-sent');
+    let endpoint: URL;
+    try {
+      endpoint = new URL('/v1/runtime', this.options.endpoint);
+    } catch {
+      throw new HermesBridgeCallError('not-sent');
+    }
+    if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password) throw new HermesBridgeCallError('not-sent');
     return exchange({ endpoint, ca, cert, key, body });
   }
 }
@@ -39,21 +61,31 @@ function exchange(input: ExchangeInput): Promise<Record<string, unknown>> {
       const chunks: Buffer[] = [];
       let bytes = 0;
       response.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 1024 * 1024) request.destroy(); else chunks.push(chunk); });
-      response.on('error', () => reject(new AiRunRuntimeUnavailableError()));
+      response.on('error', () => reject(new HermesBridgeCallError(response.statusCode === 200 ? 'unknown' : 'rejected')));
       response.on('end', () => resolveResponse(response.statusCode, Buffer.concat(chunks), resolve, reject));
     });
     request.setTimeout(150_000, () => request.destroy());
-    request.on('error', () => reject(new AiRunRuntimeUnavailableError()));
-    request.end(input.body);
+    request.on('error', () => reject(new HermesBridgeCallError('unknown')));
+    try {
+      request.end(input.body);
+    } catch {
+      reject(new HermesBridgeCallError('not-sent'));
+    }
   });
 }
 
 function resolveResponse(status: number | undefined, body: Buffer, resolve: (value: Record<string, unknown>) => void, reject: (error: Error) => void): void {
+  if (status !== 200) {
+    reject(new HermesBridgeCallError('rejected'));
+    return;
+  }
   try {
     const value: unknown = JSON.parse(body.toString('utf8'));
-    if (status !== 200 || !isRecord(value) || !isRecord(value.data)) throw new AiRunRuntimeUnavailableError();
+    if (!isRecord(value) || !isRecord(value.data)) throw new HermesBridgeCallError('unknown');
     resolve(value.data);
-  } catch { reject(new AiRunRuntimeUnavailableError()); }
+  } catch (error: unknown) {
+    reject(error instanceof HermesBridgeCallError ? error : new HermesBridgeCallError('unknown'));
+  }
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

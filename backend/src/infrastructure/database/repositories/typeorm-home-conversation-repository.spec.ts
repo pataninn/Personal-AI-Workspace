@@ -218,6 +218,21 @@ describe('TypeOrmHomeConversationRepository', () => {
     expect(messageQuery?.[1]).toEqual([OWNER_ID, CONVERSATION_ID, 3]);
   });
 
+  it('filters system and tool messages before applying the transcript history limit', async () => {
+    const { repository, query } = createRepository((statement) => {
+      if (statement.includes('FROM "home_conversations"')) return [conversationRow];
+      if (statement.includes('FROM "home_messages"')) return [messageRow];
+      return [];
+    });
+
+    await repository.listMessagesForOwner({ ownerId: OWNER_ID, conversationId: CONVERSATION_ID, limit: 8, beforeSequence: 12, transcriptOnly: true });
+
+    const messageQuery = query.mock.calls.find(([statement]) => String(statement).includes('FROM "home_messages"'));
+    expect(String(messageQuery?.[0])).toContain('"sequence" < $3');
+    expect(String(messageQuery?.[0])).toContain('"role" IN (\'user\', \'assistant\')');
+    expect(messageQuery?.[1]).toEqual([OWNER_ID, CONVERSATION_ID, 12, 9]);
+  });
+
   it('preserves PostgreSQL microseconds in the activity cursor across pages', async () => {
     const newerTimestamp = '2026-10-15T12:00:00.123456Z';
     const olderTimestamp = '2026-10-15T12:00:00.123200Z';

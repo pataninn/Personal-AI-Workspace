@@ -78,6 +78,14 @@ export class HomeTurnNotActiveError extends HomeConversationDomainError {
   }
 }
 
+/** Raised when a consent decision is expired, consumed, or conflicts with the saved decision. */
+export class HomeConsentDecisionStaleError extends HomeConversationDomainError {
+  public constructor() {
+    super('The Home consent decision is stale or conflicts with the saved decision.', 'HOME_CONSENT_DECISION_STALE', 409);
+    this.name = 'HomeConsentDecisionStaleError';
+  }
+}
+
 /** Raised when the persistence layer returns an event shape outside the API allowlist. */
 export class HomeConversationEventInvalidError extends HomeConversationDomainError {
   public constructor() {
@@ -94,6 +102,14 @@ export class HomeConversationInputInvalidError extends HomeConversationDomainErr
   }
 }
 
+/** Raised when a redacted Home transcript cannot fit the provider prompt ceiling. */
+export class HomePlanningContextTooLargeError extends HomeConversationInputInvalidError {
+  public constructor() {
+    super('The redacted conversation context exceeds the provider request limit.');
+    this.name = 'HomePlanningContextTooLargeError';
+  }
+}
+
 /** Raised when rollback would remove persisted Home conversation data. */
 export class HomeConversationRollbackBlockedError extends Error {
   public constructor() {
@@ -107,5 +123,13 @@ export class HomeConversationEventRollbackBlockedError extends Error {
   public constructor() {
     super('Cannot revert Home event persistence while events or new turn states exist.');
     this.name = 'HomeConversationEventRollbackBlockedError';
+  }
+}
+
+/** Raised when rollback would discard persisted consent decisions or disclosure history. */
+export class HomeConsentRollbackBlockedError extends Error {
+  public constructor() {
+    super('Cannot revert Home consent persistence while disclosure history exists.');
+    this.name = 'HomeConsentRollbackBlockedError';
   }
 }

@@ -19,6 +19,7 @@ describe('Home conversation OpenAPI contract', () => {
       ['/api/v1/home/conversations/{conversationId}/turns', 'post'],
       ['/api/v1/home/conversations/{conversationId}/turns/{turnId}', 'get'],
       ['/api/v1/home/conversations/{conversationId}/turns/{turnId}/cancellation', 'post'],
+      ['/api/v1/home/conversations/{conversationId}/turns/{turnId}/consent-decisions', 'post'],
       ['/api/v1/home/conversations/{conversationId}/messages', 'get'],
       ['/api/v1/home/conversations/{conversationId}/events', 'get']
     ] as const;
@@ -40,7 +41,7 @@ describe('Home conversation OpenAPI contract', () => {
     const event = record(schemas.HomeEvent, 'HomeEvent schema');
     const eventProperties = record(event.properties, 'HomeEvent properties');
     const eventType = record(eventProperties.type, 'HomeEvent.type');
-    expect(eventType.enum).toEqual(['conversation.created', 'turn.created', 'turn.status_changed', 'message.appended', 'action.receipt']);
+    expect(eventType.enum).toEqual(['conversation.created', 'turn.created', 'turn.status_changed', 'message.appended', 'action.receipt', 'consent.requested', 'consent.decided']);
 
     const submission = record(schemas.HomeTurnSubmissionEnvelope, 'HomeTurnSubmissionEnvelope');
     const data = record(record(submission.properties, 'submission properties').data, 'submission data');
@@ -51,5 +52,8 @@ describe('Home conversation OpenAPI contract', () => {
     expect(dataProperties.replayed).toBeDefined();
     expect(schemas.HomeTurn).toBeDefined();
     expect(schemas.HomeEventPageEnvelope).toBeDefined();
+    expect(schemas.HomeConsentDecisionRequest).toBeDefined();
+    expect(schemas.HomeConsentDecisionEnvelope).toBeDefined();
+    expect(schemas.HomeConsentDisclosure).toBeDefined();
   });
 });
