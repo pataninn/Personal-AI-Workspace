@@ -13,6 +13,8 @@ export interface ProviderContextMessage {
 }
 
 export interface ModelProviderRequest {
+  /** Trusted owner UUID carried from the persisted run, never supplied by the browser. */
+  readonly ownerId: string;
   readonly runId: string;
   readonly request: string;
   readonly manifest: EgressManifest;

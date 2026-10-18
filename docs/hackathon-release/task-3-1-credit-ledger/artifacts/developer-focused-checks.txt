@@ -1,0 +1,42 @@
+Developer validation (2026-10-19)
+
+Command:
+  pnpm.cmd --dir backend test -- src/modules/credits/domain/credit-calculation.spec.ts src/modules/credits/domain/credit-time-windows.spec.ts src/modules/credits/use-cases/provider-call-credit-admission.spec.ts src/infrastructure/database/migrations/1710000028000-create-credit-ledger.spec.ts src/infrastructure/config/app-config.spec.ts src/infrastructure/ai-provider/nvidia-hosted-nim-provider.spec.ts src/infrastructure/ai-provider/direct-provider-agent-runtime.spec.ts src/infrastructure/hermes/hermes-home-planning-runtime.spec.ts src/infrastructure/hermes/hermes-agent-runtime.spec.ts
+
+Result: 9 focused Jest suites passed, 81 tests passed, 0 snapshots; 3.428 seconds. The final broad run below covers the complete current backend unit suite.
+
+Command:
+  pnpm.cmd --dir backend run typecheck
+
+Result: passed (`tsc -p tsconfig.json --noEmit`) with Task 3.2 foundation files and the registered migration present. Final typecheck passed after the migration fixture and overflow changes.
+
+Command:
+  pnpm.cmd test
+
+Result: 129 Jest suites passed, 770 tests passed, 0 snapshots; 12.963 seconds.
+
+Command:
+  git diff --check
+
+Result: passed.
+
+The six NIM credit configuration names in `backend/src/infrastructure/config/app-config.ts` were checked against both `contract.md` and the new README setup note; all six match. The README and contract use the same units, limits, paused default, and fail-closed runtime prerequisites. A final `git diff --check` after documentation edits passed.
+
+Command (run only after validating the protected URL against the test database allowlist):
+  pnpm.cmd --dir backend test:integration -- credit-ledger.integration.spec.ts
+
+Result: 1 Jest integration suite passed, 7 tests passed, 0 snapshots; 7.004 seconds. This ran the full migration chain including 1710000028000 and the registered 1710000029000 migration, and the test created and removed only its guarded `home_history_task_3_1_credit_test` database.
+
+The PostgreSQL coverage includes concurrent regular daily/lifetime admission; concurrent deployment-wide demo daily and campaign caps across two demo accounts; zero limits; single-slot concurrency denial; settlement replay; unknown retention; known-not-sent release; inconsistent totals; overflowed-charge pause and retained unknown reservation; pause/disabled/expired denial; timezone change with pre-change settlement; representable over-bound charging/pause; and lazy `account_limits` creation. The first exploratory run exposed a fixture setup mistake; it now explicitly seeds the regular limit row and proves the demo account row is created lazily by production admission. The first overflow assertion included a prior held reservation from the same account; the corrected test uses a separate regular account.
+
+Command:
+  pnpm.cmd --dir backend test:integration -- r1-populated-migration.integration.spec.ts
+
+Result: 1 Jest integration suite passed, 3 tests passed; 5.954 seconds. The fixture preserves its ownership-boundary migration and dynamically rolls back that migration plus later additive migrations before checking its existing owner/session/data and legacy rollback behavior.
+
+Command:
+  pnpm.cmd test:integration
+
+Result: 24 Jest integration suites passed, 98 tests passed, 0 snapshots; 22.844 seconds. The guarded run used only the isolated loopback test fixture and applied migrations through Task 3.2 migration 1710000029000. No provider calls were made.
+
+The initial full integration run identified a stale assertion that migration 0027 remained the latest. The populated migration fixture now locates the ownership-boundary migration, checks that it remains applied, and unwinds it plus any later additive migrations before the pre-existing rollback checks. The assertion remains valid when Task 3.1 is checked out with only migration 0028 or with 0029 also registered.

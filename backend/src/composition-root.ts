@@ -14,6 +14,7 @@ import { SystemClock } from '@/infrastructure/auth/system-clock';
 import { TypeOrmSessionRepository, TypeOrmUserRepository } from '@/infrastructure/database/repositories/typeorm-auth-repositories';
 import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories/typeorm-project-repository';
 import { TypeOrmActionLedgerRepository } from '@/infrastructure/database/repositories/typeorm-action-ledger-repository';
+import { TypeOrmCreditLedgerRepository } from '@/infrastructure/database/repositories/typeorm-credit-ledger-repository';
 import { TypeOrmHomeConversationRepository } from '@/infrastructure/database/repositories/typeorm-home-conversation-repository';
 import { TypeOrmHomeActionEventRecorder } from '@/infrastructure/database/repositories/typeorm-home-action-event-recorder';
 import { TypeOrmHomeChangeProposalRepository } from '@/infrastructure/database/repositories/typeorm-home-change-proposal-repository';
@@ -37,6 +38,7 @@ import { WorkspaceBoundaryAdapter } from '@/infrastructure/workspace/workspace-b
 import { WorkspaceGatewayAdapter } from '@/infrastructure/workspace/workspace-gateway';
 import { readSecretFile } from '@/infrastructure/auth/read-secret-file';
 import { NvidiaHostedNimProvider } from '@/infrastructure/ai-provider/nvidia-hosted-nim-provider';
+import { ProviderCallCreditAdmission } from '@/modules/credits/use-cases/provider-call-credit-admission';
 import { DirectProviderAgentRuntime } from '@/infrastructure/ai-provider/direct-provider-agent-runtime';
 import { HermesAgentRuntime } from '@/infrastructure/hermes/hermes-agent-runtime';
 import { HermesBridgeClient } from '@/infrastructure/hermes/hermes-bridge-client';
@@ -100,8 +102,9 @@ export async function createApplication(
   const logger = createLogger(config.logLevel);
   const dataSource = createDataSource(config.database);
   const readiness = new InMemoryReadinessState();
+  const providerCallCreditAdmission = new ProviderCallCreditAdmission(new TypeOrmCreditLedgerRepository(dataSource));
   const modelProvider = config.agentRuntimeMode === 'direct'
-    ? await createModelProvider(config, environment)
+    ? await createModelProvider(config, environment, providerCallCreditAdmission)
     : undefined;
   const gatewayClient = config.agentRuntimeMode === 'openshell'
     ? createOpenShellGateway(config)
@@ -175,7 +178,10 @@ export async function createApplication(
     const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository, logger, taskTools);
     const homePlanningProvider: HomePlanningProvider = { profile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint };
     const homePlanningRuntime = config.agentRuntimeMode === 'hermes'
-      ? new HermesHomePlanningRuntime(createHermesBridge(config), homePlanningProvider, { registeredToolNames: HOME_PLANNING_TOOL_NAMES })
+      ? new HermesHomePlanningRuntime(createHermesBridge(config), homePlanningProvider, {
+        registeredToolNames: HOME_PLANNING_TOOL_NAMES,
+        providerEgressAdmissionEnforced: false
+      })
       : undefined;
     const homeToolResultConsentGate = new HomeToolResultConsentGate(homeConversationRepository, homePlanningProvider);
     const homeChangeProposals = new HomeChangeProposalUseCases(
@@ -389,13 +395,19 @@ export async function createApplication(
   }
 }
 
-async function createModelProvider(config: AppConfig, environment: NodeJS.ProcessEnv): Promise<IModelProvider> {
+async function createModelProvider(
+  config: AppConfig,
+  environment: NodeJS.ProcessEnv,
+  creditAdmission: ProviderCallCreditAdmission
+): Promise<IModelProvider> {
   const apiKey = await readProviderKey(environment);
   return new NvidiaHostedNimProvider({
     endpoint: config.nimEndpoint,
     model: config.nimModel,
     apiKey,
-    timeoutMs: config.startupCheckTimeoutMs * 30
+    timeoutMs: config.startupCheckTimeoutMs * 30,
+    creditAdmission,
+    ...(config.providerCreditConfiguration ? { creditConfiguration: config.providerCreditConfiguration } : {})
   });
 }
 
@@ -430,6 +442,7 @@ function createAgentRuntime(
     return new HermesAgentRuntime(createHermesBridge(config), new ApprovedContextReader(workspaceGateway, projectFactRepository), {
       taskTools,
       providerProfile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint,
+      providerEgressAdmissionEnforced: false,
       diagnose: (detail) => logger.error(detail, 'Hermes runtime operation could not be confirmed.')
     });
   }

@@ -49,6 +49,8 @@ const ALLOWED_HOME_TOOL_NAMES: ReadonlySet<string> = new Set(HOME_PLANNING_TOOL_
 export interface HermesHomePlanningRuntimeOptions {
   /** Names explicitly registered by trusted server composition; absent means deny-all. */
   readonly registeredToolNames?: readonly HomePlanningToolName[];
+  /** Must be enabled only after the bridge proves every provider egress attempt is admitted. */
+  readonly providerEgressAdmissionEnforced?: boolean;
 }
 
 interface ActivePlanningRun {
@@ -64,6 +66,7 @@ interface ActivePlanningRun {
 export class HermesHomePlanningRuntime implements IHomePlanningRuntime {
   private readonly runs = new Map<string, ActivePlanningRun>();
   private readonly homeToolNames: ReadonlySet<string>;
+  private readonly providerEgressAdmissionEnforced: boolean;
 
   public constructor(
     private readonly bridge: HermesBridgeClient,
@@ -77,10 +80,12 @@ export class HermesHomePlanningRuntime implements IHomePlanningRuntime {
       throw new TypeError('The Home planning tool registration is invalid.');
     }
     this.homeToolNames = new Set(registeredToolNames);
+    this.providerEgressAdmissionEnforced = options.providerEgressAdmissionEnforced === true;
   }
 
   public async start(input: StartHomePlanningRunInput): Promise<StartHomePlanningRunResult> {
-    if (!validTurnId(input.turnId) || !validPrompt(input.prompt) || !sameProvider(input.provider, this.provider)) {
+    if (!this.providerEgressAdmissionEnforced
+      || !validTurnId(input.turnId) || !validPrompt(input.prompt) || !sameProvider(input.provider, this.provider)) {
       return { outcome: 'unavailable', code: 'PLANNING_RUNTIME_UNAVAILABLE' };
     }
     const fingerprint = requestFingerprint(input);

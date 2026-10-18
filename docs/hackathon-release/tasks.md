@@ -5,7 +5,7 @@
 **Last Updated:** 2026-10-19
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Tasks 1.1, 2.1, and 5.2 delivered; Task 2.2 ownership boundaries in progress.
+**Status:** Execution active. Tasks 1.1, 2.1, 2.2, and 5.2 delivered; Task 3.1 credits/runtime metering in progress.
 
 ## Plan Summary
 
@@ -119,7 +119,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 2.2 — Enforce ownership across APIs, tools, storage, and streams
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** developer, tester
 **Depends on:** 2.1
 **Risk:** Critical: cross-account data exposure
@@ -134,7 +134,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-2-2-ownership-boundaries/artifacts/`
-- `Current status:` Independent tester PASS in qa-report.md with Evidence Index. Backend117 suites/709 tests; isolated PostgreSQL22 suites/88 tests; independent PG2/5, auth2/20 and OpenAPI/config2/18 PASS. Frontend typecheck,79 focused tests,26 previewAPI and browser journey PASS with independent UI review. Optional managed-storage overlay/setup/OpenAPI corrected; actual Compose parser and focused boundary check PASS. Existing unrelated NVIDIA/Hermes Compose assertion remains logged for deployment. Reviewed task-only commit pending; task stays in progress until hash recorded.
+- `Current status:` Independent tester PASS in qa-report.md with Evidence Index. Backend117 suites/709 tests; isolated PostgreSQL22 suites/88 tests; independent PG2/5, auth2/20 and OpenAPI/config2/18 PASS. Frontend typecheck,79 focused tests,26 previewAPI and browser journey PASS with independent UI review. Optional managed-storage overlay/setup/OpenAPI corrected; actual Compose parser and focused boundary check PASS. Existing unrelated NVIDIA/Hermes Compose assertion remains logged for deployment. Delivered commit `6fb7278bc680a0df11e3f6e6cb8bd03a0090cb7c`; post-commit worktree exactly original six preserved paths. No push.
 
 **Description:** Audit and close owner-scoping gaps across existing modules. Introduce a reusable application authorization contract without weakening current path and runtime checks.
 
@@ -159,11 +159,11 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 3.1 — Implement atomic credit reservations and runtime metering
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** developer, tester
 **Depends on:** 2.2
 **Risk:** Critical: overspending and unknown provider outcomes
-**Contract:** `.codex/docs/hackathon-release/task-3-1-credit-ledger/contract.md` (planned; developer owns the contract gate)
+**Contract:** `.codex/docs/hackathon-release/task-3-1-credit-ledger/contract.md` (implemented and independently verified; developer owns the contract)
 
 **MCP Inputs & Required Evidence:**
 
@@ -174,22 +174,22 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-3-1-credit-ledger/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Independent tester PASS in qa-report.md with Evidence Index. Credit focused9 suites81tests/PG1suite7tests PASS; broad backend129suites770tests, typecheck and full PG24suites98tests PASS in shared worktree. Independent runtime4suites43tests and PostgreSQL2suites10tests PASS. Integer limits/reservations/settlement, demo races, timezone and overflow pause verified. Contract/README six-field configuration aligned. PASS covers offline ledger and closed runtime gates; paid inference enablement remains unresolved. Task-only commit and isolated staged-tree validation pending; storage0029 and six original unrelated paths must be excluded.
 
 **Description:** Implement integer credit accounting, account daily/lifetime limits, demo daily/campaign caps, and an operator inference pause using PostgreSQL transactions.
 
 **Subtasks:**
 
-- [ ] Specify credit conversion, pricing versions, timezone boundaries, null/zero semantics, unique settlement, and counter migrations.
-- [ ] Reserve maximum bounded cost before each billable call; extend Hermes bridge metering/caps if needed; cover direct fallback and multi-step runs.
-- [ ] Reconcile cancellation/unknown usage conservatively and enforce call/iteration/concurrency caps.
+- [x] Specify credit conversion, pricing versions, timezone boundaries, null/zero semantics, unique settlement, and counter migrations.
+- [x] Reserve maximum bounded cost before each billable call; extend Hermes bridge metering/caps if needed; cover direct fallback and multi-step runs.
+- [x] Reconcile cancellation/unknown usage conservatively and enforce call/iteration/concurrency caps.
 
 **Definition of Done:**
 
-- [ ] Concurrent requests cannot overspend reserved limits; retries settle once; missing pricing/usage cannot grant free unbounded calls; changing timezone or session does not reset lifetime use.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
-- [ ] Developer-owned contract implemented and verified before task closure.
+- [x] Concurrent requests cannot overspend reserved limits; retries settle once; missing pricing/usage cannot grant free unbounded calls; changing timezone or session does not reset lifetime use.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Developer-owned contract implemented and verified before task closure.
 
 **Upstream Outputs Needed:** Architecture sections 7.1, 10; completed dependency outputs.
 
@@ -197,7 +197,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 3.2 — Enforce account storage limits on every persistent write
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** developer, tester
 **Depends on:** 2.2
 **Risk:** High: concurrent growth and data loss
@@ -212,7 +212,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-3-2-storage-quotas/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Contract and isolated storage foundation complete in authorized new files; backend typecheck,7focused suites31tests and guarded PG1suite3tests PASS. Migration0029 extends shared account_limits after credit0028. Source frozen during final credit QA. Full production database/filesystem writes and read API remain unintegrated; no final task QA/commit. Preflight records QueryRunner reuse, file transaction boundary refactor and retained-root charges; ownership handoff follows credit delivery.
 
 **Description:** Implement documented logical-byte accounting for files and DB content, recovery versions, and template copies; keep separate transient export/sandbox bounds.
 
@@ -1079,9 +1079,9 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | --- | --- | --- |
 | 1.1 — Confirm baseline and define screen states | `[x]` | PASS; `721f0f26011147437f9d24c4749431169b309ad1` |
 | 2.1 — Migrate local identity to regular, admin, and demo accounts | `[x]` | PASS; `d696550acddceac3a641584c1fe5f3fb52ad42bd` |
-| 2.2 — Enforce ownership across APIs, tools, storage, and streams | `[~]` | PASS; commit pending |
-| 3.1 — Implement atomic credit reservations and runtime metering | `[ ]` | Pending |
-| 3.2 — Enforce account storage limits on every persistent write | `[ ]` | Pending |
+| 2.2 — Enforce ownership across APIs, tools, storage, and streams | `[x]` | PASS; `6fb7278bc680a0df11e3f6e6cb8bd03a0090cb7c` |
+| 3.1 — Implement atomic credit reservations and runtime metering | `[~]` | PASS; commit pending |
+| 3.2 — Enforce account storage limits on every persistent write | `[~]` | Foundation checks PASS; production integration pending |
 | 3.3 — Provision private one-click demo identities | `[ ]` | Pending |
 | 3.4 — Publish a protected showcase and open editable demo copies | `[ ]` | Pending |
 | 3.5 — Expire and clean up demos safely | `[ ]` | Pending |
@@ -1107,7 +1107,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Blocked Items and implementation-time inputs
 
-Tasks 1.1, 2.1, and 5.2 are delivered. Task 2.2 is active. All subagent work delegated after the baseline commit uses GPT-6 Luna with maximum reasoning per user instruction. Dependency ordering above applies.
+Tasks 1.1, 2.1, 2.2, and 5.2 are delivered. Task 3.1 is active. All subagent work delegated after the baseline commit uses GPT-6 Luna with maximum reasoning per user instruction. Dependency ordering above applies.
 
 - Task 8.1/8.2 needs the real deployment host/domain and DNS/certificate access. Do not claim the local self-signed setup fixes public browser trust.
 - Credit enforcement requires actual provider pricing and a way to bound/meter all Hermes calls. Public AI access stays disabled if that cannot be established.

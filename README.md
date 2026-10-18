@@ -2,10 +2,11 @@
 
 This repository contains the local Personal AI Workspace with projects,
 conversations, selected context, memory, tasks, live updates, and file history.
-Hermes works in disposable OpenShell project copies using NVIDIA Nemotron on Nebius Token Factory.
-The direct server-side NIM adapter remains available as a fallback.
+Provider routes for Hermes and the direct NVIDIA adapter are preserved, but paid
+inference is fail-closed until a verified per-request input bound and all-send
+credit admission path are available.
 
-## Start with Hermes
+## Prepare the Hermes provider route
 
 This machine uses the installed WSL Ubuntu OpenShell 0.0.116 gateway
 `nemoclaw-18080` and digest-pinned Hermes 0.20.6 base image. The gateway's
@@ -27,10 +28,11 @@ AGENT_RUNTIME_MODE=hermes
 
 This model ID was confirmed in the authenticated Nebius catalog. The key is read
 locally and passed to OpenShell through the CLI's environment credential lookup;
-it is never included in command arguments or bridge payloads. Startup selects the
-route without generating a model response or spending inference tokens. Your next
-approved chat request uses Nebius. The approval dialog and Activity show Nebius as
-the recipient, and existing NVIDIA permissions do not authorize Nebius requests.
+it is never included in command arguments or bridge payloads. Startup can prepare
+the provider route without generating a model response or spending inference
+tokens. Paid inference remains fail-closed in this release, as described below.
+Provider consent remains separate by provider; existing NVIDIA permissions do
+not authorize Nebius requests.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/start-hermes.ps1
@@ -76,13 +78,45 @@ placeholders, and code references are allowed. This intentionally favors fewer
 false alarms and does not detect every secret. Context sent to the provider still
 uses the separate egress redaction policy.
 
-To use the NVIDIA direct fallback, configure `NVIDIA_API_KEY_FILE` and run
+To prepare the NVIDIA direct route, configure `NVIDIA_API_KEY_FILE` and run
 `docker compose -p personal-ai-workspace -f compose.yaml -f compose.direct.yaml up -d --no-build --wait`.
-The override selects NVIDIA/direct mode and mounts only its NVIDIA secret.
-Normal Hermes Compose does not mount either provider key. Restart with the Hermes
-helper to return to Nebius. For Hermes on NVIDIA, set `NIM_PROFILE=nvidia-hosted-nim`
-and `NIM_ENDPOINT=https://integrate.api.nvidia.com/v1` in `.env`; the installed
-gateway's existing `compatible-endpoint` credential remains available.
+The override selects NVIDIA/direct mode and mounts only its NVIDIA secret. This
+configures the provider route; it does not enable a paid request. Normal Hermes
+Compose does not mount either provider key. Restart with the Hermes helper to
+return to Nebius. For Hermes on NVIDIA, set `NIM_PROFILE=nvidia-hosted-nim` and
+`NIM_ENDPOINT=https://integrate.api.nvidia.com/v1` in `.env`; the installed
+gateway's existing `compatible-endpoint` credential remains available. Hermes
+project and Home-planning sends remain blocked before bridge creation because the
+current bridge path cannot enforce admission and account for every model call,
+retry, and fallback.
+
+### Credit admission and paid inference status
+
+The credit ledger migration starts with global inference paused, and this release
+does not choose provider prices, account budgets, or demo campaign limits. Regular
+account daily and lifetime limits default to `null` (unlimited), while missing
+demo campaign configuration denies demo sends. Do not infer that a provider key
+or provider profile enables inference.
+
+Before a direct NIM send can be enabled, an operator would need to provide the
+following six configuration values together, using verified prices and bounds:
+
+- `NIM_CREDIT_PRICE_VERSION`
+- `NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS`
+- `NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS`
+- `NIM_MAX_INPUT_TOKENS`
+- `NIM_MAX_OUTPUT_TOKENS` (at most 16,384)
+- `NIM_MAX_PROVIDER_CALLS_PER_RUN` (1–32)
+
+Rates are positive integer credit units per 1,000,000 tokens; one displayed
+credit equals 1,000,000 integer credit units. Prices and request limits have no
+application defaults. Partial configuration is rejected. These values alone
+still do not enable sends: the server also requires a verified model-specific
+input-token upper bound and a wired atomic reservation before every provider
+POST. The current hosted Nemotron endpoint has no verified bounder in this
+checkout, so direct provider calls fail closed. Hermes requires enforcement at
+the actual all-egress provider boundary and also fails closed. Do not guess rates,
+tokenizer parity, endpoint context limits, or budgets to bypass these checks.
 
 ## Local prerequisites
 
@@ -296,8 +330,9 @@ Compose without printing resolved settings. The live Compose/Hermes startup need
 Docker Desktop, operator-provisioned TLS files, the workspace identity marker,
 and the configured gateway provider credential. Application startup fails closed until
 PostgreSQL, the workspace identity, the authenticated bridge, and the selected
-gateway route are available. Startup checks route configuration; the first approved
-chat request establishes inference and tool execution with the provider.
+gateway route are available. Startup checks route configuration; it is not proof of
+paid inference. In this release, a paid chat remains blocked before provider
+execution until the credit prerequisites above are verified and enforced.
 
 The app image installs MarkItDown for converting uploaded PDF, DOCX, PPTX, XLSX,
 XLS, and EPUB documents into adjacent Markdown files. Local backend runs need

@@ -68,6 +68,7 @@ export class DirectProviderAgentRuntime implements IAgentRuntime {
     try {
       const context = await this.readApprovedContext(input);
       const request: ModelProviderRequest = {
+        ownerId: input.ownerId,
         runId: input.runId,
         request: redactEgressText(input.request),
         manifest: input.manifest,

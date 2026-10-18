@@ -1,0 +1,13 @@
+﻿Independent tester PostgreSQL rerun (2026-10-19)
+
+The ACL-restricted test URL was loaded in-process from the authorized temporary env file and validated against the repository guard (loopback port 55441, user home_test, base database home_history_test). The URL and credentials were not emitted.
+
+Command:
+  pnpm.cmd --dir Personal-AI-Workspace/backend test:integration -- credit-ledger.integration.spec.ts r1-populated-migration.integration.spec.ts
+
+Result:
+  Test Suites: 2 passed, 2 total
+  Tests: 10 passed, 10 total
+  Time: 9.345 seconds
+
+The guarded tests created and removed only their dedicated disposable databases. The credit suite verified account and demo daily/campaign reservation races, settlement replay/unknown/release behavior, timezone snapshots, representable over-bound pause, unrepresentable charge pause with retained maximum, and subsequent denial. The R1 suite preserved ownership/identity/session/legacy assertions while rolling back migrations after the ownership boundary. No application database, provider, or external service was contacted.

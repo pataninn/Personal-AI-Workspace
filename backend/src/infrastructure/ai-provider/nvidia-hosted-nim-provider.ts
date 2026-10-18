@@ -13,6 +13,11 @@ import type {
   ProviderCancellationResult
 } from '@/modules/ai-runs/repositories/model-provider';
 import type { ProviderTokenUsage } from '@/modules/ai-runs/domain/ai-run-types';
+import type {
+  IProviderCallCreditAdmission,
+  ProviderCallCreditConfiguration,
+  ProviderInputTokenBounder
+} from '@/modules/credits/repositories/provider-call-credit-admission';
 import { maxProviderOutputBytes, parseProviderOutput } from '@/infrastructure/ai-provider/provider-output';
 import { systemInstruction } from '@/infrastructure/ai-provider/provider-system-instruction';
 import { NVIDIA_RESPONSE_FORMAT } from '@/infrastructure/ai-provider/provider-response-format';
@@ -30,6 +35,10 @@ export interface NvidiaHostedNimProviderOptions {
   readonly apiKey: string;
   readonly timeoutMs?: number;
   readonly fetchImplementation?: typeof fetch;
+  /** Missing price configuration or tokenizer means no request can be sent. */
+  readonly creditAdmission?: IProviderCallCreditAdmission;
+  readonly creditConfiguration?: ProviderCallCreditConfiguration;
+  readonly inputTokenBounder?: ProviderInputTokenBounder;
 }
 
 export class NvidiaHostedNimProvider implements IModelProvider {
@@ -38,6 +47,9 @@ export class NvidiaHostedNimProvider implements IModelProvider {
   private readonly apiKey: string;
   private readonly timeoutMs: number;
   private readonly fetchImplementation: typeof fetch;
+  private readonly creditAdmission: IProviderCallCreditAdmission | undefined;
+  private readonly creditConfiguration: ProviderCallCreditConfiguration | undefined;
+  private readonly inputTokenBounder: ProviderInputTokenBounder | undefined;
   private readonly controllers = new Map<string, AbortController>();
 
   public constructor(options: NvidiaHostedNimProviderOptions) {
@@ -46,6 +58,9 @@ export class NvidiaHostedNimProvider implements IModelProvider {
     this.apiKey = options.apiKey.trim();
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImplementation = options.fetchImplementation ?? fetch;
+    this.creditAdmission = options.creditAdmission;
+    this.creditConfiguration = options.creditConfiguration;
+    this.inputTokenBounder = options.inputTokenBounder;
   }
 
   public async checkAvailability(): Promise<void> {
@@ -74,15 +89,72 @@ export class NvidiaHostedNimProvider implements IModelProvider {
       timedOut = true;
       controller.abort();
     }, this.timeoutMs);
+    let reservationId: string | undefined;
+    let settled = false;
+    let sendInvoked = false;
     try {
-      const body = buildRequestBody(input, this.model);
+      const configuration = this.creditConfiguration;
+      const bounder = this.inputTokenBounder;
+      const admission = this.creditAdmission;
+      if (!configuration || !bounder || !admission
+        || !Number.isSafeInteger(configuration.maxOutputTokens)
+        || configuration.maxOutputTokens < 1 || configuration.maxOutputTokens > 16_384
+        || !Number.isSafeInteger(configuration.maxInputTokens) || configuration.maxInputTokens < 1
+        || !Number.isSafeInteger(configuration.maxAttemptsForSource) || configuration.maxAttemptsForSource < 1) {
+        yield { type: 'started' };
+        yield { type: 'failed', message: 'AI usage controls are not configured for this provider.' };
+        return;
+      }
+      const body = buildRequestBody(input, this.model, configuration.maxOutputTokens);
       const encoded = JSON.stringify(body);
       if (Buffer.byteLength(encoded, 'utf8') > MAX_REQUEST_BYTES) {
         yield { type: 'failed', message: 'The approved provider request exceeded the safe size limit.' };
         return;
       }
+      const messages = body.messages;
+      if (!Array.isArray(messages)) {
+        yield { type: 'started' };
+        yield { type: 'failed', message: 'The approved provider request could not be bounded safely.' };
+        return;
+      }
+      let inputTokenUpperBound: number;
+      try {
+        inputTokenUpperBound = await bounder.upperBound({ model: this.model, messages: messages as readonly { readonly role: string; readonly content: string }[] });
+      } catch {
+        yield { type: 'started' };
+        yield { type: 'failed', message: 'The approved provider request could not be bounded safely.' };
+        return;
+      }
+      if (!Number.isSafeInteger(inputTokenUpperBound) || inputTokenUpperBound < 1 || inputTokenUpperBound > configuration.maxInputTokens
+        || !bounder.version.trim()) {
+        yield { type: 'started' };
+        yield { type: 'failed', message: 'The approved provider request exceeds its verified token bound.' };
+        return;
+      }
+      try {
+        const reservation = await admission.reserveBeforeSend({
+          ownerId: input.ownerId,
+          sourceKind: 'ai_run',
+          sourceId: input.runId,
+          callId: 'nvidia-hosted-primary',
+          attemptId: '1',
+          providerProfile: 'nvidia-hosted-nim',
+          model: this.model,
+          price: configuration.price,
+          inputBounderVersion: bounder.version,
+          maxInputTokens: inputTokenUpperBound,
+          maxOutputTokens: configuration.maxOutputTokens,
+          maxAttemptsForSource: configuration.maxAttemptsForSource
+        });
+        reservationId = reservation.reservationId;
+      } catch {
+        yield { type: 'started' };
+        yield { type: 'failed', message: 'AI usage controls are unavailable or spending is paused.' };
+        return;
+      }
       yield { type: 'started' };
       yield { type: 'provider.request_started' };
+      sendInvoked = true;
       const response = await this.fetchImplementation(`${this.endpoint}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -99,14 +171,14 @@ export class NvidiaHostedNimProvider implements IModelProvider {
         return;
       }
       if (!response.body) {
-        yield* this.parseJsonResponse(await response.text());
+        yield* this.settleUsageEvents(this.parseJsonResponse(await response.text()), reservationId, (value) => { settled = value; });
         return;
       }
       if (response.headers.get('content-type')?.includes('text/event-stream')) {
-        yield* this.parseStream(response.body, controller.signal);
+        yield* this.settleUsageEvents(this.parseStream(response.body, controller.signal), reservationId, (value) => { settled = value; });
         return;
       }
-      yield* this.parseJsonResponse(await readBoundedBody(response.body, controller.signal));
+      yield* this.settleUsageEvents(this.parseJsonResponse(await readBoundedBody(response.body, controller.signal)), reservationId, (value) => { settled = value; });
     } catch (error: unknown) {
       if (controller.signal.aborted && !timedOut) {
         yield { type: 'cancelled' };
@@ -118,8 +190,33 @@ export class NvidiaHostedNimProvider implements IModelProvider {
         yield { type: 'needs_manual_review', message: new ModelProviderUnavailableError().message };
       }
     } finally {
+      if (reservationId && !settled) {
+        if (sendInvoked) {
+          await this.creditAdmission?.retainUnknown(reservationId, 'provider_usage_missing').catch(() => undefined);
+        } else {
+          await this.creditAdmission?.releaseKnownNotSent(reservationId).catch(() => undefined);
+        }
+      }
       clearTimeout(timer);
       this.controllers.delete(input.runId);
+    }
+  }
+
+  private async *settleUsageEvents(
+    events: AsyncIterable<ModelProviderEvent>,
+    reservationId: string,
+    setSettled: (settled: boolean) => void
+  ): AsyncIterable<ModelProviderEvent> {
+    for await (const event of events) {
+      if (event.type === 'provider.usage') {
+        try {
+          await this.creditAdmission?.settleReportedUsage(reservationId, event.usage);
+          setSettled(true);
+        } catch {
+          await this.creditAdmission?.retainUnknown(reservationId, 'provider_usage_invalid').catch(() => undefined);
+        }
+      }
+      yield event;
     }
   }
 
@@ -288,7 +385,7 @@ function normalizeEndpoint(endpoint: string): string {
   return endpoint.trim().replace(/\/+$/u, '');
 }
 
-function buildRequestBody(input: ModelProviderRequest, model: string): Record<string, unknown> {
+function buildRequestBody(input: ModelProviderRequest, model: string, maxOutputTokens: number): Record<string, unknown> {
   const messages = [
     { role: 'system', content: systemInstruction() },
     { role: 'user', content: `${contextPrompt(input)}\n\nUser request:\n${input.request}` }
@@ -300,7 +397,7 @@ function buildRequestBody(input: ModelProviderRequest, model: string): Record<st
     response_format: NVIDIA_RESPONSE_FORMAT,
     temperature: 1.0,
     top_p: 0.95,
-    max_tokens: 16384,
+    max_tokens: maxOutputTokens,
     reasoning_effort: 'none',
     chat_template_kwargs: { force_nonempty_content: true }
   };

@@ -42,6 +42,41 @@ describe('loadConfig', () => {
     expect(config.openshellBaseUrl).toBeUndefined();
   });
 
+  it('parses only a complete operator-supplied provider credit profile using integer rates', () => {
+    const config = loadConfig({
+      ...validEnvironment,
+      NIM_CREDIT_PRICE_VERSION: 'nim-price-2026-10',
+      NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS: '1250000',
+      NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS: '2500000',
+      NIM_MAX_INPUT_TOKENS: '4096',
+      NIM_MAX_OUTPUT_TOKENS: '8192',
+      NIM_MAX_PROVIDER_CALLS_PER_RUN: '4'
+    });
+
+    expect(config.providerCreditConfiguration).toEqual({
+      price: { version: 'nim-price-2026-10', inputUnitsPerMillionTokens: 1_250_000n, outputUnitsPerMillionTokens: 2_500_000n },
+      maxInputTokens: 4096,
+      maxOutputTokens: 8192,
+      maxAttemptsForSource: 4
+    });
+  });
+
+  it('rejects partial or out-of-range provider credit profiles', () => {
+    expect(() => loadConfig({
+      ...validEnvironment,
+      NIM_CREDIT_PRICE_VERSION: 'price-v1'
+    })).toThrow(ConfigurationError);
+    expect(() => loadConfig({
+      ...validEnvironment,
+      NIM_CREDIT_PRICE_VERSION: 'price-v1',
+      NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS: '1',
+      NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS: '1',
+      NIM_MAX_INPUT_TOKENS: '4096',
+      NIM_MAX_OUTPUT_TOKENS: '16385',
+      NIM_MAX_PROVIDER_CALLS_PER_RUN: '1'
+    })).toThrow(ConfigurationError);
+  });
+
   it('maps the server-side local-user password file without reading its value into config', () => {
     const config = loadConfig({ ...validEnvironment, LOCAL_USER_PASSWORD_FILE: '/run/secrets/local_user_password' });
 

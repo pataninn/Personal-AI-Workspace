@@ -1,0 +1,15 @@
+Task 3.1 isolated staged-source validation (2026-10-19)
+
+The staged application patch at validation time was applied in a temporary detached worktree based on 6fb7278bc680a0df11e3f6e6cb8bd03a0090cb7c. Its indexed patch hash was SHA-256 DEB22356F2320FFF5787B6F366B7E161FB8689D267A849BF39B60BB57ABCEB9A. After the checks, only this evidence artifact and its references in the task manifest/summary were added; no application source changed. The worktree source was checked to contain migration 0028 and omit migration 0029 and all Task 3.2 storage sources. Existing dependencies were linked from the workspace; no package installation ran.
+
+Backend typecheck:
+  Command: pnpm.cmd run typecheck
+  Environment: process-only pnpm_config_verify_deps_before_run=false
+  Result: exit 0
+
+Guarded PostgreSQL checks:
+  Command: pnpm.cmd test:integration -- credit-ledger.integration.spec.ts r1-populated-migration.integration.spec.ts
+  Environment: the ACL-restricted test URL was loaded in-process and validated for the isolated home_test/home_history_test fixture on loopback port 55441; the value was not printed or saved in this artifact.
+  Result: exit 0; 2 suites passed, 10 tests passed, 13.956 seconds.
+
+The R1 populated-database migration fixture passed with the staged migration chain through 0028. The tests created and removed only their guarded disposable databases. No provider calls or application-database access occurred.

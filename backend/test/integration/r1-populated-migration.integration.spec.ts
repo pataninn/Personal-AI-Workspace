@@ -57,6 +57,7 @@ describeDatabase('R1 populated database migration regression', () => {
   let migrationUrl: string;
   let dataSource: DataSource | undefined;
   let createdDatabase = false;
+  let migrationsFromOwnershipBoundary = 0;
   let legacyTask: { readonly id: string; readonly title: string; readonly deadline: string | null; readonly importance: string; readonly subtasks: unknown };
 
   beforeAll(async () => {
@@ -121,7 +122,9 @@ describeDatabase('R1 populated database migration regression', () => {
     expect(applied).toHaveLength(dataSource.migrations.length - LEGACY_MIGRATION_COUNT);
     const migrationRows: readonly { readonly name: string }[] = await dataSource.query('SELECT "name" FROM "migrations" ORDER BY "timestamp"');
     expect(migrationRows).toHaveLength(dataSource.migrations.length);
-    expect(migrationRows.at(-1)?.name).toBe('EnforceProjectOwnershipBoundaries1710000027000');
+    const ownershipBoundaryIndex = migrationRows.findIndex((migration) => migration.name === 'EnforceProjectOwnershipBoundaries1710000027000');
+    expect(ownershipBoundaryIndex).toBeGreaterThanOrEqual(0);
+    migrationsFromOwnershipBoundary = migrationRows.length - ownershipBoundaryIndex;
     const migratedOwner: readonly { id: string; scope_key: string; display_name: string; identifier: string; account_kind: string; role: string; password_hash: string }[] = await dataSource.query(
       'SELECT "id", "scope_key", "display_name", "identifier", "account_kind", "role", "password_hash" FROM "users" WHERE "id" = $1',
       [OWNER_ID]
@@ -347,7 +350,9 @@ describeDatabase('R1 populated database migration regression', () => {
     `);
     expect(tables[0]).toEqual({ inboxOrder: 'project_task_order_states', homeEvents: 'home_conversation_events', proposals: 'home_change_proposals' });
 
-    await dataSource.undoLastMigration({ transaction: 'all' });
+    for (let index = 0; index < migrationsFromOwnershipBoundary; index += 1) {
+      await dataSource.undoLastMigration({ transaction: 'all' });
+    }
     const storageKindColumns: readonly { readonly storage_kind: string | null }[] = await dataSource.query(`
       SELECT column_name AS "storage_kind" FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'projects' AND column_name = 'storage_kind'

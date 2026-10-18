@@ -19,11 +19,20 @@ function runtimeWith(bridgeCall: jest.Mock, registeredToolNames: readonly HomePl
   return new HermesHomePlanningRuntime(
     { call: bridgeCall } as unknown as HermesBridgeClient,
     provider,
-    { registeredToolNames }
+    { registeredToolNames, providerEgressAdmissionEnforced: true }
   );
 }
 
 describe('HermesHomePlanningRuntime', () => {
+  it('fails closed before planning-create unless the bridge egress gate is explicitly verified', async () => {
+    const call = jest.fn();
+    const runtime = new HermesHomePlanningRuntime({ call } as unknown as HermesBridgeClient, provider);
+
+    await expect(runtime.start({ turnId, prompt: 'Plan a synthetic test.', provider }))
+      .resolves.toEqual({ outcome: 'unavailable', code: 'PLANNING_RUNTIME_UNAVAILABLE' });
+    expect(call).not.toHaveBeenCalled();
+  });
+
   it('accepts a bounded planning create once with only prompt and configured provider metadata', async () => {
     const call = jest.fn().mockResolvedValue({ status: 'preparing' });
     const runtime = runtimeWith(call);

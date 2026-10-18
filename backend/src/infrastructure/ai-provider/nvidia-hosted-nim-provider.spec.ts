@@ -1,7 +1,9 @@
 import type { ModelProviderRequest } from '@/modules/ai-runs/repositories/model-provider';
 import { NvidiaHostedNimProvider } from '@/infrastructure/ai-provider/nvidia-hosted-nim-provider';
+import type { IProviderCallCreditAdmission, ProviderCallCreditConfiguration } from '@/modules/credits/repositories/provider-call-credit-admission';
 
 const request: ModelProviderRequest = {
+  ownerId: '33333333-3333-4333-8333-333333333333',
   runId: 'run-1',
   request: 'Inspect the project.',
   manifest: {
@@ -27,12 +29,173 @@ const request: ModelProviderRequest = {
   messages: []
 };
 
+const creditConfiguration: ProviderCallCreditConfiguration = {
+  price: { version: 'provider-fixture-v1', inputUnitsPerMillionTokens: 1_000_000n, outputUnitsPerMillionTokens: 1_000_000n },
+  maxInputTokens: 100,
+  maxOutputTokens: 16_384,
+  maxAttemptsForSource: 1
+};
+
+function createProvider(options: ConstructorParameters<typeof NvidiaHostedNimProvider>[0]): NvidiaHostedNimProvider {
+  const creditAdmission: IProviderCallCreditAdmission = {
+    reserveBeforeSend: jest.fn(async () => ({ reservationId: 'fixture-reservation', maximumUnits: 100n })),
+    settleReportedUsage: jest.fn(async () => ({ outcome: 'settled' as const, chargedUnits: 2n })),
+    retainUnknown: jest.fn(async () => undefined),
+    releaseKnownNotSent: jest.fn(async () => undefined)
+  };
+  return new NvidiaHostedNimProvider({
+    creditAdmission,
+    creditConfiguration,
+    inputTokenBounder: { version: 'fixture-token-bound-v1', upperBound: async () => 32 },
+    ...options
+  });
+}
+
 describe('NvidiaHostedNimProvider', () => {
+  it('reserves from the trusted owner and exact assembled messages before sending, then settles usage', async () => {
+    const order: string[] = [];
+    const creditAdmission: IProviderCallCreditAdmission = {
+      reserveBeforeSend: jest.fn(async (input) => {
+        order.push('reserve');
+        expect(input).toMatchObject({
+          ownerId: request.ownerId,
+          sourceKind: 'ai_run',
+          sourceId: request.runId,
+          callId: 'nvidia-hosted-primary',
+          attemptId: '1',
+          maxInputTokens: 32,
+          maxOutputTokens: 16_384,
+          inputBounderVersion: 'fixture-token-bound-v1'
+        });
+        return { reservationId: 'call-reservation', maximumUnits: 100n };
+      }),
+      settleReportedUsage: jest.fn(async () => {
+        order.push('settle');
+        return { outcome: 'settled' as const, chargedUnits: 2n };
+      }),
+      retainUnknown: jest.fn(async () => undefined),
+      releaseKnownNotSent: jest.fn(async () => undefined)
+    };
+    const fetchImplementation = jest.fn(async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      order.push('send');
+      const body = JSON.parse(String(init?.body)) as { max_tokens: number };
+      expect(body.max_tokens).toBe(16_384);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ message: 'Done', changes: [] }) } }],
+        usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 }
+      }), { headers: { 'content-type': 'application/json' } });
+    });
+    const provider = createProvider({
+      endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key',
+      creditAdmission, fetchImplementation,
+      inputTokenBounder: { version: 'fixture-token-bound-v1', upperBound: async ({ messages }) => {
+        expect(messages).toHaveLength(2);
+        return 32;
+      } }
+    });
+
+    const events = await collect(provider.stream(request));
+
+    expect(order).toEqual(['reserve', 'send', 'settle']);
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+    expect(creditAdmission.settleReportedUsage).toHaveBeenCalledWith('call-reservation', {
+      promptTokens: 12, completionTokens: 4, totalTokens: 16
+    });
+    expect(events).toContainEqual({ type: 'provider.usage', usage: { promptTokens: 12, completionTokens: 4, totalTokens: 16 } });
+    expect(creditAdmission.retainUnknown).not.toHaveBeenCalled();
+  });
+
+  it('denies a send when pricing, bounder, or admission is absent', async () => {
+    const fetchImplementation = jest.fn(async () => new Response('{}'));
+    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+
+    const events = await collect(provider.stream(request));
+
+    expect(fetchImplementation).not.toHaveBeenCalled();
+    expect(events).toEqual([
+      { type: 'started' },
+      { type: 'failed', message: 'AI usage controls are not configured for this provider.' }
+    ]);
+  });
+
+  it('denies a send when atomic admission rejects the bounded provider call', async () => {
+    const fetchImplementation = jest.fn(async () => new Response('{}'));
+    const creditAdmission: IProviderCallCreditAdmission = {
+      reserveBeforeSend: jest.fn(async () => { throw new Error('ledger denied'); }),
+      settleReportedUsage: jest.fn(async () => ({ outcome: 'settled' as const, chargedUnits: 0n })),
+      retainUnknown: jest.fn(async () => undefined),
+      releaseKnownNotSent: jest.fn(async () => undefined)
+    };
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', creditAdmission, fetchImplementation });
+
+    const events = await collect(provider.stream(request));
+
+    expect(fetchImplementation).not.toHaveBeenCalled();
+    expect(events.at(-1)).toEqual({ type: 'failed', message: 'AI usage controls are unavailable or spending is paused.' });
+  });
+
+  it('denies a request whose measured input upper bound exceeds the configured hard cap', async () => {
+    const fetchImplementation = jest.fn(async () => new Response('{}'));
+    const creditAdmission: IProviderCallCreditAdmission = {
+      reserveBeforeSend: jest.fn(async () => ({ reservationId: 'must-not-reserve', maximumUnits: 100n })),
+      settleReportedUsage: jest.fn(async () => ({ outcome: 'settled' as const, chargedUnits: 0n })),
+      retainUnknown: jest.fn(async () => undefined),
+      releaseKnownNotSent: jest.fn(async () => undefined)
+    };
+    const provider = createProvider({
+      endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', creditAdmission, fetchImplementation,
+      inputTokenBounder: { version: 'fixture-token-bound-v1', upperBound: async () => 101 }
+    });
+
+    const events = await collect(provider.stream(request));
+
+    expect(fetchImplementation).not.toHaveBeenCalled();
+    expect(creditAdmission.reserveBeforeSend).not.toHaveBeenCalled();
+    expect(events.at(-1)).toEqual({ type: 'failed', message: 'The approved provider request exceeds its verified token bound.' });
+  });
+
+  it('releases the reservation only when the consumer closes before the fetch boundary', async () => {
+    const creditAdmission: IProviderCallCreditAdmission = {
+      reserveBeforeSend: jest.fn(async () => ({ reservationId: 'not-sent', maximumUnits: 100n })),
+      settleReportedUsage: jest.fn(async () => ({ outcome: 'settled' as const, chargedUnits: 0n })),
+      retainUnknown: jest.fn(async () => undefined),
+      releaseKnownNotSent: jest.fn(async () => undefined)
+    };
+    const fetchImplementation = jest.fn(async () => new Response('{}'));
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', creditAdmission, fetchImplementation });
+    const iterator = provider.stream(request)[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({ value: { type: 'started' }, done: false });
+    await iterator.return?.(undefined);
+
+    expect(fetchImplementation).not.toHaveBeenCalled();
+    expect(creditAdmission.releaseKnownNotSent).toHaveBeenCalledWith('not-sent');
+    expect(creditAdmission.retainUnknown).not.toHaveBeenCalled();
+  });
+
+  it('retains the maximum reservation when provider usage is absent after transmission', async () => {
+    const creditAdmission: IProviderCallCreditAdmission = {
+      reserveBeforeSend: jest.fn(async () => ({ reservationId: 'unknown-result', maximumUnits: 100n })),
+      settleReportedUsage: jest.fn(async () => ({ outcome: 'settled' as const, chargedUnits: 0n })),
+      retainUnknown: jest.fn(async () => undefined),
+      releaseKnownNotSent: jest.fn(async () => undefined)
+    };
+    const provider = createProvider({
+      endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', creditAdmission,
+      fetchImplementation: jest.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: 'Done' } }] }), { headers: { 'content-type': 'application/json' } }))
+    });
+
+    await collect(provider.stream(request));
+
+    expect(creditAdmission.retainUnknown).toHaveBeenCalledWith('unknown-result', 'provider_usage_missing');
+    expect(creditAdmission.releaseKnownNotSent).not.toHaveBeenCalled();
+  });
+
   it('still rejects generated content over the limit before publishing changes', async () => {
     const output = JSON.stringify({ message: 'Created file.', changes: [{ operation: 'create', path: 'index.html', content: 'x'.repeat(64 * 1024) }] });
     const wire = `data: ${JSON.stringify({ choices: [{ delta: { content: output } }] })}\n\ndata: [DONE]\n\n`;
     const fetchImplementation = jest.fn(async () => new Response(wire, { headers: { 'content-type': 'text/event-stream' } }));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
     const events = await collect(provider.stream(request));
     expect(events.at(-1)).toMatchObject({ type: 'failed' });
     expect(events.some((event) => event.type === 'changes.proposed' || event.type === 'completed')).toBe(false);
@@ -41,7 +204,7 @@ describe('NvidiaHostedNimProvider', () => {
   it('keeps a bounded transport budget even for SSE metadata without content', async () => {
     const wire = ': ' + 'x'.repeat(8 * 1024 * 1024) + '\n\ndata: [DONE]\n\n';
     const fetchImplementation = jest.fn(async () => new Response(wire, { headers: { 'content-type': 'text/event-stream' } }));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
     const events = await collect(provider.stream(request));
     expect(events.at(-1)).toMatchObject({ type: 'failed' });
     expect(events.some((event) => event.type === 'completed')).toBe(false);
@@ -58,7 +221,7 @@ describe('NvidiaHostedNimProvider', () => {
     expect(Buffer.byteLength(wire)).toBeGreaterThan(192 * 1024);
     expect(Buffer.byteLength(output)).toBeLessThan(64 * 1024);
     const fetchImplementation = jest.fn(async () => new Response(wire, { headers: { 'content-type': 'text/event-stream' } }));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
     const events = await collect(provider.stream(request));
     expect(events).toContainEqual({ type: 'changes.proposed', changes: [{ operation: 'create', path: 'index.html', content }] });
     expect(events).toContainEqual({ type: 'provider.usage', usage: { completionTokens: 4000 } });
@@ -70,7 +233,7 @@ describe('NvidiaHostedNimProvider', () => {
       ? JSON.stringify({ choices: [{ message: { content }, finish_reason: 'length' }] })
       : `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'length' }] })}\n\ndata: [DONE]\n\n`;
     const fetchImplementation = jest.fn(async () => new Response(payload, { headers: { 'content-type': format === 'json' ? 'application/json' : 'text/event-stream' } }));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
     const events = await collect(provider.stream(request));
     expect(events.at(-1)).toMatchObject({ type: 'failed', message: expect.stringContaining('response length limit') });
     expect(events.some((event) => event.type === 'changes.proposed' || event.type === 'completed')).toBe(false);
@@ -78,7 +241,7 @@ describe('NvidiaHostedNimProvider', () => {
 
   it('reports a rate limit without exposing the provider response body', async () => {
     const fetchImplementation = jest.fn(async () => new Response('secret provider detail', { status: 429 }));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
     const events = await collect(provider.stream(request));
     expect(events.at(-1)).toMatchObject({ type: 'failed', message: expect.stringContaining('HTTP 429') });
     expect(JSON.stringify(events)).not.toContain('secret provider detail');
@@ -92,7 +255,7 @@ describe('NvidiaHostedNimProvider', () => {
         `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`
       ).join('') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
       : new Response(JSON.stringify({ choices: [{ message: { content: prefix + envelope } }] }), { headers: { 'content-type': 'application/json' } }));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
 
     const events = await collect(provider.stream(request));
 
@@ -134,7 +297,7 @@ describe('NvidiaHostedNimProvider', () => {
         headers: { 'content-type': 'application/json' }
       });
     });
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
 
     const events = await collect(provider.stream(requestWithFact));
 
@@ -168,7 +331,7 @@ describe('NvidiaHostedNimProvider', () => {
         headers: { 'content-type': 'application/json' }
       });
     });
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
 
     const events = await collect(provider.stream(request));
 
@@ -187,7 +350,7 @@ describe('NvidiaHostedNimProvider', () => {
       'data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: {"choices":[{"delta":{"content":" world"}}]}\n\ndata: [DONE]\n\n',
       { status: 200, headers: { 'content-type': 'text/event-stream' } }
     ));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
 
     const events = await collect(provider.stream(request));
 
@@ -207,7 +370,7 @@ describe('NvidiaHostedNimProvider', () => {
       'data: {"choices":[{"delta":{"content":"Usage captured."}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":14,"completion_tokens":-1,"total_tokens":"18"}}\n\ndata: [DONE]\n\n',
       { status: 200, headers: { 'content-type': 'text/event-stream' } }
     ));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
 
     const events = await collect(provider.stream(request));
 
@@ -220,7 +383,7 @@ describe('NvidiaHostedNimProvider', () => {
       choices: [{ message: { content: 5 } }],
       usage: { prompt_tokens: 18, completion_tokens: -2, total_tokens: 18 }
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
 
     const events = await collect(provider.stream(request));
 
@@ -232,7 +395,7 @@ describe('NvidiaHostedNimProvider', () => {
     const fetchImplementation = jest.fn(async (): Promise<Response> => new Response(JSON.stringify({
       choices: [{ message: { content: JSON.stringify({ message: 'Suggested one task.', taskSuggestions: [{ title: 'Update setup notes' }] }) } }]
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
 
     const events = await collect(provider.stream(request));
 
@@ -245,7 +408,7 @@ describe('NvidiaHostedNimProvider', () => {
 
   it('fails closed when the provider rejects a request', async () => {
     const fetchImplementation = jest.fn(async (): Promise<Response> => new Response('provider detail with secret', { status: 422 }));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
 
     await expect(collect(provider.stream(request))).resolves.toEqual([
       { type: 'started' },
@@ -260,7 +423,7 @@ describe('NvidiaHostedNimProvider', () => {
       'data: {"choices":[{"delta":{"content":"token=super-secret"}}]}\n\ndata: [DONE]\n\n',
       { status: 200, headers: { 'content-type': 'text/event-stream' } }
     ));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
 
     const events = await collect(provider.stream(request));
 
@@ -276,7 +439,7 @@ describe('NvidiaHostedNimProvider', () => {
       'data: {"choices":[{"delta":{"content":"token="}}]}\n\ndata: {"choices":[{"delta":{"content":"split-secret"}}]}\n\ndata: [DONE]\n\n',
       { status: 200, headers: { 'content-type': 'text/event-stream' } }
     ));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
 
     const events = await collect(provider.stream(request));
 
@@ -292,7 +455,7 @@ describe('NvidiaHostedNimProvider', () => {
       'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
       { status: 200, headers: { 'content-type': 'text/event-stream' } }
     ));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
 
     await expect(collect(provider.stream(request))).resolves.toEqual([
       { type: 'started' },
@@ -307,7 +470,7 @@ describe('NvidiaHostedNimProvider', () => {
       'data: not-json\n\ndata: [DONE]\n\n',
       { status: 200, headers: { 'content-type': 'text/event-stream' } }
     ));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
 
     await expect(collect(provider.stream(request))).resolves.toEqual([
       { type: 'started' },
@@ -322,7 +485,7 @@ describe('NvidiaHostedNimProvider', () => {
       'data: {"error":{"message":"temporary unavailable"}}\n\ndata: [DONE]\n\n',
       { status: 200, headers: { 'content-type': 'text/event-stream' } }
     ));
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
 
     const events = await collect(provider.stream(request));
 
@@ -338,7 +501,7 @@ describe('NvidiaHostedNimProvider', () => {
     const fetchImplementation = jest.fn(async (): Promise<Response> => {
       throw new Error('network failure');
     });
-    const provider = new NvidiaHostedNimProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation });
 
     await expect(collect(provider.stream(request))).resolves.toEqual([
       { type: 'started' },

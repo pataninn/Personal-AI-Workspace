@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { NEBIUS_PROVIDER_PROFILE, NVIDIA_PROVIDER_PROFILE } from '@/modules/ai-runs/domain/model-provider-profile';
+import { parseCreditRate, parseTokenLimit } from '@/modules/credits/domain/credit-calculation';
+import type { ProviderCallCreditConfiguration } from '@/modules/credits/repositories/provider-call-credit-admission';
 
 import {
   ConfigurationError,
@@ -64,6 +66,12 @@ const appEnvironmentSchema = z.object({
   NIM_PROFILE: z.enum([NVIDIA_PROVIDER_PROFILE, NEBIUS_PROVIDER_PROFILE]).default(NVIDIA_PROVIDER_PROFILE),
   NIM_ENDPOINT: z.string().url().default('https://integrate.api.nvidia.com/v1'),
   NIM_MODEL: z.string().default(EXPECTED_NIM_MODEL),
+  NIM_CREDIT_PRICE_VERSION: z.string().trim().min(1).max(64).optional(),
+  NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS: z.string().regex(/^[1-9][0-9]{0,18}$/u).optional(),
+  NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS: z.string().regex(/^[1-9][0-9]{0,18}$/u).optional(),
+  NIM_MAX_INPUT_TOKENS: z.string().regex(/^[1-9][0-9]{0,8}$/u).optional(),
+  NIM_MAX_OUTPUT_TOKENS: z.string().regex(/^[1-9][0-9]{0,8}$/u).optional(),
+  NIM_MAX_PROVIDER_CALLS_PER_RUN: z.string().regex(/^[1-9][0-9]?$/u).optional(),
   HOME_PLANNING_TIME_ZONE: z.string().min(1).optional(),
   AGENT_RUNTIME_MODE: z.enum(['fake', 'direct', 'openshell', 'hermes']).default('direct'),
   HERMES_BRIDGE_ENDPOINT: z.string().url().optional(),
@@ -115,6 +123,7 @@ export interface AppConfig {
   readonly nimProfile: string;
   readonly nimEndpoint: string;
   readonly nimModel: string;
+  readonly providerCreditConfiguration?: ProviderCallCreditConfiguration;
   readonly homePlanningTimeZone?: string;
   readonly agentRuntimeMode: 'fake' | 'direct' | 'openshell' | 'hermes';
   readonly hermesBridgeEndpoint?: string;
@@ -176,6 +185,32 @@ function validateCrossFieldConfiguration(value: z.infer<typeof appEnvironmentSch
   }
   if (value.NIM_MODEL !== EXPECTED_NIM_MODEL) {
     details.push({ field: 'NIM_MODEL', message: `NIM_MODEL must be ${EXPECTED_NIM_MODEL}` });
+  }
+  const creditConfigurationFields = [
+    value.NIM_CREDIT_PRICE_VERSION,
+    value.NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS,
+    value.NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS,
+    value.NIM_MAX_INPUT_TOKENS,
+    value.NIM_MAX_OUTPUT_TOKENS,
+    value.NIM_MAX_PROVIDER_CALLS_PER_RUN
+  ];
+  const creditConfigurationCount = creditConfigurationFields.filter((field) => field !== undefined).length;
+  if (creditConfigurationCount > 0 && creditConfigurationCount < creditConfigurationFields.length) {
+    details.push({ field: 'NIM_CREDIT_PRICE_VERSION', message: 'Provider prices, token bounds, and maximum call count must be configured together.' });
+  }
+  if (value.NIM_MAX_OUTPUT_TOKENS && Number(value.NIM_MAX_OUTPUT_TOKENS) > 16_384) {
+    details.push({ field: 'NIM_MAX_OUTPUT_TOKENS', message: 'The provider output-token cap must be 16384 or less.' });
+  }
+  if (value.NIM_MAX_PROVIDER_CALLS_PER_RUN && Number(value.NIM_MAX_PROVIDER_CALLS_PER_RUN) > 32) {
+    details.push({ field: 'NIM_MAX_PROVIDER_CALLS_PER_RUN', message: 'The provider attempt cap must be 32 or less.' });
+  }
+  try {
+    if (value.NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS) parseCreditRate(value.NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS);
+    if (value.NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS) parseCreditRate(value.NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS);
+    if (value.NIM_MAX_INPUT_TOKENS) parseTokenLimit(value.NIM_MAX_INPUT_TOKENS);
+    if (value.NIM_MAX_OUTPUT_TOKENS) parseTokenLimit(value.NIM_MAX_OUTPUT_TOKENS);
+  } catch {
+    details.push({ field: 'NIM_CREDIT_PRICE_VERSION', message: 'Provider price and token limits must fit the supported integer ranges.' });
   }
   if (value.NIM_PROFILE === NEBIUS_PROVIDER_PROFILE && (value.AGENT_RUNTIME_MODE !== 'hermes' || value.NIM_ENDPOINT !== 'https://api.tokenfactory.nebius.com/v1')) {
     details.push({ field: 'NIM_PROFILE', message: 'Nebius Token Factory requires Hermes mode and https://api.tokenfactory.nebius.com/v1.' });
@@ -248,6 +283,23 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
   }
 
   const database = loadDatabaseConfig(environment);
+  const providerCreditConfiguration = parsed.data.NIM_CREDIT_PRICE_VERSION
+    && parsed.data.NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS
+    && parsed.data.NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS
+    && parsed.data.NIM_MAX_INPUT_TOKENS
+    && parsed.data.NIM_MAX_OUTPUT_TOKENS
+    && parsed.data.NIM_MAX_PROVIDER_CALLS_PER_RUN
+    ? {
+      price: {
+        version: parsed.data.NIM_CREDIT_PRICE_VERSION,
+        inputUnitsPerMillionTokens: parseCreditRate(parsed.data.NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS),
+        outputUnitsPerMillionTokens: parseCreditRate(parsed.data.NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS)
+      },
+      maxInputTokens: parseTokenLimit(parsed.data.NIM_MAX_INPUT_TOKENS),
+      maxOutputTokens: parseTokenLimit(parsed.data.NIM_MAX_OUTPUT_TOKENS),
+      maxAttemptsForSource: Number(parsed.data.NIM_MAX_PROVIDER_CALLS_PER_RUN)
+    }
+    : undefined;
   return {
     nodeEnvironment: parsed.data.NODE_ENV,
     host: parsed.data.HOST,
@@ -284,6 +336,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     nimProfile: parsed.data.NIM_PROFILE,
     nimEndpoint: parsed.data.NIM_ENDPOINT,
     nimModel: parsed.data.NIM_MODEL,
+    ...(providerCreditConfiguration ? { providerCreditConfiguration } : {}),
     ...(parsed.data.HOME_PLANNING_TIME_ZONE ? { homePlanningTimeZone: parsed.data.HOME_PLANNING_TIME_ZONE } : {}),
     agentRuntimeMode: parsed.data.AGENT_RUNTIME_MODE,
     ...(parsed.data.HERMES_BRIDGE_ENDPOINT ? { hermesBridgeEndpoint: parsed.data.HERMES_BRIDGE_ENDPOINT } : {}),

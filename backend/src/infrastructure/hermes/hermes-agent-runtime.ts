@@ -39,6 +39,8 @@ interface HermesRuntimeOptions {
   readonly providerProfile: string;
   readonly model: string;
   readonly endpoint: string;
+  /** Must be enabled only after the bridge profile proves admission at the sole provider egress boundary. */
+  readonly providerEgressAdmissionEnforced?: boolean;
   readonly diagnose?: (detail: { readonly runId: string; readonly category: string; readonly stage: string; readonly trace: string }) => void;
 }
 
@@ -48,6 +50,7 @@ export class HermesAgentRuntime implements IAgentRuntime {
   public constructor(private readonly bridge: HermesBridgeClient, private readonly context: ApprovedContextReader, private readonly options: HermesRuntimeOptions) {}
 
   public async checkAvailability(): Promise<void> {
+    if (this.options.providerEgressAdmissionEnforced !== true) throw new AiRunRuntimeUnavailableError();
     const { providerProfile, model, endpoint } = this.options;
     const receipt = await this.bridge.call('probe', undefined, undefined, { providerProfile, model, endpoint });
     if (receipt.ready !== true || !isRecord(receipt.profile) || receipt.profile.hermesVersion !== '0.20.6'
@@ -63,6 +66,10 @@ export class HermesAgentRuntime implements IAgentRuntime {
   public async create(): Promise<{ readonly kind: 'hermes'; readonly sandboxReady: true }> { return this.prepareDirectRun(); }
 
   public async *startRun(input: RuntimeRunInput): AsyncIterable<RuntimeInferenceEvent> {
+    if (this.options.providerEgressAdmissionEnforced !== true) {
+      yield { type: 'failed', message: 'The selected inference runtime is unavailable until per-call usage controls are verified.' };
+      return;
+    }
     const active: ActiveRun = { input, taskResults: new Map(), capability: randomBytes(32).toString('base64url'), permissions: [], commandEvents: [], tools: new Map(), cancelled: false, cursor: 0 };
     this.runs.set(input.runId, active);
     try {
