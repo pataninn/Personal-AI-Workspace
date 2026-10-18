@@ -76,7 +76,7 @@ describe('DirectProviderAgentRuntime', () => {
     const runtime = new DirectProviderAgentRuntime({ provider, workspaceGateway: workspace, conversationRepository: conversationRepository() });
 
     const events = await collect(runtime.startRun({
-      runId: 'run-1', ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, relativeRoot: 'project',
+      runId: 'run-1', ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, storageKind: 'legacy', relativeRoot: 'project',
       request: 'Inspect the project.', manifest: manifest()
     }));
 
@@ -89,7 +89,7 @@ describe('DirectProviderAgentRuntime', () => {
     const runtime = new DirectProviderAgentRuntime({ provider, workspaceGateway: workspaceGateway('changed'), conversationRepository: conversationRepository() });
 
     const events = await collect(runtime.startRun({
-      runId: 'run-2', ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, relativeRoot: 'project',
+      runId: 'run-2', ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, storageKind: 'legacy', relativeRoot: 'project',
       request: 'Inspect the project.', manifest: manifest()
     }));
 
@@ -103,7 +103,7 @@ describe('DirectProviderAgentRuntime', () => {
     const runtime = new DirectProviderAgentRuntime({ provider, workspaceGateway: workspaceGateway(CONTENT), conversationRepository: conversationRepository() });
 
     const events = await collect(runtime.startRun({
-      runId: 'run-3', ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, relativeRoot: 'project',
+      runId: 'run-3', ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, storageKind: 'legacy', relativeRoot: 'project',
       request: 'Inspect the project.', manifest: manifest()
     }));
 
@@ -124,7 +124,7 @@ describe('DirectProviderAgentRuntime', () => {
     });
 
     await collect(runtime.startRun({
-      runId: 'run-fact', ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, relativeRoot: 'project',
+      runId: 'run-fact', ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, storageKind: 'legacy', relativeRoot: 'project',
       request: 'Use the test command.', manifest: selectedManifest
     }));
 
@@ -144,7 +144,7 @@ describe('DirectProviderAgentRuntime', () => {
     });
 
     const events = await collect(runtime.startRun({
-      runId: 'run-fact-stale', ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, relativeRoot: 'project',
+      runId: 'run-fact-stale', ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, storageKind: 'legacy', relativeRoot: 'project',
       request: 'Use the test command.', manifest: selectedManifest
     }));
 

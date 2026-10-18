@@ -2,8 +2,9 @@ import type { RequestHandler, Response } from 'express';
 import { Router } from 'express';
 import { z } from 'zod';
 
-import { authenticateRequest, requireCsrf, sameOrigin } from '@/modules/auth/controllers/request-auth';
+import { authenticateRequest, requireCsrf, sameOrigin, SESSION_COOKIE_NAME } from '@/modules/auth/controllers/request-auth';
 import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
+import type { IPrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
 import type { IRunEventPublisher, RunEvent } from '@/modules/ai-runs/repositories/run-event-publisher';
 import { CancelAiRunUseCase } from '@/modules/ai-runs/use-cases/cancel-ai-run-use-case';
 import { GetAiRunUseCase, toSnapshot } from '@/modules/ai-runs/use-cases/ai-run-use-cases';
@@ -16,6 +17,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 
 export interface AiRunChatRouterDependencies {
   readonly getSession: GetSessionUseCase;
+  readonly principalAuthorization: IPrincipalAuthorization;
   readonly getAiRun: GetAiRunUseCase;
   readonly startAiRun: StartAiRunUseCase;
   readonly cancelAiRun: CancelAiRunUseCase;
@@ -86,6 +88,11 @@ function eventsHandler(dependencies: AiRunChatRouterDependencies): RequestHandle
     let closed = request.destroyed;
     let unsubscribe = (): void => undefined;
     let heartbeat: NodeJS.Timeout | undefined;
+    let delivery = Promise.resolve();
+    const closeStream = (): void => {
+      cleanup();
+      if (!response.writableEnded) response.end();
+    };
     const cleanup = (): void => {
       if (closed) {
         return;
@@ -101,12 +108,27 @@ function eventsHandler(dependencies: AiRunChatRouterDependencies): RequestHandle
     request.on('close', cleanup);
     try {
       const ownerId = request.auth?.principal.id;
-      if (!ownerId) {
+      const sessionId = request.auth?.sessionId;
+      if (!ownerId || !sessionId) {
         next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
         return;
       }
       const identifier = runId(request);
       const run = await dependencies.getAiRun.execute({ ownerId, runId: identifier });
+      const isStreamAuthorized = async (): Promise<boolean> => {
+        try {
+          const current = await dependencies.getSession.execute(request.cookies?.[SESSION_COOKIE_NAME]);
+          return current.sessionId === sessionId
+            && current.principal.id === ownerId
+            && await dependencies.principalAuthorization.isActive(ownerId);
+        } catch {
+          return false;
+        }
+      };
+      if (!await isStreamAuthorized()) {
+        closeStream();
+        return;
+      }
       if (closed) {
         return;
       }
@@ -117,24 +139,31 @@ function eventsHandler(dependencies: AiRunChatRouterDependencies): RequestHandle
       response.setHeader('X-Accel-Buffering', 'no');
       response.flushHeaders();
       heartbeat = setInterval(() => {
-        if (!closed) {
-          response.write(': heartbeat\n\n');
-        }
+        void isStreamAuthorized().then((active) => {
+          if (!active) closeStream();
+          else if (!closed) response.write(': heartbeat\n\n');
+        }).catch(closeStream);
       }, 15_000);
       const subscription = dependencies.events.subscribe(identifier, (event) => {
-        if (closed) {
-          return;
-        }
-        writeEvent(response, event);
-        if (isTerminalEvent(event.type)) {
-          cleanup();
-          response.end();
-        }
+        delivery = delivery.then(async () => {
+          if (closed) return;
+          if (!await isStreamAuthorized()) {
+            closeStream();
+            return;
+          }
+          if (closed) return;
+          writeEvent(response, event);
+          if (isTerminalEvent(event.type)) closeStream();
+        }).catch(closeStream);
       });
       unsubscribe = subscription;
       if (closed) {
         unsubscribe();
         unsubscribe = (): void => undefined;
+        return;
+      }
+      if (!await isStreamAuthorized()) {
+        closeStream();
         return;
       }
       writeEvent(response, {
@@ -145,8 +174,7 @@ function eventsHandler(dependencies: AiRunChatRouterDependencies): RequestHandle
         payload: serializeSnapshot(run)
       });
       if (isTerminalStatus(run.status)) {
-        cleanup();
-        response.end();
+        closeStream();
       }
     } catch (error: unknown) {
       if (closed) {

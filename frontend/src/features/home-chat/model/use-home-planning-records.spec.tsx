@@ -90,7 +90,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   api.listHomeProposals.mockResolvedValue({ proposals: [], nextCursor: null });
   api.getHomeProposal.mockResolvedValue(reviewProposal);
-  api.getProject.mockResolvedValue({ id: WORKSPACE_ID, name: 'Release planning', slug: 'release-planning', relativeRoot: null, status: 'active', version: 1, createdAt: NOW, updatedAt: NOW });
+  api.getProject.mockResolvedValue({ id: WORKSPACE_ID, name: 'Release planning', slug: 'release-planning', workspaceMode: 'planning', capabilities: { planning: true, fileAccess: false }, status: 'active', version: 1, createdAt: NOW, updatedAt: NOW });
   api.getTaskActionReceipt.mockResolvedValue({ id: RECEIPT_ID, actionKind: 'workspace.create', targetKind: 'workspace', targetId: WORKSPACE_ID, postVersion: 1, undoStatus: 'available', undoActionId: null });
   api.getGlobalTask.mockResolvedValue({ task: { id: '88888888-8888-4888-8888-888888888888' }, collection: 'inbox', workspace: null });
 });

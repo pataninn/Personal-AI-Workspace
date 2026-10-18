@@ -1,4 +1,5 @@
 import type { EgressManifest, ProviderTokenUsage } from '@/modules/ai-runs/domain/ai-run-types';
+import type { ProjectStorageKind } from '@/modules/projects/domain/project-types';
 import type { CommandLimits, CommandResult } from '@/modules/ai-runs/domain/command-types';
 import type { RuntimeChangeProposal } from '@/modules/ai-runs/domain/change-types';
 import type { TaskSuggestionDraft } from '@/modules/ai-runs/domain/task-suggestion-draft';
@@ -21,10 +22,11 @@ export interface DirectRunPreparationInput {
 
 export interface RuntimeRunInput {
   readonly runId: string;
-  readonly ownerId?: string;
-  readonly projectId?: string;
-  readonly conversationId?: string;
-  readonly relativeRoot?: string;
+  readonly ownerId: string;
+  readonly projectId: string;
+  readonly conversationId: string;
+  readonly storageKind: ProjectStorageKind;
+  readonly relativeRoot: string;
   readonly request: string;
   readonly manifest: EgressManifest;
   readonly stagedReference?: string;

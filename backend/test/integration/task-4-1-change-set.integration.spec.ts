@@ -104,7 +104,7 @@ async function buildContext(options: { readonly outcome?: WorkspaceApplyResult['
   const decideChangeSet = new DecideProposedChangeSetUseCase(runs, projects, changeSets, gateway);
   const readiness = new InMemoryReadinessState();
   readiness.markReady();
-  const getSession = { execute: jest.fn().mockImplementation((cookie?: string) => Promise.resolve({ sessionId: 'session', principal: { id: cookie === 'other' ? OTHER_OWNER_ID : OWNER_ID, displayName: 'Local user' }, csrfToken: 'csrf-token', expiresAt: new Date(Date.now() + 60_000) })) } as unknown as GetSessionUseCase;
+  const getSession = { execute: jest.fn().mockImplementation((cookie?: string) => Promise.resolve({ sessionId: 'session', principal: { id: cookie === 'other' ? OTHER_OWNER_ID : OWNER_ID, displayName: 'Local user', accountKind: 'regular', role: 'admin' }, csrfToken: 'csrf-token', expiresAt: new Date(Date.now() + 60_000) })) } as unknown as GetSessionUseCase;
   const app = createApp({
     logger: createLogger('silent'),
     readiness: new GetReadinessUseCase(readiness),
@@ -142,7 +142,7 @@ async function createSucceededRun(repository: InMemoryAiRunRepository): Promise<
     omissionSummary: 'No selected items were excluded or omitted.',
     bestEffortSecretDetection: true
   };
-  const created = await repository.create({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: '44444444-4444-4444-8444-444444444444', request: 'edit the file', relativeRoot: 'project', requestedPaths: [SOURCE], manifest, idempotencyKey: 'run', requestFingerprint: 'fingerprint' });
+  const created = await repository.create({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: '44444444-4444-4444-8444-444444444444', request: 'edit the file', relativeRoot: 'project', storageKind: 'legacy', requestedPaths: [SOURCE], manifest, idempotencyKey: 'run', requestFingerprint: 'fingerprint' });
   const run: AiRun = { ...created.resource, status: 'succeeded', phase: 'terminal', decision: 'approved', runtimeKind: 'fake', sandboxReady: true, safeMessage: 'Complete', updatedAt: new Date() };
   await repository.save(run);
   return run;
@@ -150,7 +150,7 @@ async function createSucceededRun(repository: InMemoryAiRunRepository): Promise<
 
 class ProjectFixture implements IProjectRepository {
   public status: Project['status'] = 'active';
-  private readonly project: Project = { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', objective: null, status: 'active', version: 1, createdAt: new Date(), updatedAt: new Date() };
+  private readonly project: Project = { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', storageKind: 'legacy', objective: null, status: 'active', version: 1, createdAt: new Date(), updatedAt: new Date() };
   public async listByOwner(): Promise<readonly Project[]> { return [{ ...this.project, status: this.status }]; }
   public async findByIdForOwner(ownerId: string, projectId: string): Promise<Project | null> { return ownerId === OWNER_ID && projectId === PROJECT_ID ? { ...this.project, status: this.status } : null; }
   public async listActiveRoots(): Promise<readonly string[]> { return ['project']; }

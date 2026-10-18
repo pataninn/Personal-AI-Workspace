@@ -18,6 +18,7 @@ import type {
 import type { IProposedChangeSetRepository } from '@/modules/ai-runs/repositories/change-set-repository';
 import type { ListProjectFileHistoryInput, ProjectFileHistoryRecord, ProjectFileHistoryRecordPage } from '@/modules/ai-runs/domain/file-history-types';
 import { ProjectArchivedError } from '@/modules/conversations/domain/conversation-errors';
+import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
 
 interface ChangeSetRow {
   readonly id: string;
@@ -67,6 +68,7 @@ export class TypeOrmProposedChangeSetRepository implements IProposedChangeSetRep
   public async create(input: CreateProposedChangeSetRecord): Promise<ProposedChangeSet> {
     const queryRunner = await this.startTransaction();
     try {
+      await assertPrincipalActive(queryRunner, input.ownerId);
       await lockRun(queryRunner, input.runId);
       const existing = await this.findByRun(queryRunner, input.ownerId, input.runId);
       if (existing) {
@@ -107,6 +109,7 @@ export class TypeOrmProposedChangeSetRepository implements IProposedChangeSetRep
   public async recordDecision(input: ChangeSetDecisionUpdate): Promise<ChangeSetDecisionResult> {
     const queryRunner = await this.startTransaction();
     try {
+      await assertPrincipalActive(queryRunner, input.ownerId);
       const row = await this.findForUpdate(queryRunner, input.ownerId, input.runId);
       if (!row) {
         throw new ChangeSetNotFoundError();
@@ -247,6 +250,14 @@ function returningRow(rows: readonly ChangeSetRow[]): ChangeSetRow | undefined {
 
 async function lockRun(queryRunner: QueryRunner, runId: string): Promise<void> {
   await queryRunner.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`change-set:${runId}`]);
+}
+
+async function assertPrincipalActive(queryRunner: QueryRunner, ownerId: string): Promise<void> {
+  const rows: readonly { readonly id: string }[] = await queryRunner.query(
+    'SELECT "id" FROM "users" WHERE "id" = $1 AND "is_active" = true AND ("expires_at" IS NULL OR "expires_at" > now()) FOR SHARE',
+    [ownerId]
+  );
+  if (!rows[0]) throw new UnauthenticatedError();
 }
 
 async function assertProjectActive(queryRunner: QueryRunner, ownerId: string, projectId: string): Promise<void> {

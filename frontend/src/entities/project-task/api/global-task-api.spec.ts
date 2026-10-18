@@ -121,7 +121,7 @@ describe('global task API', () => {
 
   it('accepts workspace and unavailable undo targets without exposing folder metadata as a task', async () => {
     const safeReceipt = { id: ACTION_ID, actionKind: 'workspace.update', targetKind: 'workspace', targetId: WORKSPACE_ID, postVersion: 4, undoStatus: 'undone', undoActionId: ACTION_ID };
-    const workspace = { id: WORKSPACE_ID, name: 'Planning', slug: 'planning', relativeRoot: null, objective: null, status: 'active', version: 4, createdAt: '2026-10-16T08:00:00.000Z', updatedAt: '2026-10-16T08:00:00.000Z' };
+    const workspace = { id: WORKSPACE_ID, name: 'Planning', slug: 'planning', objective: null, workspaceMode: 'planning', capabilities: { planning: true, fileAccess: false }, status: 'active', version: 4, createdAt: '2026-10-16T08:00:00.000Z', updatedAt: '2026-10-16T08:00:00.000Z' };
     fetchMock.mockResolvedValueOnce(envelope({ originalAction: safeReceipt, undoReceipt: { ...safeReceipt, actionKind: 'undo', undoStatus: 'not_reversible' }, target: { kind: 'workspace', workspace }, replayed: false }));
     await expect(undoTaskAction(ACTION_ID, 'csrf', 'workspace-undo-key')).resolves.toEqual({
       originalAction: safeReceipt,

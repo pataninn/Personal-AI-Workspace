@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { DataSource, QueryRunner } from 'typeorm';
 
 import { createDataSource } from '@/infrastructure/database/data-source';
@@ -202,10 +203,13 @@ async function createHomeConversation(repository: TypeOrmHomeConversationReposit
 }
 
 async function createWorkspace(dataSource: DataSource, ownerId: string, slug: string, relativeRoot: string | null, status: 'active' | 'archived'): Promise<string> {
+  const projectId = randomUUID();
+  const fileBacked = relativeRoot !== null;
+  const persistedRoot = fileBacked ? `projects/${projectId}` : null;
   const rows: readonly { id: string }[] = await dataSource.query(
-    `INSERT INTO "projects" ("owner_id", "name", "slug", "relative_root", "relative_root_key", "status")
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING "id"`,
-    [ownerId, slug, slug, relativeRoot, relativeRoot === null ? null : relativeRoot.toLowerCase(), status]
+    `INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "status", "storage_kind")
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING "id"`,
+    [projectId, ownerId, slug, slug, persistedRoot, persistedRoot === null ? null : persistedRoot.toLowerCase(), status, fileBacked ? 'managed' : null]
   );
   const id = rows[0]?.id;
   if (!id) throw new Error('The isolated workspace fixture was not created.');

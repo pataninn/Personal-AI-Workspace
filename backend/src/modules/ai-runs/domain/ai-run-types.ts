@@ -1,3 +1,5 @@
+import type { ProjectStorageKind } from '@/modules/projects/domain/project-types';
+
 export type AiRunStatus =
   | 'pending_approval'
   | 'rejected'
@@ -79,6 +81,7 @@ export interface AiRun {
   readonly conversationId: string;
   readonly request: string;
   readonly relativeRoot: string;
+  readonly storageKind: ProjectStorageKind;
   readonly requestedPaths: readonly string[];
   readonly manifest: EgressManifest;
   readonly manifestInvalidated: boolean;
@@ -114,6 +117,7 @@ export interface CreateAiRunRecord {
   readonly conversationId: string;
   readonly request: string;
   readonly relativeRoot: string;
+  readonly storageKind: ProjectStorageKind;
   readonly requestedPaths: readonly string[];
   readonly manifest: EgressManifest;
   readonly idempotencyKey: string;

@@ -14,7 +14,7 @@ export {
 export type {
   CreateProjectRequest
 } from '@/entities/project/api/project-api';
-export type { ProjectDetailState, ProjectListResponse, ProjectSnapshot, ProjectState, ProjectStatus } from '@/entities/project/model/types';
+export type { ProjectCapabilities, ProjectDetailState, ProjectListResponse, ProjectSnapshot, ProjectState, ProjectStatus, ProjectWorkspaceMode } from '@/entities/project/model/types';
 export { getProjectOverview } from '@/entities/project/api/project-overview-api';
 export { useProjectOverview } from '@/entities/project/model/use-project-overview';
 export type { ProjectOverview, HomeTaskSummary } from '@/entities/project/api/project-overview-api';

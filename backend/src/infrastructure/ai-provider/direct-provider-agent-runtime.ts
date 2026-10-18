@@ -128,7 +128,7 @@ export class DirectProviderAgentRuntime implements IAgentRuntime {
     const facts = await this.readApprovedFacts(input);
     const files = [];
     for (const file of input.manifest.files) {
-      const read = await this.workspaceGateway.readText({ projectId: input.projectId ?? '', relativeRoot: input.relativeRoot ?? '' }, { path: file.relativePath });
+      const read = await this.workspaceGateway.readText({ ownerId: input.ownerId, projectId: input.projectId, storageKind: input.storageKind, relativeRoot: input.relativeRoot }, { path: file.relativePath });
       if (read.truncated || read.sizeBytes !== file.sizeBytes || (read.sourceHash ?? hashText(read.content)) !== file.sourceHash) {
         throw new AiRunSourceChangedError();
       }

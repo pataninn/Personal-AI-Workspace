@@ -25,14 +25,14 @@ function makeRun(overrides: Partial<AiRun> = {}): AiRun {
     excludedItemCount: 0, omittedItemCount: 0, omissionSummary: 'No items omitted.', bestEffortSecretDetection: true
   };
   return {
-    id: RUN_ID, ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'token=super-secret inspect the project', relativeRoot: '', requestedPaths: [],
+    id: RUN_ID, ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'token=super-secret inspect the project', relativeRoot: '', storageKind: 'legacy', requestedPaths: [],
     manifest, manifestInvalidated: false, status: 'succeeded', phase: 'terminal', decision: 'approved', cleanup: 'complete', providerTransmission: 'transmitted_confirmed', stagingItemCount: 0,
     sandboxReady: true, assistantMessageId: MESSAGE_ID, assistantComplete: true, safeMessage: 'done', createdAt: NOW, updatedAt: NOW, ...overrides
   };
 }
 
 function projectRepository(owned = true, relativeRoot: string | null = 'project'): IProjectRepository {
-  return { findByIdForOwner: jest.fn(async () => owned ? ({ id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot, objective: null, status: 'active', version: 1, createdAt: NOW, updatedAt: NOW }) : null) } as unknown as IProjectRepository;
+  return { findByIdForOwner: jest.fn(async () => owned ? ({ id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot, storageKind: relativeRoot === null ? null : 'legacy', objective: null, status: 'active', version: 1, createdAt: NOW, updatedAt: NOW }) : null) } as unknown as IProjectRepository;
 }
 
 describe('Project AI run activity use cases', () => {

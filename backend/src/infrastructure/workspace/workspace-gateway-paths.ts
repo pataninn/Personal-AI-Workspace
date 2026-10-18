@@ -29,6 +29,17 @@ export async function resolveWorkspaceScope(
   scope: WorkspaceProjectScope,
   context: WorkspaceOperationContext
 ): Promise<WorkspaceScopePaths> {
+  if (boundary.resolveProjectRoot) {
+    const resolved = await context.run(() => boundary.resolveProjectRoot!(scope));
+    const isWorkspaceRootProject = resolved.canonicalRoot === resolved.canonicalProjectRoot;
+    if (!isWorkspaceRootProject && !isContained(resolved.canonicalRoot, resolved.canonicalProjectRoot)) {
+      throw new WorkspacePathForbiddenError();
+    }
+    WorkspaceRelativePath.parse(relativeWorkspacePath(resolved.canonicalRoot, resolved.canonicalProjectRoot), {
+      allowEmpty: isWorkspaceRootProject
+    });
+    return resolved;
+  }
   const relativeRoot = await context.run(() => boundary.validateProjectRoot(scope.relativeRoot));
   const canonicalRoot = await safeRealpath(fileSystem, containerRoot, context);
   const projectPath = joinWorkspaceFileSystemPath(containerRoot, relativeRoot);

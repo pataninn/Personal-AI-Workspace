@@ -1,5 +1,5 @@
 import { ProjectNotFoundError } from '@/modules/projects/domain/project-errors';
-import { requireProjectFileRoot } from '@/modules/projects/domain/project-file-root';
+import { requireProjectFileScope } from '@/modules/projects/domain/project-file-root';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { IWorkspaceGateway } from '@/modules/files/repositories/workspace-gateway';
 import type {
@@ -31,7 +31,7 @@ export class ListWorkspaceFilesUseCase {
 
   public async execute(input: ListWorkspaceFilesInput): Promise<WorkspaceListResult> {
     const project = await findProject(this.projectRepository, input.ownerId, input.projectId);
-    return this.workspaceGateway.list({ projectId: project.id, relativeRoot: requireProjectFileRoot(project) }, input);
+    return this.workspaceGateway.list(requireProjectFileScope(project), input);
   }
 }
 
@@ -43,7 +43,7 @@ export class TreeWorkspaceFilesUseCase {
 
   public async execute(input: TreeWorkspaceFilesInput): Promise<WorkspaceTreeResult> {
     const project = await findProject(this.projectRepository, input.ownerId, input.projectId);
-    return this.workspaceGateway.tree({ projectId: project.id, relativeRoot: requireProjectFileRoot(project) }, input);
+    return this.workspaceGateway.tree(requireProjectFileScope(project), input);
   }
 }
 
@@ -55,7 +55,7 @@ export class ReadWorkspaceTextUseCase {
 
   public async execute(input: ReadWorkspaceTextInput): Promise<WorkspaceReadResult> {
     const project = await findProject(this.projectRepository, input.ownerId, input.projectId);
-    return this.workspaceGateway.readText({ projectId: project.id, relativeRoot: requireProjectFileRoot(project) }, input);
+    return this.workspaceGateway.readText(requireProjectFileScope(project), input);
   }
 }
 
@@ -67,7 +67,7 @@ export class SearchWorkspaceTextUseCase {
 
   public async execute(input: SearchWorkspaceTextInput): Promise<WorkspaceSearchResult> {
     const project = await findProject(this.projectRepository, input.ownerId, input.projectId);
-    return this.workspaceGateway.searchText({ projectId: project.id, relativeRoot: requireProjectFileRoot(project) }, input);
+    return this.workspaceGateway.searchText(requireProjectFileScope(project), input);
   }
 }
 

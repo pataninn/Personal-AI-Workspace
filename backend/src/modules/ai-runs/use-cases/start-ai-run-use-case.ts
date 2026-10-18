@@ -15,6 +15,7 @@ import type { IProjectRepository } from '@/modules/projects/repositories/project
 import type { RuntimeChangeProposal, ProposedChangeSet } from '@/modules/ai-runs/domain/change-types';
 import type { TaskSuggestionDraft } from '@/modules/ai-runs/domain/task-suggestion-draft';
 import type { IProviderPermissionRepository } from '@/modules/ai-runs/repositories/provider-permission-repository';
+import type { IPrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
 
 export interface RuntimeCommandProposalPort {
   execute(input: {
@@ -53,12 +54,14 @@ export class StartAiRunUseCase {
     private readonly projectRepository?: IProjectRepository,
     private readonly changeSetProposals?: RuntimeChangeSetProposalPort,
     private readonly providerPermissionRepository?: IProviderPermissionRepository,
-    private readonly automaticChanges?: { executeAutomatically(input: { readonly ownerId: string; readonly runId: string }): Promise<Pick<ProposedChangeSet, 'status' | 'safeMessage' | 'result'> | null> }
+    private readonly automaticChanges?: { executeAutomatically(input: { readonly ownerId: string; readonly runId: string }): Promise<Pick<ProposedChangeSet, 'status' | 'safeMessage' | 'result'> | null> },
+    private readonly principalAuthorization?: IPrincipalAuthorization
   ) {}
 
   public async execute(input: StartAiRunInput): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> {
     const idempotencyKey = validateIdempotencyKey(input.idempotencyKey);
     const requestFingerprint = hashText(JSON.stringify({ action: 'start', runId: input.runId }));
+    await this.principalAuthorization?.assertActive(input.ownerId);
     if (this.projectRepository) {
       await assertActiveAiRunProject(this.aiRunRepository, this.projectRepository, input.ownerId, input.runId);
     }
@@ -112,6 +115,11 @@ export class StartAiRunUseCase {
       ? await this.aiRunRepository.markRunning(run.ownerId, run.id)
       : await this.markRunningLegacy(run);
     if (!running || running.status !== 'running') {
+      if (running?.status === 'cancel_requested' && !this.agentRuntime.startRun) {
+        await this.finishCancellation(running);
+      } else if (running?.status === 'cancel_requested' && this.principalAuthorization && !await this.principalAuthorization.isActive(run.ownerId)) {
+        await this.finishCancellation(running);
+      }
       return;
     }
     if (!await this.publishStatus(running, 'run.started')) {
@@ -130,15 +138,13 @@ export class StartAiRunUseCase {
         projectId: running.projectId,
         conversationId: running.conversationId,
         relativeRoot: running.relativeRoot,
+        storageKind: running.storageKind,
         request: running.request,
         manifest: running.manifest,
         ...(running.runtimeReference ? { stagedReference: running.runtimeReference } : {})
       })) {
         const current = await this.aiRunRepository.findByIdForOwner(running.ownerId, running.id);
         if (!current || isStopState(current.status)) {
-          if (current?.status === 'cancel_requested' && event.type === 'cancelled') {
-            await this.finishCancellation(current);
-          }
           return;
         }
         const result = await this.projectEvent(current, event, assistantText);
@@ -343,10 +349,6 @@ export class StartAiRunUseCase {
 
   private async finishFromEvent(ownerId: string, runId: string, event: RuntimeInferenceEvent, assistantText: string): Promise<void> {
     if (event.type === 'cancelled') {
-      const current = await this.aiRunRepository.findByIdForOwner(ownerId, runId);
-      if (current?.status === 'cancel_requested') {
-        await this.finishCancellation(current);
-      }
       return;
     }
     const current = await this.aiRunRepository.findByIdForOwner(ownerId, runId);
@@ -397,8 +399,6 @@ export class StartAiRunUseCase {
     }
     if (updated?.status === status) {
       this.publishTerminal(updated);
-    } else if (updated?.status === 'cancel_requested') {
-      await this.finishCancellation(updated);
     }
   }
 
@@ -444,6 +444,10 @@ export class StartAiRunUseCase {
   private async destroySafely(run: AiRun): Promise<void> {
     try {
       await this.agentRuntime.destroy(run.id);
+      const current = await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
+      if (current?.status === 'cancel_requested') {
+        await this.finishCancellation(current);
+      }
     } catch {
       const current = await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
       if (current && current.status !== 'rejected' && current.status !== 'review_required') {
@@ -457,6 +461,10 @@ export class StartAiRunUseCase {
   }
 
   private async isRunProjectable(ownerId: string, runId: string): Promise<boolean> {
+    if (this.principalAuthorization && !await this.principalAuthorization.isActive(ownerId)) {
+      await this.aiRunRepository.stopForInactivePrincipal?.(ownerId, runId);
+      return false;
+    }
     const current = await this.aiRunRepository.findByIdForOwner(ownerId, runId);
     return Boolean(current && !isStopState(current.status));
   }

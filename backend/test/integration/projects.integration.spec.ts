@@ -10,7 +10,7 @@ import { LogoutUseCase } from '@/modules/auth/use-cases/logout';
 import type { IClock, ILoginRateLimiter, IOpaqueTokenProvider, IPasswordHasher } from '@/modules/auth/repositories/security-providers';
 import type { CreateSessionInput, ISessionRepository } from '@/modules/auth/repositories/session-repository';
 import type { CreateRegularAccountInput, IUserRepository } from '@/modules/auth/repositories/user-repository';
-import { ProjectIdempotencyKeyInvalidError, ProjectNotFoundError, ProjectRemovalBusyError, ProjectRootReparsePointError, ProjectVersionConflictError, WorkspaceBoundaryUnavailableError } from '@/modules/projects/domain/project-errors';
+import { ProjectIdempotencyKeyInvalidError, ProjectNotFoundError, ProjectRemovalBusyError, ProjectRootReparsePointError, ProjectVersionConflictError, WorkspaceBoundaryUnavailableError, WorkspaceStorageUnavailableError } from '@/modules/projects/domain/project-errors';
 import type { Project } from '@/modules/projects/domain/project-types';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspace-boundary';
@@ -41,6 +41,7 @@ const activeProject: Project = {
   name: 'Existing app',
   slug: 'existing-app',
   relativeRoot: 'apps',
+  storageKind: 'legacy',
   objective: null,
   status: 'active',
   version: 1,
@@ -103,6 +104,15 @@ class FixtureWorkspaceBoundary implements IWorkspaceBoundary {
     }
   }
 
+  public async getManagedSnapshot(): Promise<{ status: 'ready' | 'unavailable' }> {
+    return this.available ? { status: 'ready' } : { status: 'unavailable' };
+  }
+
+  public async createManagedProjectRoot(_ownerId: string, projectId: string): Promise<string> {
+    if (!this.available) throw new WorkspaceStorageUnavailableError();
+    return `projects/${projectId}`;
+  }
+
   public async validateProjectRoot(relativeRoot: string): Promise<string> {
     if (relativeRoot === 'links') {
       throw new ProjectRootReparsePointError();
@@ -121,6 +131,8 @@ class FixtureUserRepository implements IUserRepository {
   public async findById(userId: string): Promise<LocalUserRecord | null> {
     return userId === 'user-1' ? this.user : null;
   }
+
+  public async findBootstrapOwnerId(): Promise<string | null> { return this.user.id; }
 
   public async hasAnyRegularAccounts(): Promise<boolean> { return true; }
 
@@ -195,6 +207,7 @@ function planningFixture(project: Project = activeProject): IWorkspacePlanningUs
     name: 'Plan',
     slug: 'plan',
     relativeRoot: null,
+    storageKind: null,
     version: 1
   };
   const secondSearchProject: Project = { ...project, id: '55555555-5555-4555-8555-555555555555', name: `${project.name} copy` };
@@ -235,6 +248,7 @@ function buildApp(boundary: FixtureWorkspaceBoundary, projectRepository = new Fi
     },
     projects: {
       getSession,
+      workspaceBoundary: boundary,
       createProject: new CreateProjectUseCase(projectRepository, boundary),
       listProjects: new ListProjectsUseCase(projectRepository),
       getProject: new GetProjectUseCase(projectRepository),
@@ -303,26 +317,30 @@ describe('projects API (integration)', () => {
       .set('X-CSRF-Token', session.csrf).set('If-Match', '1').expect(404);
   });
 
-  it('lists safely, rejects traversal and overlap, and hides guessed IDs', async () => {
+  it('lists without exposing host roots, rejects caller-supplied roots, and hides guessed IDs', async () => {
     const boundary = new FixtureWorkspaceBoundary();
     const app = buildApp(boundary);
     const session = await login(app);
 
     await request(app).get('/api/v1/projects').set('Cookie', session.cookie).expect(200).expect(({ body }) => {
-      expect(body.data.projects[0]).toMatchObject({ relativeRoot: 'apps', status: 'active' });
+      expect(body.data.projects[0]).toMatchObject({ workspaceMode: 'file_backed', capabilities: { planning: true, fileAccess: true }, status: 'active' });
+      expect(body.data.projects[0]).not.toHaveProperty('relativeRoot');
+      expect(body.data.projects[0]).not.toHaveProperty('storageKind');
       expect(JSON.stringify(body)).not.toContain('/workspace');
       expect(JSON.stringify(body)).not.toContain('C:\\');
     });
-    await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf).send({ name: 'Escape', relativeRoot: '../outside' }).expect(400).expect(({ body }) => expect(body.error.code).toBe('PROJECT_ROOT_INVALID'));
-    await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf).send({ name: 'Child', relativeRoot: 'apps/site' }).expect(409).expect(({ body }) => expect(body.error.code).toBe('PROJECT_ROOT_OVERLAP'));
+    await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf).send({ name: 'Escape', relativeRoot: '../outside' }).expect(400).expect(({ body }) => expect(body.error.code).toBe('VALIDATION_ERROR'));
+    await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf).send({ name: 'Child', relativeRoot: 'apps/site' }).expect(400).expect(({ body }) => expect(body.error.code).toBe('VALIDATION_ERROR'));
     await request(app).get('/api/v1/projects/99999999-9999-4999-8999-999999999999').set('Cookie', session.cookie).expect(404).expect(({ body }) => expect(body).toEqual({ data: null, error: { code: 'PROJECT_NOT_FOUND', message: 'Project not found.' } }));
   });
 
   it('creates, archives with CSRF/version protection, and rejects stale status changes', async () => {
     const app = buildApp(new FixtureWorkspaceBoundary());
     const session = await login(app);
-    const created = await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf).send({ name: 'Notes', relativeRoot: 'notes' }).expect(201);
-    expect(created.body.data).toMatchObject({ name: 'Notes', relativeRoot: 'notes', status: 'active', version: 1 });
+    const created = await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf).send({ name: 'Notes' }).expect(201);
+    expect(created.body.data).toMatchObject({ name: 'Notes', workspaceMode: 'file_backed', capabilities: { planning: true, fileAccess: true }, status: 'active', version: 1 });
+    expect(created.body.data).not.toHaveProperty('relativeRoot');
+    expect(created.body.data).not.toHaveProperty('storageKind');
     await request(app).patch(`/api/v1/projects/${created.body.data.id}`).set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf).set('If-Match', '1').send({ status: 'archived' }).expect(200).expect(({ body }) => expect(body.data).toMatchObject({ status: 'archived', version: 2 }));
     await request(app).patch(`/api/v1/projects/${created.body.data.id}`).set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf).set('If-Match', '1').send({ status: 'active' }).expect(409).expect(({ body }) => expect(body.error.code).toBe('PROJECT_VERSION_CONFLICT'));
   });
@@ -337,24 +355,25 @@ describe('projects API (integration)', () => {
     const planning = await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
       .send({ name: 'Launch plan', workspaceMode: 'planning', objective: '  Track the launch  ' }).expect(201);
     expect(planning.body.data).toMatchObject({
-      relativeRoot: null,
       objective: 'Track the launch',
       workspaceMode: 'planning',
       capabilities: { planning: true, fileAccess: false }
     });
+    expect(planning.body.data).not.toHaveProperty('relativeRoot');
+    expect(planning.body.data).not.toHaveProperty('storageKind');
     await request(app).get(`/api/v1/projects/${planning.body.data.id}`).set('Cookie', session.cookie).expect(200)
-      .expect(({ body }) => expect(body.data).toMatchObject({ relativeRoot: null, objective: 'Track the launch' }));
+      .expect(({ body }) => expect(body.data).toMatchObject({ workspaceMode: 'planning', objective: 'Track the launch' }));
     await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
-      .send({ name: 'Unready', relativeRoot: 'notes' }).expect(503).expect(({ body }) => expect(body.error.code).toBe('WORKSPACE_BOUNDARY_UNAVAILABLE'));
+      .send({ name: 'Unready' }).expect(503).expect(({ body }) => expect(body.error.code).toBe('WORKSPACE_STORAGE_UNAVAILABLE'));
   });
 
-  it('rejects inconsistent planning mode and root request combinations', async () => {
+  it('rejects caller-supplied roots while defaulting project creation to file-backed mode', async () => {
     const app = buildApp(new FixtureWorkspaceBoundary());
     const session = await login(app);
     await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
-      .send({ name: 'Wrong mode', workspaceMode: 'planning', relativeRoot: 'notes' }).expect(400);
+      .send({ name: 'Wrong mode', workspaceMode: 'planning', relativeRoot: 'notes' }).expect(400).expect(({ body }) => expect(body.error.code).toBe('VALIDATION_ERROR'));
     await request(app).post('/api/v1/projects').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
-      .send({ name: 'Missing mode and root' }).expect(400);
+      .send({ name: 'Default mode' }).expect(201).expect(({ body }) => expect(body.data).toMatchObject({ workspaceMode: 'file_backed', capabilities: { fileAccess: true } }));
   });
 
   it('exposes bounded metadata search, explicit reuse, and idempotent mutation headers', async () => {
@@ -378,7 +397,8 @@ describe('projects API (integration)', () => {
       .send({ name: 'Plan' }).expect(400).expect(({ body }) => expect(body.error.code).toBe('IDEMPOTENCY_KEY_REQUIRED'));
     await request(app).post('/api/v1/projects/planning').set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
       .set('Idempotency-Key', 'plan-operation-1').send({ name: 'Plan' }).expect(201).expect(({ body }) => {
-        expect(body.data).toMatchObject({ replayed: false, project: { id: '44444444-4444-4444-8444-444444444444', relativeRoot: null }, receipt: { actionKind: 'workspace.create' } });
+        expect(body.data).toMatchObject({ replayed: false, project: { id: '44444444-4444-4444-8444-444444444444', workspaceMode: 'planning', capabilities: { fileAccess: false } }, receipt: { actionKind: 'workspace.create' } });
+        expect(body.data.project).not.toHaveProperty('relativeRoot');
       });
     expect(planning.createPlanning).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'user-1', operationKey: 'plan-operation-1', name: 'Plan' }));
 
@@ -386,7 +406,8 @@ describe('projects API (integration)', () => {
       .set('Idempotency-Key', 'objective-operation-1').send({ objective: 'Improve the app' }).expect(400)
       .expect(({ body }) => expect(body.error.code).toBe('PROJECT_VERSION_REQUIRED'));
     await request(app).patch(`/api/v1/projects/${PROJECT_ID}/root-attachment`).set('Origin', APP_ORIGIN).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
-      .set('If-Match', '1').set('Idempotency-Key', 'root-operation-1').send({ relativeRoot: '.' }).expect(200);
-    expect(planning.attachInitialRoot).toHaveBeenCalledWith(expect.objectContaining({ expectedVersion: 1, operationKey: 'root-operation-1', relativeRoot: '.' }));
+      .set('If-Match', '1').set('Idempotency-Key', 'root-operation-1').send({ relativeRoot: '.' }).expect(400)
+      .expect(({ body }) => expect(body.error.code).toBe('VALIDATION_ERROR'));
+    expect(planning.attachInitialRoot).not.toHaveBeenCalled();
   });
 });

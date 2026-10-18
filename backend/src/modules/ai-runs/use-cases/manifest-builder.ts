@@ -11,12 +11,15 @@ import type { ProjectFact } from '@/modules/memory/domain/project-fact';
 import { redactEgressText } from '@/shared/egress/redaction';
 import { AiRunValidationError } from '@/modules/ai-runs/domain/ai-run-errors';
 import { providerLabel } from '@/modules/ai-runs/domain/model-provider-profile';
+import type { ProjectStorageKind } from '@/modules/projects/domain/project-types';
 
 export type ManifestMessage = EgressMessage;
 
 export interface ManifestBuildInput {
   readonly workspaceGateway: IWorkspaceGateway;
   readonly projectId: string;
+  readonly ownerId: string;
+  readonly storageKind: ProjectStorageKind;
   readonly relativeRoot: string;
   readonly request: string;
   readonly requestedPaths: readonly string[];
@@ -148,7 +151,7 @@ export function hashJson(value: unknown): string {
 }
 
 async function readCandidate(input: ManifestBuildInput, relativePath: string): Promise<WorkspaceReadResult> {
-  return input.workspaceGateway.readText({ projectId: input.projectId, relativeRoot: input.relativeRoot }, { path: relativePath });
+  return input.workspaceGateway.readText({ ownerId: input.ownerId, projectId: input.projectId, storageKind: input.storageKind, relativeRoot: input.relativeRoot }, { path: relativePath });
 }
 
 function classifyOmission(error: unknown): 'excluded' | 'omitted' | null {

@@ -18,7 +18,7 @@ vi.mock('@/entities/project-task/api/global-task-api', async (importOriginal) =>
 }));
 
 const WORKSPACE: ProjectSnapshot = {
-  id: '11111111-1111-4111-8111-111111111111', name: 'Website', slug: 'website', relativeRoot: null, status: 'active', version: 1,
+  id: '11111111-1111-4111-8111-111111111111', name: 'Website', slug: 'website', workspaceMode: 'planning', capabilities: { planning: true, fileAccess: false }, status: 'active', version: 1,
   createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z'
 };
 const SESSION = { status: 'authenticated' as const, principal: { id: 'user', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const }, csrfToken: 'csrf', expiresAt: '2099-01-01', errorCode: null };

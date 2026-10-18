@@ -112,6 +112,7 @@ describeDatabase('Home accepted proposal PostgreSQL integration', () => {
       conversations, repositoryWithLostCompletionResponse, proposalTaskQuery, taskMutations, workspaces, ledger
     );
     handler = new HomePlanningToolRequestHandler({
+      principalAuthorization: { assertActive: async () => undefined },
       conversations,
       listTasks: new ListGlobalTasksUseCase(tasks),
       getTask: new GetGlobalTaskUseCase(tasks),

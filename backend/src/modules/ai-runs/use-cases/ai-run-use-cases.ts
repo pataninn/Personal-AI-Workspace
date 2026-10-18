@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { IConversationRepository } from '@/modules/conversations/repositories/conversation-repository';
 import { ProjectNotFoundError } from '@/modules/projects/domain/project-errors';
-import { requireProjectFileRoot } from '@/modules/projects/domain/project-file-root';
+import { requireProjectFileRoot, requireProjectFileScope } from '@/modules/projects/domain/project-file-root';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { IWorkspaceGateway } from '@/modules/files/repositories/workspace-gateway';
 import type { WorkspaceReadResult } from '@/modules/files/domain/workspace-types';
@@ -62,6 +62,7 @@ export class CreateAiRunUseCase {
     if (!project || project.status === 'archived') {
       throw new ProjectNotFoundError();
     }
+    const projectScope = requireProjectFileScope(project);
     const relativeRoot = requireProjectFileRoot(project);
     const conversation = await this.conversationRepository.findWithMessagesForOwner({
       ownerId: input.ownerId,
@@ -85,6 +86,8 @@ export class CreateAiRunUseCase {
     const built = await buildManifest({
       workspaceGateway: this.workspaceGateway,
       projectId: project.id,
+      ownerId: projectScope.ownerId,
+      storageKind: projectScope.storageKind,
       relativeRoot,
       request,
       requestedPaths: relativePaths,
@@ -100,6 +103,7 @@ export class CreateAiRunUseCase {
       conversationId: input.conversationId,
       request,
       relativeRoot,
+      storageKind: projectScope.storageKind,
       requestedPaths: relativePaths,
       manifest: built.manifest,
       idempotencyKey,
@@ -173,7 +177,7 @@ export class DecideEgressUseCase {
     private readonly workspaceGateway: IWorkspaceGateway,
     private readonly stagingGateway: IStagingGateway | undefined,
     private readonly agentRuntime: IAgentRuntime,
-    private readonly workspaceRoot: string,
+    _workspaceRoot: string,
     private readonly factRepository?: IProjectFactRepository,
     private readonly providerPermissionRepository?: IProviderPermissionRepository
   ) {}
@@ -313,12 +317,11 @@ export class DecideEgressUseCase {
       throw new AiRunRuntimeUnavailableError();
     }
     try {
+      const files = await this.readApprovedFiles(run);
       const staged = await stagingGateway.stage({
         runId: run.id,
-        workspaceRoot: this.workspaceRoot,
-        relativeRoot: run.relativeRoot,
         request: run.request,
-        files: run.manifest.files,
+        files,
         messages: messageSnapshot
       });
       stagingReference = staged.stagingReference;
@@ -396,7 +399,7 @@ export class DecideEgressUseCase {
     for (const file of run.manifest.files) {
       let read: WorkspaceReadResult;
       try {
-        read = await this.workspaceGateway.readText({ projectId: run.projectId, relativeRoot: run.relativeRoot }, { path: file.relativePath });
+        read = await this.workspaceGateway.readText({ ownerId: run.ownerId, projectId: run.projectId, storageKind: run.storageKind, relativeRoot: run.relativeRoot }, { path: file.relativePath });
       } catch {
         throw new AiRunSourceChangedError();
       }
@@ -404,6 +407,23 @@ export class DecideEgressUseCase {
         throw new AiRunSourceChangedError();
       }
     }
+  }
+
+  private async readApprovedFiles(run: AiRun): Promise<readonly (AiRun['manifest']['files'][number] & { readonly content: string })[]> {
+    const files: (AiRun['manifest']['files'][number] & { readonly content: string })[] = [];
+    for (const file of run.manifest.files) {
+      let read: WorkspaceReadResult;
+      try {
+        read = await this.workspaceGateway.readText({ ownerId: run.ownerId, projectId: run.projectId, storageKind: run.storageKind, relativeRoot: run.relativeRoot }, { path: file.relativePath });
+      } catch {
+        throw new AiRunSourceChangedError();
+      }
+      if (read.truncated || read.sizeBytes !== file.sizeBytes || (read.sourceHash ?? hashText(read.content)) !== file.sourceHash) {
+        throw new AiRunSourceChangedError();
+      }
+      files.push({ ...file, content: redactEgressText(read.content) });
+    }
+    return files;
   }
 
   private async assertFactsUnchanged(run: AiRun): Promise<void> {

@@ -36,6 +36,7 @@ export function makeProject(id: string, ownerId: string, status: ProjectStatus =
     name: `Project ${id.slice(0, 4)}`,
     slug: `project-${id.slice(0, 4)}`,
     relativeRoot: `root-${id.slice(0, 4)}`,
+    storageKind: 'legacy',
     objective: null,
     status,
     version: 1,
@@ -263,6 +264,8 @@ class FixedUserRepository implements IUserRepository {
   public async findById(userId: string): Promise<LocalUserRecord | null> {
     return userId === OWNER_ID ? this.user : null;
   }
+
+  public async findBootstrapOwnerId(): Promise<string | null> { return OWNER_ID; }
 
   public async hasAnyRegularAccounts(): Promise<boolean> { return true; }
 

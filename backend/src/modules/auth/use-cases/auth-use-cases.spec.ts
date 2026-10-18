@@ -43,6 +43,7 @@ function createUserRepository(overrides: Partial<jest.Mocked<IUserRepository>> =
   return {
     findByIdentifier: jest.fn(),
     findById: jest.fn(),
+    findBootstrapOwnerId: jest.fn(),
     hasAnyRegularAccounts: jest.fn().mockResolvedValue(true),
     createRegularAccount: jest.fn(),
     bootstrapInitialAdmin: jest.fn(),

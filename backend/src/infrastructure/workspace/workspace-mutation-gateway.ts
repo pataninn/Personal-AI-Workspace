@@ -18,6 +18,7 @@ import { isProtectedFileName } from '@/modules/files/domain/workspace-policy';
 import { WorkspaceRelativePath } from '@/modules/files/domain/workspace-path';
 import { decodeUtf8 } from '@/infrastructure/workspace/workspace-text';
 import { WorkspaceBinaryFileError } from '@/modules/files/domain/workspace-errors';
+import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
 
 interface MutationStats {
   readonly size: number;
@@ -70,9 +71,7 @@ interface ClaimedFile {
 
 interface ClaimOptions {
   readonly operationId: string;
-  readonly checkpoint?: { readonly sizeBytes: number; readonly contentSha256: string };
-  readonly recordCheckpoint?: boolean;
-  readonly recordBackupCheckpoint?: WorkspaceMutationApplyOptions['recordBackupCheckpoint'];
+  readonly quarantinePath?: string;
 }
 
 class MutationConflictError extends Error {
@@ -189,6 +188,15 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
 
   private async resolveContext(scope: WorkspaceMutationScope): Promise<{ readonly projectRoot: string; readonly canonicalRoot: string }> {
     await this.options.workspaceBoundary.assertReady();
+    if (this.options.workspaceBoundary.resolveProjectRoot) {
+      const resolved = await this.options.workspaceBoundary.resolveProjectRoot(scope);
+      const isWorkspaceRootProject = resolved.canonicalRoot === resolved.canonicalProjectRoot;
+      if (isWorkspaceRootProject ? scope.relativeRoot !== '.' : !isContained(resolved.canonicalRoot, resolved.canonicalProjectRoot)) {
+        throw new ChangeSetValidationError([{ field: 'projectId', message: 'The project root is outside its authorized storage mapping.' }]);
+      }
+      WorkspaceRelativePath.parse(path.posix.relative(resolved.canonicalRoot, resolved.canonicalProjectRoot), { allowEmpty: isWorkspaceRootProject });
+      return { projectRoot: resolved.canonicalProjectRoot, canonicalRoot: resolved.canonicalRoot };
+    }
     const relativeRoot = await this.options.workspaceBoundary.validateProjectRoot(scope.relativeRoot);
     const canonicalRoot = await this.fileSystem.realpath(this.options.containerRoot);
     const projectPath = path.resolve(this.options.containerRoot, ...relativeRoot.split('/'));
@@ -294,20 +302,27 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     options: WorkspaceMutationApplyOptions
   ): Promise<WorkspaceApplyResult['operations'][number]> {
     const operation = prepared.operation;
+    await options.assertPrincipalActive?.();
     const latestSource = await this.recheck(context, operation.path);
     const latestDestination = operation.destinationPath ? await this.recheck(context, operation.destinationPath) : missingSnapshot(operation.path);
     this.assertPrecondition(operation, latestSource, latestDestination);
     const backupRequired = isDestructiveOperation(operation.operation, latestDestination.exists);
     const backup = backupRequired ? await this.createBackups(context, operation, latestSource, latestDestination, runId, proposalHash, options) : { status: 'not_required' as const };
     try {
-      if (operation.operation === 'delete') {
-        await this.deleteFile(context, operation.path, operation.expectedSourceHash, operation.operationId);
-      } else if (operation.operation === 'rename') {
+      await options.assertPrincipalActive?.();
+      if (operation.operation === 'rename') {
         await this.renameFile(context, operation.path, operation.destinationPath ?? '', operation.expectedSourceHash, operation.expectedDestinationHash, operation.operationId, latestSource.sizeBytes, options);
-      } else if (operation.operation === 'overwrite') {
-        await this.overwriteFile(context, operation.path, operation.content ?? '', operation.expectedSourceHash, operation.operationId);
       } else {
-        await this.writeFile(context, operation.path, operation.content ?? '', operation.operation === 'create' ? undefined : operation.expectedSourceHash);
+        await this.withActivePrincipal(options, async (assertStillActive) => {
+          await assertStillActive();
+          if (operation.operation === 'delete') {
+            await this.deleteFile(context, operation.path, operation.expectedSourceHash, operation.operationId, assertStillActive);
+          } else if (operation.operation === 'overwrite') {
+            await this.overwriteFile(context, operation.path, operation.content ?? '', operation.expectedSourceHash, operation.operationId, assertStillActive);
+          } else {
+            await this.writeFile(context, operation.path, operation.content ?? '', operation.operation === 'create' ? undefined : operation.expectedSourceHash, assertStillActive);
+          }
+        });
       }
     } catch (error: unknown) {
       if (error instanceof MutationConflictError) {
@@ -327,6 +342,13 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     };
   }
 
+  private async withActivePrincipal<T>(options: WorkspaceMutationApplyOptions, action: (assertStillActive: () => Promise<void>) => Promise<T>): Promise<T> {
+    if (options.withActivePrincipal) return options.withActivePrincipal(action);
+    const assertStillActive = options.assertPrincipalActive ?? (async () => undefined);
+    await assertStillActive();
+    return action(assertStillActive);
+  }
+
   private async recheck(context: { readonly projectRoot: string; readonly canonicalRoot: string }, relativePath: string): Promise<WorkspaceFileSnapshot> {
     return this.inspectPrepared(context, relativePath);
   }
@@ -343,10 +365,10 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     const checkpoints: BackupCheckpoint[] = [];
     try {
       if (source.exists) {
-        checkpoints.push(await this.writeBackup(context, runId, proposalHash, operation.operationId, operation.path, source.content, source.hash));
+        checkpoints.push(await this.withActivePrincipal(options, (assertStillActive) => this.writeBackup(context, runId, proposalHash, operation.operationId, operation.path, source.content, source.hash, assertStillActive)));
       }
       if (operation.operation === 'rename' && destination.exists) {
-        checkpoints.push(await this.writeBackup(context, runId, proposalHash, operation.operationId, operation.destinationPath ?? operation.path, destination.content, destination.hash));
+        checkpoints.push(await this.withActivePrincipal(options, (assertStillActive) => this.writeBackup(context, runId, proposalHash, operation.operationId, operation.destinationPath ?? operation.path, destination.content, destination.hash, assertStillActive)));
       }
       for (const checkpoint of checkpoints) {
         try {
@@ -357,6 +379,7 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
       }
       return { status: 'created', ...(checkpoints[0]?.reference ? { reference: checkpoints[0].reference } : {}) };
     } catch (error: unknown) {
+      if (error instanceof UnauthenticatedError) throw error;
       if (error instanceof MutationConflictError) {
         if (checkpoints.length > 0) {
           throw new MutationConflictError(error.relativePath, error.reason, 'created');
@@ -380,7 +403,8 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     operationId: string,
     relativePath: string,
     content: string | undefined,
-    expectedHash: string | undefined
+    expectedHash: string | undefined,
+    assertStillActive: () => Promise<void>
   ): Promise<BackupCheckpoint> {
     const latest = await this.finalSnapshot(context, relativePath, expectedHash, false);
     if (!latest.exists || latest.content !== content) {
@@ -396,6 +420,7 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     const safeName = relativePath.replaceAll('/', '__');
     const backupPath = path.resolve(backupDirectory, `${safeName}.bak`);
     await this.assertRecoveryPath(backupPath, true);
+    await assertStillActive();
     const handle = await this.fileSystem.open(backupPath, 'wx');
     try {
       await handle.writeFile(bytes);
@@ -423,22 +448,23 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     relativePath: string,
     content: string,
     expectedHash: string | undefined,
-    operationId: string
+    operationId: string,
+    assertStillActive: () => Promise<void>
   ): Promise<void> {
     const claim = await this.claimAndValidate(context, relativePath, expectedHash, { operationId });
     try {
-      await this.writeFile(context, relativePath, content, undefined);
+      await this.writeFile(context, relativePath, content, undefined, assertStillActive);
       await this.releaseClaim(context, claim, expectedHash);
     } catch (error: unknown) {
       await this.restoreClaimOrManual(context, claim);
-      if (error instanceof ChangeSetDomainError || error instanceof MutationConflictError) {
+      if (error instanceof ChangeSetDomainError || error instanceof MutationConflictError || error instanceof UnauthenticatedError) {
         throw error;
       }
       throw new AmbiguousMutationError('The overwrite outcome could not be confirmed.');
     }
   }
 
-  private async writeFile(context: { readonly projectRoot: string; readonly canonicalRoot: string }, relativePath: string, content: string, expectedHash: string | undefined): Promise<void> {
+  private async writeFile(context: { readonly projectRoot: string; readonly canonicalRoot: string }, relativePath: string, content: string, expectedHash: string | undefined, assertStillActive: () => Promise<void>): Promise<void> {
     if (Buffer.byteLength(content, 'utf8') > CHANGE_SET_LIMITS.maxContentBytes) {
       throw new ChangeSetValidationError([{ field: 'content', message: 'The proposed file content is too large.' }]);
     }
@@ -447,14 +473,15 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     if (!expectedHash && current.exists) {
       throw new MutationConflictError(relativePath, 'Destination appeared during apply.');
     }
-    await this.writeAtomic(context, normalizedPath, content, expectedHash);
+    await this.writeAtomic(context, normalizedPath, content, expectedHash, assertStillActive);
   }
 
   private async writeAtomic(
     context: { readonly projectRoot: string; readonly canonicalRoot: string },
     relativePath: string,
     content: string,
-    expectedHash: string | undefined
+    expectedHash: string | undefined,
+    assertStillActive: () => Promise<void>
   ): Promise<void> {
     await this.finalSnapshot(context, relativePath, expectedHash, expectedHash === undefined);
     const temporaryPath = path.join(path.dirname(path.resolve(context.projectRoot, ...relativePath.split('/'))), `.${path.basename(relativePath)}.pai-${randomUUID()}.tmp`);
@@ -473,12 +500,14 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
       if ((expectedHash === undefined && latest.exists) || (expectedHash !== undefined && latest.hash !== expectedHash)) {
         throw new MutationConflictError(relativePath, 'The target changed before the atomic rename.');
       }
+      await assertStillActive();
       await this.fileSystem.rename(temporaryPath, latestTarget.absolutePath);
     } catch (error: unknown) {
       if (handle) {
         await handle.close().catch(() => undefined);
       }
       await this.fileSystem.rm(temporaryPath, { force: true }).catch(() => undefined);
+      if (error instanceof UnauthenticatedError) throw error;
       if (error instanceof ChangeSetDomainError || error instanceof MutationConflictError) {
         throw error;
       }
@@ -490,14 +519,15 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     context: { readonly projectRoot: string; readonly canonicalRoot: string },
     relativePath: string,
     expectedHash: string | undefined,
-    operationId: string
+    operationId: string,
+    assertStillActive: () => Promise<void>
   ): Promise<void> {
     const claim = await this.claimAndValidate(context, relativePath, expectedHash, { operationId });
     try {
-      await this.releaseClaim(context, claim, expectedHash);
+      await this.releaseClaim(context, claim, expectedHash, assertStillActive);
     } catch (error: unknown) {
       await this.restoreClaimOrManual(context, claim);
-      if (error instanceof ChangeSetDomainError || error instanceof MutationConflictError) {
+      if (error instanceof ChangeSetDomainError || error instanceof MutationConflictError || error instanceof UnauthenticatedError) {
         throw error;
       }
       throw new AmbiguousMutationError('The delete outcome could not be confirmed.');
@@ -514,48 +544,64 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     sourceSizeBytes: number,
     options: WorkspaceMutationApplyOptions
   ): Promise<void> {
-    const sourceClaim = await this.claimAndValidate(context, sourcePath, expectedSourceHash, {
-      operationId,
-      checkpoint: { sizeBytes: sourceSizeBytes, contentSha256: expectedSourceHash ?? '' },
-      recordCheckpoint: expectedDestinationHash === undefined,
-      recordBackupCheckpoint: options.recordBackupCheckpoint
-    });
-    let destinationClaim: ClaimedFile | undefined;
-    let promoted = false;
-    try {
-      if (expectedDestinationHash !== undefined) {
-        destinationClaim = await this.claimAndValidate(context, destinationPath, expectedDestinationHash, { operationId });
+    const normalizedSource = this.parseFilePath(sourcePath);
+    const originalPath = path.resolve(context.projectRoot, ...normalizedSource.split('/'));
+    const quarantinePath = path.join(path.dirname(originalPath), `.${path.basename(originalPath)}.pai-${randomUUID()}.claim`);
+    if (expectedDestinationHash === undefined && options.recordBackupCheckpoint) {
+      try {
+        await options.recordBackupCheckpoint({
+          reference: path.relative(this.options.containerRoot, quarantinePath).replaceAll(path.sep, '/'),
+          operationId,
+          path: normalizedSource,
+          sizeBytes: sourceSizeBytes,
+          contentSha256: expectedSourceHash ?? '',
+          createdAt: new Date()
+        });
+      } catch {
+        throw new AmbiguousMutationError('The claim checkpoint could not be persisted before mutation.');
       }
-      const source = await this.assertAbsoluteBoundary(context, sourceClaim.quarantinePath, false);
-      const destination = await this.assertAbsoluteBoundary(context, path.resolve(context.projectRoot, ...destinationPath.split('/')), true);
-      let claimedDestination: { readonly absolutePath: string; readonly exists: boolean; readonly stats: MutationStats } | undefined;
-      if (destinationClaim) {
-        claimedDestination = await this.assertAbsoluteBoundary(context, destinationClaim.quarantinePath, false);
-      }
-      if (destination.exists) {
-        throw new MutationConflictError(destinationPath, 'Destination appeared before the rename promotion.');
-      }
-      await this.snapshotAfterBoundary(sourcePath, source, expectedSourceHash, false);
-      if (claimedDestination) {
-        await this.snapshotAfterBoundary(destinationPath, claimedDestination, expectedDestinationHash, false);
-      }
-      await this.fileSystem.rename(source.absolutePath, destination.absolutePath);
-      promoted = true;
-      if (destinationClaim) {
-        await this.releaseClaim(context, destinationClaim, expectedDestinationHash);
-      }
-    } catch (error: unknown) {
-      if (!promoted) {
-        await this.restoreClaimOrManual(context, sourceClaim);
-      }
-      if (destinationClaim && !promoted) {
-        await this.restoreClaimOrManual(context, destinationClaim);
-      }
-      if (error instanceof ChangeSetDomainError || error instanceof MutationConflictError) {
-        throw error;
-      }
-      throw new AmbiguousMutationError('The rename outcome could not be confirmed.');
     }
+    await this.withActivePrincipal(options, async (assertStillActive) => {
+      await assertStillActive();
+      const sourceClaim = await this.claimAndValidate(context, normalizedSource, expectedSourceHash, { operationId, quarantinePath });
+      let destinationClaim: ClaimedFile | undefined;
+      let promoted = false;
+      try {
+        if (expectedDestinationHash !== undefined) {
+          destinationClaim = await this.claimAndValidate(context, destinationPath, expectedDestinationHash, { operationId });
+        }
+        const source = await this.assertAbsoluteBoundary(context, sourceClaim.quarantinePath, false);
+        const destination = await this.assertAbsoluteBoundary(context, path.resolve(context.projectRoot, ...destinationPath.split('/')), true);
+        let claimedDestination: { readonly absolutePath: string; readonly exists: boolean; readonly stats: MutationStats } | undefined;
+        if (destinationClaim) {
+          claimedDestination = await this.assertAbsoluteBoundary(context, destinationClaim.quarantinePath, false);
+        }
+        if (destination.exists) {
+          throw new MutationConflictError(destinationPath, 'Destination appeared before the rename promotion.');
+        }
+        await this.snapshotAfterBoundary(normalizedSource, source, expectedSourceHash, false);
+        if (claimedDestination) {
+          await this.snapshotAfterBoundary(destinationPath, claimedDestination, expectedDestinationHash, false);
+        }
+        await assertStillActive();
+        await this.fileSystem.rename(source.absolutePath, destination.absolutePath);
+        promoted = true;
+        if (destinationClaim) {
+          await this.releaseClaim(context, destinationClaim, expectedDestinationHash);
+        }
+      } catch (error: unknown) {
+        if (!promoted) {
+          await this.restoreClaimOrManual(context, sourceClaim);
+        }
+        if (destinationClaim && !promoted) {
+          await this.restoreClaimOrManual(context, destinationClaim);
+        }
+        if (error instanceof ChangeSetDomainError || error instanceof MutationConflictError || error instanceof UnauthenticatedError) {
+          throw error;
+        }
+        throw new AmbiguousMutationError('The rename outcome could not be confirmed.');
+      }
+    });
   }
 
   private async claimAndValidate(
@@ -569,21 +615,7 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     }
     const normalizedPath = this.parseFilePath(relativePath);
     const originalPath = path.resolve(context.projectRoot, ...normalizedPath.split('/'));
-    const quarantinePath = path.join(path.dirname(originalPath), `.${path.basename(originalPath)}.pai-${randomUUID()}.claim`);
-    if (options.recordCheckpoint && options.recordBackupCheckpoint) {
-      try {
-        await options.recordBackupCheckpoint({
-          reference: path.relative(this.options.containerRoot, quarantinePath).replaceAll(path.sep, '/'),
-          operationId: options.operationId,
-          path: normalizedPath,
-          sizeBytes: options.checkpoint?.sizeBytes ?? 0,
-          contentSha256: options.checkpoint?.contentSha256 ?? expectedHash,
-          createdAt: new Date()
-        });
-      } catch {
-        throw new AmbiguousMutationError('The claim checkpoint could not be persisted before mutation.');
-      }
-    }
+    const quarantinePath = options.quarantinePath ?? path.join(path.dirname(originalPath), `.${path.basename(originalPath)}.pai-${randomUUID()}.claim`);
     let claimed = false;
     const claim = { relativePath: normalizedPath, originalPath, quarantinePath } satisfies ClaimedFile;
     try {
@@ -614,10 +646,12 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
   private async releaseClaim(
     context: { readonly projectRoot: string; readonly canonicalRoot: string },
     claim: ClaimedFile,
-    expectedHash: string | undefined
+    expectedHash: string | undefined,
+    assertStillActive?: () => Promise<void>
   ): Promise<void> {
     const target = await this.assertAbsoluteBoundary(context, claim.quarantinePath, false);
     await this.snapshotAfterBoundary(claim.relativePath, target, expectedHash, false);
+    await assertStillActive?.();
     await this.fileSystem.unlink(target.absolutePath);
   }
 

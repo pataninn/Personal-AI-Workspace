@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { DataSource } from 'typeorm';
 
 import { createDataSource } from '@/infrastructure/database/data-source';
@@ -77,6 +78,7 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
       conversations, new TypeOrmHomeChangeProposalRepository(dataSource), taskQuery, taskMutations, workspaces, ledger
     );
     handler = new HomePlanningToolRequestHandler({
+      principalAuthorization: { assertActive: async () => undefined },
       conversations,
       listTasks: new ListGlobalTasksUseCase(tasks),
       getTask: taskQuery,
@@ -98,8 +100,8 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
   });
 
   it('uses canonical task/workspace commands with assistant receipts, scoped ownership, replay and undo', async () => {
-    const fileWorkspaceId = await createWorkspace(OWNER_ID, 'file-backed', 'repo/home');
-    const dotWorkspaceId = await createWorkspace(OTHER_OWNER_ID, 'dot-root', '.');
+    const fileWorkspaceId = await createWorkspace(OWNER_ID, 'file-backed');
+    const dotWorkspaceId = await createWorkspace(OTHER_OWNER_ID, 'managed-workspace');
     const ownerTurn = await createActiveHomeTurn(OWNER_ID, 'owner-command-parity');
     const otherTurn = await createActiveHomeTurn(OTHER_OWNER_ID, 'other-command-parity');
 
@@ -434,11 +436,13 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
     return handler.resolve({ ...input.turn, name: input.name, requestId: input.requestId, args: input.args });
   }
 
-  async function createWorkspace(ownerId: string, slug: string, relativeRoot: string): Promise<string> {
+  async function createWorkspace(ownerId: string, slug: string): Promise<string> {
+    const projectId = randomUUID();
+    const relativeRoot = `projects/${projectId}`;
     const rows: readonly { id: string }[] = await dataSource.query(
-      `INSERT INTO "projects" ("owner_id", "name", "slug", "relative_root", "relative_root_key", "status")
-       VALUES ($1, $2, $3, $4, $5, 'active') RETURNING "id"`,
-      [ownerId, slug, slug, relativeRoot, relativeRoot.toLocaleLowerCase('en-US')]
+      `INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "status", "storage_kind")
+       VALUES ($1, $2, $3, $4, $5, $6, 'active', 'managed') RETURNING "id"`,
+      [projectId, ownerId, slug, slug, relativeRoot, relativeRoot.toLocaleLowerCase('en-US')]
     );
     const id = rows[0]?.id;
     if (!id) throw new Error('The isolated workspace fixture was not created.');

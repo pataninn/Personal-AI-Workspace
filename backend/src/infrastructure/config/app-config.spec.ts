@@ -22,6 +22,7 @@ describe('loadConfig', () => {
 
     expect(config.port).toBe(8443);
     expect(config.workspaceRoot).toBe('/workspace');
+    expect(config.accountWorkspacesIdentity).toBeUndefined();
     expect(config.nimModel).toBe(EXPECTED_NIM_MODEL);
     expect(config.agentRuntimeMode).toBe('direct');
     expect(config.sessionSecret).toBe('a'.repeat(32));
@@ -46,6 +47,11 @@ describe('loadConfig', () => {
 
     expect(config.localUserPassword).toBeUndefined();
     expect(config.localUserPasswordFile).toBe('/run/secrets/local_user_password');
+  });
+
+  it('enables managed file storage only when its fixed-mount identity is configured', () => {
+    expect(loadConfig({ ...validEnvironment, ACCOUNT_WORKSPACES_IDENTITY: ' managed-fixture ' }).accountWorkspacesIdentity)
+      .toBe('managed-fixture');
   });
 
   it('requires deferred OpenShell settings only when that mode is selected', () => {

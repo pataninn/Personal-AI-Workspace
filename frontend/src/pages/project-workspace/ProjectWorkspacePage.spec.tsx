@@ -72,7 +72,7 @@ describe('ProjectWorkspacePage boundary errors', () => {
   });
 
   it('loads the project before composing the workspace and its independent file panel', async () => {
-    const project: ProjectSnapshot = { id: PROJECT_ID, name: 'Website', slug: 'website', relativeRoot: 'apps/website', status: 'active', version: 1, createdAt: '2026-10-05', updatedAt: '2026-10-05' };
+    const project: ProjectSnapshot = { id: PROJECT_ID, name: 'Website', slug: 'website', workspaceMode: 'file_backed', capabilities: { planning: true, fileAccess: true }, status: 'active', version: 1, createdAt: '2026-10-05', updatedAt: '2026-10-05' };
     getProjectMock.mockResolvedValue(project);
     renderWorkspace({ status: 'idle', project: null, errorCode: null });
     expect(screen.getByRole('region', { name: 'Loading project' })).toHaveAttribute('aria-busy', 'true');
@@ -98,8 +98,8 @@ describe('ProjectWorkspacePage boundary errors', () => {
     await waitFor(() => expect(getProjectMock).toHaveBeenCalledWith(PROJECT_ID));
   });
 
-  it('keeps project-file loading disabled for a rootless planning workspace', async () => {
-    const project: ProjectSnapshot = { id: PROJECT_ID, name: 'Launch plan', slug: 'launch-plan', relativeRoot: null, objective: 'Plan the launch', status: 'active', version: 1, createdAt: '2026-10-05', updatedAt: '2026-10-05' };
+  it('keeps project-file loading disabled when a project has no file capability', async () => {
+    const project: ProjectSnapshot = { id: PROJECT_ID, name: 'Launch plan', slug: 'launch-plan', workspaceMode: 'planning', capabilities: { planning: true, fileAccess: false }, objective: 'Plan the launch', status: 'active', version: 1, createdAt: '2026-10-05', updatedAt: '2026-10-05' };
     getProjectMock.mockResolvedValue(project);
     renderWorkspace({ status: 'idle', project: null, errorCode: null });
 

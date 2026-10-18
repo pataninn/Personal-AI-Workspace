@@ -36,6 +36,7 @@ class ProjectFixture implements IProjectRepository {
     name: 'Project',
     slug: 'project',
     relativeRoot: 'project',
+    storageKind: 'legacy',
     objective: null,
     status: 'active',
     version: 1,
@@ -119,6 +120,11 @@ function buildApp(): { readonly app: express.Express; readonly staging: FakeStag
       startAiRun: new StartAiRunUseCase(repository, conversations, runtime, runEvents, undefined, projects),
       cancelAiRun: new CancelAiRunUseCase(repository, runtime, runEvents, projects),
       events: runEvents,
+      principalAuthorization: {
+        isActive: async () => true,
+        assertActive: async () => undefined,
+        withActivePrincipal: async <T>(_principalId: string, action: (assertStillActive: () => Promise<void>) => Promise<T>): Promise<T> => action(async () => undefined)
+      },
       appOrigin: APP_ORIGIN,
       clearSessionCookie: () => undefined
     }

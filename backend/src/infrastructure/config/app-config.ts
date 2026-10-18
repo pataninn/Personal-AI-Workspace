@@ -40,6 +40,7 @@ const appEnvironmentSchema = z.object({
   WORKSPACE_ROOT: z.string().default('/workspace'),
   WORKSPACE_IDENTITY_FILE: z.string().default('/workspace/.personal-ai-workspace-identity'),
   WORKSPACE_IDENTITY: z.string().min(1),
+  ACCOUNT_WORKSPACES_IDENTITY: z.string().trim().min(1).optional(),
   SESSION_SECRET: z.string().min(32),
   SESSION_TTL_HOURS: z
     .string()
@@ -94,6 +95,7 @@ export interface AppConfig {
   readonly workspaceRoot: string;
   readonly workspaceIdentityFile: string;
   readonly workspaceIdentity: string;
+  readonly accountWorkspacesIdentity?: string;
   readonly sessionSecret: string;
   readonly sessionLifetimeMs: number;
   readonly localUserPassword?: string;
@@ -262,6 +264,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     workspaceRoot: parsed.data.WORKSPACE_ROOT,
     workspaceIdentityFile: parsed.data.WORKSPACE_IDENTITY_FILE,
     workspaceIdentity: parsed.data.WORKSPACE_IDENTITY,
+    ...(parsed.data.ACCOUNT_WORKSPACES_IDENTITY ? { accountWorkspacesIdentity: parsed.data.ACCOUNT_WORKSPACES_IDENTITY } : {}),
     sessionSecret: parsed.data.SESSION_SECRET,
     sessionLifetimeMs: parsed.data.SESSION_TTL_HOURS * 60 * 60 * 1_000,
     ...(parsed.data.LOCAL_USER_PASSWORD ? { localUserPassword: parsed.data.LOCAL_USER_PASSWORD } : {}),

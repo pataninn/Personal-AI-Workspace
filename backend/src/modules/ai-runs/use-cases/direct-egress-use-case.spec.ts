@@ -16,10 +16,10 @@ describe('DecideEgressUseCase direct provider path', () => {
   it('transitions to direct readiness without staging or OpenShell calls', async () => {
     const repository = new InMemoryAiRunRepository();
     const manifest = makeManifest();
-    const created = await repository.create({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Inspect', relativeRoot: 'project', requestedPaths: [], manifest, idempotencyKey: 'create-direct-1', requestFingerprint: 'fingerprint' });
+    const created = await repository.create({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Inspect', relativeRoot: 'project', storageKind: 'legacy', requestedPaths: [], manifest, idempotencyKey: 'create-direct-1', requestFingerprint: 'fingerprint' });
     const runtime = new DirectRuntime();
     const staging = new RejectingStagingGateway();
-    const projects = { findByIdForOwner: jest.fn(async () => ({ id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', objective: null, status: 'active', version: 1, createdAt: new Date(), updatedAt: new Date() })) } as unknown as IProjectRepository;
+    const projects = { findByIdForOwner: jest.fn(async () => ({ id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', storageKind: 'legacy', objective: null, status: 'active', version: 1, createdAt: new Date(), updatedAt: new Date() })) } as unknown as IProjectRepository;
     const useCase = new DecideEgressUseCase(repository, projects, conversationRepository(), workspaceGateway(), staging, runtime, '/workspace');
 
     const result = await useCase.execute({ ownerId: OWNER_ID, runId: created.resource.id, manifestHash: manifest.manifestHash, decision: 'approve', idempotencyKey: 'decision-direct-1' });

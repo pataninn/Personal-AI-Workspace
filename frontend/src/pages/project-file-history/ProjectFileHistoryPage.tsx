@@ -25,7 +25,7 @@ export function ProjectFileHistoryPage(): React.JSX.Element {
   if (detail.status === 'error' || !detail.project) return <ErrorState title="Project could not be loaded" detail="We could not load this project. Try again." testId="file-history-project-error" action={<div className="error-state-actions"><Button type="button" variant="secondary" onClick={() => { void dispatch(loadProject(projectId)); }}>Try again</Button><Link className="button button-secondary" to="/dashboard">Back to projects</Link></div>} />;
 
   const project = detail.project;
-  if (project.relativeRoot === null) return <Alert tone="error" data-testid="file-history-root-required"><p>A project folder is required to use this area.</p><Link className="button button-secondary" to={`/projects/${encodeURIComponent(project.id)}`}>Back to planning workspace</Link></Alert>;
+  if (!project.capabilities.fileAccess) return <Alert tone="error" data-testid="file-history-file-access-unavailable"><p>File history is unavailable for this project.</p><Link className="button button-secondary" to={`/projects/${encodeURIComponent(project.id)}`}>Back to project</Link></Alert>;
   const setOutcome = (value: ProjectFileHistoryOutcome): void => {
     const next = new URLSearchParams(searchParams);
     next.set('outcome', value);

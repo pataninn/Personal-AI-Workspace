@@ -26,10 +26,8 @@ describe('LocalStagingGateway', () => {
     const gateway = new LocalStagingGateway({ stagingRoot });
     const result = await gateway.stage({
       runId: 'run-1',
-      workspaceRoot,
-      relativeRoot: '',
       request: 'Inspect',
-      files: [{ relativePath: 'project.ts', sourceHash: createHash('sha256').update(content).digest('hex'), sizeBytes: Buffer.byteLength(content) }],
+      files: [{ relativePath: 'project.ts', sourceHash: createHash('sha256').update(content).digest('hex'), sizeBytes: Buffer.byteLength(content), content }],
       messages: []
     });
 
@@ -39,14 +37,12 @@ describe('LocalStagingGateway', () => {
     await gateway.cleanup(result.stagingReference);
   });
 
-  it('fails and cleans up when the source grows beyond the approved size', async () => {
+  it('fails and cleans up when staged content exceeds the safety limit', async () => {
     const gateway = new LocalStagingGateway({ stagingRoot });
     await expect(gateway.stage({
       runId: 'run-2',
-      workspaceRoot,
-      relativeRoot: '',
       request: 'Inspect',
-      files: [{ relativePath: 'project.ts', sourceHash: '0'.repeat(64), sizeBytes: 1 }],
+      files: [{ relativePath: 'project.ts', sourceHash: '0'.repeat(64), sizeBytes: 1, content: 'x'.repeat(256 * 1024 + 1) }],
       messages: []
     })).rejects.toBeInstanceOf(AiRunStagingFailedError);
     await expect(readFile(path.join(stagingRoot, 'run-run-2', 'request.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
@@ -56,10 +52,8 @@ describe('LocalStagingGateway', () => {
     const gateway = new LocalStagingGateway({ stagingRoot });
     await expect(gateway.stage({
       runId: 'run-3',
-      workspaceRoot,
-      relativeRoot: '',
       request: 'Inspect',
-      files: [{ relativePath: '../outside.txt', sourceHash: '0'.repeat(64), sizeBytes: 1 }],
+      files: [{ relativePath: '../outside.txt', sourceHash: '0'.repeat(64), sizeBytes: 1, content: 'x' }],
       messages: []
     })).rejects.toBeInstanceOf(AiRunStagingFailedError);
   });
@@ -71,10 +65,8 @@ describe('LocalStagingGateway', () => {
     const gateway = new LocalStagingGateway({ stagingRoot });
     const result = await gateway.stage({
       runId: 'run-4',
-      workspaceRoot,
-      relativeRoot: '',
       request: 'Inspect',
-      files: [{ relativePath: 'config.ts', sourceHash: createHash('sha256').update(redacted).digest('hex'), sizeBytes: Buffer.byteLength(raw) }],
+      files: [{ relativePath: 'config.ts', sourceHash: createHash('sha256').update(redacted).digest('hex'), sizeBytes: Buffer.byteLength(raw), content: raw }],
       messages: [{ role: 'user', content: 'token=message-secret-123' }]
     });
 

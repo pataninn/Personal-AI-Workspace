@@ -96,10 +96,11 @@ Keep the active <code>.env</code> in this application repository. Copy
 Compose reads it automatically when run from this directory. Git and the Docker
 build context ignore <code>.env</code>.
 
-<code>WORKSPACE_HOST_ROOT</code> selects the local folder mounted as
-<code>/workspace</code>. It may be this repository or a dedicated workspace folder.
-The identity marker inside that folder must match <code>WORKSPACE_IDENTITY</code>.
-The server accepts project root <code>.</code> only after it verifies that marker.
+<code>WORKSPACE_HOST_ROOT</code> selects the legacy folder mounted as <code>/workspace</code>.
+Its identity marker must match <code>WORKSPACE_IDENTITY</code>. Existing legacy-owner
+projects continue to use their recorded relative roots there. New file-backed projects
+never select a host path in the browser and are allocated under the separate managed
+storage mount described below. Planning-only projects remain usable without that mount.
 
 Keep the credential and TLS files at the paths named in <code>.env</code>. The
 default template places these files under
@@ -162,12 +163,79 @@ docker compose --project-name personal-ai-workspace ps
 curl.exe -k https://127.0.0.1:8443/ready
 ```
 
-Create the project in the UI with relative root <code>.</code> to use the complete
-folder configured by <code>WORKSPACE_HOST_ROOT</code>. Workspace inspection still blocks <code>.git</code>, <code>.env*</code>,
+Workspace inspection still blocks <code>.git</code>, <code>.env*</code>,
 <code>secrets</code>, backup/audit/internal paths, private keys, links, and other protected
 paths. File changes require validation, current hashes, pre-destructive backups,
 and atomic promotion. The configured file approval mode controls review versus
 automatic application.
+
+### Optional managed file storage
+
+The base Compose stack does not mount managed account storage. Without the overlay,
+existing verified legacy projects still work, planning-only projects remain available,
+and new file-backed project creation reports that managed storage is unavailable.
+To enable new isolated file-backed projects, provision an existing persistent host
+directory dedicated to account workspaces. Keep it physically separate from
+<code>WORKSPACE_HOST_ROOT</code>; do not use a symlink, junction, nested directory, or
+the application repository. Do not create this mount source through Docker Compose.
+
+Create a stable, non-secret marker value, put that exact value in
+<code>ACCOUNT_WORKSPACES_IDENTITY</code> in the private root <code>.env</code>, and
+write it to <code>.personal-ai-managed-storage-identity</code> at the root of the
+provisioned directory. Set <code>ACCOUNT_WORKSPACES_HOST_ROOT</code> to its absolute
+host path. For example, replace these illustrative values with the existing
+operator-provisioned directory and its marker value:
+
+```dotenv
+ACCOUNT_WORKSPACES_HOST_ROOT=D:/personal-ai-managed-storage
+ACCOUNT_WORKSPACES_IDENTITY=managed-storage-local-01
+```
+
+The override binds that existing directory to the fixed app path
+<code>/account-workspaces</code> and sets <code>bind.create_host_path: false</code>.
+
+Before enabling it, verify both host roots exist, are ordinary directories rather
+than links/reparse points, and are not the same path or nested inside each other.
+Confirm the marker file is a regular file and its trimmed contents exactly match
+<code>ACCOUNT_WORKSPACES_IDENTITY</code>. For example, enter the actual paths and
+marker value in a local PowerShell session (the marker is an identity label, not a
+credential):
+
+```powershell
+$legacyRoot = Read-Host 'Absolute WORKSPACE_HOST_ROOT path'
+$managedRoot = Read-Host 'Absolute ACCOUNT_WORKSPACES_HOST_ROOT path'
+$managedIdentity = Read-Host 'ACCOUNT_WORKSPACES_IDENTITY marker value'
+$legacyItem = Get-Item -LiteralPath $legacyRoot -Force
+$legacy = (Resolve-Path -LiteralPath $legacyRoot).Path.TrimEnd('\', '/')
+$managedItem = Get-Item -LiteralPath $managedRoot -Force
+$managed = (Resolve-Path -LiteralPath $managedRoot).Path.TrimEnd('\', '/')
+$reparse = [IO.FileAttributes]::ReparsePoint
+if (-not $legacyItem.PSIsContainer -or ($legacyItem.Attributes -band $reparse) -ne 0) { throw 'Legacy root must be an ordinary directory.' }
+if (-not $managedItem.PSIsContainer -or ($managedItem.Attributes -band $reparse) -ne 0) { throw 'Managed root must be an ordinary directory.' }
+$separator = [IO.Path]::DirectorySeparatorChar
+if ($legacy.Equals($managed, [StringComparison]::OrdinalIgnoreCase) -or
+    $legacy.StartsWith($managed + $separator, [StringComparison]::OrdinalIgnoreCase) -or
+    $managed.StartsWith($legacy + $separator, [StringComparison]::OrdinalIgnoreCase)) {
+  throw 'Legacy and managed roots must be disjoint.'
+}
+$marker = Get-Item -LiteralPath (Join-Path $managed '.personal-ai-managed-storage-identity') -Force
+if ($marker.PSIsContainer -or ($marker.Attributes -band $reparse) -ne 0) { throw 'Marker must be a regular file.' }
+if ((Get-Content -LiteralPath $marker.FullName -Raw).Trim() -cne $managedIdentity) { throw 'Managed marker identity does not match.' }
+```
+
+Then validate and start with the explicit overlay:
+
+```powershell
+docker compose --project-name personal-ai-workspace -f compose.yaml -f compose.managed-storage.yaml config --quiet
+docker compose --project-name personal-ai-workspace -f compose.yaml -f compose.managed-storage.yaml up --build -d
+```
+
+The backend also checks the fixed in-container mount, marker identity, and filesystem
+identity. This host preflight and Compose wiring do not prove Docker's resolved physical
+source or mount persistence; complete that deployment check before relying on a
+production host. Never point the managed mount at the legacy root or rely on an inferred
+default. New projects use server-generated account/project directories below the
+managed mount; clients never submit a path.
 
 When preparing an AI run, use <strong>Choose context</strong> to browse or search project
 files. Search ranks phrase and term matches deterministically, reports when its bounded

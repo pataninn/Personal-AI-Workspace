@@ -37,6 +37,7 @@ describe('TypeOrmProposedChangeSetRepository', () => {
     };
     const updated = { ...pending, status: 'applying', decision: 'approved' };
     const query = jest.fn()
+      .mockResolvedValueOnce([{ id: ownerId }])
       .mockResolvedValueOnce([pending])
       .mockResolvedValueOnce([{ status: 'active' }])
       .mockResolvedValueOnce([[updated], 1]);
@@ -58,6 +59,7 @@ describe('TypeOrmProposedChangeSetRepository', () => {
     expect(result.resource.ownerId).toBe(ownerId);
     expect(result.resource.projectId).toBe(pending.project_id);
     expect(result.resource.status).toBe('applying');
+    expect(query.mock.calls[0]?.[0]).toContain('"expires_at" > now()) FOR SHARE');
     expect(queryRunner.commitTransaction).toHaveBeenCalledTimes(1);
   });
 });

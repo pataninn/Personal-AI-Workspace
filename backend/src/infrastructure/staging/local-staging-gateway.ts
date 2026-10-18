@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
@@ -26,7 +25,7 @@ export class LocalStagingGateway implements IStagingGateway {
         await fs.writeFile(path.join(stagingDirectory, 'recent-messages.json'), JSON.stringify(input.messages.map(redactMessage)), { encoding: 'utf8', flag: 'wx' });
       }
       for (const file of input.files) {
-        await this.copyFile(input, file.relativePath, file.sourceHash, file.sizeBytes, stagingDirectory);
+        await this.copyFile(file.relativePath, file.sizeBytes, file.content, stagingDirectory);
       }
       return { stagingReference, itemCount: input.files.length + 1 + (input.messages.length > 0 ? 1 : 0) };
     } catch (error: unknown) {
@@ -46,23 +45,13 @@ export class LocalStagingGateway implements IStagingGateway {
     }
   }
 
-  private async copyFile(input: StageInput, relativePath: string, expectedHash: string, expectedSize: number, stagingReference: string): Promise<void> {
-    const sourcePath = safeJoin(input.workspaceRoot, input.relativeRoot, relativePath);
+  private async copyFile(relativePath: string, expectedSize: number, content: string, stagingReference: string): Promise<void> {
     const destinationPath = safeJoin(stagingReference, relativePath);
-    const sourceStats = await fs.lstat(sourcePath);
-    if (!sourceStats.isFile() || sourceStats.isSymbolicLink()) {
-      throw new Error('The selected source is not a regular file.');
-    }
-    if (expectedSize < 0 || expectedSize > MAX_STAGED_FILE_BYTES || sourceStats.size > expectedSize) {
+    if (expectedSize < 0 || expectedSize > MAX_STAGED_FILE_BYTES || Buffer.byteLength(content, 'utf8') > MAX_STAGED_FILE_BYTES) {
       throw new Error('The selected source is larger than the staging limit.');
     }
-    const content = redactEgressText(decodeStagedUtf8(await readBounded(sourcePath, expectedSize)));
-    const actualHash = createHash('sha256').update(content, 'utf8').digest('hex');
-    if (actualHash !== expectedHash) {
-      throw new Error('The selected source changed before staging.');
-    }
     await fs.mkdir(path.dirname(destinationPath), { recursive: true });
-    await fs.writeFile(destinationPath, content, { flag: 'wx' });
+    await fs.writeFile(destinationPath, redactEgressText(content), { flag: 'wx' });
   }
 
   private async tryCleanup(stagingReference: string): Promise<boolean> {
@@ -77,27 +66,6 @@ export class LocalStagingGateway implements IStagingGateway {
 
 function redactMessage(message: EgressMessage): EgressMessage {
   return { role: message.role, content: redactEgressText(message.content) };
-}
-
-async function readBounded(filePath: string, expectedSize: number): Promise<Buffer> {
-  const handle = await fs.open(filePath, 'r');
-  try {
-    const buffer = Buffer.alloc(expectedSize + 1);
-    let offset = 0;
-    while (offset < buffer.length) {
-      const result = await handle.read(buffer, offset, buffer.length - offset, offset);
-      if (result.bytesRead === 0) {
-        break;
-      }
-      offset += result.bytesRead;
-    }
-    if (offset > expectedSize) {
-      throw new Error('The selected source changed beyond the approved size.');
-    }
-    return buffer.subarray(0, offset);
-  } finally {
-    await handle.close();
-  }
 }
 
 function safeJoin(...segments: readonly string[]): string {
@@ -115,12 +83,4 @@ function resolveStagingDirectory(stagingRoot: string, stagingReference: string):
     throw new Error('The staging reference is invalid.');
   }
   return safeJoin(stagingRoot, stagingReference);
-}
-
-function decodeStagedUtf8(buffer: Buffer): string {
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
-  } catch {
-    throw new Error('The selected source is not valid UTF-8 text.');
-  }
 }

@@ -28,6 +28,10 @@ class FakeUserRepository implements IUserRepository {
     return this.user?.id === userId ? this.user : null;
   }
 
+  public async findBootstrapOwnerId(): Promise<string | null> {
+    return this.user?.id ?? null;
+  }
+
   public async hasAnyRegularAccounts(): Promise<boolean> {
     return this.user !== null;
   }

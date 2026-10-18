@@ -36,7 +36,7 @@ class ProjectFixture implements IProjectRepository {
   public async updateStatus(): Promise<never> { throw new Error('Not used by project fact integration tests.'); }
 
   private project(): Project {
-    return { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', objective: null, status: this.status, version: 1, createdAt: NOW, updatedAt: NOW };
+    return { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', storageKind: 'legacy', objective: null, status: this.status, version: 1, createdAt: NOW, updatedAt: NOW };
   }
 }
 
@@ -90,7 +90,7 @@ class ProjectFactFixture implements IProjectFactRepository {
 function buildApp(projects: ProjectFixture, facts: ProjectFactFixture): express.Express {
   const readiness = new InMemoryReadinessState();
   readiness.markReady();
-  const getSession = { execute: jest.fn().mockResolvedValue({ sessionId: 'session', principal: { id: OWNER_ID, displayName: 'Local user' }, csrfToken: 'csrf-token', expiresAt: new Date(Date.now() + 60_000) }) } as unknown as GetSessionUseCase;
+  const getSession = { execute: jest.fn().mockResolvedValue({ sessionId: 'session', principal: { id: OWNER_ID, displayName: 'Local user', accountKind: 'regular', role: 'admin' }, csrfToken: 'csrf-token', expiresAt: new Date(Date.now() + 60_000) }) } as unknown as GetSessionUseCase;
   return createApp({
     logger: createLogger('silent'),
     readiness: new GetReadinessUseCase(readiness),

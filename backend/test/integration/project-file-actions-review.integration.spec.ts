@@ -16,6 +16,7 @@ import { ProjectFileGateway } from '@/infrastructure/workspace/project-file-gate
 
 const ORIGIN = 'https://127.0.0.1:8443';
 const PROJECT = '22222222-2222-4222-8222-222222222222';
+const OWNER = '11111111-1111-4111-8111-111111111111';
 const BASE = `/api/v1/projects/${PROJECT}/files`;
 const HASH = 'a'.repeat(64);
 const HEADERS = { Origin: ORIGIN, Cookie: '__Host-pa_session=valid', 'X-CSRF-Token': 'csrf' };
@@ -25,7 +26,7 @@ function fixture(): { app: express.Express; gateway: jest.Mocked<IProjectFileGat
     write: jest.fn().mockResolvedValue({ hash: HASH }), remove: jest.fn().mockResolvedValue(undefined),
     download: jest.fn().mockResolvedValue({ bytes: Buffer.from([0, 255]), hash: HASH })
   };
-  const access: IProjectFileAccess = { execute: async (_input, action) => action({ projectId: PROJECT, relativeRoot: 'folder' }) };
+  const access: IProjectFileAccess = { execute: async (_input, action) => action({ ownerId: OWNER, projectId: PROJECT, storageKind: 'legacy', relativeRoot: 'folder' }) };
   const getSession = { execute: jest.fn().mockImplementation(async (token: unknown) => {
     if (token !== 'valid') throw new UnauthenticatedError();
     return { sessionId: 'session', principal: { id: 'owner' }, csrfToken: 'csrf', expiresAt: new Date('2099-01-01') };

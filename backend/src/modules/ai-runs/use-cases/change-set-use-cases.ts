@@ -22,7 +22,7 @@ import type {
 import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-repository';
 import type { IProposedChangeSetRepository } from '@/modules/ai-runs/repositories/change-set-repository';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
-import { requireProjectFileRoot } from '@/modules/projects/domain/project-file-root';
+import { requireProjectFileRoot, requireProjectFileScope } from '@/modules/projects/domain/project-file-root';
 import type { IWorkspaceMutationGateway, WorkspaceFileSnapshot, WorkspaceMutationScope, WorkspaceApplyResult } from '@/modules/ai-runs/repositories/workspace-mutation-gateway';
 import type { IProjectChatContextRepository } from '@/modules/ai-runs/repositories/project-chat-context-repository';
 import { assertActiveAiRunProject, assertAiRunProjectHasFileRoot } from '@/modules/ai-runs/use-cases/assert-ai-run-project';
@@ -31,6 +31,7 @@ import { redactSensitiveText, truncateUtf8 } from '@/infrastructure/workspace/wo
 import { WorkspaceRelativePath } from '@/modules/files/domain/workspace-path';
 import { isProtectedFileName } from '@/modules/files/domain/workspace-policy';
 import { containsCredentialLikeValue } from '@/shared/egress/redaction';
+import type { IPrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
 
 export interface CollectChangeSetInput {
   readonly ownerId: string;
@@ -67,7 +68,7 @@ export class CollectProposedChangeSetUseCase {
     if (input.changes.length === 0 || input.changes.length > CHANGE_SET_LIMITS.maxOperations) {
       throw new ChangeSetValidationError([{ field: 'changes', message: 'The proposed operation count is outside the safe limit.' }]);
     }
-    const scope: WorkspaceMutationScope = { projectId: project.id, relativeRoot: requireProjectFileRoot(project) };
+    const scope: WorkspaceMutationScope = requireProjectFileScope(project);
     const operations = await this.buildOperations(scope, run.manifest.files, input.changes);
     const totalSizeBytes = operations.reduce((total, operation) => total + operation.sizeBytes, 0);
     if (totalSizeBytes > CHANGE_SET_LIMITS.maxTotalContentBytes) {
@@ -200,7 +201,8 @@ export class DecideProposedChangeSetUseCase {
     private readonly projectRepository: IProjectRepository,
     private readonly changeSets: IProposedChangeSetRepository,
     private readonly workspace: IWorkspaceMutationGateway,
-    private readonly contexts?: IProjectChatContextRepository
+    private readonly contexts?: IProjectChatContextRepository,
+    private readonly principalAuthorization?: IPrincipalAuthorization
   ) {}
 
   public async execute(input: ChangeSetDecisionInput): Promise<ProposedChangeSet> {
@@ -209,6 +211,7 @@ export class DecideProposedChangeSetUseCase {
 
   /** Applies the user's standing file-edit authorization before a run completes. */
   public async executeAutomatically(input: { readonly ownerId: string; readonly runId: string }): Promise<ProposedChangeSet | null> {
+    await this.principalAuthorization?.assertActive(input.ownerId);
     const changeSet = await this.changeSets.findByRunForOwner(input.ownerId, input.runId);
     if (!changeSet) return null;
     const applied = await this.executeDecision({ ...input, proposalHash: changeSet.proposalHash, decision: 'approve', idempotencyKey: `auto-apply-${changeSet.id}` }, true);
@@ -229,6 +232,11 @@ export class DecideProposedChangeSetUseCase {
   }
 
   private async executeDecision(input: ChangeSetDecisionInput, automatic: boolean): Promise<ProposedChangeSet> {
+    await this.principalAuthorization?.assertActive(input.ownerId);
+    return this.executeDecisionWhileActive(input, automatic);
+  }
+
+  private async executeDecisionWhileActive(input: ChangeSetDecisionInput, automatic: boolean): Promise<ProposedChangeSet> {
     const run = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
     if (!run) {
       throw new AiRunNotFoundError();
@@ -252,10 +260,12 @@ export class DecideProposedChangeSetUseCase {
 
   private async applyApprovedSet(decision: ChangeSetDecisionResult): Promise<ProposedChangeSet> {
     let changeSet = decision.resource;
-    const scope: WorkspaceMutationScope = { projectId: changeSet.projectId, relativeRoot: await this.projectRoot(changeSet.ownerId, changeSet.projectId) };
+    const scope = await this.projectFileScope(changeSet.ownerId, changeSet.projectId);
     let applied: WorkspaceApplyResult;
     try {
       applied = await this.workspace.applyChangeSet(scope, changeSet.operations, changeSet.runId, changeSet.proposalHash, {
+        ...(this.principalAuthorization ? { assertPrincipalActive: () => this.principalAuthorization!.assertActive(changeSet.ownerId) } : {}),
+        ...(this.principalAuthorization ? { withActivePrincipal: <T>(action: (assertStillActive: () => Promise<void>) => Promise<T>) => this.principalAuthorization!.withActivePrincipal(changeSet.ownerId, action) } : {}),
         recordBackupCheckpoint: async (checkpoint) => {
           const checkpoints = [...(changeSet.backupCheckpoints ?? []), checkpoint];
           const checkpointed: ProposedChangeSet = { ...changeSet, backupCheckpoints: checkpoints, updatedAt: new Date() };
@@ -294,12 +304,12 @@ export class DecideProposedChangeSetUseCase {
     return terminal;
   }
 
-  private async projectRoot(ownerId: string, projectId: string): Promise<string> {
+  private async projectFileScope(ownerId: string, projectId: string): Promise<WorkspaceMutationScope> {
     const project = await this.projectRepository.findByIdForOwner(ownerId, projectId);
     if (!project || project.status === 'archived') {
       throw new ChangeSetBlockedError('This project is archived and read-only.');
     }
-    return requireProjectFileRoot(project);
+    return requireProjectFileScope(project);
   }
 
   private async saveManualReview(changeSet: ProposedChangeSet): Promise<ProposedChangeSet> {

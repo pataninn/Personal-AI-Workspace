@@ -1,6 +1,7 @@
 import {
   ProjectRootReparsePointError,
-  WorkspaceBoundaryUnavailableError
+  WorkspaceBoundaryUnavailableError,
+  WorkspaceStorageUnavailableError
 } from '@/modules/projects/domain/project-errors';
 import {
   WorkspaceBoundaryAdapter,
@@ -8,8 +9,10 @@ import {
   type WorkspaceStats
 } from '@/infrastructure/workspace/workspace-boundary';
 
-function stats(options: { directory?: boolean; file?: boolean; symbolicLink?: boolean; reparsePoint?: boolean } = {}): WorkspaceStats {
+function stats(options: { directory?: boolean; file?: boolean; symbolicLink?: boolean; reparsePoint?: boolean; dev?: number; ino?: number } = {}): WorkspaceStats {
   return {
+    ...(options.dev === undefined ? {} : { dev: options.dev }),
+    ...(options.ino === undefined ? {} : { ino: options.ino }),
     isDirectory: () => options.directory === true,
     isFile: () => options.file === true,
     isSymbolicLink: () => options.symbolicLink === true,
@@ -145,5 +148,111 @@ describe('WorkspaceBoundaryAdapter', () => {
     });
 
     await expect(adapter.validateProjectRoot('APPS~1/WEBSIT~1')).resolves.toBe('apps/website');
+  });
+
+  it('allocates and resolves account-owned managed roots without using the reserved legacy mount', async () => {
+    const entries = new Map<string, WorkspaceStats>([
+      ['/workspace', stats({ directory: true, dev: 1, ino: 1 })],
+      ['/workspace/.identity', stats({ file: true })],
+      ['/account-workspaces', stats({ directory: true, dev: 2, ino: 2 })],
+      ['/account-workspaces/.personal-ai-managed-storage-identity', stats({ file: true })]
+    ]);
+    let nextInode = 3;
+    const fileSystem: WorkspaceFileSystem = {
+      lstat: async (filePath) => {
+        const entry = entries.get(filePath);
+        if (!entry) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        return entry;
+      },
+      mkdir: async (filePath) => {
+        if (entries.has(filePath)) throw Object.assign(new Error('exists'), { code: 'EEXIST' });
+        entries.set(filePath, stats({ directory: true, dev: 2, ino: nextInode++ }));
+      },
+      readFile: async (filePath) => filePath === '/workspace/.identity' ? 'legacy-marker' : 'managed-marker',
+      realpath: async (filePath) => filePath
+    };
+    const adapter = new WorkspaceBoundaryAdapter({
+      containerRoot: '/workspace', identityFile: '/workspace/.identity', expectedIdentity: 'legacy-marker',
+      managedContainerRoot: '/account-workspaces',
+      managedIdentityFile: '/account-workspaces/.personal-ai-managed-storage-identity',
+      managedExpectedIdentity: 'managed-marker',
+      legacyOwnerId: async () => '11111111-1111-4111-8111-111111111111',
+      fileSystem
+    });
+    const ownerId = '11111111-1111-4111-8111-111111111111';
+    const projectId = '22222222-2222-4222-8222-222222222222';
+
+    await expect(adapter.getManagedSnapshot()).resolves.toEqual({ status: 'ready' });
+    await expect(adapter.createManagedProjectRoot(ownerId, projectId)).resolves.toBe(`projects/${projectId}`);
+    await expect(adapter.resolveProjectRoot({ ownerId, projectId, storageKind: 'managed', relativeRoot: `projects/${projectId}` }))
+      .resolves.toEqual({ canonicalRoot: '/account-workspaces', canonicalProjectRoot: `/account-workspaces/${ownerId}/projects/${projectId}` });
+    await expect(adapter.resolveProjectRoot({ ownerId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', projectId, storageKind: 'legacy', relativeRoot: 'legacy-project' }))
+      .rejects.toBeInstanceOf(WorkspaceBoundaryUnavailableError);
+  });
+
+  it('keeps managed storage unavailable when its marker or distinct mount identity cannot be verified', async () => {
+    const base = new Map<string, WorkspaceStats>([
+      ['/workspace', stats({ directory: true, dev: 1, ino: 1 })],
+      ['/workspace/.identity', stats({ file: true })],
+      ['/account-workspaces', stats({ directory: true, dev: 1, ino: 1 })],
+      ['/account-workspaces/.personal-ai-managed-storage-identity', stats({ file: true })]
+    ]);
+    const fileSystem = fakeFileSystem(base);
+    const adapter = new WorkspaceBoundaryAdapter({
+      containerRoot: '/workspace', identityFile: '/workspace/.identity', expectedIdentity: 'host-marker',
+      managedContainerRoot: '/account-workspaces',
+      managedIdentityFile: '/account-workspaces/.personal-ai-managed-storage-identity',
+      managedExpectedIdentity: 'managed-marker',
+      fileSystem
+    });
+
+    await expect(adapter.getManagedSnapshot()).resolves.toMatchObject({ status: 'unavailable' });
+    await expect(adapter.createManagedProjectRoot('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'))
+      .rejects.toBeInstanceOf(WorkspaceStorageUnavailableError);
+    expect(base.has('/workspace/11111111-1111-4111-8111-111111111111')).toBe(false);
+
+    const missingIdentity = new WorkspaceBoundaryAdapter({
+      containerRoot: '/workspace', identityFile: '/workspace/.identity', expectedIdentity: 'host-marker',
+      managedContainerRoot: '/account-workspaces',
+      managedIdentityFile: '/account-workspaces/.personal-ai-managed-storage-identity',
+      managedExpectedIdentity: 'managed-marker',
+      fileSystem: fakeFileSystem(new Map([
+        ['/workspace', stats({ directory: true })], ['/workspace/.identity', stats({ file: true })],
+        ['/account-workspaces', stats({ directory: true })], ['/account-workspaces/.personal-ai-managed-storage-identity', stats({ file: true })]
+      ]))
+    });
+    await expect(missingIdentity.getManagedSnapshot()).resolves.toMatchObject({ status: 'unavailable' });
+  });
+
+  it('rejects managed traversal aliases and reparse-point account namespaces', async () => {
+    const ownerId = '11111111-1111-4111-8111-111111111111';
+    const projectId = '22222222-2222-4222-8222-222222222222';
+    const entries = new Map<string, WorkspaceStats>([
+      ['/workspace', stats({ directory: true, dev: 1, ino: 1 })], ['/workspace/.identity', stats({ file: true })],
+      ['/account-workspaces', stats({ directory: true, dev: 2, ino: 2 })],
+      ['/account-workspaces/.personal-ai-managed-storage-identity', stats({ file: true })],
+      [`/account-workspaces/${ownerId}`, stats({ directory: true, dev: 2, ino: 3, symbolicLink: true })],
+      [`/account-workspaces/${ownerId}/projects`, stats({ directory: true, dev: 2, ino: 4 })],
+      [`/account-workspaces/${ownerId}/projects/${projectId}`, stats({ directory: true, dev: 2, ino: 5 })]
+    ]);
+    const baseFileSystem = fakeFileSystem(entries);
+    const fileSystem: WorkspaceFileSystem = {
+      ...baseFileSystem,
+      readFile: async (filePath) => filePath === '/workspace/.identity' ? 'host-marker' : 'managed-marker'
+    };
+    const adapter = new WorkspaceBoundaryAdapter({
+      containerRoot: '/workspace', identityFile: '/workspace/.identity', expectedIdentity: 'host-marker',
+      managedContainerRoot: '/account-workspaces',
+      managedIdentityFile: '/account-workspaces/.personal-ai-managed-storage-identity',
+      managedExpectedIdentity: 'managed-marker',
+      fileSystem
+    });
+
+    await expect(adapter.resolveProjectRoot({ ownerId, projectId, storageKind: 'managed', relativeRoot: '../legacy-project' }))
+      .rejects.toBeInstanceOf(WorkspaceStorageUnavailableError);
+    await expect(adapter.resolveProjectRoot({ ownerId, projectId, storageKind: 'managed', relativeRoot: `projects/${projectId}` }))
+      .rejects.toBeInstanceOf(ProjectRootReparsePointError);
+    await expect(adapter.resolveProjectRoot({ ownerId, projectId, storageKind: 'managed', relativeRoot: `projects/${projectId}/..` }))
+      .rejects.toBeInstanceOf(WorkspaceStorageUnavailableError);
   });
 });

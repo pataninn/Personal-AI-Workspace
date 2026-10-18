@@ -181,14 +181,15 @@ test('global task edit receipts are safe to reload, replay, and undo only once',
   assert.equal((await secondUndo.json()).data.reason, 'already_undone');
 });
 
-test('moves tasks to a rootless planning workspace and reverses archive without changing the task id', async () => {
+test('moves tasks to a planning-only workspace and reverses archive without changing the task id', async () => {
   const { origin } = await startPreview(); const cookie = await signIn(origin);
   const planningResponse = await fetch(`${origin}/api/v1/projects`, {
     method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Preview plan', workspaceMode: 'planning', objective: 'Move tasks here' })
   });
   const planning = (await planningResponse.json()).data;
   assert.equal(planningResponse.status, 201);
-  assert.equal(planning.relativeRoot, null);
+  assert.equal(Object.hasOwn(planning, 'relativeRoot'), false);
+  assert.equal(planning.capabilities.fileAccess, false);
   const page = await fetch(`${origin}/api/v1/tasks?limit=10`, { headers: headers(cookie) });
   const taskItem = (await page.json()).data.items.find((item) => item.workspace?.id === PROJECT_ID);
   const taskId = taskItem.task.id;
@@ -310,17 +311,21 @@ test('files support upload, raw download, stale-safe edits and deletion without 
   assert.equal((await fetch(`${endpoint}/content?path=README.md`, { headers: headers(cookie) })).status, 200);
 });
 
-test('project removal clears app records and retains files for the same root after reattachment', async () => {
+test('project removal clears app records and newly allocated roots stay private to the public response', async () => {
   const { origin } = await startPreview(); const cookie = await signIn(origin);
   const before = (await (await fetch(`${origin}/api/v1/projects/${PROJECT_ID}/files/content?path=README.md`, { headers: headers(cookie) })).json()).data;
   const removed = await fetch(`${origin}/api/v1/projects/${PROJECT_ID}`, { method: 'DELETE', headers: headers(cookie, { 'If-Match': '1' }) });
   assert.equal(removed.status, 204);
   assert.equal((await fetch(`${origin}/api/v1/projects/${PROJECT_ID}/tasks`, { headers: headers(cookie) })).status, 404);
   assert.equal((await fetch(`${origin}/api/v1/conversations/${CONVERSATION_ID}?projectId=${PROJECT_ID}`, { headers: headers(cookie) })).status, 404);
-  const attached = await fetch(`${origin}/api/v1/projects`, { method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Reattached', relativeRoot: 'apps/website' }) });
-  const id = (await attached.json()).data.id;
-  const after = (await (await fetch(`${origin}/api/v1/projects/${id}/files/content?path=README.md`, { headers: headers(cookie) })).json()).data;
-  assert.equal(after.content, before.content);
+  const created = await fetch(`${origin}/api/v1/projects`, { method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Replacement project' }) });
+  const replacement = (await created.json()).data;
+  assert.equal(created.status, 201);
+  assert.equal(replacement.capabilities.fileAccess, true);
+  assert.equal(Object.hasOwn(replacement, 'relativeRoot'), false);
+  const after = (await (await fetch(`${origin}/api/v1/projects/${replacement.id}/files/content?path=README.md`, { headers: headers(cookie) })).json()).data;
+  assert.equal(after.content, '# New project\n');
+  assert.notEqual(after.content, before.content);
 });
 
 test('new destructive/file methods require CSRF and direct preview chat stays local with Markdown', async () => {
@@ -361,10 +366,13 @@ test('shows seeded projects and supports create, archive, and restore', async ()
   const projects = (await list.json()).data.projects;
   assert.equal(projects.length, 2);
   const created = await fetch(`${origin}/api/v1/projects`, {
-    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'My preview', relativeRoot: 'apps/my-preview' })
+    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'My preview' })
   });
   assert.equal(created.status, 201);
   const project = (await created.json()).data;
+  assert.equal(project.workspaceMode, 'file_backed');
+  assert.deepEqual(project.capabilities, { planning: true, fileAccess: true });
+  assert.equal(Object.hasOwn(project, 'relativeRoot'), false);
   const archive = await fetch(`${origin}/api/v1/projects/${project.id}`, {
     method: 'PATCH', headers: headers(cookie, { 'If-Match': '1' }), body: JSON.stringify({ status: 'archived' })
   });
@@ -375,7 +383,7 @@ test('shows seeded projects and supports create, archive, and restore', async ()
   assert.equal((await restore.json()).data.status, 'active');
 });
 
-test('creates rootless planning metadata and refuses file-backed capabilities without a root', async () => {
+test('creates planning-only metadata and omits filesystem roots', async () => {
   const { origin } = await startPreview();
   const cookie = await signIn(origin);
   const created = await fetch(`${origin}/api/v1/projects`, {
@@ -384,7 +392,7 @@ test('creates rootless planning metadata and refuses file-backed capabilities wi
   });
   assert.equal(created.status, 201);
   const project = (await created.json()).data;
-  assert.equal(project.relativeRoot, null);
+  assert.equal(Object.hasOwn(project, 'relativeRoot'), false);
   assert.equal(project.objective, 'Track the launch');
   assert.equal(project.workspaceMode, 'planning');
   assert.deepEqual(project.capabilities, { planning: true, fileAccess: false });
@@ -393,7 +401,7 @@ test('creates rootless planning metadata and refuses file-backed capabilities wi
   assert.deepEqual((await detail.json()).data, project);
   const overview = await fetch(`${origin}/api/v1/projects/overview`, { headers: { Cookie: cookie } });
   const listed = (await overview.json()).data.projects.find((item) => item.id === project.id);
-  assert.equal(listed.relativeRoot, null);
+  assert.equal(Object.hasOwn(listed, 'relativeRoot'), false);
   assert.equal(listed.capabilities.fileAccess, false);
 
   const filePaths = [
@@ -414,23 +422,31 @@ test('creates rootless planning metadata and refuses file-backed capabilities wi
   assert.equal((await run.json()).error.code, 'PROJECT_ROOT_NOT_ATTACHED');
 });
 
-test('preserves rooted compatibility and rejects inconsistent planning mode requests', async () => {
+test('allocates default file capability and rejects caller-selected roots', async () => {
   const { origin } = await startPreview();
   const cookie = await signIn(origin);
-  const wrongRootMode = await fetch(`${origin}/api/v1/projects`, {
-    method: 'POST', headers: headers(cookie),
-    body: JSON.stringify({ name: 'Bad plan', workspaceMode: 'planning', relativeRoot: 'notes' })
-  });
-  assert.equal(wrongRootMode.status, 400);
-  const missingRoot = await fetch(`${origin}/api/v1/projects`, {
+  const defaultMode = await fetch(`${origin}/api/v1/projects`, {
     method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Missing root' })
   });
-  assert.equal(missingRoot.status, 400);
-  const workspaceRoot = await fetch(`${origin}/api/v1/projects`, {
-    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Whole workspace', relativeRoot: '.' })
+  assert.equal(defaultMode.status, 201);
+  const defaultProject = (await defaultMode.json()).data;
+  assert.equal(defaultProject.workspaceMode, 'file_backed');
+  assert.equal(defaultProject.capabilities.fileAccess, true);
+  assert.equal(Object.hasOwn(defaultProject, 'relativeRoot'), false);
+
+  const selectedRoot = await fetch(`${origin}/api/v1/projects`, {
+    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Caller selected root', relativeRoot: 'private/path' })
   });
-  assert.equal(workspaceRoot.status, 409);
-  assert.equal((await workspaceRoot.json()).error.code, 'PROJECT_ROOT_OVERLAP');
+  assert.equal(selectedRoot.status, 400);
+  const error = (await selectedRoot.json()).error;
+  assert.equal(error.code, 'VALIDATION_ERROR');
+  assert.doesNotMatch(error.message, /private\/path/u);
+
+  const planningRoot = await fetch(`${origin}/api/v1/projects`, {
+    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Bad plan', workspaceMode: 'planning', relativeRoot: 'notes' })
+  });
+  assert.equal(planningRoot.status, 400);
+  assert.equal((await planningRoot.json()).error.code, 'VALIDATION_ERROR');
 });
 
 test('supports seeded history, new conversations, and idempotent message retries', async () => {

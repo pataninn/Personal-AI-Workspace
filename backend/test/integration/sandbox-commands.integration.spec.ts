@@ -54,7 +54,7 @@ class ProjectFixture implements IProjectRepository {
 
   private makeProject(id: string, ownerId: string): Project {
     const now = new Date('2026-09-16T00:00:00.000Z');
-    return { id, ownerId, name: 'Project', slug: 'project', relativeRoot: id === PROJECT_ID ? 'project' : 'other', objective: null, status: 'active', version: 1, createdAt: now, updatedAt: now };
+    return { id, ownerId, name: 'Project', slug: 'project', relativeRoot: id === PROJECT_ID ? 'project' : 'other', storageKind: 'legacy', objective: null, status: 'active', version: 1, createdAt: now, updatedAt: now };
   }
 }
 
@@ -81,6 +81,7 @@ class ReadyRunFixture implements IAiRunRepository {
       conversationId: '44444444-4444-4444-8444-444444444444',
       request: 'inspect',
       relativeRoot: '',
+      storageKind: 'legacy',
       requestedPaths: [],
       manifest: {
         manifestHash: 'a'.repeat(64),
@@ -159,7 +160,7 @@ async function buildFixture(runtime: FakeAgentRuntime = new FakeAgentRuntime()):
       if (rawToken !== 'valid-session-token') {
         throw new UnauthenticatedError();
       }
-      return { sessionId: 'session', principal: { id: OWNER_ID, displayName: 'Local user' }, csrfToken: 'csrf-token', expiresAt: new Date(Date.now() + 60_000) };
+      return { sessionId: 'session', principal: { id: OWNER_ID, displayName: 'Local user', accountKind: 'regular', role: 'admin' }, csrfToken: 'csrf-token', expiresAt: new Date(Date.now() + 60_000) };
     })
   } as unknown as GetSessionUseCase;
   const app = createApp({

@@ -16,12 +16,12 @@ export function ProjectWorkspaceLayout({ project, filePanel }: ProjectWorkspaceL
   const { conversationId } = useParams();
   const [panel, setPanel] = useState<'chat' | 'tasks' | 'files'>('chat');
   useEffect(() => { setPanel('chat'); }, [project.id]);
-  if (project.relativeRoot === null) {
+  if (!project.capabilities.fileAccess) {
     return <div className="planning-workspace" data-testid="planning-workspace">
       <section aria-labelledby="planning-workspace-title">
         <h2 id="planning-workspace-title">Planning workspace</h2>
         {project.objective ? <p>{project.objective}</p> : null}
-        <p>Files and assistant runs are unavailable until a project folder is attached.</p>
+        <p>This is a planning-only workspace. Files and file-based runs are unavailable here. Tasks, memory, and planning assistance remain available where enabled.</p>
       </section>
       <section className="workspace-tasks"><ProjectTasksManager projectId={project.id} projectName={project.name} archived={project.status === 'archived'} conversationId={null} compact /></section>
     </div>;

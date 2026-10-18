@@ -46,7 +46,8 @@ function workspace(overrides: Partial<ProjectSnapshot> = {}): ProjectSnapshot {
     id: PROJECT_ID,
     name: 'Launch plan',
     slug: 'launch-plan',
-    relativeRoot: null,
+    workspaceMode: 'planning',
+    capabilities: { planning: true, fileAccess: false },
     objective: 'Plan the launch',
     status: 'active',
     version: 1,
@@ -82,7 +83,7 @@ describe('WorkspacePlanningChatPage', () => {
     getProjectMock.mockReset().mockResolvedValue(workspace());
   });
 
-  it('loads a rootless workspace into its own workspace-scoped text chat', async () => {
+  it('loads a planning-only workspace into its own workspace-scoped text chat', async () => {
     const project = workspace();
     getProjectMock.mockResolvedValue(project);
     renderPlanningChat(project);
@@ -105,8 +106,8 @@ describe('WorkspacePlanningChatPage', () => {
     expect(chat).toHaveAttribute('data-disabled-reason', 'This planning workspace is archived. Its conversation history is read-only.');
   });
 
-  it.each(['apps/website', '.'])('redirects file-backed root %s to the existing project chat', async (relativeRoot) => {
-    const project = workspace({ relativeRoot });
+  it('redirects projects with file capability to the existing project chat', async () => {
+    const project = workspace({ workspaceMode: 'file_backed', capabilities: { planning: true, fileAccess: true } });
     getProjectMock.mockResolvedValue(project);
     renderPlanningChat(project);
 

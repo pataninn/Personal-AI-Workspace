@@ -35,7 +35,7 @@ export function TaskMoveDialog({
         <Label className="field-label" htmlFor="task-move-destination">Destination</Label>
         <select id="task-move-destination" data-testid="task-move-destination" className="rounded-md border border-[var(--color-border-strong)] bg-[var(--color-surface-raised)] p-2 text-[var(--color-text)]" value={selectedWorkspaceId} disabled={saving} onChange={(event) => { onWorkspaceChange(event.currentTarget.value); }}>
           <option value="" disabled={currentWorkspaceId === null}>Inbox{currentWorkspaceId === null ? ' (current)' : ''}</option>
-          {destinations.map((project) => <option key={project.id} value={project.id} disabled={project.id === currentWorkspaceId}>{project.name}{project.relativeRoot === null ? ' (planning only)' : ''}{project.id === currentWorkspaceId ? ' (current)' : ''}</option>)}
+          {destinations.map((project) => <option key={project.id} value={project.id} disabled={project.id === currentWorkspaceId}>{project.name}{!project.capabilities.fileAccess ? ' (planning only)' : ''}{project.id === currentWorkspaceId ? ' (current)' : ''}</option>)}
         </select>
       </div>
       {projectListStatus === 'loading' ? <p role="status">Loading active workspaces…</p> : null}

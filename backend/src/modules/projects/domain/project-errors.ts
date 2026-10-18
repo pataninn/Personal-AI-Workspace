@@ -183,3 +183,9 @@ export class WorkspaceBoundaryUnavailableError extends ProjectDomainError {
     super('WORKSPACE_BOUNDARY_UNAVAILABLE', 503, 'The authoritative workspace is unavailable, so this project operation cannot proceed safely.');
   }
 }
+
+export class WorkspaceStorageUnavailableError extends ProjectDomainError {
+  public constructor() {
+    super('WORKSPACE_STORAGE_UNAVAILABLE', 503, 'Private file storage is unavailable. Choose Planning only or try again later.');
+  }
+}

@@ -10,7 +10,7 @@ const { createGlobalTaskMock } = vi.hoisted(() => ({ createGlobalTaskMock: vi.fn
 vi.mock('@/entities/project-task', () => ({ createGlobalTask: createGlobalTaskMock }));
 
 const WORKSPACE: ProjectSnapshot = {
-  id: '11111111-1111-4111-8111-111111111111', name: 'Studio refresh', slug: 'studio-refresh', relativeRoot: null,
+  id: '11111111-1111-4111-8111-111111111111', name: 'Studio refresh', slug: 'studio-refresh', workspaceMode: 'planning', capabilities: { planning: true, fileAccess: false },
   status: 'active', version: 3, createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z'
 };
 const item = { task: { id: 'task-1', projectId: WORKSPACE.id }, collection: 'workspace', workspace: { id: WORKSPACE.id, name: WORKSPACE.name, status: 'active' } };

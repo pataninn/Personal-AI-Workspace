@@ -1,0 +1,12 @@
+# Task 2.2 independent final contract/config checks
+
+Date: 2026-10-19
+
+- Backend focused Jest command: `$env:pnpm_config_verify_deps_before_run='false'; pnpm.cmd --dir backend exec jest --runInBand --runTestsByPath src/openapi/project-planning-openapi.spec.ts src/infrastructure/config/app-config.spec.ts` — 2 suites / 18 tests passed; exit 0.
+- Managed Compose boundary: `node --test --test-name-pattern="managed storage" scripts/compose-boundary-check.test.mjs` — 1 / 1 passed; exit 0.
+- Compose parser: `docker compose --project-name pai-qa-parse-only -f compose.yaml -f compose.managed-storage.yaml config --quiet` — exit 0 using process-only harmless placeholders for required values and fake absolute roots. No service was started and resolved config was not printed. Docker emitted a warning that `%USERPROFILE%\\.docker\\config.json` could not be read in this sandbox.
+- `git diff --check` — exit 0 (only a CRLF-to-LF normalization warning for a changed backend file).
+- `rg -n '"relativeRoot"' backend/openapi.json` — no matches. OpenAPI Jest assertions also verify path-free project DTO/create request and empty root-attachment request.
+- Developer final evidence: `artifacts/config-contract-final.txt` reports 3 suites / 19 OpenAPI/config tests, backend typecheck pass, focused Compose test pass, and README preflight checks.
+- The complete Compose boundary test file still has one existing NVIDIA-key expectation failure (7 / 8); this baseline issue is recorded in the release Tech Debt Log. The new managed-storage-specific check and Compose parser pass.
+- Compose parsing does not attest the real deployment host source, physical disjointness, or persistence; those checks remain in Task 8.1.

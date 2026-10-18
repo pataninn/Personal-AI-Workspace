@@ -72,6 +72,7 @@ import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state
 import { runStartupChecks } from '@/infrastructure/startup/startup-checks';
 import { GetReadinessUseCase } from '@/modules/health';
 import { BootstrapLocalUserUseCase, clearSessionCookie, GetSessionUseCase, LoginUseCase, LogoutUseCase } from '@/modules/auth';
+import { PrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
 import { CreateProjectUseCase, GetProjectUseCase, ListProjectsUseCase, UpdateProjectStatusUseCase, WorkspacePlanningUseCases } from '@/modules/projects';
 import { AddUserMessageUseCase, CreateConversationUseCase, GetConversationUseCase, ListConversationsUseCase } from '@/modules/conversations';
 import { CancelAiRunUseCase, CancelSandboxCommandUseCase, CollectProposedChangeSetUseCase, CreateAiRunUseCase, DecideEgressUseCase, DecideProposedChangeSetUseCase, DecideSandboxCommandUseCase, GetAiRunUseCase, GetProposedChangeSetUseCase, GetSandboxCommandUseCase, ListProviderPermissionsUseCase, ListSandboxCommandsUseCase, ProposeSandboxCommandUseCase, RecoverInterruptedAiRunsUseCase, RevokeProviderPermissionUseCase, StartAiRunUseCase } from '@/modules/ai-runs';
@@ -121,6 +122,8 @@ export async function createApplication(
       ...(config.agentRuntimeMode === 'hermes' ? { providerCheck: async () => { await createHermesBridge(config).call('probe', undefined, undefined, { providerProfile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint }); } } : {})
     });
     const userRepository = new TypeOrmUserRepository(dataSource);
+    const clock = new SystemClock();
+    const principalAuthorization = new PrincipalAuthorization(userRepository, clock);
     const sessionRepository = new TypeOrmSessionRepository(dataSource);
     const projectRepository = new TypeOrmProjectRepository(dataSource);
     const homeConversationRepository = new TypeOrmHomeConversationRepository(dataSource);
@@ -149,7 +152,13 @@ export async function createApplication(
     const workspaceBoundary = new WorkspaceBoundaryAdapter({
       containerRoot: config.workspaceRoot,
       identityFile: config.workspaceIdentityFile,
-      expectedIdentity: config.workspaceIdentity
+        expectedIdentity: config.workspaceIdentity,
+        legacyOwnerId: () => userRepository.findBootstrapOwnerId(),
+        ...(config.accountWorkspacesIdentity ? {
+          managedContainerRoot: '/account-workspaces',
+          managedIdentityFile: '/account-workspaces/.personal-ai-managed-storage-identity',
+          managedExpectedIdentity: config.accountWorkspacesIdentity
+        } : {})
     });
     const workspacePlanning = new WorkspacePlanningUseCases(projectRepository, projectRepository, actionLedgerRepository, workspaceBoundary);
     const workspaceGateway = new WorkspaceGatewayAdapter({
@@ -162,7 +171,7 @@ export async function createApplication(
       workspaceBoundary,
       recoveryRoot: config.recoveryRoot
     });
-    const taskTools = new HermesProjectTaskTools({ runs: aiRunRepository, list: new ListProjectTasksUseCase(projectRepository, projectTaskRepository), create: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases), update: new UpdateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases) });
+    const taskTools = new HermesProjectTaskTools({ runs: aiRunRepository, principalAuthorization, list: new ListProjectTasksUseCase(projectRepository, projectTaskRepository), create: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases), update: new UpdateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases) });
     const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository, logger, taskTools);
     const homePlanningProvider: HomePlanningProvider = { profile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint };
     const homePlanningRuntime = config.agentRuntimeMode === 'hermes'
@@ -174,6 +183,7 @@ export async function createApplication(
       taskMutationUseCases, workspacePlanning, actionLedgerRepository, config.homePlanningTimeZone
     );
     const homePlanningToolHandler = new HomePlanningToolRequestHandler({
+      principalAuthorization,
       conversations: homeConversationRepository,
       listTasks: new ListGlobalTasksUseCase(projectTaskRepository),
       getTask: new GetGlobalTaskUseCase(projectTaskRepository),
@@ -192,14 +202,13 @@ export async function createApplication(
     const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel, projectFactRepository);
     const proposeSandboxCommand = new ProposeSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger);
     const collectProposedChangeSet = new CollectProposedChangeSetUseCase(aiRunRepository, projectRepository, workspaceMutationGateway, changeSetRepository);
-    const decideProposedChangeSet = new DecideProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository, workspaceMutationGateway, chatContextRepository);
-    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, proposeSandboxCommand, projectRepository, collectProposedChangeSet, providerPermissionRepository, decideProposedChangeSet);
+    const decideProposedChangeSet = new DecideProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository, workspaceMutationGateway, chatContextRepository, principalAuthorization);
+    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, proposeSandboxCommand, projectRepository, collectProposedChangeSet, providerPermissionRepository, decideProposedChangeSet, principalAuthorization);
     const decideEgress = new DecideEgressUseCase(aiRunRepository, projectRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot, projectFactRepository, providerPermissionRepository);
     const sendChatMessage = new SendChatMessageUseCase(projectChatContext, projectFactRepository, createAiRun, decideEgress);
     const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository, commandRepository);
     const passwordHasher = new BcryptPasswordHasher();
     const tokenProvider = new OpaqueTokenProvider(config.sessionSecret);
-    const clock = new SystemClock();
     const localUserPassword = config.localUserPassword ?? await readSecretFile(config.localUserPasswordFile);
     if (localUserPassword) {
       await new BootstrapLocalUserUseCase(userRepository, passwordHasher).execute({
@@ -240,6 +249,7 @@ export async function createApplication(
           getProject: new GetProjectUseCase(projectRepository),
           updateProjectStatus: new UpdateProjectStatusUseCase(projectRepository, workspaceBoundary),
           workspacePlanning,
+          workspaceBoundary,
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },
@@ -316,6 +326,7 @@ export async function createApplication(
         },
         aiRunChat: {
           getSession,
+          principalAuthorization,
           getAiRun: new GetAiRunUseCase(aiRunRepository, projectRepository),
           startAiRun,
           cancelAiRun,

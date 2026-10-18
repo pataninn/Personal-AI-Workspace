@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import type { ProjectRouterDependencies } from '@/modules/projects/controllers/project-router';
 import { ProjectNotFoundError, ProjectVersionRequiredError } from '@/modules/projects/domain/project-errors';
-import { projectCapabilities, projectWorkspaceMode } from '@/modules/projects/domain/project-types';
+import { projectWorkspaceMode } from '@/modules/projects/domain/project-types';
 import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
 
@@ -20,10 +20,18 @@ export function overviewHandler(dependencies: ProjectRouterDependencies): Reques
       if (!taskLimit.success) throw new AppError('VALIDATION_ERROR', 400, 'taskLimit must be an integer from 1 to 100.');
       if (!dependencies.getOverview) throw new AppError('PROJECT_OVERVIEW_UNAVAILABLE', 503, 'The project overview is unavailable.');
       const overview = await dependencies.getOverview.execute({ ownerId, taskLimit: taskLimit.data });
-      sendData(response, { projects: overview.projects.map(({ ownerId: _ownerId, ...project }) => ({
-        ...project, workspaceMode: projectWorkspaceMode(project), capabilities: projectCapabilities(project),
-        createdAt: project.createdAt.toISOString(), updatedAt: project.updatedAt.toISOString(), lastActivityAt: project.lastActivityAt.toISOString()
-      })), tasks: overview.tasks });
+      const projects = await Promise.all(overview.projects.map(async ({ ownerId: _ownerId, relativeRoot, storageKind, ...project }) => {
+        const fileAccess = relativeRoot !== null && (storageKind === 'legacy'
+          ? (await dependencies.workspaceBoundary?.getSnapshot())?.status === 'ready'
+          : storageKind === 'managed' && (await dependencies.workspaceBoundary?.getManagedSnapshot?.())?.status === 'ready');
+        return {
+          ...project,
+          workspaceMode: projectWorkspaceMode({ relativeRoot }),
+          capabilities: { planning: true as const, fileAccess: fileAccess === true },
+          createdAt: project.createdAt.toISOString(), updatedAt: project.updatedAt.toISOString(), lastActivityAt: project.lastActivityAt.toISOString()
+        };
+      }));
+      sendData(response, { projects, tasks: overview.tasks });
     } catch (error: unknown) { next(error); }
   };
 }

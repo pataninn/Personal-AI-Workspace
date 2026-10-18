@@ -1,5 +1,5 @@
 import { deleteNoContent, getJson, patchJson, postJson } from '@/shared/api';
-import type { ProjectListResponse, ProjectSnapshot, ProjectStatus } from '@/entities/project/model/types';
+import type { ProjectListResponse, ProjectSnapshot, ProjectStatus, ProjectWorkspaceMode } from '@/entities/project/model/types';
 
 const PROJECTS_PATH = '/api/v1/projects';
 
@@ -10,15 +10,7 @@ export function removeProject(projectId: string, version: number, csrfToken: str
 export interface CreateProjectRequest {
   readonly name: string;
   readonly objective?: string;
-  readonly workspaceMode: 'planning';
-  readonly relativeRoot?: never;
-}
-
-export interface CreateFileBackedProjectRequest {
-  readonly name: string;
-  readonly objective?: string;
-  readonly relativeRoot: string;
-  readonly workspaceMode?: 'file_backed';
+  readonly workspaceMode?: ProjectWorkspaceMode;
 }
 
 export async function listProjects(includeArchived = true): Promise<ProjectListResponse> {
@@ -31,7 +23,7 @@ export function getProject(projectId: string): Promise<ProjectSnapshot> {
 }
 
 export function createProject(
-  request: CreateProjectRequest | CreateFileBackedProjectRequest,
+  request: CreateProjectRequest,
   csrfToken: string
 ): Promise<ProjectSnapshot> {
   return postJson<ProjectSnapshot>(PROJECTS_PATH, request, { 'X-CSRF-Token': csrfToken });

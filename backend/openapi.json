@@ -794,8 +794,8 @@
       "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
       "patch": {
         "tags": ["Workspace redesign"],
-        "summary": "Attach an existing folder to a planning workspace",
-        "description": "Validates an existing folder read-only. It does not create, move, or delete files. This action is recorded as not reversible.",
+        "summary": "Allocate an isolated managed root for a planning workspace",
+        "description": "Allocates a server-managed project root. The caller cannot select or attach a host path. This action is recorded as not reversible.",
         "security": [{ "sessionCookie": [] }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AttachProjectRootRequest" } } } },
         "responses": {
@@ -4878,7 +4878,7 @@
         }
       },
       "WorkspaceUnavailable": {
-        "description": "The authoritative workspace boundary could not be verified safely.",
+        "description": "Configured workspace storage is unavailable or its identity could not be verified; file access fails closed.",
         "content": {
           "application/json": {
             "schema": {
@@ -9057,10 +9057,6 @@
           "slug": {
             "type": "string"
           },
-          "relativeRoot": {
-            "type": "string",
-            "nullable": true
-          },
           "objective": {
             "type": "string",
             "nullable": true
@@ -9100,7 +9096,6 @@
           "id",
           "name",
           "slug",
-          "relativeRoot",
           "objective",
           "workspaceMode",
           "capabilities",
@@ -9127,7 +9122,6 @@
           "id": { "$ref": "#/components/schemas/Uuid" },
           "name": { "type": "string" },
           "slug": { "type": "string" },
-          "relativeRoot": { "type": "string", "nullable": true },
           "objective": { "type": "string", "nullable": true },
           "workspaceMode": { "type": "string", "enum": ["planning", "file_backed"] },
           "capabilities": { "$ref": "#/components/schemas/ProjectCapabilities" },
@@ -9136,33 +9130,18 @@
           "createdAt": { "type": "string", "format": "date-time" },
           "updatedAt": { "type": "string", "format": "date-time" }
         },
-        "required": ["id", "name", "slug", "relativeRoot", "objective", "workspaceMode", "capabilities", "status", "version", "createdAt", "updatedAt"],
+        "required": ["id", "name", "slug", "objective", "workspaceMode", "capabilities", "status", "version", "createdAt", "updatedAt"],
         "additionalProperties": false
       },
       "CreateProjectRequest": {
-        "oneOf": [
-          {
-            "type": "object",
-            "properties": {
-              "name": { "type": "string", "maxLength": 120 },
-              "workspaceMode": { "type": "string", "enum": ["planning"] },
-              "objective": { "type": "string", "maxLength": 2000 }
-            },
-            "required": ["name", "workspaceMode"],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "name": { "type": "string", "maxLength": 120 },
-              "relativeRoot": { "type": "string", "maxLength": 2048 },
-              "workspaceMode": { "type": "string", "enum": ["file_backed"] },
-              "objective": { "type": "string", "maxLength": 2000 }
-            },
-            "required": ["name", "relativeRoot"],
-            "additionalProperties": false
-          }
-        ]
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "maxLength": 120 },
+          "workspaceMode": { "type": "string", "enum": ["planning", "file_backed"], "default": "file_backed" },
+          "objective": { "type": "string", "maxLength": 2000 }
+        },
+        "required": ["name"],
+        "additionalProperties": false
       },
       "UpdateProjectStatusRequest": {
         "type": "object",
@@ -9216,8 +9195,7 @@
       },
       "AttachProjectRootRequest": {
         "type": "object",
-        "properties": { "relativeRoot": { "type": "string", "maxLength": 2048 } },
-        "required": ["relativeRoot"],
+        "properties": {},
         "additionalProperties": false
       },
       "ProjectMetadataSearchItem": {
@@ -9352,14 +9330,13 @@
                   "id": { "$ref": "#/components/schemas/Uuid" },
                   "name": { "type": "string" },
                   "slug": { "type": "string" },
-                  "relativeRoot": { "type": "string", "nullable": true },
                   "objective": { "type": "string", "nullable": true },
                   "status": { "type": "string", "enum": ["active", "archived"] },
                   "version": { "type": "integer", "minimum": 1 },
                   "createdAt": { "type": "string", "format": "date-time" },
                   "updatedAt": { "type": "string", "format": "date-time" }
                 },
-                "required": ["id", "name", "slug", "relativeRoot", "objective", "status", "version", "createdAt", "updatedAt"],
+                "required": ["id", "name", "slug", "objective", "status", "version", "createdAt", "updatedAt"],
                 "additionalProperties": false
               }
             },

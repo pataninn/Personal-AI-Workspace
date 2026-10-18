@@ -1,0 +1,39 @@
+# Final Task 2.2 validation
+
+Date: 2026-10-19
+
+## Backend
+
+- TypeScript: `pnpm.cmd --dir backend run typecheck` — PASS.
+- Backend unit tests (Jest): `pnpm.cmd --dir backend test` — 117 suites / 709 tests passed (17.481s).
+- Backend integration tests (Jest): `pnpm.cmd --dir backend test:integration` — 22 suites / 88 tests passed (22.769s). `HOME_CONVERSATION_TEST_DATABASE_URL` was loaded privately from the ACL-restricted disposable fixture file. The credential and URL are intentionally omitted.
+- Final focused DB rerun by QA: `r1-populated-migration.integration.spec.ts` and `ownership-boundaries.integration.spec.ts` — 2 suites / 5 tests passed (6.908s). QA recorded the command and guarded-fixture result in `artifacts/qa-postgres-focused-rerun.txt`.
+- Real-router HTTP ownership spec: `ownership-boundaries-http.integration.spec.ts` — 1 suite / 3 tests passed (4.922s) using Supertest, in-memory repositories and a real temporary filesystem gateway. Details: `artifacts/test-ownership-http-run.md`.
+- `git diff --check` — PASS after removing a trailing blank line from `backend/src/infrastructure/staging/local-staging-gateway.ts`.
+
+The PostgreSQL tests use the isolated loopback fixture and guarded disposable databases only. They do not target the owner's application database.
+
+## Frontend
+
+- TypeScript: `pnpm.cmd run typecheck` from `frontend/` — PASS (both configured TypeScript projects).
+- Focused Vitest: 15 files / 79 tests passed. The exact command and file list are in `ui-dev-notes.md`.
+- Preview API Node tests: 26 / 26 passed.
+- Preview build: passed.
+- Playwright preview: `task-2-2-workspace.preview.spec.ts` — 1 / 1 passed. QA independently reran the preview journey (1 / 1) and focused Vitest (2 files / 17 tests), and inspected all five screenshots; see `artifacts/qa-ui-independent-review.md`.
+- Screenshots: `ui-create-desktop.png`, `ui-storage-fallback-desktop.png`, `ui-planning-mobile.png`, `ui-files-desktop.png`, and `ui-files-mobile.png`.
+
+The preview uses an in-memory API and synthetic 503 response. No live provider was called, and the provider-dependent direct-chat E2E was not run.
+
+## Evidence boundary
+
+The backend validates the configured fixed in-container managed mount and its identity marker. This local validation does not prove Docker's actual host bind source, physical disjointness from `/workspace`, or deployment persistence/read-only settings; those require the later deployment/mount verification task. No external provider or owner files were used for these tests.
+
+## Final contract and deployment-wiring checks
+
+- `pnpm.cmd --dir backend exec jest --runInBand --runTestsByPath src/openapi/openapi.spec.ts src/openapi/project-planning-openapi.spec.ts src/infrastructure/config/app-config.spec.ts` — 3 suites / 19 tests passed after removing public root-path fields from the OpenAPI project DTOs and request schemas.
+- `pnpm.cmd --dir backend run typecheck` — passed after the final OpenAPI-spec and README edits.
+- `node --test --test-name-pattern="managed storage is an explicit optional bind overlay" scripts/compose-boundary-check.test.mjs` — 1 / 1 passed.
+- QA confirmed the explicit `compose.yaml` + `compose.managed-storage.yaml` overlay passes Docker Compose `config --quiet`. The overlay requires `ACCOUNT_WORKSPACES_HOST_ROOT` and `ACCOUNT_WORKSPACES_IDENTITY`, targets only `/account-workspaces`, and disables implicit host-path creation.
+- `git diff --check` — passed. `backend/openapi.json` contains no `relativeRoot` property; project creation accepts `name`, optional `objective`, and optional `workspaceMode`, and root attachment has an empty request object.
+
+The entire Compose boundary test file has an existing unrelated NVIDIA-key expectation that disagrees with the current Hermes provider default (7 / 8 pass). It was left unchanged; the new managed-storage-specific check and Compose parse pass.

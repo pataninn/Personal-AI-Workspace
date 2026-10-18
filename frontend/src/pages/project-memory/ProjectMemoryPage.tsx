@@ -42,7 +42,7 @@ export function ProjectMemoryPage(): React.JSX.Element {
         </div>
         <Link data-testid="project-memory-back-to-project" className="button button-secondary" to={`/projects/${encodeURIComponent(project.id)}`}>Back to project</Link>
       </header>
-      <ProjectMemoryManager projectId={project.id} projectName={project.name} archived={project.status === 'archived'} fileAccess={project.relativeRoot !== null} />
+      <ProjectMemoryManager projectId={project.id} projectName={project.name} archived={project.status === 'archived'} fileAccess={project.capabilities.fileAccess} />
     </div>
   );
 }

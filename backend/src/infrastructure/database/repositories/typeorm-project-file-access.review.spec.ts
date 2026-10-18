@@ -4,9 +4,10 @@ import { TypeOrmProjectFileAccess } from '@/infrastructure/database/repositories
 
 const INPUT = { ownerId: 'owner', projectId: 'project', writable: true };
 
-function fixture(options: { missing?: boolean; rootless?: boolean; archived?: boolean; busy?: boolean; activeChangeSet?: boolean; runningCommand?: boolean } = {}) {
+function fixture(options: { disabled?: boolean; missing?: boolean; rootless?: boolean; archived?: boolean; busy?: boolean; activeChangeSet?: boolean; runningCommand?: boolean } = {}) {
   const query = jest.fn().mockImplementation(async (sql: string) => {
-    if (sql.startsWith('SELECT id, relative_root')) return options.missing ? [] : [{ id: 'project', relative_root: options.rootless ? null : 'folder', status: options.archived ? 'archived' : 'active' }];
+    if (sql.startsWith('SELECT id FROM users')) return options.disabled ? [] : [{ id: 'owner' }];
+    if (sql.startsWith('SELECT id, relative_root')) return options.missing ? [] : [{ id: 'project', relative_root: options.rootless ? null : 'folder', storage_kind: options.rootless ? null : 'legacy', status: options.archived ? 'archived' : 'active' }];
     if (sql.includes('FROM ai_runs')) return options.busy ? [{ id: 'run' }] : [];
     if (sql.includes('ai_run_change_sets')) return options.activeChangeSet ? [{ id: 'change', status: 'applying' }] : [];
     if (sql.includes('sandbox_commands')) return options.runningCommand ? [{ id: 'command', status: 'running' }] : [];
@@ -24,8 +25,9 @@ describe('manual file ownership/run guard review', () => {
       return 'written';
     });
     await expect(access.execute(INPUT, action)).resolves.toBe('written');
-    expect(query.mock.calls[0]).toEqual(['SELECT id, relative_root, status FROM projects WHERE owner_id=$1 AND id=$2 FOR UPDATE', ['owner', 'project']]);
-    expect(action).toHaveBeenCalledWith({ projectId: 'project', relativeRoot: 'folder' });
+    expect(query.mock.calls[0]).toEqual(['SELECT id FROM users WHERE id=$1 AND is_active=true AND (expires_at IS NULL OR expires_at > now()) FOR SHARE', ['owner']]);
+    expect(query.mock.calls[1]).toEqual(['SELECT id, relative_root, storage_kind, status FROM projects WHERE owner_id=$1 AND id=$2 FOR UPDATE', ['owner', 'project']]);
+    expect(action).toHaveBeenCalledWith({ ownerId: 'owner', projectId: 'project', storageKind: 'legacy', relativeRoot: 'folder' });
     expect(query.mock.calls.at(-1)?.[0]).toContain('UPDATE projects SET updated_at=now()');
   });
 
@@ -36,18 +38,26 @@ describe('manual file ownership/run guard review', () => {
     expect(action).not.toHaveBeenCalled();
   });
 
+  it('rejects file access after the account has been disabled or expired', async () => {
+    const { access, query } = fixture({ disabled: true });
+    const action = jest.fn();
+    await expect(access.execute(INPUT, action)).rejects.toMatchObject({ name: 'UnauthenticatedError' });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(action).not.toHaveBeenCalled();
+  });
+
   it('rejects a planning project before running a file action', async () => {
     const { access, query } = fixture({ rootless: true });
     const action = jest.fn();
     await expect(access.execute(INPUT, action)).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED', statusCode: 409 });
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledTimes(2);
     expect(action).not.toHaveBeenCalled();
   });
 
   it('permits owned downloads during active runs without recording write activity', async () => {
     const { access, query } = fixture({ busy: true });
     await expect(access.execute({ ...INPUT, writable: false }, async () => 'bytes')).resolves.toBe('bytes');
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledTimes(2);
   });
 
   it.each([{ activeChangeSet: true }, { runningCommand: true }])('blocks manual writes while dependent work remains active %s', async (options) => {

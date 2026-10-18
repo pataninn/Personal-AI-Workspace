@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: ['login.preview.spec.ts', 'project-activity.preview.spec.ts', 'project-file-history.preview.spec.ts', 'provider-permissions.preview.spec.ts', 'run-recovery.preview.spec.ts', 'task-home.preview.spec.ts', 'task-actions.preview.spec.ts', 'home-chat.preview.spec.ts', 'home-summaries.preview.spec.ts'],
+  testMatch: ['login.preview.spec.ts', 'project-activity.preview.spec.ts', 'project-file-history.preview.spec.ts', 'provider-permissions.preview.spec.ts', 'run-recovery.preview.spec.ts', 'task-home.preview.spec.ts', 'task-actions.preview.spec.ts', 'task-2-2-workspace.preview.spec.ts', 'home-chat.preview.spec.ts', 'home-summaries.preview.spec.ts'],
   fullyParallel: false,
   workers: 1,
   timeout: 30_000,

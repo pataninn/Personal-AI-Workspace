@@ -14,6 +14,7 @@ import type { ITaskMutationCommands } from '@/modules/tasks/use-cases/task-mutat
 import type { Project } from '@/modules/projects/domain/project-types';
 import type { IWorkspacePlanningUseCases } from '@/modules/projects/use-cases/workspace-planning-use-cases';
 import type { IActionUndoUseCases } from '@/modules/home-assistant/use-cases/action-undo-use-cases';
+import type { IPrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
 import { parseHomePlanningToolArgs, resolveDeadline, stableJson, type HomePlanningToolName } from '@/modules/home-assistant/use-cases/home-planning-command-validation';
 
 const MAX_TASK_LIST_BYTES = 64 * 1024;
@@ -25,6 +26,7 @@ export interface HomeProposalDraftCreator {
 }
 
 export interface HomePlanningToolRequestHandlerDependencies {
+  readonly principalAuthorization: Pick<IPrincipalAuthorization, 'assertActive'>;
   readonly conversations: IHomeConversationRepository;
   readonly listTasks: ListGlobalTasksUseCase;
   readonly getTask: GetGlobalTaskUseCase;
@@ -40,6 +42,13 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
   public constructor(private readonly dependencies: HomePlanningToolRequestHandlerDependencies) {}
 
   public async resolve(input: HomePlanningToolRequest): Promise<HomePlanningToolResolution | null> {
+    await this.dependencies.principalAuthorization.assertActive(input.ownerId);
+    const result = await this.resolveWhileActive(input);
+    await this.dependencies.principalAuthorization.assertActive(input.ownerId);
+    return result;
+  }
+
+  private async resolveWhileActive(input: HomePlanningToolRequest): Promise<HomePlanningToolResolution | null> {
     const args = parseHomePlanningToolArgs(input);
     const { conversation, turn } = await this.assertActiveSource(input);
     if (conversation.scope.kind !== input.scope.kind

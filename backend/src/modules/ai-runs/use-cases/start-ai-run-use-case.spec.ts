@@ -56,7 +56,7 @@ function conversationRepository(): IConversationRepository & { readonly assistan
 }
 
 async function readyRun(repository: InMemoryAiRunRepository): Promise<AiRun> {
-  const created = await repository.create({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Inspect the project', relativeRoot: '', requestedPaths: [], manifest: manifest(), idempotencyKey: 'create-run-3-3', requestFingerprint: 'fingerprint' });
+  const created = await repository.create({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Inspect the project', relativeRoot: '', storageKind: 'legacy', requestedPaths: [], manifest: manifest(), idempotencyKey: 'create-run-3-3', requestFingerprint: 'fingerprint' });
   const ready: AiRun = { ...created.resource, status: 'ready', phase: 'runtime', decision: 'approved', runtimeKind: 'fake', sandboxReady: true, runtimeReference: 'fake://staging/run', safeMessage: 'Private run environment ready.', updatedAt: new Date() };
   await repository.save(ready);
   return ready;

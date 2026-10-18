@@ -92,6 +92,9 @@ function createFakeDatabase(): { readonly dataSource: DataSource; readonly runne
     };
     const query = async (sql: string, parameters: readonly unknown[] = []): Promise<readonly Record<string, unknown>[]> => {
       state.runnerQueries.push(sql);
+      if (sql.includes('FROM "users"')) {
+        return [{ id: parameters[0] }];
+      }
       if (sql.includes('pg_advisory_xact_lock')) {
         const key = String(parameters[0]);
         const current = locks.get(key);
@@ -276,8 +279,10 @@ describe('TypeOrmActionLedgerRepository', () => {
     expect(state.committedRecords).toHaveLength(1);
     expect(mutation.mock.calls[0]?.[0]).toBe(runner);
     expect(runner.commitTransaction).toHaveBeenCalledTimes(1);
-    expect(state.runnerQueries[0]).toContain('pg_advisory_xact_lock');
-    expect(state.runnerQueries[1]).toContain('"operation_key"');
+    expect(state.runnerQueries[0]).toContain('FROM "users"');
+    expect(state.runnerQueries[0]).toContain('FOR SHARE');
+    expect(state.runnerQueries[1]).toContain('pg_advisory_xact_lock');
+    expect(state.runnerQueries[2]).toContain('"operation_key"');
   });
 
   it('rolls back the target mutation when receipt persistence fails', async () => {

@@ -34,8 +34,8 @@ export function ProjectActivityPage(): React.JSX.Element {
   }
 
   const project = detail.project;
-  if (project.relativeRoot === null) {
-    return <Alert tone="error" data-testid="project-activity-root-required"><p>A project folder is required to use this area.</p><Link className="button button-secondary" to={`/projects/${encodeURIComponent(project.id)}`}>Back to planning workspace</Link></Alert>;
+  if (!project.capabilities.fileAccess) {
+    return <Alert tone="error" data-testid="project-activity-file-access-unavailable"><p>File activity is unavailable for this project.</p><Link className="button button-secondary" to={`/projects/${encodeURIComponent(project.id)}`}>Back to project</Link></Alert>;
   }
   return (
     <div className="project-activity-page" data-testid="project-activity-page">

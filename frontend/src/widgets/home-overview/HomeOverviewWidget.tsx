@@ -130,7 +130,7 @@ function WorkspaceCard({ workspace }: { readonly workspace: HomeWorkspaceSummary
     <Link className="project-item-link" to={`/projects/${encodeURIComponent(project.id)}`} data-testid={`home-workspace-link-${project.id}`}>
       <div className="project-card-top"><span className="project-tile" style={{ background: projectColor(project.id) }}><Icon name="folder" size={24} /></span><span className={`reference-pill${archived ? '' : ' reference-pill-active'}`}><i aria-hidden="true" />{archived ? 'Archived' : 'Active'}</span></div>
       <h3>{project.name}</h3>
-      <p className="project-card-root">{project.relativeRoot ?? 'Planning workspace'}</p>
+      <p className="project-card-root">{project.capabilities.fileAccess ? 'Files available' : 'Planning only'}</p>
       {project.objective ? <p className="project-card-objective supporting-copy">{project.objective}</p> : null}
       <div className="project-card-bottom">{archived ? <span className="supporting-copy">Archived · read only</span> : lastActivityAt ? <WorkspaceActivity value={lastActivityAt} /> : <span className="supporting-copy">Activity unavailable</span>}<span className="project-open-arrow"><Icon name="arrow" /></span></div>
     </Link>

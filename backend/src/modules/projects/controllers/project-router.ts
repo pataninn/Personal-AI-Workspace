@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import { ProjectNotFoundError, ProjectVersionRequiredError } from '@/modules/projects/domain/project-errors';
-import { projectCapabilities, projectWorkspaceMode, type Project } from '@/modules/projects/domain/project-types';
+import { projectWorkspaceMode, type Project } from '@/modules/projects/domain/project-types';
 import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
 import { authenticateRequest, requireCsrf, sameOrigin } from '@/modules/auth/controllers/request-auth';
 import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
@@ -19,20 +19,13 @@ import type {
   UpdateProjectStatusUseCase
 } from '@/modules/projects/use-cases/project-use-cases';
 import type { IWorkspacePlanningUseCases } from '@/modules/projects/use-cases/workspace-planning-use-cases';
+import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspace-boundary';
 
 const createProjectSchema = z.object({
   name: z.string().max(120),
-  relativeRoot: z.string().max(2048).optional(),
   workspaceMode: z.enum(['planning', 'file_backed']).optional(),
   objective: z.string().max(2000).optional()
-}).strict().superRefine((input, context) => {
-  if (input.workspaceMode === 'planning' && input.relativeRoot !== undefined) {
-    context.addIssue({ code: 'custom', path: ['relativeRoot'], message: 'Planning workspaces do not have a folder.' });
-  }
-  if (input.workspaceMode !== 'planning' && input.relativeRoot === undefined) {
-    context.addIssue({ code: 'custom', path: ['relativeRoot'], message: 'Provide a folder for a file-backed project.' });
-  }
-});
+}).strict();
 
 const updateProjectSchema = z.object({
   status: z.enum(['active', 'archived'])
@@ -52,7 +45,7 @@ const planningProjectSchema = z.object({
 
 const updateObjectiveSchema = z.object({ objective: z.string().max(2000).nullable() }).strict();
 
-const attachRootSchema = z.object({ relativeRoot: z.string().max(2048) }).strict();
+const attachRootSchema = z.object({}).strict();
 
 export interface ProjectRouterDependencies {
   readonly getSession: GetSessionUseCase;
@@ -61,6 +54,7 @@ export interface ProjectRouterDependencies {
   readonly getProject: GetProjectUseCase;
   readonly updateProjectStatus: UpdateProjectStatusUseCase;
   readonly workspacePlanning: IWorkspacePlanningUseCases;
+  readonly workspaceBoundary?: IWorkspaceBoundary;
   readonly deleteProject?: DeleteProjectUseCase;
   readonly getOverview?: GetProjectOverviewUseCase;
   readonly appOrigin: string;
@@ -118,15 +112,20 @@ function parseVersion(value: string | undefined): number {
   return version;
 }
 
-function serializeProject(project: Project): Record<string, unknown> {
+async function serializeProject(project: Project, workspaceBoundary?: IWorkspaceBoundary): Promise<Record<string, unknown>> {
+  let fileAccess = false;
+  if (project.relativeRoot !== null && project.storageKind === 'legacy') {
+    fileAccess = (await workspaceBoundary?.getSnapshot())?.status === 'ready';
+  } else if (project.relativeRoot !== null && project.storageKind === 'managed') {
+    fileAccess = (await workspaceBoundary?.getManagedSnapshot?.())?.status === 'ready';
+  }
   return {
     id: project.id,
     name: project.name,
     slug: project.slug,
-    relativeRoot: project.relativeRoot,
     objective: project.objective,
     workspaceMode: projectWorkspaceMode(project),
-    capabilities: projectCapabilities(project),
+    capabilities: { planning: true, fileAccess },
     status: project.status,
     version: project.version,
     createdAt: project.createdAt.toISOString(),
@@ -185,7 +184,7 @@ function reuseProjectHandler(dependencies: ProjectPlanningRouterDependencies): R
       }
       const input = parseBody(reuseProjectSchema, request.body);
       const project = await dependencies.workspacePlanning.reuse({ ownerId, projectId: input.projectId });
-      sendData(response, serializeProject(project));
+      sendData(response, await serializeProject(project, dependencies.workspaceBoundary));
     } catch (error: unknown) {
       next(error);
     }
@@ -208,7 +207,7 @@ function createPlanningProjectHandler(dependencies: ProjectPlanningRouterDepende
         ...(input.objective !== undefined ? { objective: input.objective } : {})
       });
       sendData(response, {
-        project: serializeProject(result.project),
+        project: await serializeProject(result.project, dependencies.workspaceBoundary),
         receipt: serializeProjectAction(result.receipt),
         replayed: result.replayed
       }, result.replayed ? 200 : 201);
@@ -235,7 +234,7 @@ function updateProjectObjectiveHandler(dependencies: ProjectPlanningRouterDepend
         objective: input.objective
       });
       sendData(response, {
-        project: serializeProject(result.project),
+        project: await serializeProject(result.project, dependencies.workspaceBoundary),
         receipt: serializeProjectAction(result.receipt),
         replayed: result.replayed
       });
@@ -253,16 +252,15 @@ function attachInitialProjectRootHandler(dependencies: ProjectPlanningRouterDepe
         next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
         return;
       }
-      const input = parseBody(attachRootSchema, request.body);
+      parseBody(attachRootSchema, request.body);
       const result = await dependencies.workspacePlanning.attachInitialRoot({
         ownerId,
         projectId: parseProjectId(routeProjectId(request.params.projectId)),
         expectedVersion: parseVersion(request.header('if-match')),
-        operationKey: request.header('idempotency-key'),
-        relativeRoot: input.relativeRoot
+        operationKey: request.header('idempotency-key')
       });
       sendData(response, {
-        project: serializeProject(result.project),
+        project: await serializeProject(result.project, dependencies.workspaceBoundary),
         receipt: serializeProjectAction(result.receipt),
         replayed: result.replayed
       });
@@ -284,7 +282,7 @@ function listHandler(dependencies: ProjectRouterDependencies): RequestHandler {
         ownerId,
         includeArchived: parseIncludeArchived(request.query.includeArchived)
       });
-      sendData(response, { projects: projects.map(serializeProject) });
+      sendData(response, { projects: await Promise.all(projects.map((project) => serializeProject(project, dependencies.workspaceBoundary))) });
     } catch (error: unknown) {
       next(error);
     }
@@ -300,7 +298,7 @@ function createHandler(dependencies: ProjectRouterDependencies): RequestHandler 
         return;
       }
       const project = await dependencies.createProject.execute({ ownerId, ...parseBody(createProjectSchema, request.body) });
-      sendData(response, serializeProject(project), 201);
+      sendData(response, await serializeProject(project, dependencies.workspaceBoundary), 201);
     } catch (error: unknown) {
       next(error);
     }
@@ -316,7 +314,7 @@ function getHandler(dependencies: ProjectRouterDependencies): RequestHandler {
         return;
       }
       const project = await dependencies.getProject.execute({ ownerId, projectId: parseProjectId(routeProjectId(request.params.projectId)) });
-      sendData(response, serializeProject(project));
+      sendData(response, await serializeProject(project, dependencies.workspaceBoundary));
     } catch (error: unknown) {
       next(error);
     }
@@ -337,7 +335,7 @@ function updateStatusHandler(dependencies: ProjectRouterDependencies): RequestHa
         expectedVersion: parseVersion(request.header('if-match')),
         ...parseBody(updateProjectSchema, request.body)
       });
-      sendData(response, serializeProject(project));
+      sendData(response, await serializeProject(project, dependencies.workspaceBoundary));
     } catch (error: unknown) {
       next(error);
     }

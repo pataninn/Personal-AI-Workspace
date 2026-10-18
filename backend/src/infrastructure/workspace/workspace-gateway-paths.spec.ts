@@ -63,7 +63,9 @@ describe('resolveWorkspaceEntry', () => {
     };
     const context = new WorkspaceOperationContext(undefined, 5000);
     const scopePaths = await resolveWorkspaceScope(boundary, fileSystem, root, {
+      ownerId: 'owner-root',
       projectId: 'project-root',
+      storageKind: 'legacy',
       relativeRoot: '.'
     }, context);
 
@@ -92,7 +94,9 @@ describe('resolveWorkspaceEntry', () => {
     };
     const context = new WorkspaceOperationContext(undefined, 5000);
     const scopePaths = await resolveWorkspaceScope(boundary, fileSystem, root, {
+      ownerId: 'owner-nested',
       projectId: 'nested-project',
+      storageKind: 'legacy',
       relativeRoot: 'apps/demo'
     }, context);
 
@@ -165,7 +169,9 @@ describe('resolveWorkspaceEntry', () => {
     };
     const context = new WorkspaceOperationContext(undefined, 5000);
     const scopePaths = await resolveWorkspaceScope(boundary, fileSystem, '/workspace', {
+      ownerId: 'owner-1',
       projectId: 'project-1',
+      storageKind: 'legacy',
       relativeRoot: '.'
     }, context);
 

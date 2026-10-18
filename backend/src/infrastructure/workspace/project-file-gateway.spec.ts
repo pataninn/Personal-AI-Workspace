@@ -6,7 +6,7 @@ import { ProjectFileGateway } from '@/infrastructure/workspace/project-file-gate
 describe('manual project files', () => {
   let directory: string;
   let gateway: ProjectFileGateway;
-  const scope = { projectId: 'project', relativeRoot: 'project' };
+  const scope = { ownerId: 'owner', projectId: 'project', storageKind: 'legacy' as const, relativeRoot: 'project' };
 
   beforeEach(async () => {
     directory = (await mkdtemp(path.join(tmpdir(), 'pai-file-tools-'))).replaceAll('\\', '/');

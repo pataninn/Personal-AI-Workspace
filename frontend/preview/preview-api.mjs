@@ -75,9 +75,10 @@ function isValidRoot(root) {
 }
 
 function serializeProject(project) {
-  const fileAccess = project.relativeRoot !== null;
+  const { relativeRoot, ...publicProject } = project;
+  const fileAccess = relativeRoot !== null;
   return {
-    ...project,
+    ...publicProject,
     objective: project.objective ?? null,
     workspaceMode: fileAccess ? 'file_backed' : 'planning',
     capabilities: { planning: true, fileAccess }
@@ -165,32 +166,26 @@ async function handleProjects(request, response, seed, idempotency, parts, metho
   }
   if (!projectId && method === 'POST') {
     const body = await readBody(request);
+    const allowedFields = new Set(['name', 'objective', 'workspaceMode']);
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((field) => !allowedFields.has(field))) {
+      sendError(response, 400, 'VALIDATION_ERROR', 'Enter a valid project name, workspace mode, and objective.');
+      return;
+    }
     const name = typeof body?.name === 'string' ? body.name.trim() : '';
-    const hasRoot = body?.relativeRoot !== undefined;
-    const requestedMode = body?.workspaceMode;
-    const planning = requestedMode === 'planning' && !hasRoot;
-    const fileBacked = (requestedMode === undefined || requestedMode === 'file_backed') && hasRoot && typeof body.relativeRoot === 'string';
-    const relativeRoot = fileBacked ? body.relativeRoot.trim().replaceAll('\\', '/') : null;
+    const requestedMode = body.workspaceMode ?? 'file_backed';
+    const planning = requestedMode === 'planning';
+    const fileBacked = requestedMode === 'file_backed';
     const objectiveInput = body?.objective;
     if (!name || name.length > 120 || !(planning || fileBacked) || (objectiveInput !== undefined && (typeof objectiveInput !== 'string' || objectiveInput.length > 2000))) {
-      sendError(response, 400, 'VALIDATION_ERROR', 'Enter a valid project name, workspace mode, folder, and objective.');
+      sendError(response, 400, 'VALIDATION_ERROR', 'Enter a valid project name, workspace mode, and objective.');
       return;
     }
     const objective = typeof objectiveInput === 'string' ? objectiveInput.trim() || null : null;
-    if (planning && hasRoot) {
-      sendError(response, 400, 'VALIDATION_ERROR', 'Planning workspaces do not have a folder.');
-      return;
-    }
-    if (fileBacked && !isValidRoot(relativeRoot)) {
-      sendError(response, 400, 'VALIDATION_ERROR', 'Enter a valid relative project root.');
-      return;
-    }
-    if (relativeRoot !== null && isOverlappingRoot(seed, relativeRoot)) {
-      sendError(response, 409, 'PROJECT_ROOT_OVERLAP', 'Choose a non-overlapping preview root.');
-      return;
-    }
+    const projectId = randomUUID();
+    // The preview fixture simulates a server-managed private root for file APIs.
+    const relativeRoot = fileBacked ? `managed/${projectId}` : null;
     const createdAt = now();
-    const project = { id: randomUUID(), name, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), relativeRoot, objective, status: 'active', version: 1, createdAt, updatedAt: createdAt };
+    const project = { id: projectId, name, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), relativeRoot, objective, status: 'active', version: 1, createdAt, updatedAt: createdAt };
     seed.projects.push(project);
     sendData(response, serializeProject(project), 201);
     return;

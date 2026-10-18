@@ -11,6 +11,7 @@ import { AddHomeConversationEvents1710000023000 } from '@/infrastructure/databas
 import { AddHomeConsentDisclosures1710000024000 } from '@/infrastructure/database/migrations/1710000024000-add-home-consent-disclosures';
 import { CreateHomeChangeProposals1710000025000 } from '@/infrastructure/database/migrations/1710000025000-create-home-change-proposals';
 import { AddAccountIdentity1710000026000 } from '@/infrastructure/database/migrations/1710000026000-add-account-identity';
+import { EnforceProjectOwnershipBoundaries1710000027000 } from '@/infrastructure/database/migrations/1710000027000-enforce-project-ownership-boundaries';
 
 import type { DatabaseConfig } from '@/infrastructure/config/database-config';
 import { CreateApplicationMetadata1710000000000 } from '@/infrastructure/database/migrations/1710000000000-create-application-metadata';
@@ -37,7 +38,7 @@ export function createDataSource(config: DatabaseConfig): DataSource {
     url: config.url,
     synchronize: false,
     migrationsRun: false,
-    migrations: [CreateApplicationMetadata1710000000000, CreateUsersAndSessions1710000001000, CreateProjects1710000002000, CreateConversationsAndMessages1710000003000, CreateAiRunsAndEgress1710000004000, CreateSandboxCommands1710000005000, CreateAiRunChat1710000006000, CreateAiRunChangeSets1710000007000, AddConfirmedProviderTransmission1710000008000, CreateProjectFacts1710000009000, CreateProjectTasks1710000010000, AddAiRunProviderUsage1710000011000, AddChangeSetOperationPathIndex1710000012000, CreateProviderPermissions1710000013000, CreateProjectChatContext1710000014000, AddContextFileExclusions1710000015000, AddTaskPlanningFields1710000016000, CreateProjectRemovalJobs1710000017000, AddInboxTaskPersistence1710000018000, AddPlanningProjectPersistence1710000019000, CreateHomeConversationPersistence1710000020000, CreateActionLedgerPersistence1710000021000, IncreaseActionLedgerReversibleFieldsCap1710000022000, AddHomeConversationEvents1710000023000, AddHomeConsentDisclosures1710000024000, CreateHomeChangeProposals1710000025000, AddAccountIdentity1710000026000],
+    migrations: [CreateApplicationMetadata1710000000000, CreateUsersAndSessions1710000001000, CreateProjects1710000002000, CreateConversationsAndMessages1710000003000, CreateAiRunsAndEgress1710000004000, CreateSandboxCommands1710000005000, CreateAiRunChat1710000006000, CreateAiRunChangeSets1710000007000, AddConfirmedProviderTransmission1710000008000, CreateProjectFacts1710000009000, CreateProjectTasks1710000010000, AddAiRunProviderUsage1710000011000, AddChangeSetOperationPathIndex1710000012000, CreateProviderPermissions1710000013000, CreateProjectChatContext1710000014000, AddContextFileExclusions1710000015000, AddTaskPlanningFields1710000016000, CreateProjectRemovalJobs1710000017000, AddInboxTaskPersistence1710000018000, AddPlanningProjectPersistence1710000019000, CreateHomeConversationPersistence1710000020000, CreateActionLedgerPersistence1710000021000, IncreaseActionLedgerReversibleFieldsCap1710000022000, AddHomeConversationEvents1710000023000, AddHomeConsentDisclosures1710000024000, CreateHomeChangeProposals1710000025000, AddAccountIdentity1710000026000, EnforceProjectOwnershipBoundaries1710000027000],
     entities: [],
     logging: false
   });

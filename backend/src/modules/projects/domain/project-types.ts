@@ -1,4 +1,5 @@
 export type ProjectStatus = 'active' | 'archived';
+export type ProjectStorageKind = 'legacy' | 'managed';
 
 export interface Project {
   readonly id: string;
@@ -6,6 +7,8 @@ export interface Project {
   readonly name: string;
   readonly slug: string;
   readonly relativeRoot: string | null;
+  /** Internal mount mapping. This field is never serialized in project DTOs. */
+  readonly storageKind: ProjectStorageKind | null;
   readonly objective: string | null;
   readonly status: ProjectStatus;
   readonly version: number;

@@ -26,7 +26,7 @@ vi.mock('@/widgets/home-chat', () => ({
 }));
 
 const ACTIVE_PROJECT: ProjectSnapshot = {
-  id: '11111111-1111-4111-8111-111111111111', name: 'Website', slug: 'website', relativeRoot: 'apps/website', status: 'active', version: 1,
+  id: '11111111-1111-4111-8111-111111111111', name: 'Website', slug: 'website', workspaceMode: 'file_backed', capabilities: { planning: true, fileAccess: true }, status: 'active', version: 1,
   createdAt: '2026-09-12T00:00:00.000Z', updatedAt: '2026-09-12T00:00:00.000Z'
 };
 const AUTHENTICATED_SESSION = {
@@ -82,7 +82,7 @@ describe('DashboardPage chat and task Home', () => {
   });
 
   it('shows the complete workspace list and opens a selected workspace', async () => {
-    const projects = Array.from({ length: 6 }, (_, index) => ({ ...ACTIVE_PROJECT, id: `project-${index}`, name: `Project ${index + 1}`, relativeRoot: `projects/${index + 1}` }));
+    const projects = Array.from({ length: 6 }, (_, index) => ({ ...ACTIVE_PROJECT, id: `project-${index}`, name: `Project ${index + 1}` }));
     getProjectOverviewMock.mockResolvedValue(overview([]));
     renderDashboard({ ...PROJECT_STATE, projects });
     const user = userEvent.setup();
@@ -90,7 +90,7 @@ describe('DashboardPage chat and task Home', () => {
     const links = within(workspaces).getAllByRole('link');
     expect(links).toHaveLength(projects.length);
     expect(links.map((link) => link.getAttribute('href'))).toEqual(projects.map((project) => `/projects/${project.id}`));
-    await user.click(within(workspaces).getByRole('link', { name: /Project 5/ }));
+    await user.click(within(workspaces).getByRole('link', { name: /Project 5.*Files available/ }));
     expect(screen.getByTestId('location-probe')).toHaveTextContent('/projects/project-4');
   });
 
@@ -111,51 +111,74 @@ describe('DashboardPage chat and task Home', () => {
   it('selects a project and shows an empty task state', async () => {
     renderDashboard();
     expect(await screen.findByTestId('home-tasks-empty')).toHaveTextContent('No open tasks');
-    await userEvent.setup().click(screen.getByRole('link', { name: /Website.*apps\/website/ }));
+    await userEvent.setup().click(screen.getByRole('link', { name: /Website.*Files available/ }));
     expect(screen.getByRole('heading', { name: 'Selected project' })).toBeInTheDocument();
   });
 
   it('creates a project, updates the store and navigates to it', async () => {
-    const createdProject = { ...ACTIVE_PROJECT, id: 'created-project', name: 'Website App', slug: 'website-app', relativeRoot: 'apps/new-site' };
+    const createdProject = { ...ACTIVE_PROJECT, id: 'created-project', name: 'Website App', slug: 'website-app' };
     createProjectMock.mockResolvedValue(createdProject);
     const store = renderDashboard();
     const user = userEvent.setup();
     await waitFor(() => expect(screen.getByTestId('project-create-trigger')).toBeEnabled());
     await user.click(screen.getByTestId('project-create-trigger'));
     await user.type(screen.getByLabelText('Project name'), createdProject.name);
-    await user.type(screen.getByLabelText('Root folder'), createdProject.relativeRoot);
+    expect(screen.getByLabelText('Workspace features')).toHaveValue('file_backed');
+    expect(screen.getByTestId('project-workspace-mode-help')).toHaveTextContent('The app manages a private folder for files and file-based runs.');
+    expect(screen.queryByLabelText(/root|folder/i)).not.toBeInTheDocument();
     await user.click(screen.getByTestId('project-create-submit'));
     await waitFor(() => expect(screen.getByTestId('location-probe')).toHaveTextContent('/projects/created-project'));
-    expect(createProjectMock).toHaveBeenCalledWith({ name: createdProject.name, relativeRoot: createdProject.relativeRoot }, 'csrf-value');
+    expect(createProjectMock).toHaveBeenCalledWith({ name: createdProject.name, workspaceMode: 'file_backed' }, 'csrf-value');
     expect(store.getState().project.projects).toContainEqual(createdProject);
   });
 
-  it('rejects unsafe project roots locally and preserves the draft', async () => {
+  it('requires a project name and focuses the invalid field', async () => {
     renderDashboard();
     const user = userEvent.setup();
     await waitFor(() => expect(screen.getByTestId('project-create-trigger')).toBeEnabled());
     await user.click(screen.getByTestId('project-create-trigger'));
-    await user.type(screen.getByLabelText('Project name'), 'Unsafe project');
-    const rootInput = screen.getByLabelText('Root folder');
-    await user.type(rootInput, '../outside');
     await user.click(screen.getByTestId('project-create-submit'));
-    expect(screen.getByTestId('project-relative-root-error')).toHaveTextContent('relative folder');
-    expect(rootInput).toHaveValue('../outside'); expect(rootInput).toHaveFocus();
+    expect(screen.getByTestId('project-name-error')).toHaveTextContent('Enter a project name.');
+    expect(screen.getByLabelText('Project name')).toHaveFocus();
     expect(createProjectMock).not.toHaveBeenCalled();
   });
 
-  it('maps overlap errors to the folder field without exposing internal details', async () => {
-    createProjectMock.mockRejectedValue(new ApiClientError(409, 'PROJECT_ROOT_OVERLAP', 'internal root detail', [{ field: 'relativeRoot', message: 'internal overlap detail' }]));
+  it('maps project-name conflicts without exposing internal details', async () => {
+    createProjectMock.mockRejectedValue(new ApiClientError(409, 'PROJECT_NAME_CONFLICT', 'internal account detail'));
     renderDashboard();
     const user = userEvent.setup();
     await waitFor(() => expect(screen.getByTestId('project-create-trigger')).toBeEnabled());
     await user.click(screen.getByTestId('project-create-trigger'));
-    await user.type(screen.getByLabelText('Project name'), 'Overlapping project');
-    await user.type(screen.getByLabelText('Root folder'), 'apps/website-child');
+    await user.type(screen.getByLabelText('Project name'), 'Existing project');
     await user.click(screen.getByTestId('project-create-submit'));
-    expect(await screen.findByTestId('project-relative-root-error')).toHaveTextContent('already used by another active project');
-    expect(screen.queryByText('internal overlap detail')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Root folder')).toHaveFocus();
+    expect(await screen.findByTestId('project-name-error')).toHaveTextContent('Choose a different project name.');
+    expect(screen.queryByText('internal account detail')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Project name')).toHaveFocus();
+  });
+
+  it('keeps the draft and offers retry or a planning-only choice when managed storage is unavailable', async () => {
+    const planningProject: ProjectSnapshot = { ...ACTIVE_PROJECT, id: 'planning-project', name: 'Planning draft', workspaceMode: 'planning', capabilities: { planning: true, fileAccess: false } };
+    createProjectMock.mockRejectedValueOnce(new ApiClientError(503, 'WORKSPACE_STORAGE_UNAVAILABLE', 'C:\\private\\account root'));
+    createProjectMock.mockResolvedValueOnce(planningProject);
+    renderDashboard();
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByTestId('project-create-trigger')).toBeEnabled());
+    await user.click(screen.getByTestId('project-create-trigger'));
+    await user.type(screen.getByLabelText('Project name'), planningProject.name);
+    await user.click(screen.getByTestId('project-create-submit'));
+
+    expect(await screen.findByTestId('workspace-storage-error')).toHaveTextContent('We could not create this project safely. Try again.');
+    expect(screen.queryByText('C:\\private\\account root')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Project name')).toHaveValue(planningProject.name);
+    expect(screen.getByLabelText('Workspace features')).toHaveValue('file_backed');
+    expect(screen.getByTestId('workspace-storage-retry-button')).toBeEnabled();
+
+    await user.selectOptions(screen.getByLabelText('Workspace features'), 'planning');
+    expect(screen.getByTestId('project-workspace-mode-help')).toHaveTextContent('Tasks, memory, and planning assistance remain available where enabled.');
+    await user.click(screen.getByTestId('project-create-submit'));
+    await waitFor(() => expect(screen.getByTestId('location-probe')).toHaveTextContent('/projects/planning-project'));
+    expect(createProjectMock).toHaveBeenNthCalledWith(1, { name: planningProject.name, workspaceMode: 'file_backed' }, 'csrf-value');
+    expect(createProjectMock).toHaveBeenNthCalledWith(2, { name: planningProject.name, workspaceMode: 'planning' }, 'csrf-value');
   });
 
   it('fails closed on workspace boundary errors and retries overview loading', async () => {
@@ -226,7 +249,6 @@ describe('DashboardPage chat and task Home', () => {
     await waitFor(() => expect(screen.getByTestId('project-create-trigger')).toBeEnabled());
     await user.click(screen.getByTestId('project-create-trigger'));
     await user.type(screen.getByLabelText('Project name'), 'Expired project');
-    await user.type(screen.getByLabelText('Root folder'), 'expired');
     await user.click(screen.getByTestId('project-create-submit'));
     await waitFor(() => expect(store.getState().userSession.status).toBe('unauthenticated'));
     unregister();

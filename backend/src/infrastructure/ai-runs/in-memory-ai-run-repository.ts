@@ -77,6 +77,7 @@ export class InMemoryAiRunRepository implements IAiRunRepository, IProjectTaskSu
         conversationId: input.conversationId,
         request: input.request,
         relativeRoot: input.relativeRoot,
+        storageKind: input.storageKind,
         requestedPaths: [...input.requestedPaths],
         manifest: input.manifest,
         manifestInvalidated: false,

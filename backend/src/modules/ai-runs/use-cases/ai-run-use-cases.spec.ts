@@ -24,7 +24,7 @@ const FACT_ID = '55555555-5555-4555-8555-555555555555';
 
 function makeProject(): Project {
   const now = new Date('2026-09-16T00:00:00.000Z');
-  return { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', objective: null, status: 'active', version: 1, createdAt: now, updatedAt: now };
+  return { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', storageKind: 'legacy', objective: null, status: 'active', version: 1, createdAt: now, updatedAt: now };
 }
 
 function makeConversation(): MessagePage {
@@ -76,7 +76,7 @@ class ProjectFixture implements IProjectRepository {
 }
 
 class RootlessProjectFixture extends ProjectFixture {
-  public override async findByIdForOwner(): Promise<Project | null> { return { ...makeProject(), relativeRoot: null }; }
+  public override async findByIdForOwner(): Promise<Project | null> { return { ...makeProject(), relativeRoot: null, storageKind: null }; }
 }
 
 class ConversationFixture implements IConversationRepository {

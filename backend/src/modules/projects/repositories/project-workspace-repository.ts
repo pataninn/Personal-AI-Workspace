@@ -27,6 +27,7 @@ export interface AttachProjectRootRecord {
   readonly expectedVersion: number;
   readonly relativeRoot: string;
   readonly relativeRootKey: string;
+  readonly storageKind: 'managed';
 }
 
 /** Narrow project participants that join the action ledger's transaction. */

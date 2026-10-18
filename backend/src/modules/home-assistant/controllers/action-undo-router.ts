@@ -87,6 +87,7 @@ function serializeTarget(target: GlobalTaskQueryItem | Project | null): Record<s
       name: target.name,
       slug: target.slug,
       relativeRoot: target.relativeRoot,
+      storageKind: 'legacy',
       objective: target.objective,
       status: target.status,
       version: target.version,

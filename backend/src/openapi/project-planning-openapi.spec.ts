@@ -12,6 +12,7 @@ describe('workspace planning OpenAPI contract', () => {
     const document = record(openApiDocument, 'OpenAPI document');
     const paths = record(document.paths, 'paths');
     const expected: Record<string, Record<string, readonly string[]>> = {
+      '/api/v1/projects': { post: ['201', '400', '401', '403', '409', '500', '503'] },
       '/api/v1/projects/search': { get: ['200', '400', '401', '500'] },
       '/api/v1/projects/reuse': { post: ['200', '400', '401', '403', '404', '409', '500'] },
       '/api/v1/projects/planning': { post: ['200', '201', '400', '401', '403', '409', '500'] },
@@ -47,8 +48,13 @@ describe('workspace planning OpenAPI contract', () => {
       expect.objectContaining({ $ref: '#/components/parameters/WorkspaceIdempotencyKeyHeader' })
     ]));
     const attachment = record(record(paths['/api/v1/projects/{projectId}/root-attachment'], 'root attachment route').patch, 'root attachment');
-    expect(attachment.description).toMatch(/read-only/iu);
+    expect(attachment.summary).toMatch(/managed root/iu);
+    expect(attachment.description).toMatch(/cannot select or attach a host path/iu);
     expect(attachment.description).toMatch(/not reversible/iu);
+    const attachmentBody = record(attachment.requestBody, 'root attachment request body');
+    const attachmentContent = record(attachmentBody.content, 'root attachment content');
+    const attachmentJson = record(attachmentContent['application/json'], 'root attachment JSON body');
+    expect(attachmentJson.schema).toEqual({ $ref: '#/components/schemas/AttachProjectRootRequest' });
     expect(attachment.parameters).toEqual(expect.arrayContaining([
       expect.objectContaining({ $ref: '#/components/parameters/ProjectIfMatchHeader' }),
       expect.objectContaining({ $ref: '#/components/parameters/WorkspaceIdempotencyKeyHeader' })
@@ -76,6 +82,23 @@ describe('workspace planning OpenAPI contract', () => {
     const searchProperties = record(searchItem.properties, 'search item properties');
     expect(searchProperties.relativeRoot).toBeUndefined();
     expect(searchProperties.ownerId).toBeUndefined();
+
+    const representation = record(schemas.ProjectRepresentation, 'project representation');
+    const representationProperties = record(representation.properties, 'project representation properties');
+    expect(representationProperties.relativeRoot).toBeUndefined();
+    expect(record(schemas.ProjectSummary, 'project summary').properties).not.toHaveProperty('relativeRoot');
+
+    const createProject = record(schemas.CreateProjectRequest, 'create project request');
+    const createProjectProperties = record(createProject.properties, 'create project properties');
+    expect(createProjectProperties.relativeRoot).toBeUndefined();
+    expect(createProject.required).toEqual(['name']);
+    expect(createProjectProperties.workspaceMode).toEqual(expect.objectContaining({ default: 'file_backed', enum: ['planning', 'file_backed'] }));
+    const attachRequest = record(schemas.AttachProjectRootRequest, 'managed root request');
+    expect(attachRequest.properties).toEqual({});
+    expect(attachRequest.required).toBeUndefined();
+    expect(JSON.stringify(document)).not.toContain('"relativeRoot"');
+    const workspaceUnavailable = record(record(components.responses, 'responses').WorkspaceUnavailable, 'workspace unavailable response');
+    expect(workspaceUnavailable.description).toMatch(/storage is unavailable/iu);
     const receipt = record(schemas.ProjectActionReceipt, 'action receipt');
     const receiptProperties = record(receipt.properties, 'receipt properties');
     expect(receiptProperties.undoStatus).toEqual(expect.objectContaining({ enum: expect.arrayContaining(['not_reversible']) }));

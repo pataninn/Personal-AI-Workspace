@@ -2,10 +2,8 @@ import type { EgressFileEntry, EgressMessage } from '@/modules/ai-runs/domain/ai
 
 export interface StageInput {
   readonly runId: string;
-  readonly workspaceRoot: string;
-  readonly relativeRoot: string;
   readonly request: string;
-  readonly files: readonly EgressFileEntry[];
+  readonly files: readonly (EgressFileEntry & { readonly content: string })[];
   readonly messages: readonly EgressMessage[];
 }
 

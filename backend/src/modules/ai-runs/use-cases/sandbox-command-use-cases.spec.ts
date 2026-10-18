@@ -20,6 +20,7 @@ class ReadyRunRepository implements IAiRunRepository {
     conversationId: '44444444-4444-4444-8444-444444444444',
     request: 'inspect',
     relativeRoot: 'project',
+    storageKind: 'legacy',
     requestedPaths: [],
     manifest: {
       manifestHash: 'a'.repeat(64),
@@ -68,6 +69,7 @@ class ProjectRepositoryFixture implements IProjectRepository {
     name: 'Project',
     slug: 'project',
     relativeRoot: this.relativeRoot,
+    storageKind: 'legacy',
     objective: null,
     status: 'active',
     version: 1,

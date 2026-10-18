@@ -16,9 +16,10 @@ import {
   ProjectNotFoundError,
   ProjectObjectiveInvalidError,
   ProjectRootAlreadyAttachedError,
-  ProjectVersionConflictError
+  ProjectVersionConflictError,
+  WorkspaceStorageUnavailableError
 } from '@/modules/projects/domain/project-errors';
-import { assertProjectRootDoesNotOverlap, normalizeProjectName, normalizeProjectRoot, projectRootOverlapKey } from '@/modules/projects/domain/project-root-policy';
+import { normalizeProjectName } from '@/modules/projects/domain/project-root-policy';
 import type { Project } from '@/modules/projects/domain/project-types';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { IProjectWorkspaceRepository } from '@/modules/projects/repositories/project-workspace-repository';
@@ -70,7 +71,6 @@ export interface AttachInitialProjectRootInput {
   readonly projectId: string;
   readonly expectedVersion: number;
   readonly operationKey: unknown;
-  readonly relativeRoot: unknown;
 }
 
 export interface ProjectActionResult {
@@ -191,11 +191,10 @@ export class WorkspacePlanningUseCases<TTransaction> implements IWorkspacePlanni
 
   public async attachInitialRoot(input: AttachInitialProjectRootInput): Promise<ProjectActionResult> {
     const operationKey = this.operationKey(input.operationKey);
-    const requestedRoot = normalizeProjectRoot(input.relativeRoot);
     const persisted = await this.runLedger(() => this.ledger.executeAtomically({
       ownerId: input.ownerId,
       operationKey,
-      requestFingerprint: fingerprint({ action: 'workspace.attach-root', projectId: input.projectId, expectedVersion: input.expectedVersion, relativeRoot: requestedRoot }),
+      requestFingerprint: fingerprint({ action: 'workspace.attach-root', projectId: input.projectId, expectedVersion: input.expectedVersion }),
       actorKind: 'manual',
       turnId: null,
       targetKind: 'workspace',
@@ -209,16 +208,15 @@ export class WorkspacePlanningUseCases<TTransaction> implements IWorkspacePlanni
       this.assertActiveAndCurrent(current, input.expectedVersion);
       if (current.relativeRoot !== null) throw new ProjectRootAlreadyAttachedError();
 
-      // This validator is read-only. The ledger repository has already checked for a replay.
-      const relativeRoot = await this.workspaceBoundary.validateProjectRoot(requestedRoot);
-      const roots = await this.workspaceProjects.listActiveRootKeys(transaction, input.ownerId, input.projectId);
-      assertProjectRootDoesNotOverlap(relativeRoot, roots);
+      if (!this.workspaceBoundary.createManagedProjectRoot) throw new WorkspaceStorageUnavailableError();
+      const relativeRoot = await this.workspaceBoundary.createManagedProjectRoot(input.ownerId, input.projectId);
       const updated = await this.workspaceProjects.attachInitialRoot(transaction, {
         ownerId: input.ownerId,
         projectId: input.projectId,
         expectedVersion: input.expectedVersion,
         relativeRoot,
-        relativeRootKey: projectRootOverlapKey(relativeRoot)
+        relativeRootKey: relativeRoot,
+        storageKind: 'managed'
       });
       if (!updated) throw new ProjectVersionConflictError();
       return {

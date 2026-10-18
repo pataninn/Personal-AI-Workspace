@@ -1,13 +1,18 @@
 export type ProjectStatus = 'active' | 'archived';
+export type ProjectWorkspaceMode = 'planning' | 'file_backed';
+
+export interface ProjectCapabilities {
+  readonly planning: true;
+  readonly fileAccess: boolean;
+}
 
 export interface ProjectSnapshot {
   readonly id: string;
   readonly name: string;
   readonly slug: string;
-  readonly relativeRoot: string | null;
   readonly objective?: string | null;
-  readonly workspaceMode?: 'planning' | 'file_backed';
-  readonly capabilities?: { readonly planning: true; readonly fileAccess: boolean };
+  readonly workspaceMode: ProjectWorkspaceMode;
+  readonly capabilities: ProjectCapabilities;
   readonly status: ProjectStatus;
   readonly version: number;
   readonly createdAt: string;

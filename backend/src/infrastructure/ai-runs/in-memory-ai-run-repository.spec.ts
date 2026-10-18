@@ -13,6 +13,7 @@ function createRecord(idempotencyKey: string): CreateAiRunRecord {
     conversationId: CONVERSATION_ID,
     request: 'Review the project.',
     relativeRoot: '',
+    storageKind: 'legacy',
     requestedPaths: [],
     manifest: {
       manifestHash: 'a'.repeat(64),

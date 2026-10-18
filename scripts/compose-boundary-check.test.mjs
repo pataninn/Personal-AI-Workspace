@@ -4,6 +4,8 @@ import test from 'node:test';
 
 const composePath = new URL('../compose.yaml', import.meta.url);
 const source = readFileSync(composePath, 'utf8');
+const managedComposePath = new URL('../compose.managed-storage.yaml', import.meta.url);
+const managedSource = readFileSync(managedComposePath, 'utf8');
 
 function service(name) {
   const pattern = new RegExp(`^  ${name}:\\r?\\n([\\s\\S]*?)(?=^  [a-z][a-z0-9-]*:\\r?$|^networks:|^volumes:|^secrets:)`, 'm');
@@ -84,4 +86,16 @@ test('app performs ordered migrations after PostgreSQL health', () => {
   assert.match(app, /node backend\/dist\/infrastructure\/database\/migrate\.js/);
   assert.match(app, /exec node backend\/dist\/server\.js/);
   assert.match(app, /depends_on:\r?\n      postgres:\r?\n        condition: service_healthy/);
+});
+
+test('managed storage is an explicit optional bind overlay with no implicit host-root creation', () => {
+  const overlayService = managedSource.match(/^  personal-ai-app:\r?\n([\s\S]*)$/m)?.[1];
+  assert.ok(overlayService, 'managed overlay must target only the existing app service');
+  assert.match(overlayService, /ACCOUNT_WORKSPACES_IDENTITY:\s*\$\{ACCOUNT_WORKSPACES_IDENTITY:\?[^}]+\}/);
+  assert.match(overlayService, /source:\s*\$\{ACCOUNT_WORKSPACES_HOST_ROOT:\?[^}]+\}/);
+  assert.match(overlayService, /target:\s*\/account-workspaces/);
+  assert.match(overlayService, /bind:\r?\n\s+create_host_path:\s*false/);
+  assert.doesNotMatch(overlayService, /WORKSPACE_HOST_ROOT|\/workspace/);
+  assert.doesNotMatch(source, /ACCOUNT_WORKSPACES_HOST_ROOT|ACCOUNT_WORKSPACES_IDENTITY/);
+  assert.match(managedSource, /existing dedicated managed-storage directory/);
 });

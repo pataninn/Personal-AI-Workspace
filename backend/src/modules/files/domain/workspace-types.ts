@@ -1,5 +1,7 @@
 export interface WorkspaceProjectScope {
+  readonly ownerId: string;
   readonly projectId: string;
+  readonly storageKind: 'legacy' | 'managed';
   readonly relativeRoot: string;
 }
 

@@ -18,7 +18,7 @@ async function fixture(): Promise<{
   readonly run: Awaited<ReturnType<InMemoryAiRunRepository['create']>>['resource'];
 }> {
   const repository = new InMemoryAiRunRepository();
-  const { resource: run } = await repository.create({ ...input, relativeRoot: 'project', requestedPaths: [], manifest, requestFingerprint: 'fingerprint' });
+  const { resource: run } = await repository.create({ ...input, relativeRoot: 'project', storageKind: 'legacy', requestedPaths: [], manifest, requestFingerprint: 'fingerprint' });
   const contexts = { get: jest.fn().mockResolvedValue({ relativePaths: ['README.md'], factIds: ['selected', 'deleted'], includeProjectConversations: true }), update: jest.fn() };
   const facts: jest.Mocked<IProjectFactRepository> = { findActiveByIds: jest.fn().mockResolvedValue([{ id: 'selected' } satisfies Pick<ProjectFact, 'id'>]),
     listActiveByProject: jest.fn(), findActiveById: jest.fn(), create: jest.fn(), update: jest.fn(), verify: jest.fn(), softDelete: jest.fn() };

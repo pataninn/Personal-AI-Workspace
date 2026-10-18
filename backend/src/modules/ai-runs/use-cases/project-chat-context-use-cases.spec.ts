@@ -10,7 +10,7 @@ function fixture(): {
   readonly contexts: { readonly get: jest.Mock; readonly update: jest.Mock };
   readonly workspace: jest.Mocked<IWorkspaceGateway>;
 } {
-  const projects: jest.Mocked<IProjectRepository> = { findByIdForOwner: jest.fn().mockResolvedValue({ status: 'active', relativeRoot: 'project' }),
+  const projects: jest.Mocked<IProjectRepository> = { findByIdForOwner: jest.fn().mockResolvedValue({ id: 'project', ownerId: 'owner', status: 'active', relativeRoot: 'project', storageKind: 'legacy' }),
     listByOwner: jest.fn(), listActiveRoots: jest.fn(), create: jest.fn(), updateStatus: jest.fn() };
   const facts: jest.Mocked<IProjectFactRepository> = { findActiveByIds: jest.fn().mockResolvedValue([]), listActiveByProject: jest.fn(),
     findActiveById: jest.fn(), create: jest.fn(), update: jest.fn(), verify: jest.fn(), softDelete: jest.fn() };
@@ -42,7 +42,7 @@ describe('ProjectChatContextUseCases', () => {
   it('checks selected files through the workspace boundary and saves the derived exclusions', async () => {
     const { useCases, workspace, contexts } = fixture();
     await useCases.update('owner', 'project', { relativePaths: ['app.ts'] });
-    expect(workspace.readText).toHaveBeenCalledWith({ projectId: 'project', relativeRoot: 'project' }, { path: 'app.ts' });
+    expect(workspace.readText).toHaveBeenCalledWith({ ownerId: 'owner', projectId: 'project', storageKind: 'legacy', relativeRoot: 'project' }, { path: 'app.ts' });
     expect(contexts.update).toHaveBeenCalledWith('owner', 'project', { relativePaths: ['app.ts'], excludedPaths: [] });
   });
   it('does not persist files which fail boundary validation', async () => {

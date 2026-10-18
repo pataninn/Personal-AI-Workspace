@@ -1,10 +1,7 @@
-import {
-  assertProjectRootDoesNotOverlap,
-  normalizeProjectName,
-  normalizeProjectRoot,
-  projectRootOverlapKey
-} from '@/modules/projects/domain/project-root-policy';
-import { ProjectObjectiveInvalidError, ProjectRootInvalidError, ProjectWorkspaceModeInvalidError } from '@/modules/projects/domain/project-errors';
+import { randomUUID } from 'node:crypto';
+
+import { normalizeProjectName } from '@/modules/projects/domain/project-root-policy';
+import { ProjectObjectiveInvalidError, ProjectWorkspaceModeInvalidError, WorkspaceStorageUnavailableError } from '@/modules/projects/domain/project-errors';
 import type { Project } from '@/modules/projects/domain/project-types';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspace-boundary';
@@ -12,7 +9,6 @@ import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspa
 export interface CreateProjectInput {
   readonly ownerId: string;
   readonly name: unknown;
-  readonly relativeRoot?: unknown;
   readonly workspaceMode?: unknown;
   readonly objective?: unknown;
 }
@@ -20,21 +16,21 @@ export interface CreateProjectInput {
 export class CreateProjectUseCase {
   public constructor(
     private readonly projectRepository: IProjectRepository,
-    private readonly workspaceBoundary: IWorkspaceBoundary
+    private readonly workspaceBoundary: IWorkspaceBoundary,
+    private readonly createId: () => string = randomUUID
   ) {}
 
   public async execute(input: CreateProjectInput): Promise<Project> {
     const identity = normalizeProjectName(input.name);
     const objective = normalizeProjectObjective(input.objective);
     if (input.workspaceMode === 'planning') {
-      if (input.relativeRoot !== undefined) {
-        throw new ProjectWorkspaceModeInvalidError('Planning workspaces must not include a folder.');
-      }
       return this.projectRepository.create({
+        id: this.createId(),
         ownerId: input.ownerId,
         name: identity.name,
         slug: identity.slug,
         relativeRoot: null,
+        storageKind: null,
         relativeRootKey: null,
         objective
       });
@@ -42,24 +38,17 @@ export class CreateProjectUseCase {
     if (input.workspaceMode !== undefined && input.workspaceMode !== 'file_backed') {
       throw new ProjectWorkspaceModeInvalidError();
     }
-    if (input.relativeRoot === undefined) {
-      throw new ProjectRootInvalidError();
-    }
-    const requestedRoot = normalizeProjectRoot(input.relativeRoot);
-    await this.workspaceBoundary.assertReady();
-    const relativeRoot = requestedRoot;
-    const activeRoots = await this.projectRepository.listActiveRoots(input.ownerId);
-    assertProjectRootDoesNotOverlap(relativeRoot, activeRoots);
-    const projectRoot = this.workspaceBoundary.createProjectRoot
-      ? await this.workspaceBoundary.createProjectRoot(relativeRoot)
-      : relativeRoot;
-    assertProjectRootDoesNotOverlap(projectRoot, activeRoots);
+    const id = this.createId();
+    if (!this.workspaceBoundary.createManagedProjectRoot) throw new WorkspaceStorageUnavailableError();
+    const relativeRoot = await this.workspaceBoundary.createManagedProjectRoot(input.ownerId, id);
     return this.projectRepository.create({
+      id,
       ownerId: input.ownerId,
       name: identity.name,
       slug: identity.slug,
-      relativeRoot: projectRoot,
-      relativeRootKey: projectRootOverlapKey(projectRoot),
+      relativeRoot,
+      storageKind: 'managed',
+      relativeRootKey: relativeRoot,
       objective
     });
   }

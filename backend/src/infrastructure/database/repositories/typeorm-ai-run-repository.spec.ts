@@ -38,6 +38,7 @@ function row(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     conversation_id: '44444444-4444-4444-8444-444444444444',
     request: 'Inspect',
     relative_root: '',
+    storage_kind: 'legacy',
     requested_paths: [],
     manifest: manifest(),
     manifest_hash: MANIFEST_HASH,
@@ -74,6 +75,21 @@ describe('TypeOrmAiRunRepository', () => {
     expect(sql).toContain("'review_required'");
     expect(sql).toContain("'unknown'");
     expect(query.mock.calls[0]?.[1]).toEqual(['The app restarted while this run was active. Review its saved status; no work was resumed automatically.']);
+  });
+
+  it('cancels an inactive principal run for internal cleanup without requiring user authorization', async () => {
+    const stopped = row({ status: 'cancel_requested', phase: 'terminal', safe_message: 'This run stopped because account access is no longer active.' });
+    const query = jest.fn().mockResolvedValue([stopped]);
+    const repository = new TypeOrmAiRunRepository({ query } as unknown as DataSource);
+
+    await expect(repository.stopForInactivePrincipal(OWNER_ID, RUN_ID)).resolves.toMatchObject({
+      ownerId: OWNER_ID,
+      status: 'cancel_requested',
+      phase: 'terminal'
+    });
+    expect(query.mock.calls[0]?.[0]).toContain('SET "status" = \'cancel_requested\'');
+    expect(query.mock.calls[0]?.[0]).toContain('AND "status" IN');
+    expect(query.mock.calls[0]?.[1]).toEqual([OWNER_ID, RUN_ID]);
   });
 
   it('lists bounded project activity with owner/project scope, stable cursor ordering, and safe usage counts', async () => {
@@ -121,14 +137,22 @@ describe('TypeOrmAiRunRepository', () => {
 
   it('records confirmed provider transmission with an enum cast and a narrow update', async () => {
     const updated = row({ status: 'running', provider_transmission: 'transmitted_confirmed' });
-    const query = jest.fn().mockResolvedValue([[updated], 1]);
-    const repository = new TypeOrmAiRunRepository({ query } as unknown as DataSource);
+    const query = jest.fn()
+      .mockResolvedValueOnce([{ id: OWNER_ID }])
+      .mockResolvedValueOnce([row({ status: 'running' })])
+      .mockResolvedValueOnce([{ id: OWNER_ID }])
+      .mockResolvedValueOnce([[updated], 1]);
+    const queryRunner = {
+      connect: jest.fn().mockResolvedValue(undefined), startTransaction: jest.fn().mockResolvedValue(undefined), query,
+      commitTransaction: jest.fn().mockResolvedValue(undefined), rollbackTransaction: jest.fn().mockResolvedValue(undefined), release: jest.fn().mockResolvedValue(undefined)
+    } as unknown as QueryRunner;
+    const repository = new TypeOrmAiRunRepository({ createQueryRunner: () => queryRunner } as unknown as DataSource);
 
     const result = await repository.recordProviderTransmission(OWNER_ID, RUN_ID, 'transmitted_confirmed');
 
     expect(result?.providerTransmission).toBe('transmitted_confirmed');
-    expect(query.mock.calls[0]?.[0]).toContain('$1::"ai_run_provider_transmission"');
-    expect(query.mock.calls[0]?.[0]).toContain('"status" IN');
+    expect(query.mock.calls[3]?.[0]).toContain('$1::"ai_run_provider_transmission"');
+    expect(query.mock.calls[3]?.[0]).toContain('"status" IN');
   });
 
   it('preserves confirmed transmission when a completed provider response needs review', async () => {
@@ -163,8 +187,10 @@ describe('TypeOrmAiRunRepository', () => {
       safe_message: 'Preparing a private run environment.'
     });
     const query = jest.fn()
+      .mockResolvedValueOnce([{ id: OWNER_ID }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([pending])
+      .mockResolvedValueOnce([{ id: OWNER_ID }])
       .mockResolvedValueOnce([[approved], 1]);
     const queryRunner = {
       connect: jest.fn().mockResolvedValue(undefined),
@@ -188,9 +214,10 @@ describe('TypeOrmAiRunRepository', () => {
 
     expect(result.resource.status).toBe('staging');
     expect(result.resource.decision).toBe('approved');
-    expect(query.mock.calls[0]?.[0]).toContain('pg_advisory_xact_lock');
-    expect(query.mock.calls[1]?.[0]).toContain('FOR UPDATE');
-    expect(query.mock.calls[2]?.[0]).toContain('UPDATE "ai_runs"');
+    expect(query.mock.calls[0]?.[0]).toContain('FROM "users"');
+    expect(query.mock.calls[1]?.[0]).toContain('pg_advisory_xact_lock');
+    expect(query.mock.calls[2]?.[0]).toContain('FOR UPDATE');
+    expect(query.mock.calls[4]?.[0]).toContain('UPDATE "ai_runs"');
     expect(queryRunner.commitTransaction).toHaveBeenCalledTimes(1);
     expect(queryRunner.rollbackTransaction).not.toHaveBeenCalled();
     expect(queryRunner.release).toHaveBeenCalledTimes(1);
@@ -200,7 +227,9 @@ describe('TypeOrmAiRunRepository', () => {
     const waiting = row({ status: 'waiting_approval', phase: 'inference' });
     const running = row({ status: 'running', phase: 'inference', safe_message: 'Assistant is working.' });
     const query = jest.fn()
+      .mockResolvedValueOnce([{ id: OWNER_ID }])
       .mockResolvedValueOnce([waiting])
+      .mockResolvedValueOnce([{ id: OWNER_ID }])
       .mockResolvedValueOnce([running]);
     const queryRunner = {
       connect: jest.fn().mockResolvedValue(undefined),
@@ -216,13 +245,17 @@ describe('TypeOrmAiRunRepository', () => {
     const result = await repository.markRunning(OWNER_ID, RUN_ID);
 
     expect(result?.status).toBe('running');
-    expect(query.mock.calls[1]?.[0]).toContain("'queued', 'waiting_approval'");
+    expect(query.mock.calls[3]?.[0]).toContain("'queued', 'waiting_approval'");
   });
 
   it('persists task suggestions inside the existing run completion transaction', async () => {
     const running = row({ status: 'running', phase: 'inference', decision: 'approved' });
     const done = row({ status: 'succeeded', phase: 'terminal', decision: 'approved' });
-    const query = jest.fn().mockResolvedValueOnce([running]).mockResolvedValueOnce([[done], 1]);
+    const query = jest.fn()
+      .mockResolvedValueOnce([{ id: OWNER_ID }])
+      .mockResolvedValueOnce([running])
+      .mockResolvedValueOnce([{ id: OWNER_ID }])
+      .mockResolvedValueOnce([[done], 1]);
     const commitTransaction = jest.fn().mockResolvedValue(undefined);
     const queryRunner = {
       connect: jest.fn().mockResolvedValue(undefined),
@@ -253,7 +286,10 @@ describe('TypeOrmAiRunRepository', () => {
 
   it('rolls back run completion when task suggestion persistence fails', async () => {
     const running = row({ status: 'running', phase: 'inference', decision: 'approved' });
-    const query = jest.fn().mockResolvedValueOnce([running]);
+    const query = jest.fn()
+      .mockResolvedValueOnce([{ id: OWNER_ID }])
+      .mockResolvedValueOnce([running])
+      .mockResolvedValueOnce([{ id: OWNER_ID }]);
     const queryRunner = {
       connect: jest.fn().mockResolvedValue(undefined),
       startTransaction: jest.fn().mockResolvedValue(undefined),
@@ -269,5 +305,35 @@ describe('TypeOrmAiRunRepository', () => {
     expect(queryRunner.rollbackTransaction).toHaveBeenCalledTimes(1);
     expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
     expect(query.mock.calls.every(([sql]) => !String(sql).startsWith('UPDATE "ai_runs"'))).toBe(true);
+  });
+
+  it('suppresses assistant output and task suggestions when account disable wins before completion', async () => {
+    const running = row({ status: 'running', phase: 'inference', decision: 'approved' });
+    const cancelled = row({ ...running, status: 'cancel_requested', phase: 'terminal', safe_message: 'This run stopped because account access is no longer active.' });
+    const query = jest.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([running])
+      .mockResolvedValueOnce([cancelled]);
+    const queryRunner = {
+      connect: jest.fn().mockResolvedValue(undefined), startTransaction: jest.fn().mockResolvedValue(undefined), query,
+      commitTransaction: jest.fn().mockResolvedValue(undefined), rollbackTransaction: jest.fn().mockResolvedValue(undefined), release: jest.fn().mockResolvedValue(undefined)
+    } as unknown as QueryRunner;
+    const writer = { persistForRunCompletion: jest.fn() } as unknown as TaskSuggestionCompletionWriter;
+    const repository = new TypeOrmAiRunRepository({ createQueryRunner: () => queryRunner } as unknown as DataSource, writer);
+
+    const result = await repository.completeRun({
+      ownerId: OWNER_ID,
+      runId: RUN_ID,
+      status: 'succeeded',
+      safeMessage: 'Assistant response complete.',
+      assistantText: 'private late assistant response',
+      taskSuggestions: [{ title: 'late suggestion', details: null }]
+    });
+
+    expect(result?.status).toBe('cancel_requested');
+    expect(writer.persistForRunCompletion).not.toHaveBeenCalled();
+    expect(query.mock.calls.some(([sql]) => String(sql).startsWith('INSERT INTO "messages"'))).toBe(false);
+    expect(query.mock.calls[2]?.[0]).toContain("SET \"status\" = 'cancel_requested'");
+    expect(queryRunner.commitTransaction).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,10 +1,12 @@
-import type { Project, ProjectStatus } from '@/modules/projects/domain/project-types';
+import type { Project, ProjectStatus, ProjectStorageKind } from '@/modules/projects/domain/project-types';
 
 export interface CreateProjectRecord {
+  readonly id: string;
   readonly ownerId: string;
   readonly name: string;
   readonly slug: string;
   readonly relativeRoot: string | null;
+  readonly storageKind: ProjectStorageKind | null;
   readonly relativeRootKey?: string | null;
   readonly objective: string | null;
 }

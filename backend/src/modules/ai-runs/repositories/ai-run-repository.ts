@@ -53,6 +53,8 @@ export interface IAiRunRepository {
   readonly requestCancellation?: (input: CancelRunUpdate) => Promise<RunMutationResult>;
   readonly completeRun?: (input: CompleteRunUpdate) => Promise<AiRun | null>;
   readonly markCancelled?: (ownerId: string, runId: string) => Promise<AiRun | null>;
+  /** Fences an already-running job after its persisted principal has expired or been disabled. */
+  readonly stopForInactivePrincipal?: (ownerId: string, runId: string) => Promise<AiRun | null>;
   readonly markReviewRequired?: (ownerId: string, runId: string, safeMessage: string) => Promise<AiRun | null>;
   /**
    * Run event projection and cancellation share this conditional fence. The

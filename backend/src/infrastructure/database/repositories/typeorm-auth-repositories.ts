@@ -3,6 +3,7 @@ import type { DataSource, EntityManager } from 'typeorm';
 import type { AccountKind, AccountRole, LocalUserRecord, SessionRecord } from '@/modules/auth/domain/auth-types';
 import type { CreateSessionInput, ISessionRepository } from '@/modules/auth/repositories/session-repository';
 import type { CreateRegularAccountInput, DisableAccountResult, IUserRepository } from '@/modules/auth/repositories/user-repository';
+import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
 
 interface UserRow {
   readonly id: string;
@@ -87,6 +88,30 @@ export class TypeOrmUserRepository implements IUserRepository {
     return rows[0] ? toLocalUser(rows[0]) : null;
   }
 
+  public async isActive(userId: string): Promise<boolean> {
+    const rows: readonly { readonly active: boolean }[] = await this.dataSource.query(`
+      SELECT EXISTS (
+        SELECT 1 FROM "users"
+        WHERE "id" = $1 AND "is_active" = true AND ("expires_at" IS NULL OR "expires_at" > now())
+      ) AS "active"
+    `, [userId]);
+    return rows[0]?.active === true;
+  }
+
+  public async findBootstrapOwnerId(): Promise<string | null> {
+    const rows: readonly { id: string }[] = await this.dataSource.query(
+      'SELECT "id" FROM "users" WHERE "scope_key" = \'local\' LIMIT 1'
+    );
+    return rows[0]?.id ?? null;
+  }
+
+  public async withActivePrincipal<T>(userId: string, action: (assertStillActive: () => Promise<void>) => Promise<T>): Promise<T> {
+    return this.dataSource.transaction(async (manager) => {
+      await assertActivePrincipal(manager, userId, true);
+      return action(() => assertActivePrincipal(manager, userId, false));
+    });
+  }
+
   public async hasAnyRegularAccounts(): Promise<boolean> {
     const rows: readonly { exists: boolean }[] = await this.dataSource.query(
       'SELECT EXISTS (SELECT 1 FROM "users" WHERE "account_kind" = \'regular\') AS "exists"'
@@ -158,6 +183,14 @@ export class TypeOrmUserRepository implements IUserRepository {
     `, [targetId]);
     return 'disabled';
   }
+}
+
+async function assertActivePrincipal(manager: EntityManager, userId: string, lock: boolean): Promise<void> {
+  const rows: readonly { id: string }[] = await manager.query(
+    `SELECT "id" FROM "users" WHERE "id" = $1 AND "is_active" = true AND ("expires_at" IS NULL OR "expires_at" > now())${lock ? ' FOR SHARE' : ''}`,
+    [userId]
+  );
+  if (!rows[0]) throw new UnauthenticatedError();
 }
 
 export class TypeOrmSessionRepository implements ISessionRepository {

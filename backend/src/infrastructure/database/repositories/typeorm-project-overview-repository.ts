@@ -1,6 +1,6 @@
 import type { DataSource } from 'typeorm';
 
-import type { ProjectStatus } from '@/modules/projects/domain/project-types';
+import type { Project, ProjectStatus } from '@/modules/projects/domain/project-types';
 import type { ActiveProjectSummary, HomeTaskSummary, IProjectOverviewRepository, ProjectOverview } from '@/modules/projects/repositories/project-overview-repository';
 
 interface ProjectActivityRow {
@@ -9,6 +9,7 @@ interface ProjectActivityRow {
   readonly name: string;
   readonly slug: string;
   readonly relative_root: string | null;
+  readonly storage_kind: Project['storageKind'];
   readonly objective: string | null;
   readonly status: ProjectStatus;
   readonly version: number;
@@ -20,7 +21,7 @@ interface ProjectActivityRow {
 function toSummary(row: ProjectActivityRow): ActiveProjectSummary {
   return {
     id: row.id, ownerId: row.owner_id, name: row.name, slug: row.slug,
-    relativeRoot: row.relative_root, objective: row.objective, status: row.status, version: row.version,
+    relativeRoot: row.relative_root, storageKind: row.storage_kind, objective: row.objective, status: row.status, version: row.version,
     createdAt: new Date(row.created_at), updatedAt: new Date(row.updated_at),
     lastActivityAt: new Date(row.last_activity_at)
   };

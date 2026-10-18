@@ -28,8 +28,8 @@ const ACTION_ID = '33333333-3333-4333-8333-333333333333';
 const WORKSPACE_ID = '11111111-1111-4111-8111-111111111111';
 const PLANNING_ID = '44444444-4444-4444-8444-444444444444';
 const SESSION = { status: 'authenticated' as const, principal: { id: 'owner-1', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const }, csrfToken: 'csrf-token', expiresAt: '2099-01-01', errorCode: null };
-const WORKSPACE: ProjectSnapshot = { id: WORKSPACE_ID, name: 'Website', slug: 'website', relativeRoot: 'apps/website', status: 'active', version: 1, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z' };
-const PLANNING: ProjectSnapshot = { id: PLANNING_ID, name: 'Planning', slug: 'planning', relativeRoot: null, status: 'active', version: 1, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z' };
+const WORKSPACE: ProjectSnapshot = { id: WORKSPACE_ID, name: 'Website', slug: 'website', workspaceMode: 'file_backed', capabilities: { planning: true, fileAccess: true }, status: 'active', version: 1, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z' };
+const PLANNING: ProjectSnapshot = { id: PLANNING_ID, name: 'Planning', slug: 'planning', workspaceMode: 'planning', capabilities: { planning: true, fileAccess: false }, status: 'active', version: 1, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z' };
 const archivedWorkspace: ProjectSnapshot = { ...WORKSPACE, id: '55555555-5555-4555-8555-555555555555', name: 'Archived', status: 'archived' };
 const inboxItem: GlobalTaskItem = {
   task: { id: TASK_ID, projectId: null, title: 'Send the proposal', details: 'Review the draft.', importance: 'medium', deadline: null,

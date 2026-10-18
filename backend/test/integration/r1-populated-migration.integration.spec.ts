@@ -2,12 +2,23 @@ import type { DataSource } from 'typeorm';
 import { DataSource as TypeOrmDataSource } from 'typeorm';
 
 import { createDataSource } from '@/infrastructure/database/data-source';
-import { TypeOrmSessionRepository } from '@/infrastructure/database/repositories/typeorm-auth-repositories';
+import { TypeOrmSessionRepository, TypeOrmUserRepository } from '@/infrastructure/database/repositories/typeorm-auth-repositories';
+import { TypeOrmAiRunRepository } from '@/infrastructure/database/repositories/typeorm-ai-run-repository';
+import { TypeOrmConversationRepository } from '@/infrastructure/database/repositories/typeorm-conversation-repository';
+import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories/typeorm-project-repository';
+import { TypeOrmTaskSuggestionRepository } from '@/infrastructure/database/repositories/task-suggestion-completion-writer';
+import { InMemoryRunEventPublisher } from '@/infrastructure/ai-runs/in-memory-run-event-publisher';
 import { HomeProposalRollbackBlockedError } from '@/modules/home-assistant/domain/home-planning-errors';
 import { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
+import { PrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
+import { StartAiRunUseCase } from '@/modules/ai-runs/use-cases/start-ai-run-use-case';
+import type { AiRun, EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
+import type { IAgentRuntime, RuntimeInferenceEvent } from '@/modules/ai-runs/repositories/agent-runtime';
 
 const OWNER_ID = '4a105f66-6666-4666-8666-666666666666';
+const OTHER_USER_ID = '4a105f66-6666-4666-8666-666666666668';
 const SESSION_ID = '4a105f66-6666-4666-8666-666666666667';
+const EXPIRING_DEMO_ID = '4a105f66-6666-4666-8666-666666666669';
 const LEGACY_SESSION_TOKEN = 'r1-preserved-legacy-session-token-0001';
 const PROJECT_ID = '4a105f77-7777-4777-8777-777777777777';
 const TASK_ID = '4a105f88-8888-4888-8888-888888888888';
@@ -16,6 +27,9 @@ const TURN_ID = '4a105faa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const PROPOSAL_ID = '4a105fbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const PROPOSAL_ITEM_ID = '4a105fcc-cccc-4ccc-8ccc-cccccccccccc';
 const PROPOSAL_TARGET_ID = '4a105fdd-dddd-4ddd-8ddd-dddddddddddd';
+const COMPLETION_CONVERSATION_ID = '4a105fee-eeee-4eee-8eee-eeeeeeeeeeee';
+const EXPIRY_CONVERSATION_ID = '4a105ff0-eeee-4eee-8eee-eeeeeeeeeeee';
+const EXPIRY_PROJECT_ID = '4a105f77-7777-4777-8777-777777777778';
 const MIGRATION_DATABASE = 'home_history_task_5_1_migration_test';
 const LEGACY_MIGRATION_COUNT = 18;
 interface PgClient {
@@ -107,7 +121,7 @@ describeDatabase('R1 populated database migration regression', () => {
     expect(applied).toHaveLength(dataSource.migrations.length - LEGACY_MIGRATION_COUNT);
     const migrationRows: readonly { readonly name: string }[] = await dataSource.query('SELECT "name" FROM "migrations" ORDER BY "timestamp"');
     expect(migrationRows).toHaveLength(dataSource.migrations.length);
-    expect(migrationRows.at(-1)?.name).toBe('AddAccountIdentity1710000026000');
+    expect(migrationRows.at(-1)?.name).toBe('EnforceProjectOwnershipBoundaries1710000027000');
     const migratedOwner: readonly { id: string; scope_key: string; display_name: string; identifier: string; account_kind: string; role: string; password_hash: string }[] = await dataSource.query(
       'SELECT "id", "scope_key", "display_name", "identifier", "account_kind", "role", "password_hash" FROM "users" WHERE "id" = $1',
       [OWNER_ID]
@@ -176,7 +190,148 @@ describeDatabase('R1 populated database migration regression', () => {
     }
   }, 30_000);
 
-  it('preserves the legacy owner and tasks, then verifies safe rollback of identity and proposal migrations', async () => {
+  it('keeps legacy storage bound to the immutable local account when its login identifier changes', async () => {
+    if (!dataSource) throw new Error('The isolated migration database was not initialized.');
+    const users = new TypeOrmUserRepository(dataSource);
+    const originalOwnerId = await users.findBootstrapOwnerId();
+    expect(originalOwnerId).toBe(OWNER_ID);
+
+    await dataSource.query('UPDATE "users" SET "identifier" = $1 WHERE "id" = $2', ['renamed-legacy-owner', OWNER_ID]);
+    expect(await users.findByIdentifier('owner')).toBeNull();
+    expect(await users.findBootstrapOwnerId()).toBe(OWNER_ID);
+    const legacyProject: readonly { readonly owner_id: string; readonly relative_root: string; readonly storage_kind: string }[] = await dataSource.query(
+      'SELECT "owner_id", "relative_root", "storage_kind" FROM "projects" WHERE "id" = $1',
+      [PROJECT_ID]
+    );
+    expect(legacyProject).toEqual([{ owner_id: OWNER_ID, relative_root: 'legacy-project', storage_kind: 'legacy' }]);
+
+    await expect(dataSource.query('UPDATE "users" SET "scope_key" = $1 WHERE "id" = $2', ['account:renamed-local-scope', OWNER_ID]))
+      .rejects.toThrow('the bootstrap owner scope is immutable');
+    await expect(dataSource.query('UPDATE "users" SET "scope_key" = \'local\' WHERE "id" = $1', [OTHER_USER_ID]))
+      .rejects.toThrow('the bootstrap owner scope is immutable');
+    await expect(dataSource.query('DELETE FROM "users" WHERE "id" = $1', [OWNER_ID]))
+      .rejects.toThrow('the bootstrap owner scope is immutable');
+  }, 30_000);
+
+  it('serializes run output against account disable and suppresses output after expiry wins', async () => {
+    if (!dataSource) throw new Error('The isolated migration database was not initialized.');
+    const users = new TypeOrmUserRepository(dataSource);
+    await dataSource.query('UPDATE "users" SET "role" = \'admin\', "is_active" = true, "expires_at" = NULL WHERE "id" = $1', [OTHER_USER_ID]);
+    await dataSource.query('UPDATE "users" SET "is_active" = true, "expires_at" = NULL WHERE "id" = $1', [OWNER_ID]);
+    try {
+    await dataSource.query(`
+      INSERT INTO "users" ("id", "scope_key", "display_name", "identifier", "account_kind", "role", "password_hash", "is_active", "expires_at")
+      VALUES ($1, 'account:expiring-demo', 'Expiring demo', NULL, 'demo', 'user', NULL, true, now() + interval '1 day')
+    `, [EXPIRING_DEMO_ID]);
+    await dataSource.query(`
+      INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind")
+      VALUES ($1, $2, 'Expiring demo project', 'expiring-demo-project', $3, $3, 'managed')
+    `, [EXPIRY_PROJECT_ID, EXPIRING_DEMO_ID, `projects/${EXPIRY_PROJECT_ID}`]);
+
+    const baseWriter = new TypeOrmTaskSuggestionRepository(dataSource);
+    let enteredWriter!: () => void;
+    let releaseWriter!: () => void;
+    const writerEntered = new Promise<void>((resolve) => { enteredWriter = resolve; });
+    const writerGate = new Promise<void>((resolve) => { releaseWriter = resolve; });
+    const gatedWriter = {
+      persistForRunCompletion: async (...args: Parameters<TypeOrmTaskSuggestionRepository['persistForRunCompletion']>) => {
+        enteredWriter();
+        await writerGate;
+        return baseWriter.persistForRunCompletion(...args);
+      }
+    };
+    const runs = new TypeOrmAiRunRepository(dataSource, gatedWriter);
+    const conversations = new TypeOrmConversationRepository(dataSource);
+    const completionRunId = await createReadyRun(dataSource, runs, COMPLETION_CONVERSATION_ID, 'running');
+
+    const completion = runs.completeRun({
+      ownerId: OWNER_ID, runId: completionRunId, status: 'succeeded', safeMessage: 'Assistant response complete.',
+      assistantText: 'Permitted response before disable.', assistantComplete: true, cleanup: 'complete',
+      providerTransmission: 'transmitted_confirmed', taskSuggestions: [{ title: 'Permitted suggestion', details: null }]
+    });
+    let disabled: Promise<'disabled' | 'not-found' | 'forbidden' | 'last-active-admin'> | undefined;
+    try {
+      await writerEntered;
+      disabled = users.disableAccount(OTHER_USER_ID, OWNER_ID);
+      await waitForBlockedAccountLock(dataSource);
+    } finally {
+      releaseWriter();
+    }
+    const [completedRun, disableResult] = await Promise.all([completion, disabled]);
+    expect(completedRun?.status).toBe('succeeded');
+    expect(disableResult).toBe('disabled');
+    await expect(dataSource.query('SELECT "content" FROM "messages" WHERE "conversation_id" = $1 AND "role" = \'assistant\'', [COMPLETION_CONVERSATION_ID]))
+      .resolves.toEqual([{ content: 'Permitted response before disable.' }]);
+    await expect(dataSource.query('SELECT "title" FROM "project_task_suggestions" WHERE "run_id" = $1', [completionRunId]))
+      .resolves.toEqual([{ title: 'Permitted suggestion' }]);
+
+    await dataSource.query('UPDATE "users" SET "is_active" = true, "expires_at" = NULL WHERE "id" = $1', [OWNER_ID]);
+    const expiryRuns = new TypeOrmAiRunRepository(dataSource);
+    const expiryRunId = await createReadyRun(dataSource, expiryRuns, EXPIRY_CONVERSATION_ID, 'ready', EXPIRING_DEMO_ID, EXPIRY_PROJECT_ID, 'managed');
+    let runtimeStarted!: () => void;
+    let releaseRuntime!: () => void;
+    const runtimeReady = new Promise<void>((resolve) => { runtimeStarted = resolve; });
+    const runtimeGate = new Promise<void>((resolve) => { releaseRuntime = resolve; });
+    const runtimeEvents: RuntimeInferenceEvent[] = [
+      { type: 'tool.proposed', proposal: { runId: expiryRunId, commandId: 'late-command', command: 'write private file', args: [], cwd: '.' } },
+      { type: 'assistant.delta', text: 'private content after expiry' },
+      { type: 'completed', text: 'private content after expiry', taskSuggestions: [{ title: 'Expired suggestion', details: null }] }
+    ];
+    const runtime: IAgentRuntime = {
+      checkAvailability: async () => undefined,
+      create: async () => ({ kind: 'fake', sandboxReady: true }),
+      startRun: async function* (): AsyncIterable<RuntimeInferenceEvent> {
+        runtimeStarted();
+        await runtimeGate;
+        yield* runtimeEvents;
+      },
+      destroy: async () => undefined
+    };
+    const eventPublisher = new InMemoryRunEventPublisher();
+    const seenEvents: string[] = [];
+    let finishExpiredRun!: () => void;
+    const expiredRunFinished = new Promise<void>((resolve) => { finishExpiredRun = resolve; });
+    const unsubscribe = eventPublisher.subscribe(expiryRunId, (event) => {
+      seenEvents.push(event.type);
+      if (event.type === 'run.cancelled') finishExpiredRun();
+    });
+    const commandProposals = { execute: jest.fn().mockResolvedValue({ resource: { id: 'unused', status: 'pending_approval', safeMessage: 'Review command.' }, replayed: false }) };
+    const principalAuthorization = new PrincipalAuthorization(users, { now: () => new Date() });
+    const start = new StartAiRunUseCase(
+      expiryRuns, conversations, runtime, eventPublisher, commandProposals, new TypeOrmProjectRepository(dataSource),
+      undefined, undefined, undefined, principalAuthorization
+    );
+
+    try {
+      await start.execute({ ownerId: EXPIRING_DEMO_ID, runId: expiryRunId, idempotencyKey: 'expiry-race-start' });
+      await runtimeReady;
+      await dataSource.query('UPDATE "users" SET "expires_at" = now() - interval \'1 second\' WHERE "id" = $1', [EXPIRING_DEMO_ID]);
+      await expect(principalAuthorization.isActive(EXPIRING_DEMO_ID)).resolves.toBe(false);
+    } finally {
+      releaseRuntime();
+    }
+    await awaitBeforeTimeout(expiredRunFinished, 5000, 'Expired run did not reach cancellation.');
+    unsubscribe();
+
+    expect(seenEvents).not.toContain('assistant.delta');
+    expect(seenEvents).not.toContain('run.completed');
+    expect(commandProposals.execute).not.toHaveBeenCalled();
+    await expect(dataSource.query('SELECT "content" FROM "messages" WHERE "conversation_id" = $1 AND "role" = \'assistant\'', [EXPIRY_CONVERSATION_ID]))
+      .resolves.toEqual([]);
+    await expect(dataSource.query('SELECT "id" FROM "project_task_suggestions" WHERE "run_id" = $1', [expiryRunId]))
+      .resolves.toEqual([]);
+    await expect(dataSource.query('SELECT "event_type" FROM "project_task_events" WHERE "run_id" = $1', [expiryRunId]))
+      .resolves.toEqual([]);
+    const expiredRun: readonly { status: AiRun['status']; cleanup: AiRun['cleanup'] }[] = await dataSource.query('SELECT "status", "cleanup" FROM "ai_runs" WHERE "id" = $1', [expiryRunId]);
+    expect(expiredRun[0]).toEqual({ status: 'cancelled', cleanup: 'complete' });
+    await dataSource.query('UPDATE "users" SET "role" = \'user\' WHERE "id" = $1', [OTHER_USER_ID]);
+    } finally {
+      await dataSource.query('DELETE FROM "projects" WHERE "id" = $1', [EXPIRY_PROJECT_ID]);
+      await dataSource.query('DELETE FROM "users" WHERE "id" = $1', [EXPIRING_DEMO_ID]);
+    }
+  }, 60_000);
+
+  it('preserves legacy data, then verifies safe rollback of ownership, identity, and proposal migrations', async () => {
     if (!dataSource) throw new Error('The isolated migration database was not initialized.');
     expect(legacyTask).toMatchObject({
       id: TASK_ID,
@@ -192,6 +347,12 @@ describeDatabase('R1 populated database migration regression', () => {
     `);
     expect(tables[0]).toEqual({ inboxOrder: 'project_task_order_states', homeEvents: 'home_conversation_events', proposals: 'home_change_proposals' });
 
+    await dataSource.undoLastMigration({ transaction: 'all' });
+    const storageKindColumns: readonly { readonly storage_kind: string | null }[] = await dataSource.query(`
+      SELECT column_name AS "storage_kind" FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'projects' AND column_name = 'storage_kind'
+    `);
+    expect(storageKindColumns).toHaveLength(0);
     await dataSource.undoLastMigration({ transaction: 'all' });
     const identityColumns: readonly { readonly identifier: string | null }[] = await dataSource.query(`
       SELECT column_name AS "identifier" FROM information_schema.columns
@@ -223,6 +384,7 @@ describeDatabase('R1 populated database migration regression', () => {
 
 async function seedLegacyProjectAndTask(dataSource: DataSource): Promise<void> {
   await dataSource.query('INSERT INTO "users" ("id", "scope_key", "display_name", "password_hash") VALUES ($1, $2, $3, $4)', [OWNER_ID, 'local', 'R1 migration fixture owner', 'x']);
+  await dataSource.query('INSERT INTO "users" ("id", "scope_key", "display_name", "password_hash") VALUES ($1, $2, $3, $4)', [OTHER_USER_ID, 'legacy:test-account', 'Other migration fixture account', 'y']);
   await dataSource.query(
     'INSERT INTO "sessions" ("id", "user_id", "token_hash", "expires_at") VALUES ($1, $2, $3, $4)',
     [SESSION_ID, OWNER_ID, 'r1-migration-session-hash', new Date('2026-11-01T00:00:00.000Z')]
@@ -235,6 +397,71 @@ async function seedLegacyProjectAndTask(dataSource: DataSource): Promise<void> {
     INSERT INTO "project_tasks" ("id", "owner_id", "project_id", "title", "details", "status", "position", "importance", "deadline", "subtasks")
     VALUES ($1, $2, $3, 'R1 legacy task retained', 'legacy details', 'todo', 0, 'high', '2026-10-20', $4::jsonb)
   `, [TASK_ID, OWNER_ID, PROJECT_ID, JSON.stringify([{ id: 'legacy-subtask', title: 'Keep checklist', completed: false }])]);
+}
+
+function testManifest(): EgressManifest {
+  return {
+    manifestHash: 'a'.repeat(64), provider: 'NVIDIA hosted NIM', providerProfile: 'nvidia-hosted-nim',
+    model: 'nvidia/nemotron-3-super-120b-a12b', categories: ['Request'], files: [], requestBytes: 8,
+    messageBytes: 0, messageCount: 0, messageHash: 'b'.repeat(64), byteEstimate: 8, tokenEstimate: 2,
+    excludedItemCount: 0, omittedItemCount: 0, omissionSummary: 'No selected items were omitted.', bestEffortSecretDetection: true
+  };
+}
+
+async function createReadyRun(
+  dataSource: DataSource,
+  runs: TypeOrmAiRunRepository,
+  conversationId: string,
+  status: 'ready' | 'running',
+  ownerId = OWNER_ID,
+  projectId = PROJECT_ID,
+  storageKind: AiRun['storageKind'] = 'legacy'
+): Promise<string> {
+  await dataSource.query(
+    'INSERT INTO "conversations" ("id", "owner_id", "project_id", "title") VALUES ($1, $2, $3, $4)',
+    [conversationId, ownerId, projectId, 'Ownership boundary race']
+  );
+  const manifest = testManifest();
+  const created = await runs.create({
+    ownerId, projectId, conversationId,
+    request: 'Inspect the project.', relativeRoot: storageKind === 'managed' ? `projects/${projectId}` : 'legacy-project', storageKind, requestedPaths: [], manifest,
+    idempotencyKey: `create-${conversationId}`, requestFingerprint: 'd'.repeat(64)
+  });
+  await runs.recordDecision({
+    ownerId, runId: created.resource.id, manifestHash: manifest.manifestHash, decision: 'approve',
+    idempotencyKey: `decision-${conversationId}`, requestFingerprint: 'e'.repeat(64)
+  });
+  await dataSource.query('UPDATE "ai_runs" SET "status" = $1, "phase" = \'inference\', "runtime_kind" = \'fake\', "sandbox_ready" = true WHERE "id" = $2', [status, created.resource.id]);
+  return created.resource.id;
+}
+
+async function waitForBlockedAccountLock(dataSource: DataSource): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const rows: readonly { readonly blocked: boolean }[] = await dataSource.query(`
+      SELECT EXISTS (
+        SELECT 1 FROM pg_stat_activity
+        WHERE pid <> pg_backend_pid() AND datname = current_database()
+          AND wait_event_type = 'Lock' AND state = 'active'
+          AND query ILIKE '%FROM "users"%' AND query ILIKE '%FOR UPDATE%'
+      ) AS "blocked"
+    `);
+    if (rows[0]?.blocked) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error('Account disable did not block behind the active output transaction.');
+}
+
+async function awaitBeforeTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error(message)), timeoutMs); })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 async function seedProposalRollbackFixture(dataSource: DataSource): Promise<void> {

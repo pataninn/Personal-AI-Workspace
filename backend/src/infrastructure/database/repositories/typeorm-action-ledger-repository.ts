@@ -18,6 +18,7 @@ import type { IActionLedgerRepository } from '@/modules/action-ledger/repositori
 import type { IActionLedgerEventRecorder } from '@/modules/action-ledger/repositories/action-ledger-event-recorder';
 import type { IActionLedgerUndoRepository } from '@/modules/action-ledger/repositories/action-ledger-undo-repository';
 import { toActionLedgerRecord, type ActionLedgerRow } from '@/infrastructure/database/repositories/action-ledger-persistence-mappers';
+import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
 
 const ACTION_LEDGER_COLUMNS = `"id", "owner_id", "operation_key", "request_fingerprint", "actor_kind", "turn_id",
   "target_kind", "target_id", "action_kind", "expected_version", "pre_version", "post_version",
@@ -38,6 +39,11 @@ export class TypeOrmActionLedgerRepository implements IActionLedgerRepository<Qu
   ): Promise<PersistedActionLedgerRecord> {
     assertActionLedgerExecutionInput(input);
     return this.withTransaction(async (queryRunner) => {
+      const principals: readonly { readonly id: string }[] = await queryRunner.query(
+        'SELECT "id" FROM "users" WHERE "id" = $1 AND "is_active" = true AND ("expires_at" IS NULL OR "expires_at" > now()) FOR SHARE',
+        [input.ownerId]
+      );
+      if (!principals[0]) throw new UnauthenticatedError();
       const lockIdentity = JSON.stringify(['action-ledger', input.ownerId, input.operationKey]);
       await queryRunner.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [lockIdentity]);
       const existing = await this.findByOperation(queryRunner, input.ownerId, input.operationKey);

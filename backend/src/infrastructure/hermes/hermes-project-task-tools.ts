@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { RuntimeRunInput } from '@/modules/ai-runs/repositories/agent-runtime';
 import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-repository';
 import type { CreateProjectTaskUseCase, ListProjectTasksUseCase, UpdateProjectTaskUseCase } from '@/modules/tasks/use-cases/project-task-use-cases';
+import type { IPrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
 import { ProjectTaskDomainError } from '@/modules/tasks/domain/project-task-errors';
 import { AppError } from '@/shared/errors/app-error';
 import { redactEgressText } from '@/shared/egress/redaction';
@@ -12,6 +13,7 @@ const statusSchema = z.object({ taskId: z.string().uuid(), expectedVersion: z.nu
 
 interface TaskToolDependencies {
   readonly runs: IAiRunRepository;
+  readonly principalAuthorization: Pick<IPrincipalAuthorization, 'assertActive'>;
   readonly list: ListProjectTasksUseCase;
   readonly create: CreateProjectTaskUseCase;
   readonly update: UpdateProjectTaskUseCase;
@@ -23,10 +25,13 @@ export class HermesProjectTaskTools {
 
   public async execute(input: { readonly run: RuntimeRunInput; readonly requestId: string; readonly name: unknown; readonly args: unknown }): Promise<Record<string, unknown>> {
     try {
+      if (!input.run.ownerId || !input.run.projectId) throw new AppError('TASK_RUN_SCOPE_INVALID', 409, 'No owned project is available for this run.');
+      await this.dependencies.principalAuthorization.assertActive(input.run.ownerId);
       const scope = await this.scope(input.run);
       if (input.name === 'project_tasks_list') {
         z.object({}).strict().parse(input.args);
         const list = await this.dependencies.list.execute({ ...scope, filter: 'all' });
+        await this.dependencies.principalAuthorization.assertActive(input.run.ownerId);
         return { tasks: list.tasks.slice(0, 100).map((task) => ({ id: task.id, title: redactEgressText(task.title), status: task.status, version: task.version })), hasMore: list.tasks.length > 100 };
       }
       return await this.mutate({ ...input, scope });

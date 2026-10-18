@@ -8,6 +8,7 @@ import { appendHomeConversationEvent } from '@/infrastructure/database/repositor
 import { lockConversation } from '@/infrastructure/database/repositories/home-conversation-repository-helpers';
 import { stableJson } from '@/modules/home-assistant/use-cases/home-planning-command-validation';
 import type { CreateHomeProposalInput, HomeProposalListPage, IHomeChangeProposalRepository, ListHomeProposalsInput, SealHomeProposalInput, UpdateHomeProposalItemInput } from '@/modules/home-assistant/repositories/home-change-proposal-repository';
+import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
 
 type Timestamp = Date | string;
 
@@ -135,6 +136,11 @@ export class TypeOrmHomeChangeProposalRepository implements IHomeChangeProposalR
 
   public async createDraft(input: CreateHomeProposalInput): Promise<{ readonly proposal: HomeChangeProposal; readonly replayed: boolean }> {
     const replayed = await this.withTransaction(async (transaction) => {
+      const principals: readonly { readonly id: string }[] = await transaction.query(
+        'SELECT "id" FROM "users" WHERE "id" = $1 AND "is_active" = true AND ("expires_at" IS NULL OR "expires_at" > now()) FOR SHARE',
+        [input.ownerId]
+      );
+      if (!principals[0]) throw new UnauthenticatedError();
       const conversation = await lockConversation(transaction, input.ownerId, input.conversationId);
       if (!conversation) throw new HomeProposalNotFoundError();
       const prior: readonly { readonly id: string; readonly request_fingerprint: string }[] = await transaction.query(

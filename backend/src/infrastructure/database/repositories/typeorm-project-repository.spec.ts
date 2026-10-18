@@ -18,6 +18,7 @@ function projectRow(status: ProjectStatus): Record<string, unknown> {
     slug: 'website',
     relative_root: 'apps/website',
     relative_root_key: 'apps/website',
+    storage_kind: 'legacy',
     objective: null,
     status,
     version: 2,
@@ -47,7 +48,7 @@ function fixture(query: jest.Mock): {
 
 describe('TypeOrmProjectRepository', () => {
   it('maps a rootless planning row with its objective without inventing a file root', async () => {
-    const row = { ...projectRow('active'), relative_root: null, relative_root_key: null, objective: 'Plan the launch' };
+    const row = { ...projectRow('active'), relative_root: null, relative_root_key: null, storage_kind: null, objective: 'Plan the launch' };
     const dataSource = { query: jest.fn().mockResolvedValue([row]) } as unknown as DataSource;
     const project = (await new TypeOrmProjectRepository(dataSource).listByOwner(OWNER_ID, false))[0];
 
@@ -55,16 +56,16 @@ describe('TypeOrmProjectRepository', () => {
   });
 
   it('creates a rootless project without overlap lookup and persists null root columns', async () => {
-    const row = { ...projectRow('active'), relative_root: null, relative_root_key: null, objective: 'Plan the launch' };
+    const row = { ...projectRow('active'), relative_root: null, relative_root_key: null, storage_kind: null, objective: 'Plan the launch' };
     const query = jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce([row]);
     const { repository, commitTransaction, rollbackTransaction } = fixture(query);
 
-    const project = await repository.create({ ownerId: OWNER_ID, name: 'Planning', slug: 'planning', relativeRoot: null, relativeRootKey: null, objective: 'Plan the launch' });
+    const project = await repository.create({ id: PROJECT_ID, ownerId: OWNER_ID, name: 'Planning', slug: 'planning', relativeRoot: null, storageKind: null, relativeRootKey: null, objective: 'Plan the launch' });
 
     expect(project).toMatchObject({ relativeRoot: null, objective: 'Plan the launch' });
     expect(query.mock.calls[1]?.[0]).toContain('"relative_root_key" IS NOT NULL');
-    expect(query.mock.calls[2]?.[0]).toContain('"relative_root_key", "objective"');
-    expect(query.mock.calls[2]?.[1]).toEqual([OWNER_ID, 'Planning', 'planning', null, null, 'Plan the launch']);
+    expect(query.mock.calls[2]?.[0]).toContain('"relative_root_key", "storage_kind", "objective"');
+    expect(query.mock.calls[2]?.[1]).toEqual([PROJECT_ID, OWNER_ID, 'Planning', 'planning', null, null, null, 'Plan the launch']);
     expect(commitTransaction).toHaveBeenCalledTimes(1);
     expect(rollbackTransaction).not.toHaveBeenCalled();
   });
@@ -130,7 +131,7 @@ describe('TypeOrmProjectRepository', () => {
   });
 
   it('creates a planning workspace on the supplied ledger transaction without opening a nested transaction', async () => {
-    const row = { ...projectRow('active'), id: '33333333-3333-4333-8333-333333333333', relative_root: null, relative_root_key: null, objective: 'Prepare the release' };
+    const row = { ...projectRow('active'), id: '33333333-3333-4333-8333-333333333333', relative_root: null, relative_root_key: null, storage_kind: null, objective: 'Prepare the release' };
     const query = jest.fn().mockResolvedValue([row]);
     const runner = { query };
     const createQueryRunner = jest.fn();
@@ -151,8 +152,8 @@ describe('TypeOrmProjectRepository', () => {
   });
 
   it('uses owner and row locks plus the same QueryRunner for initial-root overlap checks and update', async () => {
-    const rootless = { ...projectRow('active'), relative_root: null, relative_root_key: null, objective: 'Prepare the release' };
-    const attached = { ...rootless, relative_root: '.', relative_root_key: '.', version: 3 };
+    const rootless = { ...projectRow('active'), relative_root: null, relative_root_key: null, storage_kind: null, objective: 'Prepare the release' };
+    const attached = { ...rootless, relative_root: '.', relative_root_key: '.', storage_kind: 'managed', version: 3 };
     const query = jest.fn()
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([rootless])
@@ -170,7 +171,8 @@ describe('TypeOrmProjectRepository', () => {
       projectId: PROJECT_ID,
       expectedVersion: 2,
       relativeRoot: '.',
-      relativeRootKey: '.'
+      relativeRootKey: '.',
+      storageKind: 'managed'
     });
 
     expect(current).toMatchObject({ id: PROJECT_ID, relativeRoot: null, version: 2 });
@@ -179,7 +181,7 @@ describe('TypeOrmProjectRepository', () => {
     expect(query.mock.calls[0]?.[0]).toContain('pg_advisory_xact_lock');
     expect(query.mock.calls[1]?.[0]).toContain('FOR UPDATE');
     expect(query.mock.calls[1]?.[1]).toEqual([OWNER_ID, PROJECT_ID]);
-    expect(query.mock.calls[3]?.[1]).toEqual(['.', '.', OWNER_ID, PROJECT_ID, 2]);
+    expect(query.mock.calls[3]?.[1]).toEqual(['.', '.', 'managed', OWNER_ID, PROJECT_ID, 2]);
     expect(createQueryRunner).not.toHaveBeenCalled();
   });
 

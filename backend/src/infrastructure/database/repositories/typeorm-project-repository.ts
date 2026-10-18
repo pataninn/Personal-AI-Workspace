@@ -26,6 +26,7 @@ interface ProjectRow {
   readonly slug: string;
   readonly relative_root: string | null;
   readonly relative_root_key: string | null;
+  readonly storage_kind: Project['storageKind'];
   readonly objective: string | null;
   readonly status: ProjectStatus;
   readonly version: number;
@@ -44,6 +45,7 @@ function toProject(row: ProjectRow): Project {
     name: row.name,
     slug: row.slug,
     relativeRoot: row.relative_root,
+    storageKind: row.storage_kind,
     objective: row.objective,
     status: row.status,
     version: row.version,
@@ -122,7 +124,7 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
   public async listByOwner(ownerId: string, includeArchived: boolean): Promise<readonly Project[]> {
     const statusFilter = includeArchived ? '' : ' AND "status" = \'active\'';
     const rows: readonly ProjectRow[] = await this.dataSource.query(
-      `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"
+      `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"
        FROM "projects" WHERE "owner_id" = $1${statusFilter} ORDER BY CASE WHEN "status" = 'active' THEN 0 ELSE 1 END, "name" ASC, "created_at" ASC`,
       [ownerId]
     );
@@ -131,7 +133,7 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
 
   public async findByIdForOwner(ownerId: string, projectId: string): Promise<Project | null> {
     const rows: readonly ProjectRow[] = await this.dataSource.query(
-      `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"
+      `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"
        FROM "projects" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1`,
       [ownerId, projectId]
     );
@@ -148,7 +150,7 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
 
   public async searchForOwner(ownerId: string, query: string, limit: number): Promise<ProjectMetadataSearchResult> {
     const rows: readonly ProjectRow[] = await this.dataSource.query(
-      `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"
+      `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"
        FROM "projects"
        WHERE "owner_id" = $1 AND "status" = 'active'
          AND (strpos(lower("name"), lower($2)) > 0 OR strpos(lower(coalesce("objective", '')), lower($2)) > 0)
@@ -164,7 +166,7 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
 
   public async findByIdForOwnerForUpdate(transaction: QueryRunner, ownerId: string, projectId: string): Promise<Project | null> {
     const rows: readonly ProjectRow[] = await transaction.query(
-      `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"
+      `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"
        FROM "projects" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1 FOR UPDATE`,
       [ownerId, projectId]
     );
@@ -185,9 +187,9 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
   public async createPlanning(transaction: QueryRunner, input: CreatePlanningProjectRecord): Promise<Project> {
     try {
       const rows: readonly ProjectRow[] = await transaction.query(
-        `INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective")
-         VALUES ($1, $2, $3, $4, NULL, NULL, $5)
-         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"`,
+        `INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective")
+         VALUES ($1, $2, $3, $4, NULL, NULL, NULL, $5)
+         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"`,
         [input.id, input.ownerId, input.name, input.slug, input.objective]
       );
       const row = rows[0];
@@ -203,7 +205,7 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
     const [rows]: readonly [readonly ProjectRow[], number] = await transaction.query(
       `UPDATE "projects" SET "objective" = $1, "version" = "version" + 1, "updated_at" = now()
        WHERE "owner_id" = $2 AND "id" = $3 AND "version" = $4
-       RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"`,
+       RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"`,
       [input.objective, input.ownerId, input.projectId, input.expectedVersion]
     );
     return rows[0] ? toProject(rows[0]) : null;
@@ -212,10 +214,10 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
   public async attachInitialRoot(transaction: QueryRunner, input: AttachProjectRootRecord): Promise<Project | null> {
     try {
       const [rows]: readonly [readonly ProjectRow[], number] = await transaction.query(
-        `UPDATE "projects" SET "relative_root" = $1, "relative_root_key" = $2, "version" = "version" + 1, "updated_at" = now()
-         WHERE "owner_id" = $3 AND "id" = $4 AND "version" = $5 AND "relative_root" IS NULL
-         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"`,
-        [input.relativeRoot, input.relativeRootKey, input.ownerId, input.projectId, input.expectedVersion]
+        `UPDATE "projects" SET "relative_root" = $1, "relative_root_key" = $2, "storage_kind" = $3, "version" = "version" + 1, "updated_at" = now()
+         WHERE "owner_id" = $4 AND "id" = $5 AND "version" = $6 AND "relative_root" IS NULL
+         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"`,
+        [input.relativeRoot, input.relativeRootKey, input.storageKind, input.ownerId, input.projectId, input.expectedVersion]
       );
       return rows[0] ? toProject(rows[0]) : null;
     } catch (error: unknown) {
@@ -267,7 +269,7 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
       const updatedRows = asRows<ProjectRow>(await transaction.query(
         `UPDATE "projects" SET ${assignments.join(', ')}, "version" = "version" + 1, "updated_at" = now()
          WHERE "owner_id" = $${values.length - 2} AND "id" = $${values.length - 1} AND "version" = $${values.length} AND "status" = 'active'
-         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"`,
+         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"`,
         values
       ));
       const updated = updatedRows[0];
@@ -282,7 +284,7 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
     const archivedRows = asRows<ProjectRow>(await transaction.query(
       `UPDATE "projects" SET "status" = 'archived', "version" = "version" + 1, "updated_at" = now()
        WHERE "owner_id" = $1 AND "id" = $2 AND "status" = 'active' AND "version" = $3 AND "relative_root" IS NULL
-       RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"`,
+       RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"`,
       [ownerId, current.id, original.postVersion]
     ));
     const archived = archivedRows[0];
@@ -391,10 +393,10 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
         throw new ProjectRootOverlapError();
       }
       const rows: readonly ProjectRow[] = await queryRunner.query(
-        `INSERT INTO "projects" ("owner_id", "name", "slug", "relative_root", "relative_root_key", "objective")
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"`,
-        [input.ownerId, input.name, input.slug, input.relativeRoot, input.relativeRoot === null ? null : input.relativeRootKey ?? projectRootOverlapKey(input.relativeRoot), input.objective]
+        `INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"`,
+        [input.id, input.ownerId, input.name, input.slug, input.relativeRoot, input.relativeRoot === null ? null : input.relativeRootKey ?? projectRootOverlapKey(input.relativeRoot), input.storageKind, input.objective]
       );
       const row = rows[0];
       if (!row) {
@@ -437,7 +439,7 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
       const [rows]: readonly [readonly ProjectRow[], number] = await queryRunner.query(
         `UPDATE "projects" SET "status" = $1, "version" = "version" + 1, "updated_at" = now()
          WHERE "owner_id" = $2 AND "id" = $3 AND "version" = $4
-         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "objective", "status", "version", "created_at", "updated_at"`,
+         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"`,
         [input.status, input.ownerId, input.projectId, input.expectedVersion]
       );
       const updated = rows[0] ? toProject(rows[0]) : null;

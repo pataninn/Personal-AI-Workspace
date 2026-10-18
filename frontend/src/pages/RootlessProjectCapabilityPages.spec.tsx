@@ -35,7 +35,7 @@ vi.mock('@/features/project-file-history', () => ({
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const PROJECT: ProjectSnapshot = {
-  id: PROJECT_ID, name: 'Launch plan', slug: 'launch-plan', relativeRoot: null,
+  id: PROJECT_ID, name: 'Launch plan', slug: 'launch-plan', workspaceMode: 'planning', capabilities: { planning: true, fileAccess: false },
   objective: 'Plan the launch', status: 'active', version: 1,
   createdAt: '2026-10-05T00:00:00.000Z', updatedAt: '2026-10-05T00:00:00.000Z'
 };
@@ -67,7 +67,7 @@ function renderRootlessPage(path: string, page: ReactNode): void {
   );
 }
 
-describe('rootless project capability routes', () => {
+describe('planning-only project capability routes', () => {
   beforeEach(() => {
     getProjectMock.mockReset().mockResolvedValue(PROJECT);
     panelMocks.context.mockReset();
@@ -76,14 +76,14 @@ describe('rootless project capability routes', () => {
   });
 
   it.each([
-    { suffix: 'context', page: <ProjectContextPage />, panel: 'context' as const, alert: 'project-context-root-required' },
-    { suffix: 'activity', page: <ProjectActivityPage />, panel: 'activity' as const, alert: 'project-activity-root-required' },
-    { suffix: 'file-history?path=README.md', page: <ProjectFileHistoryPage />, panel: 'history' as const, alert: 'file-history-root-required' }
+    { suffix: 'context', page: <ProjectContextPage />, panel: 'context' as const, alert: 'project-context-file-access-unavailable' },
+    { suffix: 'activity', page: <ProjectActivityPage />, panel: 'activity' as const, alert: 'project-activity-file-access-unavailable' },
+    { suffix: 'file-history?path=README.md', page: <ProjectFileHistoryPage />, panel: 'history' as const, alert: 'file-history-file-access-unavailable' }
   ])('gates a direct $suffix visit before mounting its folder-bound panel', async ({ suffix, page, panel, alert }) => {
     renderRootlessPage(`/projects/${PROJECT_ID}/${suffix}`, page);
 
-    expect(await screen.findByTestId(alert)).toHaveTextContent('A project folder is required to use this area.');
-    expect(screen.getByRole('link', { name: 'Back to planning workspace' })).toHaveAttribute('href', `/projects/${PROJECT_ID}`);
+    expect(await screen.findByTestId(alert)).toHaveTextContent('unavailable');
+    expect(screen.getByRole('link', { name: 'Back to project' })).toHaveAttribute('href', `/projects/${PROJECT_ID}`);
     expect(panelMocks[panel]).not.toHaveBeenCalled();
     expect(getProjectMock).toHaveBeenCalledWith(PROJECT_ID);
   });

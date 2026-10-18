@@ -33,6 +33,7 @@ const activeProject: Project = {
   name: 'Workspace',
   slug: 'workspace',
   relativeRoot: 'apps',
+  storageKind: 'legacy',
   objective: null,
   status: 'active',
   version: 1,
@@ -100,6 +101,7 @@ class UserFixture implements IUserRepository {
   private readonly user: LocalUserRecord = { id: 'user-1', displayName: 'Local user', identifier: 'owner', accountKind: 'regular', role: 'admin', passwordHash: 'stored-hash', isActive: true, expiresAt: null };
   public async findByIdentifier(identifier: string): Promise<LocalUserRecord | null> { return identifier === 'owner' ? this.user : null; }
   public async findById(userId: string): Promise<LocalUserRecord | null> { return userId === 'user-1' ? this.user : null; }
+  public async findBootstrapOwnerId(): Promise<string | null> { return this.user.id; }
   public async hasAnyRegularAccounts(): Promise<boolean> { return true; }
   public async createRegularAccount(_input: CreateRegularAccountInput): Promise<LocalUserRecord> { throw new Error('not used'); }
   public async bootstrapInitialAdmin(): Promise<boolean> { return false; }

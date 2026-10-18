@@ -7,8 +7,9 @@ import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspa
 import type { ProposedChangeOperation } from '@/modules/ai-runs/domain/change-types';
 import type { MutationFileSystem } from '@/infrastructure/workspace/workspace-mutation-gateway';
 import { WorkspaceMutationGatewayAdapter } from '@/infrastructure/workspace/workspace-mutation-gateway';
+import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
 
-const SCOPE = { projectId: 'project-1', relativeRoot: 'project' } as const;
+const SCOPE = { ownerId: 'owner-1', projectId: 'project-1', storageKind: 'legacy' as const, relativeRoot: 'project' } as const;
 const RUN_ID = 'run-1';
 const PROPOSAL_HASH = 'a'.repeat(64);
 
@@ -65,6 +66,120 @@ describe('WorkspaceMutationGatewayAdapter', () => {
     await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, operations[4]!.operationId, 'delete.txt.bak'), 'utf8')).resolves.toBe('delete-before\n');
   });
 
+  it('keeps repository checkpoints outside the short principal lock and file promotion inside it', async () => {
+    let principalLocked = false;
+    let checkpointWhileLocked = false;
+    let filePromotionWhileLocked = false;
+    let lockCalls = 0;
+    const fileSystem = makeFileSystem(undefined, undefined, undefined, undefined, async (sourcePath, destinationPath) => {
+      if (sourcePath.endsWith('.tmp') && destinationPath.endsWith(`${path.sep}edit.txt`)) {
+        filePromotionWhileLocked = principalLocked;
+      }
+    });
+    const adapter = makeAdapter(root, recoveryRoot, fileSystem);
+
+    const result = await adapter.applyChangeSet(
+      SCOPE,
+      [operation('edit', 'edit.txt', { content: 'edit-after\n', expectedSourceHash: hash('edit-before\n') })],
+      RUN_ID,
+      PROPOSAL_HASH,
+      {
+        assertPrincipalActive: async () => { expect(principalLocked).toBe(false); },
+        withActivePrincipal: async <T>(action: (assertStillActive: () => Promise<void>) => Promise<T>): Promise<T> => {
+          expect(principalLocked).toBe(false);
+          lockCalls += 1;
+          principalLocked = true;
+          try {
+            return await action(async () => undefined);
+          } finally {
+            principalLocked = false;
+          }
+        },
+        recordBackupCheckpoint: async () => { checkpointWhileLocked ||= principalLocked; }
+      }
+    );
+
+    expect(result.outcome).toBe('applied');
+    expect(lockCalls).toBe(2);
+    expect(checkpointWhileLocked).toBe(false);
+    expect(filePromotionWhileLocked).toBe(true);
+    expect(principalLocked).toBe(false);
+  });
+
+  it('records a partial failure and stops the next file promotion when access is revoked between operations', async () => {
+    let active = true;
+    let principalLocked = false;
+    let firstPromotion = false;
+    const fileSystem = makeFileSystem(undefined, undefined, undefined, undefined, async (sourcePath, destinationPath) => {
+      if (sourcePath.endsWith('.tmp') && destinationPath.endsWith(`${path.sep}edit.txt`)) {
+        expect(principalLocked).toBe(true);
+        firstPromotion = true;
+      }
+    });
+    const adapter = makeAdapter(root, recoveryRoot, fileSystem);
+    const result = await adapter.applyChangeSet(
+      SCOPE,
+      [
+        operation('edit', 'edit.txt', { content: 'edit-after\n', expectedSourceHash: hash('edit-before\n') }),
+        operation('create', 'later.txt', { content: 'must-not-be-written\n' })
+      ],
+      RUN_ID,
+      PROPOSAL_HASH,
+      {
+        assertPrincipalActive: async () => { if (!active) throw new Error('Principal revoked.'); },
+        withActivePrincipal: async <T>(action: (assertStillActive: () => Promise<void>) => Promise<T>): Promise<T> => {
+          if (!active) throw new Error('Principal revoked.');
+          principalLocked = true;
+          try {
+            return await action(async () => { if (!active) throw new Error('Principal expired.'); });
+          } finally {
+            principalLocked = false;
+            if (firstPromotion) active = false;
+          }
+        }
+      }
+    );
+
+    expect(result.outcome).toBe('failed');
+    expect(result.operations.map(({ status }) => status)).toEqual(['applied', 'failed']);
+    await expect(fs.readFile(path.join(projectRoot, 'edit.txt'), 'utf8')).resolves.toBe('edit-after\n');
+    await expect(fs.access(path.join(projectRoot, 'later.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(principalLocked).toBe(false);
+  });
+
+  it('rechecks expiry after staging and before atomic file promotion', async () => {
+    let inPrincipalLock = false;
+    let activeChecks = 0;
+    const adapter = makeAdapter(root, recoveryRoot);
+
+    const result = await adapter.applyChangeSet(
+      SCOPE,
+      [operation('edit', 'edit.txt', { content: 'must-not-promote\n', expectedSourceHash: hash('edit-before\n') })],
+      RUN_ID,
+      PROPOSAL_HASH,
+      {
+        withActivePrincipal: async <T>(action: (assertStillActive: () => Promise<void>) => Promise<T>): Promise<T> => {
+          inPrincipalLock = true;
+          try {
+            return await action(async () => {
+              activeChecks += 1;
+              if (activeChecks === 3) throw new UnauthenticatedError();
+            });
+          } finally {
+            inPrincipalLock = false;
+          }
+        },
+        assertPrincipalActive: async () => { expect(inPrincipalLock).toBe(false); }
+      }
+    );
+
+    expect(result.outcome).toBe('failed');
+    expect(result.operations[0]).toMatchObject({ status: 'failed', backup: 'created' });
+    expect(activeChecks).toBe(3);
+    expect(inPrincipalLock).toBe(false);
+    await expect(fs.readFile(path.join(projectRoot, 'edit.txt'), 'utf8')).resolves.toBe('edit-before\n');
+  });
+
   it('writes extensionless files and renames/deletes binary files while retaining recovery bytes', async () => {
     const adapter = makeAdapter(root, recoveryRoot);
     const bytes = Buffer.from([0, 255, 128, 42]);
@@ -83,7 +198,7 @@ describe('WorkspaceMutationGatewayAdapter', () => {
   });
 
   it('allows reviewed root-project changes but still rejects protected root paths', async () => {
-    const rootScope = { projectId: 'project-1', relativeRoot: '.' } as const;
+    const rootScope = { ownerId: 'owner-1', projectId: 'project-1', storageKind: 'legacy' as const, relativeRoot: '.' } as const;
     const adapter = makeAdapter(root, recoveryRoot);
     await fs.writeFile(path.join(root, 'root-edit.txt'), 'root-before\n', 'utf8');
     const rootEdit = operation('edit', 'root-edit.txt', { content: 'root-after\n', expectedSourceHash: hash('root-before\n') });

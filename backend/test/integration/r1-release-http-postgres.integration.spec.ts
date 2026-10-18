@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import os from 'node:os';
 
 import request from 'supertest';
 import type { DataSource } from 'typeorm';
@@ -29,7 +29,7 @@ import { ListHomeTurnsUseCase } from '@/modules/home-assistant/use-cases/list-ho
 import { SubmitHomeTurnUseCase } from '@/modules/home-assistant/use-cases/submit-home-turn';
 import { ListConversationsUseCase, CreateConversationUseCase, GetConversationUseCase, AddUserMessageUseCase } from '@/modules/conversations/use-cases';
 import { ListWorkspaceFilesUseCase, ReadWorkspaceTextUseCase, SearchWorkspaceTextUseCase, TreeWorkspaceFilesUseCase } from '@/modules/files/use-cases';
-import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspace-boundary';
+import type { IWorkspaceBoundary, ProjectRootScope, ResolvedProjectRoot } from '@/modules/projects/repositories/workspace-boundary';
 import { WorkspacePlanningUseCases } from '@/modules/projects/use-cases/workspace-planning-use-cases';
 import { GetReadinessUseCase } from '@/modules/health';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
@@ -82,14 +82,32 @@ interface TaskCreated {
 interface ReleaseWorkspaceBoundary extends IWorkspaceBoundary {}
 
 class FixtureWorkspaceBoundary implements ReleaseWorkspaceBoundary {
+  public constructor(private readonly legacyRoot: string, private readonly managedRoot: string) {}
+
   public async getSnapshot(): Promise<{ readonly status: 'ready' }> { return { status: 'ready' }; }
+  public async getManagedSnapshot(): Promise<{ readonly status: 'ready' }> { return { status: 'ready' }; }
   public async assertReady(): Promise<void> { return undefined; }
   public async validateProjectRoot(relativeRoot: string): Promise<string> { return relativeRoot; }
+
+  public async resolveProjectRoot(scope: ProjectRootScope): Promise<ResolvedProjectRoot> {
+    if (scope.storageKind === 'legacy') {
+      if (scope.ownerId !== OWNER_A) throw new Error('The legacy fixture is reserved for its bootstrap owner.');
+      const canonicalRoot = path.resolve(this.legacyRoot);
+      return {
+        canonicalRoot,
+        canonicalProjectRoot: scope.relativeRoot === '.' ? canonicalRoot : path.resolve(canonicalRoot, ...scope.relativeRoot.split('/'))
+      };
+    }
+    if (scope.relativeRoot !== `projects/${scope.projectId}`) throw new Error('Managed fixture roots are server-derived.');
+    const canonicalRoot = path.resolve(this.managedRoot);
+    return { canonicalRoot, canonicalProjectRoot: path.resolve(canonicalRoot, scope.ownerId, 'projects', scope.projectId) };
+  }
 }
 
 describeDatabase('R1 release HTTP and PostgreSQL regression', () => {
   const dataSource: DataSource = createDataSource({ url: databaseUrl ?? 'postgres://disabled:disabled@127.0.0.1:1/disabled' });
   let root: string;
+  let managedRoot: string;
   let app: ReturnType<typeof createApp>;
   let homeRepository: TypeOrmHomeConversationRepository;
   let planningHandler: HomePlanningToolRequestHandler;
@@ -97,6 +115,7 @@ describeDatabase('R1 release HTTP and PostgreSQL regression', () => {
 
   beforeAll(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'pai-r1-http-pg-'));
+    managedRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pai-r1-managed-pg-'));
     await fs.mkdir(path.join(root, 'repo', 'alpha'), { recursive: true });
     await fs.mkdir(path.join(root, 'repo', 'beta'), { recursive: true });
     await fs.writeFile(path.join(root, 'README.md'), 'Root project fixture file.\n', 'utf8');
@@ -136,6 +155,7 @@ describeDatabase('R1 release HTTP and PostgreSQL regression', () => {
       await dataSource.destroy();
     }
     if (root) await fs.rm(root, { recursive: true, force: true });
+    if (managedRoot) await fs.rm(managedRoot, { recursive: true, force: true });
   });
 
   it('captures, filters, moves, undoes, and reloads owner-scoped tasks through HTTP and PostgreSQL', async () => {
@@ -212,7 +232,7 @@ describeDatabase('R1 release HTTP and PostgreSQL regression', () => {
     const rootFiles = await request(app).get(`/api/v1/projects/${workspaces.dot}/files`).set({ Cookie: USER_B }).expect(200);
     expect(JSON.stringify(rootFiles.body)).toContain('README.md');
     const rootFile = await request(app).get(`/api/v1/projects/${workspaces.dot}/files/content?path=README.md`).set({ Cookie: USER_B }).expect(200);
-    expect(responseData<{ readonly content: string }>(rootFile).content).toBe('Root project fixture file.\n');
+    expect(responseData<{ readonly content: string }>(rootFile).content).toBe('Managed project fixture file.\n');
     await request(app).get(`/api/v1/projects/${workspaces.dot}/files/content?path=README.md`).set({ Cookie: USER_A }).expect(404);
 
     const turn = await createActiveHomeTurn('r1-partial-proposal-turn');
@@ -284,10 +304,11 @@ describeDatabase('R1 release HTTP and PostgreSQL regression', () => {
     const ledger = new TypeOrmActionLedgerRepository(dataSource, new TypeOrmHomeActionEventRecorder());
     const taskMutations = new TaskMutationUseCases(ledger, taskRepository, taskRepository);
     const taskQuery = new GetGlobalTaskUseCase(taskRepository);
-    const workspaceBoundary = new FixtureWorkspaceBoundary();
+    const workspaceBoundary = new FixtureWorkspaceBoundary(root, managedRoot);
     const workspacePlanning = new WorkspacePlanningUseCases(projectRepository, projectRepository, ledger, workspaceBoundary);
     const homeProposalUseCases = new HomeChangeProposalUseCases(homeRepository, homeProposalsRepository, taskQuery, taskMutations, workspacePlanning, ledger);
     planningHandler = new HomePlanningToolRequestHandler({
+      principalAuthorization: { assertActive: async () => undefined },
       conversations: homeRepository,
       listTasks: new ListGlobalTasksUseCase(taskRepository),
       getTask: taskQuery,
@@ -351,10 +372,19 @@ describeDatabase('R1 release HTTP and PostgreSQL regression', () => {
   }
 
   async function createWorkspace(ownerId: string, id: string, slug: string, relativeRoot: string | null, status: 'active' | 'archived'): Promise<string> {
-    const key = relativeRoot?.toLocaleLowerCase('en-US') ?? null;
+    const storageKind = relativeRoot === null ? null : 'managed';
+    const persistedRoot = storageKind === 'managed' ? `projects/${id}` : relativeRoot;
+    const key = persistedRoot?.toLocaleLowerCase('en-US') ?? null;
+    if (storageKind === 'managed') {
+      const managedProjectRoot = path.join(managedRoot, ownerId, 'projects', id);
+      await fs.mkdir(managedProjectRoot, { recursive: true });
+      if (id === WORKSPACE_DOT) {
+        await fs.writeFile(path.join(managedProjectRoot, 'README.md'), 'Managed project fixture file.\n', 'utf8');
+      }
+    }
     await dataSource.query(
-      'INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "status") VALUES ($1, $2, $3, $4, $5, $6, $7)',
-      [id, ownerId, slug, slug, relativeRoot, key, status]
+      'INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "status", "storage_kind") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+      [id, ownerId, slug, slug, persistedRoot, key, status, storageKind]
     );
     return id;
   }

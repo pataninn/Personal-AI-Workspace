@@ -11,7 +11,7 @@ export function ProjectWorkspacePage(): React.JSX.Element {
   const { projectId = '' } = useParams();
   const dispatch = useAppDispatch();
   const detail = useAppSelector(selectProjectDetail(projectId));
-  const files = useProjectFiles(projectId, detail.project?.relativeRoot !== null && detail.project?.relativeRoot !== undefined);
+  const files = useProjectFiles(projectId, detail.project?.capabilities.fileAccess === true);
 
   useEffect(() => {
     if (projectId) {

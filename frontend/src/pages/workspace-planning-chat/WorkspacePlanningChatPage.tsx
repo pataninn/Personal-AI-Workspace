@@ -20,7 +20,7 @@ export function WorkspacePlanningChatPage(): React.JSX.Element {
   if (detail.status === 'idle' || detail.status === 'loading') return <PlanningChatLoading />;
   if (detail.status === 'error') return <ProjectLoadError code={detail.errorCode} onRetry={() => { void dispatch(loadProject(projectId)); }} />;
   if (!detail.project) return <ErrorState title="Planning chat could not be loaded" detail="Try again to reload this workspace." />;
-  if (detail.project.relativeRoot !== null) return <Navigate to={`/projects/${encodeURIComponent(detail.project.id)}`} replace />;
+  if (detail.project.capabilities.fileAccess) return <Navigate to={`/projects/${encodeURIComponent(detail.project.id)}`} replace />;
 
   const archived = detail.project.status === 'archived';
   return <HomeChatWidget scope={{ kind: 'workspace', workspaceId: detail.project.id }} scopeLabel={detail.project.name} disabled={archived} disabledReason={archived ? ARCHIVED_WORKSPACE_REASON : undefined} />;

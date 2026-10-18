@@ -5,7 +5,7 @@
 **Last Updated:** 2026-10-19
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Tasks 1.1 and 5.2 delivered; Task 2.1 tester PASS, implementation commit in progress.
+**Status:** Execution active. Tasks 1.1, 2.1, and 5.2 delivered; Task 2.2 ownership boundaries in progress.
 
 ## Plan Summary
 
@@ -81,11 +81,11 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 2.1 — Migrate local identity to regular, admin, and demo accounts
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** developer, tester
 **Depends on:** 1.1
 **Risk:** High: authentication and existing owner data
-**Contract:** `.codex/docs/hackathon-release/task-2-1-account-identity/contract.md` (planned; developer owns the contract gate)
+**Contract:** `.codex/docs/hackathon-release/task-2-1-account-identity/contract.md` (implemented and independently verified; developer owns the contract)
 
 **MCP Inputs & Required Evidence:**
 
@@ -96,22 +96,22 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-2-1-account-identity/artifacts/`
-- `Current status:` Independent tester PASS in qa-report.md. Broad backend114/685 and PostgreSQL20/81 runs recorded; final independent backend3suites/20tests, PostgreSQL2suites/3tests (including session continuity/race), frontendtypecheck and24files/160tests PASS. Contract/UI/dev-summary/evidence complete. Required task-isolated commit pending.
+- `Current status:` Independent tester PASS in qa-report.md. Broad backend114/685 and PostgreSQL20/81 runs recorded; final independent backend3suites/20tests, PostgreSQL2suites/3tests (including session continuity/race), frontendtypecheck and24files/160tests PASS. Contract/UI/dev-summary/evidence complete. Delivered commit `d696550acddceac3a641584c1fe5f3fb52ad42bd`; worktree afterward exactly original six preserved paths.
 
 **Description:** Extend user/session persistence and sign-in lookup for multiple regular accounts and passwordless demo principals. Preserve the current owner's password and data; assign initial admin role once.
 
 **Subtasks:**
 
-- [ ] Add unique regular-account identifiers, kind/role/status/expiry fields and compatible migrations.
-- [ ] Keep secure session/CSRF/origin handling; implement session revocation and disabled/expired checks.
-- [ ] Test bootstrap reruns, regular login, foreign session IDs, and protection of the last active admin.
+- [x] Add unique regular-account identifiers, kind/role/status/expiry fields and compatible migrations.
+- [x] Keep secure session/CSRF/origin handling; implement session revocation and disabled/expired checks.
+- [x] Test bootstrap reruns, regular login, foreign session IDs, and protection of the last active admin.
 
 **Definition of Done:**
 
-- [ ] Existing owner can still sign in; two users remain distinct; demo identities cannot use regular password login; disabled/expired sessions fail.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
-- [ ] Developer-owned contract implemented and verified before task closure.
+- [x] Existing owner can still sign in; two users remain distinct; demo identities cannot use regular password login; disabled/expired sessions fail.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Developer-owned contract implemented and verified before task closure.
 
 **Upstream Outputs Needed:** Architecture sections 5.1, 7.3, 11; completed dependency outputs.
 
@@ -119,37 +119,37 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 2.2 — Enforce ownership across APIs, tools, storage, and streams
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** developer, tester
 **Depends on:** 2.1
 **Risk:** Critical: cross-account data exposure
-**Contract:** `.codex/docs/hackathon-release/task-2-2-ownership-boundaries/contract.md` (planned; developer owns the contract gate)
+**Contract:** `.codex/docs/hackathon-release/task-2-2-ownership-boundaries/contract.md` (implemented and independently verified; developer owns the contract)
 
 **MCP Inputs & Required Evidence:**
 
-- `Playwright MCP:` N/A
+- `Playwright MCP:` Managed workspace creation form (no arbitrary host root), desktop/mobile focus and ownership-error states; preserve legacy rootless workspace notice. CLI/browser equivalent if MCP unavailable.
 - `Chrome DevTools MCP:` N/A
 - `Context7:` N/A
 
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-2-2-ownership-boundaries/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Independent tester PASS in qa-report.md with Evidence Index. Backend117 suites/709 tests; isolated PostgreSQL22 suites/88 tests; independent PG2/5, auth2/20 and OpenAPI/config2/18 PASS. Frontend typecheck,79 focused tests,26 previewAPI and browser journey PASS with independent UI review. Optional managed-storage overlay/setup/OpenAPI corrected; actual Compose parser and focused boundary check PASS. Existing unrelated NVIDIA/Hermes Compose assertion remains logged for deployment. Reviewed task-only commit pending; task stays in progress until hash recorded.
 
 **Description:** Audit and close owner-scoping gaps across existing modules. Introduce a reusable application authorization contract without weakening current path and runtime checks.
 
 **Subtasks:**
 
-- [ ] Constrain projects/tasks/conversations/facts/runs/history/events and nested relationships by trusted principal.
-- [ ] Allocate non-overlapping server-managed roots; preserve and reserve the legacy owner root; block traversal, links, and arbitrary host attachment.
-- [ ] Apply the same policy to tool dispatch and output promotion, including late output after disablement.
+- [x] Constrain projects/tasks/conversations/facts/runs/history/events and nested relationships by trusted principal.
+- [x] Allocate non-overlapping server-managed roots; preserve and reserve the legacy owner root; block traversal, links, and arbitrary host attachment.
+- [x] Apply the same policy to tool dispatch and output promotion, including late output after disablement.
 
 **Definition of Done:**
 
-- [ ] Integration tests deny cross-user reads/writes/event replay and file access; own resources continue working; unauthorized IDs do not reveal foreign data.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
-- [ ] Developer-owned contract implemented and verified before task closure.
+- [x] Integration tests deny cross-user reads/writes/event replay and file access; own resources continue working; unauthorized IDs do not reveal foreign data.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Developer-owned contract implemented and verified before task closure.
 
 **Upstream Outputs Needed:** Architecture sections 3, 5.1, 5.2, 10; completed dependency outputs.
 
@@ -1078,8 +1078,8 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | Task | Status | QA verdict |
 | --- | --- | --- |
 | 1.1 — Confirm baseline and define screen states | `[x]` | PASS; `721f0f26011147437f9d24c4749431169b309ad1` |
-| 2.1 — Migrate local identity to regular, admin, and demo accounts | `[~]` | PASS; commit pending |
-| 2.2 — Enforce ownership across APIs, tools, storage, and streams | `[ ]` | Pending |
+| 2.1 — Migrate local identity to regular, admin, and demo accounts | `[x]` | PASS; `d696550acddceac3a641584c1fe5f3fb52ad42bd` |
+| 2.2 — Enforce ownership across APIs, tools, storage, and streams | `[~]` | PASS; commit pending |
 | 3.1 — Implement atomic credit reservations and runtime metering | `[ ]` | Pending |
 | 3.2 — Enforce account storage limits on every persistent write | `[ ]` | Pending |
 | 3.3 — Provision private one-click demo identities | `[ ]` | Pending |
@@ -1107,7 +1107,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Blocked Items and implementation-time inputs
 
-Task 1.1 is delivered. Task 2.1 is active. All subagent work delegated after the baseline commit uses GPT-6 Luna with maximum reasoning per user instruction. Dependency ordering above applies.
+Tasks 1.1, 2.1, and 5.2 are delivered. Task 2.2 is active. All subagent work delegated after the baseline commit uses GPT-6 Luna with maximum reasoning per user instruction. Dependency ordering above applies.
 
 - Task 8.1/8.2 needs the real deployment host/domain and DNS/certificate access. Do not claim the local self-signed setup fixes public browser trust.
 - Credit enforcement requires actual provider pricing and a way to bound/meter all Hermes calls. Public AI access stays disabled if that cannot be established.
@@ -1122,8 +1122,8 @@ Accepted baseline observations for Task 1.1 only; these do not waive any release
 
 | Severity | Baseline finding | Required resolution / owner |
 | --- | --- | --- |
-| Medium | Workspace mutation filesystem test exceeded 5000ms during concurrent baseline run | Tester focused serial rerun PASS (1 suite/16 tests, 4.84s) without edits; original full-run timeout retained as host-contention/flaky observation. Recheck in integrated acceptance. |
-| Medium | Six guarded PostgreSQL suites / 16 tests skipped without isolated database URL | Tester provisioned isolated loopback55441 fixture; developer reports full backend integration20 suites/81 tests PASS with PostgreSQL, pending Task2.1 independent QA verification. Original baseline skips retained as historical unverified baseline. |
+| Medium | Workspace mutation filesystem test exceeded 5000ms during concurrent baseline run | Resolved evidence: tester serial rerun16/16 PASS, then Task2.1 full backend114 suites/685 tests PASS. Original timeout remains historical; normal integrated acceptance still applies. |
+| Medium | Six guarded PostgreSQL suites / 16 tests skipped without isolated database URL | Resolved by Task2.1: isolated loopback55441 fixture, full PostgreSQL integration20 suites/81 tests PASS and final independent identity/migration2 suites/3 tests PASS. Baseline skips remain historical; future persistence tasks must run real PostgreSQL. |
 | Medium | Default Compose boundary test expects NVIDIA key despite Hermes-default topology | Developer reconcile supported default/direct topologies and retain secret isolation in deployment tasks; resolve before release. |
 | Medium | Task action rows touch metadata cards and mobile Back/action controls; editor title crowded by preview banner | Designer/developer address spacing under Tasks 5.3/5.4, verify desktop/mobile/keyboard. |
 | Medium | Task5.2 QA preview-only smoke observed404 GET /api/v1/home/conversations?scope=home&limit=50 and saved-conversation error; cause unverified | Existing capture/All tasks journey unaffected. Reproduce/resolve preview history fixture under Task5.1 Ask/history; do not infer live API failure or whole-page console PASS. |

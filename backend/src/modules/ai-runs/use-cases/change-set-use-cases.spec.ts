@@ -79,7 +79,7 @@ describe('proposed change-set use cases', () => {
   it('does not read proposed change-set history for a planning project', async () => {
     const runs = new RunRepository();
     const projects = new ProjectRepository();
-    projects.project = { ...projects.project, relativeRoot: null };
+    projects.project = { ...projects.project, relativeRoot: null, storageKind: null };
     const changeSets = new InMemoryProposedChangeSetRepository();
     const findChangeSet = jest.spyOn(changeSets, 'findByRunForOwner');
     const get = new GetProposedChangeSetUseCase(runs, projects, changeSets);
@@ -227,6 +227,7 @@ class RunRepository implements IAiRunRepository {
     conversationId: '44444444-4444-4444-8444-444444444444',
     request: 'edit the file',
     relativeRoot: 'project',
+    storageKind: 'legacy',
     requestedPaths: [FILE_PATH],
     manifest: { manifestHash: 'b'.repeat(64), provider: 'NVIDIA hosted NIM', providerProfile: 'nvidia-hosted-nim', model: 'nvidia/nemotron-3-super-120b-a12b', categories: ['Request'], files: [{ relativePath: FILE_PATH, sourceHash: ORIGINAL_HASH, sizeBytes: ORIGINAL.length }], requestBytes: 14, messageBytes: 0, messageCount: 0, messageHash: 'c'.repeat(64), byteEstimate: 14, tokenEstimate: 4, excludedItemCount: 0, omittedItemCount: 0, omissionSummary: 'No selected items were excluded or omitted.', bestEffortSecretDetection: true },
     manifestInvalidated: false,
@@ -249,7 +250,7 @@ class RunRepository implements IAiRunRepository {
 }
 
 class ProjectRepository implements IProjectRepository {
-  public project: Project = { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', objective: null, status: 'active', version: 1, createdAt: new Date(), updatedAt: new Date() };
+  public project: Project = { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', storageKind: 'legacy', objective: null, status: 'active', version: 1, createdAt: new Date(), updatedAt: new Date() };
   public async listByOwner(): Promise<readonly Project[]> { return [this.project]; }
   public async findByIdForOwner(ownerId: string, projectId: string): Promise<Project | null> { return ownerId === OWNER_ID && projectId === PROJECT_ID ? this.project : null; }
   public async listActiveRoots(): Promise<readonly string[]> { return this.project.relativeRoot === null ? [] : [this.project.relativeRoot]; }

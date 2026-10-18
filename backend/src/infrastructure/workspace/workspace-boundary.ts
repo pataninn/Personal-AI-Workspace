@@ -5,16 +5,19 @@ import {
   ProjectRootInvalidError,
   ProjectRootNotFoundError,
   ProjectRootReparsePointError,
-  WorkspaceBoundaryUnavailableError
+  WorkspaceBoundaryUnavailableError,
+  WorkspaceStorageUnavailableError
 } from '@/modules/projects/domain/project-errors';
 import { normalizeProjectRoot } from '@/modules/projects/domain/project-root-policy';
-import type { IWorkspaceBoundary, WorkspaceBoundarySnapshot } from '@/modules/projects/repositories/workspace-boundary';
+import type { IWorkspaceBoundary, ProjectRootScope, ResolvedProjectRoot, WorkspaceBoundarySnapshot } from '@/modules/projects/repositories/workspace-boundary';
 
 export interface WorkspaceStats {
   isDirectory(): boolean;
   isFile(): boolean;
   isSymbolicLink(): boolean;
   isReparsePoint?(): boolean;
+  readonly dev?: number | bigint;
+  readonly ino?: number | bigint;
 }
 
 export interface WorkspaceFileSystem {
@@ -35,6 +38,10 @@ export interface WorkspaceBoundaryOptions {
   readonly containerRoot: string;
   readonly identityFile: string;
   readonly expectedIdentity: string;
+  readonly managedContainerRoot?: string;
+  readonly managedIdentityFile?: string;
+  readonly managedExpectedIdentity?: string;
+  readonly legacyOwnerId?: () => Promise<string | null>;
   readonly fileSystem?: WorkspaceFileSystem;
 }
 
@@ -71,6 +78,75 @@ export class WorkspaceBoundaryAdapter implements IWorkspaceBoundary {
     } catch {
       throw new WorkspaceBoundaryUnavailableError();
     }
+  }
+
+  public async getManagedSnapshot(): Promise<WorkspaceBoundarySnapshot> {
+    try {
+      await this.verifyManagedRoot();
+      return { status: 'ready' };
+    } catch (error: unknown) {
+      return { status: 'unavailable', code: error instanceof Error ? error.name : 'WORKSPACE_STORAGE_UNAVAILABLE' };
+    }
+  }
+
+  public async createManagedProjectRoot(ownerId: string, projectId: string): Promise<string> {
+    await this.verifyManagedRoot();
+    if (!isUuid(ownerId) || !isUuid(projectId) || !this.fileSystem.mkdir) {
+      throw new WorkspaceStorageUnavailableError();
+    }
+    const root = this.options.managedContainerRoot;
+    if (!root) throw new WorkspaceStorageUnavailableError();
+    let currentPath = root;
+    for (const [index, segment] of [ownerId, 'projects', projectId].entries()) {
+      currentPath = path.posix.join(currentPath, segment);
+      let exists = true;
+      try {
+        await this.fileSystem.lstat(currentPath);
+      } catch (error: unknown) {
+        if (!hasFileSystemCode(error, 'ENOENT')) throw new WorkspaceStorageUnavailableError();
+        exists = false;
+      }
+      if (index === 2 && exists) throw new WorkspaceStorageUnavailableError();
+      if (!exists) {
+        try {
+          await this.fileSystem.mkdir(currentPath);
+        } catch (error: unknown) {
+          if (!(index < 2 && hasFileSystemCode(error, 'EEXIST'))) {
+            throw new WorkspaceStorageUnavailableError();
+          }
+        }
+      }
+      await this.assertDirectoryWithoutReparse(currentPath);
+      if (await this.fileSystem.realpath(currentPath) !== currentPath) {
+        throw new WorkspaceStorageUnavailableError();
+      }
+    }
+    return `projects/${projectId}`;
+  }
+
+  public async resolveProjectRoot(scope: ProjectRootScope): Promise<ResolvedProjectRoot> {
+    if (scope.storageKind === 'managed') {
+      if (!isUuid(scope.ownerId) || !isUuid(scope.projectId) || scope.relativeRoot !== `projects/${scope.projectId}`) {
+        throw new WorkspaceStorageUnavailableError();
+      }
+      const canonicalRoot = await this.verifyManagedRoot();
+      const canonicalProjectRoot = await this.resolveManagedProjectRoot(canonicalRoot, scope.ownerId, scope.projectId);
+      return { canonicalRoot, canonicalProjectRoot };
+    }
+    const legacyOwner = await this.options.legacyOwnerId?.();
+    if (!legacyOwner || scope.ownerId !== legacyOwner) {
+      throw new WorkspaceBoundaryUnavailableError();
+    }
+    const relativeRoot = await this.validateProjectRoot(scope.relativeRoot);
+    const canonicalRoot = await this.fileSystem.realpath(this.options.containerRoot);
+    const projectPath = relativeRoot === '.' ? canonicalRoot : path.posix.join(canonicalRoot, ...relativeRoot.split('/'));
+    const canonicalProjectRoot = await this.fileSystem.realpath(projectPath);
+    if (relativeRoot === '.') {
+      if (canonicalProjectRoot !== canonicalRoot) throw new ProjectRootInvalidError();
+    } else if (!isContained(canonicalRoot, canonicalProjectRoot)) {
+      throw new ProjectRootInvalidError();
+    }
+    return { canonicalRoot, canonicalProjectRoot };
   }
 
   public async validateProjectRoot(relativeRoot: string): Promise<string> {
@@ -153,6 +229,49 @@ export class WorkspaceBoundaryAdapter implements IWorkspaceBoundary {
     }
   }
 
+  private async verifyManagedRoot(): Promise<string> {
+    const root = this.options.managedContainerRoot;
+    const markerFile = this.options.managedIdentityFile;
+    const expectedIdentity = this.options.managedExpectedIdentity;
+    try {
+      if (root !== '/account-workspaces'
+        || markerFile !== '/account-workspaces/.personal-ai-managed-storage-identity'
+        || !expectedIdentity?.trim()) {
+        throw new WorkspaceStorageUnavailableError();
+      }
+      await this.verifyConfiguredRoot();
+      const rootStats = await this.fileSystem.lstat(root);
+      if (!rootStats.isDirectory() || isReparsePoint(rootStats)) throw new WorkspaceStorageUnavailableError();
+      const canonicalRoot = await this.fileSystem.realpath(root);
+      if (canonicalRoot !== root) throw new WorkspaceStorageUnavailableError();
+      const markerStats = await this.fileSystem.lstat(markerFile);
+      if (!markerStats.isFile() || isReparsePoint(markerStats)) throw new WorkspaceStorageUnavailableError();
+      if ((await this.fileSystem.readFile(markerFile)).trim() !== expectedIdentity) throw new WorkspaceStorageUnavailableError();
+      const legacyStats = await this.fileSystem.lstat(this.options.containerRoot);
+      if (!hasDirectoryIdentity(rootStats) || !hasDirectoryIdentity(legacyStats) || sameDirectoryIdentity(rootStats, legacyStats)) {
+        throw new WorkspaceStorageUnavailableError();
+      }
+      const legacyRoot = await this.fileSystem.realpath(this.options.containerRoot);
+      if (isContained(legacyRoot, canonicalRoot) || isContained(canonicalRoot, legacyRoot)) throw new WorkspaceStorageUnavailableError();
+      return canonicalRoot;
+    } catch {
+      throw new WorkspaceStorageUnavailableError();
+    }
+  }
+
+  private async resolveManagedProjectRoot(canonicalRoot: string, ownerId: string, projectId: string): Promise<string> {
+    const ownerRoot = path.posix.join(canonicalRoot, ownerId);
+    const projectsRoot = path.posix.join(ownerRoot, 'projects');
+    const projectRoot = path.posix.join(projectsRoot, projectId);
+    for (const target of [ownerRoot, projectsRoot, projectRoot]) {
+      await this.assertDirectoryWithoutReparse(target);
+      const resolved = await this.fileSystem.realpath(target);
+      if (!isContained(canonicalRoot, resolved)) throw new WorkspaceStorageUnavailableError();
+    }
+    const resolved = await this.fileSystem.realpath(projectRoot);
+    return resolved;
+  }
+
   private async assertDirectoryWithoutReparse(filePath: string): Promise<void> {
     let stats: WorkspaceStats;
     try {
@@ -167,4 +286,20 @@ export class WorkspaceBoundaryAdapter implements IWorkspaceBoundary {
       throw new ProjectRootNotFoundError();
     }
   }
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
+}
+
+function sameDirectoryIdentity(left: WorkspaceStats, right: WorkspaceStats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function hasDirectoryIdentity(stats: WorkspaceStats): boolean {
+  return stats.dev !== undefined && stats.ino !== undefined;
+}
+
+function hasFileSystemCode(error: unknown, code: string): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === code);
 }

@@ -15,6 +15,7 @@ const PROJECT: Project = {
   name: 'Workspace',
   slug: 'workspace',
   relativeRoot: 'apps/workspace',
+  storageKind: 'legacy',
   objective: null,
   status: 'active',
   version: 1,
@@ -50,8 +51,9 @@ describe('workspace inspection use cases', () => {
     await new SearchWorkspaceTextUseCase(projectRepository, workspaceGateway).execute({ ownerId: 'owner-1', projectId: PROJECT.id, directory: '', query: 'x' });
 
     expect(projectRepository.findByIdForOwner).toHaveBeenCalledTimes(4);
-    expect(workspaceGateway.list).toHaveBeenCalledWith({ projectId: PROJECT.id, relativeRoot: PROJECT.relativeRoot }, expect.objectContaining({ directory: '' }));
-    expect(workspaceGateway.readText).toHaveBeenCalledWith({ projectId: PROJECT.id, relativeRoot: PROJECT.relativeRoot }, expect.objectContaining({ path: 'main.ts' }));
+    const scope = { ownerId: PROJECT.ownerId, projectId: PROJECT.id, storageKind: PROJECT.storageKind, relativeRoot: PROJECT.relativeRoot };
+    expect(workspaceGateway.list).toHaveBeenCalledWith(scope, expect.objectContaining({ directory: '' }));
+    expect(workspaceGateway.readText).toHaveBeenCalledWith(scope, expect.objectContaining({ path: 'main.ts' }));
   });
 
   it('hides guessed or cross-owner project identifiers', async () => {

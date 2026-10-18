@@ -10,7 +10,8 @@ const ACTIVE_WORKSPACE: ProjectSnapshot = {
   id: '11111111-1111-4111-8111-111111111111',
   name: 'Studio refresh',
   slug: 'studio-refresh',
-  relativeRoot: null,
+  workspaceMode: 'planning',
+  capabilities: { planning: true, fileAccess: false },
   objective: 'Prepare the next launch.',
   status: 'active',
   version: 3,
@@ -23,7 +24,8 @@ const ARCHIVED_WORKSPACE: ProjectSnapshot = {
   id: '22222222-2222-4222-8222-222222222222',
   name: 'Retired site',
   slug: 'retired-site',
-  relativeRoot: 'archive/site',
+  workspaceMode: 'file_backed',
+  capabilities: { planning: true, fileAccess: true },
   objective: null,
   status: 'archived',
   updatedAt: '2026-10-15T00:00:00.000Z'
@@ -79,12 +81,13 @@ describe('HomeOverviewWidget', () => {
 
     const activeCard = screen.getByTestId(`home-workspace-link-${ACTIVE_WORKSPACE.id}`);
     expect(activeCard).toHaveAttribute('href', `/projects/${ACTIVE_WORKSPACE.id}`);
-    expect(within(activeCard).getByText('Planning workspace')).toBeInTheDocument();
+    expect(within(activeCard).getByText('Planning only')).toBeInTheDocument();
     expect(within(activeCard).getByText('Prepare the next launch.')).toBeInTheDocument();
     expect(within(activeCard).getByText(/Last active/)).toHaveAttribute('datetime', '2026-10-14T08:00:00.000Z');
 
     const archivedCard = screen.getByTestId(`home-workspace-link-${ARCHIVED_WORKSPACE.id}`);
     expect(within(archivedCard).getByText('Archived')).toBeInTheDocument();
+    expect(within(archivedCard).getByText('Files available')).toBeInTheDocument();
     expect(within(archivedCard).getByText('Archived · read only')).toBeInTheDocument();
     expect(within(archivedCard).queryByText(/Last active|Updated/)).not.toBeInTheDocument();
     expect(screen.queryByText('01')).not.toBeInTheDocument();

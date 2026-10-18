@@ -93,7 +93,6 @@ export interface SyntheticProject {
   readonly id: string;
   readonly name: string;
   readonly slug: string;
-  readonly relativeRoot: string | null;
   readonly workspaceMode: 'planning' | 'file_backed';
   readonly capabilities: { readonly planning: true; readonly fileAccess: boolean };
   readonly status: 'active' | 'archived';
@@ -107,7 +106,6 @@ export function archivedWorkspace(id: string, time: string): SyntheticProject {
     id,
     name: 'Planning workspace',
     slug: 'planning-workspace',
-    relativeRoot: null,
     workspaceMode: 'planning',
     capabilities: { planning: true, fileAccess: false },
     status: 'archived',
@@ -122,7 +120,6 @@ export function fileBackedProject(time: string): SyntheticProject {
     id: 'file-backed-id',
     name: 'File-backed project',
     slug: 'file-backed-project',
-    relativeRoot: '.',
     workspaceMode: 'file_backed',
     capabilities: { planning: true, fileAccess: true },
     status: 'active',

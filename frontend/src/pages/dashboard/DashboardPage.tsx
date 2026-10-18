@@ -44,7 +44,7 @@ export function DashboardPage(): React.JSX.Element {
       csrfToken={csrfToken}
       onTaskCreated={refreshWorkspaceData}
     />
-    <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} onRetryBoundary={refreshWorkspaceData} onCreated={(projectId) => { navigate(`/projects/${projectId}`); }} />
+    <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={(projectId) => { navigate(`/projects/${projectId}`); }} />
   </div>;
 }
 

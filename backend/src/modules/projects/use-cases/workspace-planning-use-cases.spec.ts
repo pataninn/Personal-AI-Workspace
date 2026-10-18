@@ -11,7 +11,6 @@ import {
   ProjectArchivedError,
   ProjectNotFoundError,
   ProjectRootAlreadyAttachedError,
-  ProjectRootOverlapError,
   ProjectVersionConflictError
 } from '@/modules/projects/domain/project-errors';
 import type { Project } from '@/modules/projects/domain/project-types';
@@ -40,6 +39,7 @@ function project(overrides: Partial<Project> = {}): Project {
     name: 'Launch planning',
     slug: 'launch-planning',
     relativeRoot: null,
+    storageKind: null,
     objective: 'Ship the launch',
     status: 'active',
     version: 1,
@@ -114,7 +114,7 @@ class MemoryProjectRepository implements IProjectRepository, IProjectWorkspaceRe
   public async attachInitialRoot(_transaction: void, input: AttachProjectRootRecord): Promise<Project | null> {
     const current = await this.findByIdForOwner(input.ownerId, input.projectId);
     if (!current || current.version !== input.expectedVersion || current.relativeRoot !== null) return null;
-    const updated = { ...current, relativeRoot: input.relativeRoot, version: current.version + 1 };
+    const updated = { ...current, relativeRoot: input.relativeRoot, storageKind: input.storageKind, version: current.version + 1 };
     this.records.set(updated.id, updated);
     return updated;
   }
@@ -153,13 +153,13 @@ class MemoryActionLedger implements IActionLedgerRepository<void> {
   }
 }
 
-function fixture(projects = new MemoryProjectRepository()) {
+function fixture(projects = new MemoryProjectRepository(), managedRoot?: (ownerId: string, projectId: string) => Promise<string>) {
   const ledger = new MemoryActionLedger();
-  const boundary: IWorkspaceBoundary & { readonly validateProjectRoot: jest.Mock; readonly createProjectRoot: jest.Mock } = {
+  const boundary: IWorkspaceBoundary & { readonly validateProjectRoot: jest.Mock; readonly createManagedProjectRoot: jest.Mock } = {
     getSnapshot: jest.fn().mockResolvedValue({ status: 'ready' }),
     assertReady: jest.fn().mockResolvedValue(undefined),
     validateProjectRoot: jest.fn(async (root: string) => root),
-    createProjectRoot: jest.fn(async (root: string) => root)
+    createManagedProjectRoot: jest.fn(managedRoot ?? (async (_ownerId: string, projectId: string) => `projects/${projectId}`))
   };
   const useCases = new WorkspacePlanningUseCases(projects, projects, ledger, boundary, () => NEW_PROJECT_ID);
   return { boundary, ledger, projects, useCases };
@@ -208,61 +208,51 @@ describe('WorkspacePlanningUseCases', () => {
     await expect(useCases.updateObjective({ ...input, ownerId: OTHER_OWNER_ID, operationKey: 'foreign' })).rejects.toBeInstanceOf(ProjectNotFoundError);
   });
 
-  it('attaches an existing root read-only, preserves dot, checks normalized overlaps under the owner lock, and records a non-reversible receipt', async () => {
+  it('allocates a managed root server-side and records a non-reversible receipt', async () => {
     const { boundary, ledger, projects, useCases } = fixture();
-    const input = { ownerId: OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'attach-dot', relativeRoot: '.' };
+    const input = { ownerId: OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'attach-managed' };
     const result = await useCases.attachInitialRoot(input);
     const replay = await useCases.attachInitialRoot(input);
 
-    expect(result).toMatchObject({ project: { relativeRoot: '.', version: 2 }, receipt: { undoStatus: 'not_reversible', reversibleFields: {} } });
-    expect(replay).toMatchObject({ replayed: true, project: { relativeRoot: '.', version: 2 }, receipt: { id: result.receipt.id } });
+    expect(result).toMatchObject({ project: { relativeRoot: `projects/${PROJECT_ID}`, storageKind: 'managed', version: 2 }, receipt: { undoStatus: 'not_reversible', reversibleFields: {} } });
+    expect(replay).toMatchObject({ replayed: true, project: { relativeRoot: `projects/${PROJECT_ID}`, storageKind: 'managed', version: 2 }, receipt: { id: result.receipt.id } });
     expect(ledger.callbackCount).toBe(1);
-    expect(boundary.validateProjectRoot).toHaveBeenCalledTimes(1);
+    expect(boundary.createManagedProjectRoot).toHaveBeenCalledTimes(1);
     expect(projects.sequence.slice(0, 2)).toEqual(['owner-lock', 'row-lock']);
-    expect(boundary.validateProjectRoot).toHaveBeenCalledWith('.');
-    expect(boundary.createProjectRoot).not.toHaveBeenCalled();
-
-    const overlap = fixture();
-    overlap.projects.records.set('55555555-5555-4555-8555-555555555555', project({ id: '55555555-5555-4555-8555-555555555555', name: 'Existing folder', relativeRoot: 'apps/site' }));
-    await expect(overlap.useCases.attachInitialRoot({ ownerId: OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'attach-overlap', relativeRoot: '.' }))
-      .rejects.toBeInstanceOf(ProjectRootOverlapError);
-    expect(overlap.projects.records.get(PROJECT_ID)?.relativeRoot).toBeNull();
-    expect(overlap.ledger.records.size).toBe(0);
+    expect(boundary.createManagedProjectRoot).toHaveBeenCalledWith(OWNER_ID, PROJECT_ID);
+    expect(boundary.validateProjectRoot).not.toHaveBeenCalled();
   });
 
-  it('rejects archived, foreign, and already-attached targets before filesystem validation; validation failure commits no receipt', async () => {
+  it('rejects archived, foreign, and already-attached targets before allocation; allocation failure commits no receipt', async () => {
     const archived = fixture();
     archived.projects.records.set(PROJECT_ID, project({ status: 'archived' }));
-    await expect(archived.useCases.attachInitialRoot({ ownerId: OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'archived', relativeRoot: 'apps/site' }))
+    await expect(archived.useCases.attachInitialRoot({ ownerId: OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'archived' }))
       .rejects.toBeInstanceOf(ProjectArchivedError);
-    expect(archived.boundary.validateProjectRoot).not.toHaveBeenCalled();
+    expect(archived.boundary.createManagedProjectRoot).not.toHaveBeenCalled();
 
     const foreign = fixture();
-    await expect(foreign.useCases.attachInitialRoot({ ownerId: OTHER_OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'foreign', relativeRoot: 'apps/site' }))
+    await expect(foreign.useCases.attachInitialRoot({ ownerId: OTHER_OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'foreign' }))
       .rejects.toBeInstanceOf(ProjectNotFoundError);
-    expect(foreign.boundary.validateProjectRoot).not.toHaveBeenCalled();
+    expect(foreign.boundary.createManagedProjectRoot).not.toHaveBeenCalled();
 
     const attached = fixture();
-    attached.projects.records.set(PROJECT_ID, project({ relativeRoot: 'apps/site' }));
-    await expect(attached.useCases.attachInitialRoot({ ownerId: OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'attached', relativeRoot: 'apps/site' }))
+    attached.projects.records.set(PROJECT_ID, project({ relativeRoot: 'projects/22222222-2222-4222-8222-222222222222', storageKind: 'managed' }));
+    await expect(attached.useCases.attachInitialRoot({ ownerId: OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'attached' }))
       .rejects.toBeInstanceOf(ProjectRootAlreadyAttachedError);
-    expect(attached.boundary.validateProjectRoot).not.toHaveBeenCalled();
+    expect(attached.boundary.createManagedProjectRoot).not.toHaveBeenCalled();
 
-    const unavailable = fixture();
-    const validationFailure = new Error('existing root could not be verified');
-    unavailable.boundary.validateProjectRoot.mockRejectedValue(validationFailure);
-    await expect(unavailable.useCases.attachInitialRoot({ ownerId: OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'validation-failure', relativeRoot: 'apps/site' }))
-      .rejects.toBe(validationFailure);
+    const unavailable = fixture(new MemoryProjectRepository(), async () => { throw new Error('managed storage unavailable'); });
+    await expect(unavailable.useCases.attachInitialRoot({ ownerId: OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'allocation-failure' }))
+      .rejects.toThrow('managed storage unavailable');
     expect(unavailable.projects.records.get(PROJECT_ID)?.relativeRoot).toBeNull();
     expect(unavailable.ledger.records.size).toBe(0);
 
     const failedUpdate = fixture();
     const persistenceFailure = new Error('root association update failed');
     jest.spyOn(failedUpdate.projects, 'attachInitialRoot').mockRejectedValue(persistenceFailure);
-    await expect(failedUpdate.useCases.attachInitialRoot({ ownerId: OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'update-failure', relativeRoot: 'apps/site' }))
+    await expect(failedUpdate.useCases.attachInitialRoot({ ownerId: OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'update-failure' }))
       .rejects.toBe(persistenceFailure);
-    expect(failedUpdate.boundary.validateProjectRoot).toHaveBeenCalledWith('apps/site');
-    expect(failedUpdate.boundary.createProjectRoot).not.toHaveBeenCalled();
+    expect(failedUpdate.boundary.createManagedProjectRoot).toHaveBeenCalledWith(OWNER_ID, PROJECT_ID);
     expect(failedUpdate.projects.records.get(PROJECT_ID)?.relativeRoot).toBeNull();
     expect(failedUpdate.ledger.records.size).toBe(0);
   });

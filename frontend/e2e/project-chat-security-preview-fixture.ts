@@ -261,7 +261,7 @@ export class ProjectChatPreviewFixture {
   }
 
   private project(): Record<string, unknown> {
-    return { id: PROJECT_ID, name: 'Website redesign', slug: 'website-redesign', relativeRoot: 'fixtures/website-redesign', workspaceMode: 'file_backed',
+    return { id: PROJECT_ID, name: 'Website redesign', slug: 'website-redesign', workspaceMode: 'file_backed',
       objective: 'Keep the synthetic project isolated.', capabilities: { planning: true, fileAccess: true }, status: 'active', version: 1, createdAt: PREVIEW_TIME, updatedAt: PREVIEW_TIME };
   }
 
