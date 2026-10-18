@@ -20,6 +20,7 @@ test('reviews project run activity and safe details without starting a provider 
   });
 
   await page.goto('/login');
+  await page.getByTestId('login-identifier-input').fill('owner');
   await page.getByTestId('login-password-input').fill(readLocalPassword());
   await page.getByTestId('login-submit-button').click();
   await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);

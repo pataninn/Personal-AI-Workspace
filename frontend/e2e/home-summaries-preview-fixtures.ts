@@ -10,7 +10,7 @@ const HOME_CONVERSATIONS_PATH = '/api/v1/home/conversations';
 const AUTH_SESSION_PATH = '/api/v1/auth/session';
 const AUTH_LOGIN_PATH = '/api/v1/auth/login';
 const SYNTHETIC_SESSION = {
-  principal: { id: 'home-summaries-preview-user', displayName: 'Synthetic preview user' },
+  principal: { id: 'home-summaries-preview-user', displayName: 'Synthetic preview user', accountKind: 'regular' as const, role: 'user' as const },
   csrfToken: 'preview-only-csrf-token',
   expiresAt: '2099-01-01T00:00:00.000Z'
 } as const;

@@ -51,8 +51,8 @@ describeDatabase('Home accepted proposal PostgreSQL integration', () => {
     await dataSource.query('DELETE FROM "home_change_proposals" WHERE "owner_id" = $1', [OWNER_ID]);
     await dataSource.query('DELETE FROM "users" WHERE "id" = $1', [OWNER_ID]);
     await dataSource.query(
-      'INSERT INTO "users" ("id", "scope_key", "display_name", "password_hash") VALUES ($1, $2, $3, $4)',
-      [OWNER_ID, 'home-proposal-execution-test', 'Home Proposal Test', 'x']
+      'INSERT INTO "users" ("id", "scope_key", "identifier", "display_name", "password_hash") VALUES ($1, $2, $3, $4, $5)',
+      [OWNER_ID, 'home-proposal-execution-test', 'home-proposal-execution-test', 'Home Proposal Test', 'x']
     );
 
     conversations = new TypeOrmHomeConversationRepository(dataSource);

@@ -39,6 +39,7 @@ test('uses saved files, ticked memory, and previous project conversations when s
     const privateRoot = join(process.env.LOCALAPPDATA ?? '', 'Personal-AI-Workspace', 'private');
     const password = readFileSync(join(privateRoot, 'secrets', 'local_user_password'), 'utf8').trim();
     await page.goto('/login');
+    await page.getByTestId('login-identifier-input').fill('owner');
     await page.getByTestId('login-password-input').fill(password);
     await page.getByTestId('login-submit-button').click();
     await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);
@@ -169,6 +170,7 @@ test('automatically creates, edits, and deletes workspace files without asking f
     const privateRoot = join(process.env.LOCALAPPDATA ?? '', 'Personal-AI-Workspace', 'private');
     const password = readFileSync(join(privateRoot, 'secrets', 'local_user_password'), 'utf8').trim();
     await page.goto('/login');
+    await page.getByTestId('login-identifier-input').fill('owner');
     await page.getByTestId('login-password-input').fill(password);
     await page.getByTestId('login-submit-button').click();
     await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);

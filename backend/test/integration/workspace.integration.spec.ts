@@ -9,7 +9,7 @@ import { LoginUseCase } from '@/modules/auth/use-cases/login';
 import { LogoutUseCase } from '@/modules/auth/use-cases/logout';
 import type { IClock, ILoginRateLimiter, IOpaqueTokenProvider, IPasswordHasher } from '@/modules/auth/repositories/security-providers';
 import type { CreateSessionInput, ISessionRepository } from '@/modules/auth/repositories/session-repository';
-import type { CreateLocalUserInput, IUserRepository } from '@/modules/auth/repositories/user-repository';
+import type { CreateRegularAccountInput, IUserRepository } from '@/modules/auth/repositories/user-repository';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { WorkspaceGatewayAdapter } from '@/infrastructure/workspace/workspace-gateway';
 import type { WorkspaceGatewayFileHandle, WorkspaceGatewayFileSystem, WorkspaceGatewayStats } from '@/infrastructure/workspace/workspace-gateway-fs';
@@ -97,13 +97,17 @@ class FileSystemFixture implements WorkspaceGatewayFileSystem {
 function missing(): Error { return Object.assign(new Error('missing'), { code: 'ENOENT' }); }
 
 class UserFixture implements IUserRepository {
-  public async findActiveLocalUser(): Promise<LocalUserRecord> { return { id: 'user-1', displayName: 'Local user', passwordHash: 'stored-hash', isActive: true }; }
-  public async findActiveLocalUserById(): Promise<LocalUserRecord> { return this.findActiveLocalUser(); }
-  public async createLocalUser(_input: CreateLocalUserInput): Promise<LocalUserRecord> { throw new Error('not used'); }
+  private readonly user: LocalUserRecord = { id: 'user-1', displayName: 'Local user', identifier: 'owner', accountKind: 'regular', role: 'admin', passwordHash: 'stored-hash', isActive: true, expiresAt: null };
+  public async findByIdentifier(identifier: string): Promise<LocalUserRecord | null> { return identifier === 'owner' ? this.user : null; }
+  public async findById(userId: string): Promise<LocalUserRecord | null> { return userId === 'user-1' ? this.user : null; }
+  public async hasAnyRegularAccounts(): Promise<boolean> { return true; }
+  public async createRegularAccount(_input: CreateRegularAccountInput): Promise<LocalUserRecord> { throw new Error('not used'); }
+  public async bootstrapInitialAdmin(): Promise<boolean> { return false; }
+  public async disableAccount(): Promise<'disabled'> { return 'disabled'; }
 }
 class SessionFixture implements ISessionRepository {
   private readonly records = new Map<string, SessionRecord>();
-  public async create(input: CreateSessionInput): Promise<Pick<SessionRecord, 'id' | 'userId' | 'expiresAt'>> { this.records.set(input.tokenHash, { id: 'session-1', userId: input.userId, displayName: 'Local user', expiresAt: input.expiresAt, revokedAt: null }); return { id: 'session-1', userId: input.userId, expiresAt: input.expiresAt }; }
+  public async create(input: CreateSessionInput): Promise<Pick<SessionRecord, 'id' | 'userId' | 'expiresAt'>> { this.records.set(input.tokenHash, { id: 'session-1', userId: input.userId, displayName: 'Local user', accountKind: 'regular', role: 'admin', accountExpiresAt: null, expiresAt: input.expiresAt, revokedAt: null }); return { id: 'session-1', userId: input.userId, expiresAt: input.expiresAt }; }
   public async findByTokenHash(tokenHash: string): Promise<SessionRecord | null> { return this.records.get(tokenHash) ?? null; }
   public async revoke(sessionId: string): Promise<void> { for (const [key, value] of this.records) if (value.id === sessionId) this.records.set(key, { ...value, revokedAt: NOW }); }
 }
@@ -128,7 +132,7 @@ function buildApp(boundary: BoundaryFixture): express.Express {
 
 function cookiePair(response: request.Response): string { const cookies = response.headers['set-cookie']; const values = typeof cookies === 'string' ? [cookies] : cookies ?? []; const cookie = values.find((value) => value.startsWith('__Host-pa_session=')); if (!cookie) throw new Error('missing session'); return cookie.split(';')[0] ?? cookie; }
 
-async function login(app: express.Express): Promise<{ readonly cookie: string; readonly csrf: string }> { const response = await request(app).post('/api/v1/auth/login').set('Origin', APP_ORIGIN).send({ password: 'correct-password' }).expect(200); return { cookie: cookiePair(response), csrf: response.body.data.csrfToken as string }; }
+async function login(app: express.Express): Promise<{ readonly cookie: string; readonly csrf: string }> { const response = await request(app).post('/api/v1/auth/login').set('Origin', APP_ORIGIN).send({ identifier: 'owner', password: 'correct-password' }).expect(200); return { cookie: cookiePair(response), csrf: response.body.data.csrfToken as string }; }
 
 describe('workspace inspection API (integration)', () => {
   it('enforces authentication, project ownership, and relative path responses', async () => {

@@ -9,17 +9,23 @@ import { getSafeReturnTo } from '@/shared/lib/navigation';
 import { Alert, Button, Card, Icon, Input, Label, Spinner } from '@/shared/ui';
 import { SignInArtwork } from './SignInArtwork';
 
-const REQUIRED_MESSAGE = 'Enter your local password.';
-const LENGTH_MESSAGE = 'Enter a password between 1 and 1024 characters.';
+const IDENTIFIER_REQUIRED_MESSAGE = 'Enter your account identifier.';
+const IDENTIFIER_INVALID_MESSAGE = 'Enter a valid account identifier.';
+const PASSWORD_REQUIRED_MESSAGE = 'Enter your password.';
+const PASSWORD_LENGTH_MESSAGE = 'Enter a password between 1 and 1024 characters.';
 const MAX_PASSWORD_LENGTH = 1024;
+const IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9._-]{2,63}$/u;
 
 export function SignInForm(): React.JSX.Element {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const location = useLocation();
-  const inputRef = useRef<HTMLInputElement>(null);
+  const identifierInputRef = useRef<HTMLInputElement>(null);
+  const passwordInputRef = useRef<HTMLInputElement>(null);
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
-  const [fieldError, setFieldError] = useState<string | null>(null);
+  const [identifierError, setIdentifierError] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -28,22 +34,37 @@ export function SignInForm(): React.JSX.Element {
   const reason = params.get('reason');
 
   useEffect(() => {
-    inputRef.current?.focus();
+    identifierInputRef.current?.focus();
   }, []);
 
   function validate(): boolean {
+    setIdentifierError(null);
+    setPasswordError(null);
+    const trimmedIdentifier = identifier.trim();
+    const normalizedIdentifier = /[^\x00-\x7f]/u.test(trimmedIdentifier)
+      ? trimmedIdentifier
+      : trimmedIdentifier.toLowerCase();
+    if (!normalizedIdentifier) {
+      setIdentifierError(IDENTIFIER_REQUIRED_MESSAGE);
+      identifierInputRef.current?.focus();
+      return false;
+    }
+    if (!IDENTIFIER_PATTERN.test(normalizedIdentifier)) {
+      setIdentifierError(IDENTIFIER_INVALID_MESSAGE);
+      identifierInputRef.current?.focus();
+      return false;
+    }
     const trimmedLength = password.trim().length;
     if (trimmedLength === 0) {
-      setFieldError(REQUIRED_MESSAGE);
-      inputRef.current?.focus();
+      setPasswordError(PASSWORD_REQUIRED_MESSAGE);
+      passwordInputRef.current?.focus();
       return false;
     }
     if (trimmedLength <= MAX_PASSWORD_LENGTH && password.length <= MAX_PASSWORD_LENGTH) {
-      setFieldError(null);
       return true;
     }
-    setFieldError(LENGTH_MESSAGE);
-    inputRef.current?.focus();
+    setPasswordError(PASSWORD_LENGTH_MESSAGE);
+    passwordInputRef.current?.focus();
     return false;
   }
 
@@ -55,13 +76,13 @@ export function SignInForm(): React.JSX.Element {
     }
     setIsSubmitting(true);
     try {
-      const snapshot = await signIn(password);
+      const snapshot = await signIn(identifier, password);
       dispatch(sessionAuthenticated(snapshot));
       setStatusMessage('Signed in. Loading your workspace.');
       navigate(returnTo ?? '/dashboard', { replace: true });
     } catch (error: unknown) {
       setServerError(toLoginError(error));
-      inputRef.current?.focus();
+      passwordInputRef.current?.focus();
     } finally {
       setIsSubmitting(false);
     }
@@ -77,25 +98,45 @@ export function SignInForm(): React.JSX.Element {
       <Card className="login-card">
         <p className="product-label">Personal AI Workspace</p>
         <h1>Sign in</h1>
-        <p className="supporting-copy">{import.meta.env.MODE === 'preview' ? 'Use any non-empty made-up password. Do not enter a real password.' : 'Use the local password configured for this workspace.'}</p>
+        <p className="supporting-copy">{import.meta.env.MODE === 'preview' ? 'Use any account identifier and non-empty made-up password. Do not enter real credentials.' : 'Use your account identifier and password.'}</p>
         {notice ? <Alert tone={reason === 'signed-out' ? 'success' : 'info'} live="polite">{notice}</Alert> : null}
         <form data-testid="login-form" onSubmit={(event) => void handleSubmit(event)} noValidate>
           <div className="field-group">
-            <Label htmlFor="local-password">Local password</Label>
+            <Label htmlFor="account-identifier">Account identifier</Label>
             <Input
-              ref={inputRef}
+              ref={identifierInputRef}
+              id="account-identifier"
+              data-testid="login-identifier-input"
+              type="text"
+              value={identifier}
+              onChange={(event) => setIdentifier(event.target.value)}
+              aria-required="true"
+              aria-invalid={identifierError ? 'true' : 'false'}
+              aria-describedby={identifierError ? 'login-identifier-error' : undefined}
+              disabled={isSubmitting}
+              autoComplete="username"
+              maxLength={64}
+              autoCapitalize="none"
+              spellCheck={false}
+            />
+            {identifierError ? <p id="login-identifier-error" className="field-error" role="alert">{identifierError}</p> : null}
+          </div>
+          <div className="field-group">
+            <Label htmlFor="local-password">Password</Label>
+            <Input
+              ref={passwordInputRef}
               id="local-password"
               data-testid="login-password-input"
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               aria-required="true"
-              aria-invalid={fieldError ? 'true' : 'false'}
-              aria-describedby={fieldError ? 'login-password-error' : undefined}
+              aria-invalid={passwordError ? 'true' : 'false'}
+              aria-describedby={passwordError ? 'login-password-error' : undefined}
               disabled={isSubmitting}
               autoComplete="current-password"
             />
-            {fieldError ? <p id="login-password-error" className="field-error" role="alert">{fieldError}</p> : null}
+            {passwordError ? <p id="login-password-error" className="field-error" role="alert">{passwordError}</p> : null}
           </div>
           {serverError ? <Alert tone="error" data-testid="login-error-message">{serverError}</Alert> : null}
           <Button

@@ -5,7 +5,7 @@
 **Last Updated:** 2026-10-19
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Task 1.1 delivered; Task 2.1 identity and independent Task 5.2 Home capture implementation in progress.
+**Status:** Execution active. Tasks 1.1 and 5.2 delivered; Task 2.1 tester PASS, implementation commit in progress.
 
 ## Plan Summary
 
@@ -96,7 +96,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-2-1-account-identity/artifacts/`
-- `Current status:` Contract/UI spec and identity/migration/session implementation written. Tester provisioned isolated PostgreSQL fixture (artifacts/qa-postgres-fixture.txt); developer reports20 integration suites/81 tests PASS with real PostgreSQL. Final checks/dev-summary and independent QA pending.
+- `Current status:` Independent tester PASS in qa-report.md. Broad backend114/685 and PostgreSQL20/81 runs recorded; final independent backend3suites/20tests, PostgreSQL2suites/3tests (including session continuity/race), frontendtypecheck and24files/160tests PASS. Contract/UI/dev-summary/evidence complete. Required task-isolated commit pending.
 
 **Description:** Extend user/session persistence and sign-in lookup for multiple regular accounts and passwordless demo principals. Preserve the current owner's password and data; assign initial admin role once.
 
@@ -542,7 +542,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 5.2 — Replace Inbox emphasis with Add task and View all
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 1.1
 **Risk:** Low: discoverability and unassigned task retention
@@ -557,21 +557,21 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-5-2-up-next-capture/artifacts/`
-- `Current status:` Developer implementation/dev-summary/screenshots complete. Focused Vitest38/38, previewAPI26/26, frontend typecheck and7 Playwright preview journeys PASS. Independent tester PASS in qa-report.md; independent38unit/2browser checks reproduced,320px smoke. Task-isolated commit pending; Home developer excludes identifier-login hunks from index so5.2 can commit first against existing auth. Task remains in progress until required commit.
+- `Current status:` Developer implementation/dev-summary/screenshots complete. Focused Vitest38/38, previewAPI26/26, frontend typecheck and7 Playwright preview journeys PASS. Independent tester PASS in qa-report.md; independent38unit/2browser checks reproduced,320px smoke. Delivered commit `fdb200dc23eb83a1047f138ccdd8f7316f3855b1`; identity-only helper lines excluded safely from index and preserved unstaged.
 
 **Description:** Move compact task capture into Up next and make All tasks the destination for browsing/filtering, retaining unassigned tasks.
 
 **Subtasks:**
 
-- [ ] Reuse task-capture/global-task-query slices and optional workspace selection.
-- [ ] Remove prominent Inbox block/navigation emphasis without deleting task records.
-- [ ] Cover empty, loading, error, and long-list states.
+- [x] Reuse task-capture/global-task-query slices and optional workspace selection.
+- [x] Remove prominent Inbox block/navigation emphasis without deleting task records.
+- [x] Cover empty, loading, error, and long-list states.
 
 **Definition of Done:**
 
-- [ ] User can add assigned or unassigned tasks from Home and find existing Inbox tasks in All tasks.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] User can add assigned or unassigned tasks from Home and find existing Inbox tasks in All tasks.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
 
 **Upstream Outputs Needed:** Architecture sections 4.2; Task 1.1 ui-spec.md and relevant task contracts; completed dependency outputs.
 
@@ -1078,7 +1078,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | Task | Status | QA verdict |
 | --- | --- | --- |
 | 1.1 — Confirm baseline and define screen states | `[x]` | PASS; `721f0f26011147437f9d24c4749431169b309ad1` |
-| 2.1 — Migrate local identity to regular, admin, and demo accounts | `[~]` | Pending |
+| 2.1 — Migrate local identity to regular, admin, and demo accounts | `[~]` | PASS; commit pending |
 | 2.2 — Enforce ownership across APIs, tools, storage, and streams | `[ ]` | Pending |
 | 3.1 — Implement atomic credit reservations and runtime metering | `[ ]` | Pending |
 | 3.2 — Enforce account storage limits on every persistent write | `[ ]` | Pending |
@@ -1090,7 +1090,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | 4.2 — Execute Home task and workspace actions through canonical use cases | `[ ]` | Pending |
 | 4.3 — Unify task deletion and remove archive behavior | `[ ]` | Pending |
 | 5.1 — Move Home assistant into a floating Ask panel | `[ ]` | Pending |
-| 5.2 — Replace Inbox emphasis with Add task and View all | `[~]` | PASS; task-isolated commit pending |
+| 5.2 — Replace Inbox emphasis with Add task and View all | `[x]` | PASS; `fdb200dc23eb83a1047f138ccdd8f7316f3855b1` |
 | 5.3 — Open task details editable with Save and dirty-exit protection | `[ ]` | Pending |
 | 5.4 — Audit spacing, responsiveness, and accessibility across release screens | `[ ]` | Pending |
 | 6.1 — Make memory and selected context visibly control future runs | `[ ]` | Pending |

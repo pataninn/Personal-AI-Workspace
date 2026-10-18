@@ -31,7 +31,7 @@ describe('ProjectTasksPage Home task deep link', () => {
   it('opens the referenced task even when it completed after appearing on Home', async () => {
     const store = configureStore({ reducer: { project: projectReducer, userSession: userSessionReducer }, preloadedState: {
       project: { listStatus: 'success' as const, projects: [project], errorCode: null, detailById: { [project.id]: { status: 'idle' as const, project: null, errorCode: null } } },
-      userSession: { status: 'authenticated' as const, principal: { id: 'user', displayName: 'Local user' }, csrfToken: 'csrf', expiresAt: '2099-01-01', errorCode: null }
+      userSession: { status: 'authenticated' as const, principal: { id: 'user', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const }, csrfToken: 'csrf', expiresAt: '2099-01-01', errorCode: null }
     } });
     render(<Provider store={store}><MemoryRouter initialEntries={['/projects/project/tasks?task=target']}><Routes><Route path="/projects/:projectId/tasks" element={<ProjectTasksPage />} /></Routes></MemoryRouter></Provider>);
     const title = await screen.findByText('Review guide');

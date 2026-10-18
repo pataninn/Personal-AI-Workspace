@@ -37,14 +37,14 @@ describe('SignInForm', () => {
     signInMock.mockReset();
   });
 
-  it('returns focus to the labelled password field when submitted empty', async () => {
+  it('focuses the first required field when submitted empty', async () => {
     const user = userEvent.setup();
     renderForm();
 
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
-    expect(screen.getByRole('alert')).toHaveTextContent('Enter your local password.');
-    expect(screen.getByLabelText('Local password')).toHaveFocus();
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter your account identifier.');
+    expect(screen.getByLabelText('Account identifier')).toHaveFocus();
     expect(signInMock).not.toHaveBeenCalled();
   });
 
@@ -53,25 +53,28 @@ describe('SignInForm', () => {
     const user = userEvent.setup();
     renderForm();
 
-    await user.type(screen.getByLabelText('Local password'), 'wrong-password');
+    await user.type(screen.getByLabelText('Account identifier'), 'owner');
+    await user.type(screen.getByLabelText('Password'), 'wrong-password');
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
     expect(await screen.findByTestId('login-error-message')).toHaveTextContent(
-      'That password was not accepted. Check it and try again.'
+      'That account identifier or password was not accepted. Check both and try again.'
     );
     expect(screen.getByTestId('location-probe')).toHaveTextContent('/login');
-    expect(screen.getByLabelText('Local password')).toHaveValue('wrong-password');
+    expect(screen.getByLabelText('Account identifier')).toHaveValue('owner');
+    expect(screen.getByLabelText('Password')).toHaveValue('wrong-password');
   });
 
   it('rejects whitespace-only passwords and keeps focus on the invalid field', async () => {
     const user = userEvent.setup();
     renderForm();
 
-    await user.type(screen.getByLabelText('Local password'), '   ');
+    await user.type(screen.getByLabelText('Account identifier'), 'owner');
+    await user.type(screen.getByLabelText('Password'), '   ');
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
-    expect(screen.getByRole('alert')).toHaveTextContent('Enter your local password.');
-    expect(screen.getByLabelText('Local password')).toHaveFocus();
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter your password.');
+    expect(screen.getByLabelText('Password')).toHaveFocus();
     expect(signInMock).not.toHaveBeenCalled();
   });
 
@@ -79,11 +82,12 @@ describe('SignInForm', () => {
     const user = userEvent.setup();
     renderForm();
 
-    fireEvent.change(screen.getByLabelText('Local password'), { target: { value: 'a'.repeat(1025) } });
+    await user.type(screen.getByLabelText('Account identifier'), 'owner');
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'a'.repeat(1025) } });
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
     expect(screen.getByRole('alert')).toHaveTextContent('Enter a password between 1 and 1024 characters.');
-    expect(screen.getByLabelText('Local password')).toHaveFocus();
+    expect(screen.getByLabelText('Password')).toHaveFocus();
     expect(signInMock).not.toHaveBeenCalled();
   });
 
@@ -92,30 +96,32 @@ describe('SignInForm', () => {
     const user = userEvent.setup();
     renderForm();
 
-    await user.type(screen.getByLabelText('Local password'), 'valid-password');
+    await user.type(screen.getByLabelText('Account identifier'), 'owner');
+    await user.type(screen.getByLabelText('Password'), 'valid-password');
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
     expect(await screen.findByTestId('login-error-message')).toHaveTextContent(
-      'Enter a valid local password and try again.'
+      'Check the account identifier and password format, then try again.'
     );
   });
 
   it('dispatches the non-secret session snapshot and navigates after success', async () => {
     signInMock.mockResolvedValue({
-      principal: { id: 'user-1', displayName: 'Local user' },
+      principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular', role: 'admin' },
       csrfToken: 'csrf-value',
       expiresAt: '2026-09-13T00:00:00.000Z'
     });
     const user = userEvent.setup();
     renderForm('/login?returnTo=%2Fdashboard');
 
-    await user.type(screen.getByLabelText('Local password'), 'correct-password');
+    await user.type(screen.getByLabelText('Account identifier'), ' OWNER ');
+    await user.type(screen.getByLabelText('Password'), 'correct-password');
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
     expect(await screen.findByTestId('login-status-message')).toHaveTextContent(
       'Signed in. Loading your workspace.'
     );
     expect(screen.getByTestId('location-probe')).toHaveTextContent('/dashboard');
-    expect(signInMock).toHaveBeenCalledWith('correct-password');
+    expect(signInMock).toHaveBeenCalledWith(' OWNER ', 'correct-password');
   });
 });

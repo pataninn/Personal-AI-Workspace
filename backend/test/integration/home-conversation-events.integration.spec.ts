@@ -39,8 +39,8 @@ describeDatabase('Home durable events PostgreSQL integration', () => {
     await dataSource.query('DROP TABLE IF EXISTS "home_event_test_targets"');
     await dataSource.query('DELETE FROM "users" WHERE "id" IN ($1, $2)', [OWNER_ID, OTHER_OWNER_ID]);
     await dataSource.query(
-      `INSERT INTO "users" ("id", "scope_key", "display_name", "password_hash") VALUES
-       ($1, 'home-test-owner', 'Home Test', 'x'), ($2, 'home-test-other', 'Home Other', 'x')`,
+      `INSERT INTO "users" ("id", "scope_key", "identifier", "display_name", "password_hash") VALUES
+       ($1, 'home-test-owner', 'home-test-owner', 'Home Test', 'x'), ($2, 'home-test-other', 'home-test-other', 'Home Other', 'x')`,
       [OWNER_ID, OTHER_OWNER_ID]
     );
     conversations = new TypeOrmHomeConversationRepository(dataSource);

@@ -113,9 +113,9 @@ describeDatabase('R1 release HTTP and PostgreSQL regression', () => {
     await dataSource.query('DELETE FROM "home_change_proposals" WHERE "owner_id" = ANY($1::uuid[])', [[OWNER_A, OWNER_B]]);
     await dataSource.query('DELETE FROM "users" WHERE "id" = ANY($1::uuid[])', [[OWNER_A, OWNER_B]]);
     await dataSource.query(
-      `INSERT INTO "users" ("id", "scope_key", "display_name", "password_hash") VALUES
-       ($1, 'r1-release-owner-a', 'R1 Fixture Owner A', 'x'),
-       ($2, 'r1-release-owner-b', 'R1 Fixture Owner B', 'x')`,
+      `INSERT INTO "users" ("id", "scope_key", "identifier", "display_name", "password_hash") VALUES
+       ($1, 'r1-release-owner-a', 'r1-release-owner-a', 'R1 Fixture Owner A', 'x'),
+       ($2, 'r1-release-owner-b', 'r1-release-owner-b', 'R1 Fixture Owner B', 'x')`,
       [OWNER_A, OWNER_B]
     );
     workspaces = {

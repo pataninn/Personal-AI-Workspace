@@ -20,6 +20,7 @@ test('opens file history from activity, shows all outcomes, and filters applied 
   });
 
   await page.goto('/login');
+  await page.getByTestId('login-identifier-input').fill('owner');
   await page.getByTestId('login-password-input').fill('preview-e2e-only');
   await page.getByTestId('login-submit-button').click();
   await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);

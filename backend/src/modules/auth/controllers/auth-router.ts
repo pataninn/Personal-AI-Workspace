@@ -14,8 +14,12 @@ import {
 import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
 import type { ILoginRateLimiter } from '@/modules/auth/repositories/security-providers';
+import { isValidAccountIdentifier, normalizeAccountIdentifier } from '@/modules/auth/domain/account-identifier';
 
 const loginSchema = z.object({
+  identifier: z.string().transform(normalizeAccountIdentifier).refine(isValidAccountIdentifier, {
+    message: 'Enter a valid account identifier.'
+  }),
   password: z.string().max(1024).refine((value) => value.trim().length > 0, {
     message: 'Password must contain at least one non-whitespace character.'
   })
@@ -46,11 +50,11 @@ export function clearSessionCookie(response: Response, secure: boolean): void {
   response.cookie(SESSION_COOKIE_NAME, '', cookieOptions(secure, undefined, 0));
 }
 
-function parseLoginBody(body: unknown): { password: string } {
+function parseLoginBody(body: unknown): { identifier: string; password: string } {
   const result = loginSchema.safeParse(body);
   if (!result.success) {
     throw new AppError('VALIDATION_ERROR', 400, 'The sign-in request is invalid.', result.error.issues.map((issue) => ({
-      field: issue.path.join('.') || 'password',
+      field: issue.path.join('.') || 'identifier',
       message: issue.message
     })));
   }

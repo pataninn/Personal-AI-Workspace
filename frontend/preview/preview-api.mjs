@@ -9,7 +9,7 @@ import { previewOverview, removePreviewProject } from './preview-overview.mjs';
 
 const COOKIE_NAME = 'pai_preview_session';
 const CSRF_TOKEN = 'preview-only-csrf-token';
-const PRINCIPAL = { id: '5eb82c22-8424-4b9f-87f4-ea20dfbfc16d', displayName: 'Preview user' };
+const PRINCIPAL = { id: '5eb82c22-8424-4b9f-87f4-ea20dfbfc16d', displayName: 'Preview user', accountKind: 'regular', role: 'user' };
 
 function sendData(response, data, status = 200, headers = {}) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
@@ -107,8 +107,11 @@ export function createPreviewApi() {
     const method = request.method ?? 'GET';
     if (url.pathname === '/api/v1/auth/login' && method === 'POST') {
       const body = await readBody(request);
-      if (typeof body?.password !== 'string' || body.password.trim().length === 0) {
-        sendError(response, 400, 'VALIDATION_ERROR', 'Enter any non-empty password for the mock preview.');
+      const identifier = typeof body?.identifier === 'string' ? body.identifier.trim().toLowerCase() : '';
+      if (!/^[a-z0-9][a-z0-9._-]{2,63}$/u.test(identifier)
+        || typeof body?.password !== 'string'
+        || body.password.trim().length === 0) {
+        sendError(response, 400, 'VALIDATION_ERROR', 'Enter a valid account identifier and non-empty mock password.');
         return;
       }
       sendData(response, previewSession(), 200, { 'Set-Cookie': `${COOKIE_NAME}=1; HttpOnly; SameSite=Lax; Path=/` });

@@ -270,7 +270,7 @@ export class ProjectChatPreviewFixture {
   }
 
   private session(): Record<string, unknown> {
-    return { principal: { id: OWNER_ID, displayName: 'Preview user' }, csrfToken: PREVIEW_CSRF_TOKEN, expiresAt: '2027-01-01T00:00:00.000Z' };
+    return { principal: { id: OWNER_ID, displayName: 'Preview user', accountKind: 'regular' as const, role: 'user' as const }, csrfToken: PREVIEW_CSRF_TOKEN, expiresAt: '2027-01-01T00:00:00.000Z' };
   }
 
   private addMessage(content: string): void {
@@ -313,6 +313,7 @@ export class ProjectChatPreviewFixture {
 
 export async function signInToProjectChat(page: Page): Promise<void> {
   await page.goto('/login');
+  await page.getByTestId('login-identifier-input').fill('owner');
   await page.getByTestId('login-password-input').fill('preview-e2e-only');
   await page.getByTestId('login-submit-button').click();
 }

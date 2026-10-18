@@ -30,7 +30,7 @@ const ACTIVE_PROJECT: ProjectSnapshot = {
   createdAt: '2026-09-12T00:00:00.000Z', updatedAt: '2026-09-12T00:00:00.000Z'
 };
 const AUTHENTICATED_SESSION = {
-  status: 'authenticated' as const, principal: { id: 'user-1', displayName: 'Local user' }, csrfToken: 'csrf-value',
+  status: 'authenticated' as const, principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const }, csrfToken: 'csrf-value',
   expiresAt: '2026-09-13T00:00:00.000Z', errorCode: null
 };
 const PROJECT_STATE: ProjectState = { listStatus: 'success', projects: [ACTIVE_PROJECT], errorCode: null, detailById: {} };

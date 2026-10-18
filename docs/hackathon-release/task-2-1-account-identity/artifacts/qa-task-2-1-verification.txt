@@ -1,0 +1,42 @@
+Task 2.1 independent QA verification (2026-10-19)
+
+Backend unit check
+Command:
+pnpm.cmd --dir backend test -- src/openapi/auth-openapi.spec.ts src/modules/auth/use-cases/auth-use-cases.spec.ts src/infrastructure/database/migrations/1710000026000-add-account-identity.spec.ts
+Result: PASS, Jest 3 suites / 20 tests.
+
+Isolated PostgreSQL integration check
+The tester loaded HOME_CONVERSATION_TEST_DATABASE_URL privately from the protected fixture env file. The URL and password were not printed, stored in this artifact, or committed.
+Command:
+pnpm.cmd --dir backend test:integration -- account-identity.integration.spec.ts r1-populated-migration.integration.spec.ts
+Result: PASS, Jest 2 suites / 3 tests.
+The account identity test proves the exactly-two-active-admin cross-disable race leaves exactly one active admin and the survivor cannot disable itself. The populated migration test verifies legacy owner/session data, repository lookup of the preserved token hash, and session restoration through GetSessionUseCase.
+Focused auth HTTP rerun (developer evidence): auth.integration.spec.ts, PASS, 1 suite / 4 tests.
+The fixture is loopback-only on port 55441, using the test role/database home_test/home_history_test. Guarded tests created and dropped only their fixed disposable test databases. No application database/container/data was used.
+
+Frontend principal compatibility checks
+Command:
+pnpm.cmd --dir frontend run typecheck
+Result: PASS for both frontend TypeScript configs.
+
+Affected frontend fixture test group
+Command (run from Personal-AI-Workspace):
+pnpm.cmd --dir frontend exec vitest run --config vitest.config.mjs --configLoader runner src/app/providers/AuthProvider.spec.tsx src/entities/user-session/model/slice.spec.ts src/features/ai-run/ui/AiRunEntry.spec.tsx src/features/ai-run/ui/AiRunTimeline.spec.tsx src/features/ai-run/ui/ChatComposer.spec.tsx src/features/ai-run/ui/CommandExecutionSurface.spec.tsx src/features/ai-run/ui/ProposedChangeReview.spec.tsx src/features/auth/ui/SignInForm.spec.tsx src/features/conversation-management/ui/CreateConversationDialog.spec.tsx src/features/home-chat/model/use-home-planning-records.spec.tsx src/features/home-chat/ui/HomeChat.spec.tsx src/features/message-persistence/ui/MessageComposer.spec.tsx src/features/project-context/ui/ProjectContextSettings.spec.tsx src/features/project-management/ui/RemoveProjectDialog.spec.tsx src/features/project-memory/ui/ProjectMemoryManager.spec.tsx src/pages/RootlessProjectCapabilityPages.spec.tsx src/pages/all-tasks/AllTasksPage.spec.tsx src/pages/dashboard/DashboardPage.spec.tsx src/pages/project-tasks/ProjectTasksPage.spec.tsx src/pages/project-workspace/ProjectWorkspacePage.spec.tsx src/pages/task-detail/TaskDetailPage.spec.tsx src/pages/workspace-planning-chat/WorkspacePlanningChatPage.spec.tsx src/widgets/app-shell/AppShell.spec.tsx src/widgets/chat-workspace/ChatWorkspace.spec.tsx
+Result: PASS, 24 files / 160 tests.
+Coverage included AuthProvider, user-session slice, SignInForm, Home chat, AI-run, conversation, message persistence, project context/management/memory, task pages, workspace planning, AppShell, and chat workspace.
+Focused auth/session run: SignInForm.spec.tsx plus user-session/model/slice.spec.ts, PASS, 2 files / 8 tests.
+
+Diff check
+Command:
+git diff --check
+Result: PASS, no whitespace errors.
+
+Developer evidence reviewed
+- Backend unit full run: 114 suites / 685 tests before the final rollback guard; final focused unit check above includes the guard and latest OpenAPI/auth assertions.
+- Backend full PostgreSQL integration run: 20 suites / 81 tests before final review additions; final focused PostgreSQL rerun above includes the changed migration continuity assertion.
+- Frontend full Vitest run: 57 files / 292 tests and Node preview API: 26 tests before the final principal metadata type tightening; the affected principal-fixture group passed after tightening.
+- Playwright CLI preview login: 2 tests passed for identifier-based success and generic credential failure. Screenshots are login-identifier-success.png and login-generic-credential-error.png; the preview fixture uses fake credentials only.
+- Playwright MCP, Chrome DevTools MCP, and Context7 are N/A in Task 2.1's task brief. Playwright CLI preview evidence was used for the login flow.
+- Existing React Router v7 future-flag warnings appeared in Vitest output; they did not fail tests and are unrelated to Task 2.1 behavior.
+
+No production credentials, owner passwords, session tokens, provider calls, or application database data were used.

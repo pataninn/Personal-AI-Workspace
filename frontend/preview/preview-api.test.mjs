@@ -25,7 +25,7 @@ async function signIn(origin) {
   const response = await fetch(`${origin}/api/v1/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password: 'made-up-preview-password' })
+    body: JSON.stringify({ identifier: 'owner', password: 'made-up-preview-password' })
   });
   assert.equal(response.status, 200);
   return response.headers.get('set-cookie').split(';')[0];

@@ -96,7 +96,7 @@ const manifest: EgressManifest = {
 
 const session = {
   status: 'authenticated' as const,
-  principal: { id: 'user-1', displayName: 'Local user' },
+  principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const },
   csrfToken: 'csrf-token',
   expiresAt: '2026-09-13T00:00:00.000Z',
   errorCode: null

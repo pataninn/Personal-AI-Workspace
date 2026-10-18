@@ -70,7 +70,7 @@ const reviewProposal: HomeProposal = {
 function wrapper({ children }: { readonly children: ReactNode }): React.JSX.Element {
   const store = configureStore({
     reducer: { userSession: userSessionReducer },
-    preloadedState: { userSession: { status: 'authenticated' as const, principal: { id: 'owner', displayName: 'User' }, csrfToken: 'csrf', expiresAt: null, errorCode: null } }
+    preloadedState: { userSession: { status: 'authenticated' as const, principal: { id: 'owner', displayName: 'User', accountKind: 'regular' as const, role: 'user' as const }, csrfToken: 'csrf', expiresAt: null, errorCode: null } }
   });
   return <Provider store={store}>{children}</Provider>;
 }

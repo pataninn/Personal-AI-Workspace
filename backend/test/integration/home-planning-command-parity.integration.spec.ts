@@ -57,9 +57,9 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
     await dataSource.query('DELETE FROM "home_change_proposal_items" WHERE "owner_id" = ANY($1::uuid[])', [[OWNER_ID, OTHER_OWNER_ID]]);
     await dataSource.query('DELETE FROM "users" WHERE "id" IN ($1, $2)', [OWNER_ID, OTHER_OWNER_ID]);
     await dataSource.query(
-      `INSERT INTO "users" ("id", "scope_key", "display_name", "password_hash") VALUES
-       ($1, 'planning-parity-owner', 'Planning Parity Owner', 'x'),
-       ($2, 'planning-parity-other', 'Planning Parity Other', 'x')`,
+      `INSERT INTO "users" ("id", "scope_key", "identifier", "display_name", "password_hash") VALUES
+       ($1, 'planning-parity-owner', 'planning-parity-owner', 'Planning Parity Owner', 'x'),
+       ($2, 'planning-parity-other', 'planning-parity-other', 'Planning Parity Other', 'x')`,
       [OWNER_ID, OTHER_OWNER_ID]
     );
 

@@ -58,7 +58,7 @@ const history: ConversationHistoryResponse = {
 
 function renderComposer(disabled = false, initialEntry = '/conversation', initialHistory: ConversationHistoryResponse | null = null): ReturnType<typeof vi.fn> {
   const store = configureStore({ reducer: { userSession: userSessionReducer }, preloadedState: { userSession: {
-    status: 'authenticated' as const, principal: { id: 'owner', displayName: 'User' }, csrfToken: 'csrf', expiresAt: null, errorCode: null
+    status: 'authenticated' as const, principal: { id: 'owner', displayName: 'User', accountKind: 'regular' as const, role: 'user' as const }, csrfToken: 'csrf', expiresAt: null, errorCode: null
   } } });
   const onHistory = vi.fn();
   render(<Provider store={store}><MemoryRouter initialEntries={[initialEntry]}><ChatComposer projectId={PROJECT_ID} conversationId={CONVERSATION_ID} history={initialHistory} disabled={disabled} onConversationReconciled={onHistory} /></MemoryRouter></Provider>);

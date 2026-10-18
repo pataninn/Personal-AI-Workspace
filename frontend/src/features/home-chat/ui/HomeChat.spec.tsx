@@ -93,7 +93,7 @@ function submission(content: string, status: HomeTurnSnapshot['status'] = 'pendi
 function renderChat(entry = '/dashboard', scope = HOME_SCOPE, disabled = false): void {
   const store = configureStore({
     reducer: { userSession: userSessionReducer },
-    preloadedState: { userSession: { status: 'authenticated' as const, principal: { id: 'owner', displayName: 'User' }, csrfToken: 'csrf', expiresAt: null, errorCode: null } }
+    preloadedState: { userSession: { status: 'authenticated' as const, principal: { id: 'owner', displayName: 'User', accountKind: 'regular' as const, role: 'user' as const }, csrfToken: 'csrf', expiresAt: null, errorCode: null } }
   });
   render(<Provider store={store}><MemoryRouter initialEntries={[entry]}><HomeChat scope={scope} scopeLabel={scope.kind === 'home' ? 'Home' : 'Planning workspace'} disabled={disabled} disabledReason={disabled ? 'This planning workspace is archived. Existing conversation history is read-only.' : undefined} /></MemoryRouter></Provider>);
 }
@@ -109,7 +109,7 @@ function ConversationSwitchHarness(): React.JSX.Element {
 function renderSwitchChat(): void {
   const store = configureStore({
     reducer: { userSession: userSessionReducer },
-    preloadedState: { userSession: { status: 'authenticated' as const, principal: { id: 'owner', displayName: 'User' }, csrfToken: 'csrf', expiresAt: null, errorCode: null } }
+    preloadedState: { userSession: { status: 'authenticated' as const, principal: { id: 'owner', displayName: 'User', accountKind: 'regular' as const, role: 'user' as const }, csrfToken: 'csrf', expiresAt: null, errorCode: null } }
   });
   render(<Provider store={store}><MemoryRouter initialEntries={[`/dashboard?conversation=${CONVERSATION_ID}`]}><ConversationSwitchHarness /></MemoryRouter></Provider>);
 }
@@ -122,7 +122,7 @@ function HookProbe({ scope }: { readonly scope: HomeConversationScope }): React.
 function renderProbe(entry: string, scope = HOME_SCOPE): void {
   const store = configureStore({
     reducer: { userSession: userSessionReducer },
-    preloadedState: { userSession: { status: 'authenticated' as const, principal: { id: 'owner', displayName: 'User' }, csrfToken: 'csrf', expiresAt: null, errorCode: null } }
+    preloadedState: { userSession: { status: 'authenticated' as const, principal: { id: 'owner', displayName: 'User', accountKind: 'regular' as const, role: 'user' as const }, csrfToken: 'csrf', expiresAt: null, errorCode: null } }
   });
   render(<Provider store={store}><MemoryRouter initialEntries={[entry]}><HookProbe scope={scope} /></MemoryRouter></Provider>);
 }

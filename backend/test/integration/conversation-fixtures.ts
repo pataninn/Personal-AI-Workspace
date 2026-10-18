@@ -9,7 +9,7 @@ import { LoginUseCase } from '@/modules/auth/use-cases/login';
 import { LogoutUseCase } from '@/modules/auth/use-cases/logout';
 import type { IClock, ILoginRateLimiter, IOpaqueTokenProvider, IPasswordHasher } from '@/modules/auth/repositories/security-providers';
 import type { CreateSessionInput, ISessionRepository } from '@/modules/auth/repositories/session-repository';
-import type { CreateLocalUserInput, IUserRepository } from '@/modules/auth/repositories/user-repository';
+import type { CreateRegularAccountInput, IUserRepository } from '@/modules/auth/repositories/user-repository';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { GetReadinessUseCase } from '@/modules/health';
 import type { Project, ProjectStatus } from '@/modules/projects/domain/project-types';
@@ -254,24 +254,32 @@ function idempotencyKey(ownerId: string, projectId: string, operation: string, k
 }
 
 class FixedUserRepository implements IUserRepository {
-  public async findActiveLocalUser(): Promise<LocalUserRecord> {
-    return { id: OWNER_ID, displayName: 'Local user', passwordHash: 'stored-hash', isActive: true };
+  private readonly user: LocalUserRecord = { id: OWNER_ID, displayName: 'Local user', identifier: 'owner', accountKind: 'regular', role: 'admin', passwordHash: 'stored-hash', isActive: true, expiresAt: null };
+
+  public async findByIdentifier(identifier: string): Promise<LocalUserRecord | null> {
+    return identifier === 'owner' ? this.user : null;
   }
 
-  public async findActiveLocalUserById(): Promise<LocalUserRecord> {
-    return { id: OWNER_ID, displayName: 'Local user', passwordHash: 'stored-hash', isActive: true };
+  public async findById(userId: string): Promise<LocalUserRecord | null> {
+    return userId === OWNER_ID ? this.user : null;
   }
 
-  public async createLocalUser(_input: CreateLocalUserInput): Promise<LocalUserRecord> {
+  public async hasAnyRegularAccounts(): Promise<boolean> { return true; }
+
+  public async createRegularAccount(_input: CreateRegularAccountInput): Promise<LocalUserRecord> {
     throw new Error('The conversation integration fixture does not bootstrap users.');
   }
+
+  public async bootstrapInitialAdmin(): Promise<boolean> { return false; }
+
+  public async disableAccount(): Promise<'disabled'> { return 'disabled'; }
 }
 
 class FixedSessionRepository implements ISessionRepository {
   private readonly records = new Map<string, SessionRecord>();
 
   public async create(input: CreateSessionInput): Promise<Pick<SessionRecord, 'id' | 'userId' | 'expiresAt'>> {
-    const record: SessionRecord = { id: 'session-1', userId: input.userId, displayName: 'Local user', expiresAt: input.expiresAt, revokedAt: null };
+    const record: SessionRecord = { id: 'session-1', userId: input.userId, displayName: 'Local user', accountKind: 'regular', role: 'admin', accountExpiresAt: null, expiresAt: input.expiresAt, revokedAt: null };
     this.records.set(input.tokenHash, record);
     return { id: record.id, userId: record.userId, expiresAt: record.expiresAt };
   }
@@ -354,7 +362,7 @@ export async function login(app: express.Express): Promise<{ readonly cookie: st
   const response = await request(app)
     .post('/api/v1/auth/login')
     .set('Origin', APP_ORIGIN)
-    .send({ password: 'correct-password' })
+    .send({ identifier: 'owner', password: 'correct-password' })
     .expect(200);
   return { cookie: cookiePair(response), csrf: response.body.data.csrfToken as string };
 }

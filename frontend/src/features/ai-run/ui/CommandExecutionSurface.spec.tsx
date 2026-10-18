@@ -25,7 +25,7 @@ vi.mock('@/entities/ai-run/api/sandbox-command-api', () => ({
 const RUN_ID = '77777777-7777-4777-8777-000000000001';
 const COMMAND_ID = '88888888-8888-4888-8888-000000000001';
 const HASH = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-const session = { status: 'authenticated' as const, principal: { id: 'user-1', displayName: 'Local user' }, csrfToken: 'csrf-token', expiresAt: '2099-01-01T00:00:00.000Z', errorCode: null };
+const session = { status: 'authenticated' as const, principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const }, csrfToken: 'csrf-token', expiresAt: '2099-01-01T00:00:00.000Z', errorCode: null };
 const limits = { wallTimeMs: 10_000, idleTimeMs: 5_000, maxOutputBytes: 32_768, maxProcesses: 4, memoryBytes: 134_217_728, cpuTimeMs: 5_000, network: 'denied' as const };
 
 const run: AiRunSnapshot = {

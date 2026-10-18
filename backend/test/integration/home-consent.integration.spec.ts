@@ -32,8 +32,8 @@ describeDatabase('Home consent persistence PostgreSQL integration', () => {
     expect(migrations).toHaveLength(dataSource.migrations.length);
     await dataSource.query('DELETE FROM "users" WHERE "id" IN ($1, $2)', [OWNER_ID, OTHER_OWNER_ID]);
     await dataSource.query(
-      `INSERT INTO "users" ("id", "scope_key", "display_name", "password_hash") VALUES
-       ($1, 'consent-test-owner', 'Consent Test', 'x'), ($2, 'consent-test-other', 'Consent Other', 'x')`,
+      `INSERT INTO "users" ("id", "scope_key", "identifier", "display_name", "password_hash") VALUES
+       ($1, 'consent-test-owner', 'consent-test-owner', 'Consent Test', 'x'), ($2, 'consent-test-other', 'consent-test-other', 'Consent Other', 'x')`,
       [OWNER_ID, OTHER_OWNER_ID]
     );
     conversations = new TypeOrmHomeConversationRepository(dataSource);

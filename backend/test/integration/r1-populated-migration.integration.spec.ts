@@ -2,9 +2,13 @@ import type { DataSource } from 'typeorm';
 import { DataSource as TypeOrmDataSource } from 'typeorm';
 
 import { createDataSource } from '@/infrastructure/database/data-source';
+import { TypeOrmSessionRepository } from '@/infrastructure/database/repositories/typeorm-auth-repositories';
 import { HomeProposalRollbackBlockedError } from '@/modules/home-assistant/domain/home-planning-errors';
+import { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
 
 const OWNER_ID = '4a105f66-6666-4666-8666-666666666666';
+const SESSION_ID = '4a105f66-6666-4666-8666-666666666667';
+const LEGACY_SESSION_TOKEN = 'r1-preserved-legacy-session-token-0001';
 const PROJECT_ID = '4a105f77-7777-4777-8777-777777777777';
 const TASK_ID = '4a105f88-8888-4888-8888-888888888888';
 const CONVERSATION_ID = '4a105f99-9999-4999-8999-999999999999';
@@ -103,7 +107,53 @@ describeDatabase('R1 populated database migration regression', () => {
     expect(applied).toHaveLength(dataSource.migrations.length - LEGACY_MIGRATION_COUNT);
     const migrationRows: readonly { readonly name: string }[] = await dataSource.query('SELECT "name" FROM "migrations" ORDER BY "timestamp"');
     expect(migrationRows).toHaveLength(dataSource.migrations.length);
-    expect(migrationRows.at(-1)?.name).toBe('CreateHomeChangeProposals1710000025000');
+    expect(migrationRows.at(-1)?.name).toBe('AddAccountIdentity1710000026000');
+    const migratedOwner: readonly { id: string; scope_key: string; display_name: string; identifier: string; account_kind: string; role: string; password_hash: string }[] = await dataSource.query(
+      'SELECT "id", "scope_key", "display_name", "identifier", "account_kind", "role", "password_hash" FROM "users" WHERE "id" = $1',
+      [OWNER_ID]
+    );
+    expect(migratedOwner[0]).toEqual({
+      id: OWNER_ID,
+      scope_key: 'local',
+      display_name: 'R1 migration fixture owner',
+      identifier: 'owner',
+      account_kind: 'regular',
+      role: 'admin',
+      password_hash: 'x'
+    });
+    const retainedSession: readonly { readonly id: string; readonly user_id: string; readonly token_hash: string; readonly revoked_at: Date | null }[] = await dataSource.query(
+      'SELECT "id", "user_id", "token_hash", "revoked_at" FROM "sessions" WHERE "id" = $1',
+      [SESSION_ID]
+    );
+    expect(retainedSession).toEqual([{ id: SESSION_ID, user_id: OWNER_ID, token_hash: 'r1-migration-session-hash', revoked_at: null }]);
+    const migratedSessionRepository = new TypeOrmSessionRepository(dataSource);
+    await expect(migratedSessionRepository.findByTokenHash('r1-migration-session-hash')).resolves.toMatchObject({
+      id: SESSION_ID,
+      userId: OWNER_ID,
+      accountKind: 'regular',
+      role: 'admin',
+      accountExpiresAt: null,
+      revokedAt: null,
+      expiresAt: new Date('2026-11-01T00:00:00.000Z')
+    });
+    const legacySessionUseCase = new GetSessionUseCase(
+      migratedSessionRepository,
+      {
+        createToken: () => 'unused-session-token',
+        digestToken: (token) => token === LEGACY_SESSION_TOKEN ? 'r1-migration-session-hash' : 'unknown-session-hash',
+        createCsrfToken: (token) => `csrf:${token}`
+      },
+      { now: () => new Date('2026-10-19T12:00:00.000Z') }
+    );
+    await expect(legacySessionUseCase.execute(LEGACY_SESSION_TOKEN)).resolves.toMatchObject({
+      principal: {
+        id: OWNER_ID,
+        displayName: 'R1 migration fixture owner',
+        accountKind: 'regular',
+        role: 'admin'
+      },
+      csrfToken: `csrf:${LEGACY_SESSION_TOKEN}`
+    });
     const retainedTasks: readonly typeof legacyTask[] = await dataSource.query(
       'SELECT "id", "title", "deadline"::text AS "deadline", "importance", "subtasks" FROM "project_tasks" WHERE "id" = $1',
       [TASK_ID]
@@ -126,7 +176,7 @@ describeDatabase('R1 populated database migration regression', () => {
     }
   }, 30_000);
 
-  it('preserves legacy project tasks through upgrade and refuses then permits the latest rollback', async () => {
+  it('preserves the legacy owner and tasks, then verifies safe rollback of identity and proposal migrations', async () => {
     if (!dataSource) throw new Error('The isolated migration database was not initialized.');
     expect(legacyTask).toMatchObject({
       id: TASK_ID,
@@ -141,6 +191,15 @@ describeDatabase('R1 populated database migration regression', () => {
         to_regclass('public.home_change_proposals')::text AS "proposals"
     `);
     expect(tables[0]).toEqual({ inboxOrder: 'project_task_order_states', homeEvents: 'home_conversation_events', proposals: 'home_change_proposals' });
+
+    await dataSource.undoLastMigration({ transaction: 'all' });
+    const identityColumns: readonly { readonly identifier: string | null }[] = await dataSource.query(`
+      SELECT column_name AS "identifier" FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'identifier'
+    `);
+    expect(identityColumns).toHaveLength(0);
+    const latestAfterIdentityRollback: readonly { readonly name: string }[] = await dataSource.query('SELECT "name" FROM "migrations" ORDER BY "timestamp" DESC LIMIT 1');
+    expect(latestAfterIdentityRollback[0]?.name).toBe('CreateHomeChangeProposals1710000025000');
 
     await seedProposalRollbackFixture(dataSource);
     await expect(dataSource.undoLastMigration({ transaction: 'all' })).rejects.toBeInstanceOf(HomeProposalRollbackBlockedError);
@@ -163,7 +222,11 @@ describeDatabase('R1 populated database migration regression', () => {
 });
 
 async function seedLegacyProjectAndTask(dataSource: DataSource): Promise<void> {
-  await dataSource.query('INSERT INTO "users" ("id", "scope_key", "display_name", "password_hash") VALUES ($1, $2, $3, $4)', [OWNER_ID, 'r1-migration-owner', 'R1 migration fixture owner', 'x']);
+  await dataSource.query('INSERT INTO "users" ("id", "scope_key", "display_name", "password_hash") VALUES ($1, $2, $3, $4)', [OWNER_ID, 'local', 'R1 migration fixture owner', 'x']);
+  await dataSource.query(
+    'INSERT INTO "sessions" ("id", "user_id", "token_hash", "expires_at") VALUES ($1, $2, $3, $4)',
+    [SESSION_ID, OWNER_ID, 'r1-migration-session-hash', new Date('2026-11-01T00:00:00.000Z')]
+  );
   await dataSource.query(`
     INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key")
     VALUES ($1, $2, 'R1 legacy project', 'r1-legacy-project', 'legacy-project', 'legacy-project')

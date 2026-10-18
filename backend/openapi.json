@@ -3,7 +3,7 @@
   "info": {
     "title": "Personal AI Workspace API",
     "version": "0.1.0",
-    "description": "Authenticated REST endpoints for Home and project-scoped conversations, project tasks, owner-wide task queries, durable project facts, and AI runs."
+    "description": "Authenticated REST endpoints for account identity, Home and project-scoped conversations, project tasks, owner-wide task queries, durable project facts, and AI runs."
   },
   "servers": [
     {
@@ -37,9 +37,58 @@
     },
     {
       "name": "Home conversations"
+    },
+    {
+      "name": "Authentication"
     }
   ],
   "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Sign in to a regular account",
+        "operationId": "login",
+        "parameters": [{ "$ref": "#/components/parameters/OriginHeader" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoginRequest" } } } },
+        "responses": {
+          "200": { "description": "Authenticated principal and CSRF value; session token is set in a secure HttpOnly cookie.", "headers": { "Set-Cookie": { "description": "Opaque host-only session cookie with HttpOnly, Secure, SameSite=Lax, and Path=/.", "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AuthSessionEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "description": "Credentials were not accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "403": { "description": "The request Origin is not allowed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "429": { "description": "Login rate limit exceeded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "503": { "description": "No account has been bootstrapped.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/auth/session": {
+      "get": {
+        "tags": ["Authentication"],
+        "summary": "Read the current authenticated principal",
+        "operationId": "getCurrentSession",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Current principal and CSRF value.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AuthSessionEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Revoke the current session",
+        "operationId": "logout",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/OriginHeader" }, { "$ref": "#/components/parameters/CsrfHeader" }],
+        "responses": {
+          "204": { "description": "Session revoked and cookie cleared." },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
     "/api/v1/home/conversations": {
       "get": {
         "tags": ["Home conversations"],
@@ -5280,6 +5329,45 @@
       "Uuid": {
         "type": "string",
         "format": "uuid"
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": ["identifier", "password"],
+        "properties": {
+          "identifier": { "type": "string", "minLength": 3, "pattern": "^\\s*[A-Za-z0-9][A-Za-z0-9._-]{2,63}\\s*$", "description": "Leading and trailing whitespace is trimmed and ASCII letters are lowercased before the normalized identifier is validated." },
+          "password": { "type": "string", "minLength": 1, "maxLength": 1024, "description": "Must contain at least one non-whitespace character. The password is verified without trimming or normalization." }
+        },
+        "additionalProperties": false
+      },
+      "AccountPrincipal": {
+        "type": "object",
+        "required": ["id", "displayName", "accountKind", "role"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "displayName": { "type": "string" },
+          "accountKind": { "type": "string", "enum": ["regular", "demo"] },
+          "role": { "type": "string", "enum": ["user", "admin"] }
+        },
+        "additionalProperties": false
+      },
+      "AuthSessionData": {
+        "type": "object",
+        "required": ["principal", "csrfToken", "expiresAt"],
+        "properties": {
+          "principal": { "$ref": "#/components/schemas/AccountPrincipal" },
+          "csrfToken": { "type": "string" },
+          "expiresAt": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      },
+      "AuthSessionEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/AuthSessionData" },
+          "error": { "type": "null" }
+        },
+        "additionalProperties": false
       },
       "ErrorDetail": {
         "type": "object",

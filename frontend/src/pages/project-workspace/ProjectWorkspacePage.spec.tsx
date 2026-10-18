@@ -34,7 +34,7 @@ const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 
 const session = {
   status: 'authenticated' as const,
-  principal: { id: 'user-1', displayName: 'Local user' },
+  principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const },
   csrfToken: 'csrf-value',
   expiresAt: '2026-09-13T00:00:00.000Z',
   errorCode: null
