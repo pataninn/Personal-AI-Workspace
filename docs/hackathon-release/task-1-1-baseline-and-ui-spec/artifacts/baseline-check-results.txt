@@ -1,0 +1,13 @@
+2026-10-19 Task 1.1 developer observations, summarized from tool outputs (not raw transcript).
+Node v22.20.0; pnpm.cmd 11.8.0.
+Initial pnpm commands: dependency check triggered registry fetch failure and aborted auto-install (non-TTY). No install performed.
+All executed package checks then used process-only pnpm_config_verify_deps_before_run=false.
+Typecheck: exit 0 frontend+backend.
+Unit: exit 1 overall; frontend Vitest 57/57 files and 286/286 tests; preview Node 25/25 tests; backend Jest 110 passed/1 failed suites, 666 passed/1 failed tests. Failure workspace-mutation-gateway.spec.ts:41 exceeded 5000ms applying create/edit/overwrite/rename/delete.
+Integration: exit 0; 13 passed/6 skipped suites, 63 passed/16 skipped tests. HOME_CONVERSATION_TEST_DATABASE_URL not provided; no guarded PostgreSQL integration run claimed.
+Boundary exact node script body: exit 1; 6 passed/1 failed. Failure expects nvidia_api_key in default app secrets while Hermes-default compose does not mount that key.
+Docker default sandbox read denied; scoped read-only escalation: app and postgres healthy; app published loopback 8443 only; PostgreSQL container port 5432 not published by inspected compose.
+Host listeners: 127.0.0.1 ports 17871,8443,5432. No 55441 observed.
+WSL distributions Ubuntu/docker-desktop. Chrome installed.
+Playwright CLI fallback: live login screenshots at 1440x1000 and 375x812, URL https://127.0.0.1:8443/login; title Personal AI Workspace; password input count 1; ignoreHTTPSErrors true. No authentication, credentials, model calls, or owner data mutations.
+Workspace and .codex are outside application Git root. Git baseline preserved six files. Generated tsconfig.node.tsbuildinfo restored only after typecheck; no other reset/restore.
