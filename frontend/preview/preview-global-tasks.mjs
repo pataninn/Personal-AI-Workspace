@@ -36,7 +36,7 @@ export async function handlePreviewGlobalTasks(request, response, seed, idempote
     return true;
   }
   if (method === 'POST' && parts.length === 3) {
-    await createInboxTask(request, response, seed, idempotency);
+    await createGlobalTask(request, response, seed, idempotency);
     return true;
   }
   if (method === 'GET' && parts.length === 4) {
@@ -539,17 +539,26 @@ function cloneValue(value) {
   return value === undefined ? undefined : structuredClone(value);
 }
 
-async function createInboxTask(request, response, seed, idempotency) {
+async function createGlobalTask(request, response, seed, idempotency) {
   const key = validIdempotencyKey(request);
   const body = await readBody(request);
+  if (!isRecord(body) || Object.keys(body).some((field) => !['title', 'details', 'workspaceId', 'importance', 'deadline', 'subtasks'].includes(field))) {
+    sendError(response, 400, 'VALIDATION_ERROR', 'Provide a valid task capture.');
+    return;
+  }
   const title = typeof body?.title === 'string' ? body.title.trim() : '';
   if (!key) { sendError(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'An idempotency key is required.'); return; }
   if (!title || Array.from(title).length > 120 || /[\u0000-\u001f\u007f]/u.test(title)) { sendError(response, 400, 'VALIDATION_ERROR', 'Enter a valid task title.'); return; }
-  if (body.workspaceId !== null || body.importance !== 'medium' || body.deadline !== null || body.details !== null || !Array.isArray(body.subtasks) || body.subtasks.length !== 0) {
-    sendError(response, 400, 'VALIDATION_ERROR', 'This capture endpoint accepts a default Inbox task only.');
+  if (!Object.hasOwn(body, 'workspaceId') || body.workspaceId !== null && (typeof body.workspaceId !== 'string' || !UUID.test(body.workspaceId)) ||
+      body.importance !== 'medium' || body.deadline !== null || body.details !== null || !Array.isArray(body.subtasks) || body.subtasks.length !== 0) {
+    sendError(response, 400, 'VALIDATION_ERROR', 'This capture endpoint accepts a default task only.');
     return;
   }
-  const fingerprint = JSON.stringify({ title, workspaceId: null, importance: 'medium', deadline: null, details: null, subtasks: [] });
+  const workspaceId = body.workspaceId;
+  const workspace = workspaceId === null ? null : findProject(seed, workspaceId);
+  if (workspaceId !== null && !workspace) { sendError(response, 404, 'PROJECT_NOT_FOUND', 'Choose an existing workspace.'); return; }
+  if (workspace?.status === 'archived') { sendError(response, 409, 'PROJECT_TASK_PROJECT_ARCHIVED', 'The workspace is archived.'); return; }
+  const fingerprint = JSON.stringify({ title, workspaceId, importance: 'medium', deadline: null, details: null, subtasks: [] });
   const replayKey = `global-task:${OWNER_ID}:${key}`;
   const previous = idempotency.get(replayKey);
   if (previous) {
@@ -557,9 +566,9 @@ async function createInboxTask(request, response, seed, idempotency) {
     sendData(response, { ...previous.result, replayed: true }, 200, { Location: `/api/v1/tasks/${previous.result.item.task.id}`, ETag: '"1"' });
     return;
   }
-  const task = buildTask(null, { ...body, title }, activeTasks(seed, null).length);
+  const task = buildTask(workspaceId, { ...body, title }, activeTasks(seed, workspaceId).length);
   seed.tasks.push(task);
-  const result = { item: taskItem(seed, task), receipt: { id: randomUUID(), actionKind: 'task.create', undoStatus: 'available', outcome: { targetId: task.id, targetVersion: task.version, destinationOrderVersion: bumpOrder(seed, null) } }, replayed: false };
+  const result = { item: taskItem(seed, task), receipt: { id: randomUUID(), actionKind: 'task.create', undoStatus: 'available', outcome: { targetId: task.id, targetVersion: task.version, destinationOrderVersion: bumpOrder(seed, workspaceId) } }, replayed: false };
   idempotency.set(replayKey, { fingerprint, result });
   sendData(response, result, 201, { Location: `/api/v1/tasks/${task.id}`, ETag: `"${task.version}"` });
 }

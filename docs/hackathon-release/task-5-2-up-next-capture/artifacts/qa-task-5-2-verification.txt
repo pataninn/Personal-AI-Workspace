@@ -1,0 +1,32 @@
+Task 5.2 independent QA verification — 2026-10-19
+
+Independent focused unit rerun (frontend directory):
+  pnpm.cmd exec vitest run --config vitest.config.mjs --configLoader runner src/features/task-capture/ui/HomeTaskCapture.spec.tsx src/widgets/home-overview/HomeOverviewWidget.spec.tsx src/pages/dashboard/DashboardPage.spec.tsx src/pages/all-tasks/AllTasksPage.spec.tsx src/entities/project-task/api/global-task-api.spec.ts
+  Result: 5 files passed; 38 tests passed. React Router emitted only future-flag warnings.
+
+Independent browser rerun (frontend directory, installed Chromium against loopback mock preview):
+  pnpm.cmd exec playwright test --config playwright.preview.config.ts task-home.preview.spec.ts
+  Result: 2 passed. Covered assigned and unassigned capture, keyboard opening/focus return, View task, All tasks unassigned label, Inbox filter, and same-idempotency-key retry after an uncertain response.
+
+Independent 320 CSS px / deviceScaleFactor 2 browser smoke:
+  Result: document scroll width 320; title, workspace selector, Cancel, Add task, and View all tasks controls were visible and within the viewport (all bounds from x=17 to x=303). An unassigned task was created and listed as Unassigned in All tasks. No page JavaScript exception occurred.
+  Environment responses observed: unauthenticated preview session request returned 401 before sign-in; adjacent Home Chat mock request `/api/v1/home/conversations?scope=home&limit=50` returned 404 and rendered the saved-conversation error. Task capture and All tasks requests succeeded. These responses are disclosed for scope clarity and are not attributed to Task 5.2.
+
+Developer-authored evidence reviewed from dev-summary.md:
+  - Full frontend Vitest suite: 57 files / 292 tests passed (refreshed developer handoff after concurrent identity tests were included).
+  - Preview API tests: 26 passed.
+  - Playwright CLI preview tests: 7 passed across task-home, task-actions, and home-summaries.
+  - Frontend typecheck and scoped git diff --check passed.
+  - Preview build completed with a 1.17 MB main-chunk warning.
+
+Browser screenshot inspection:
+  - home-up-next-desktop-preview.png
+  - home-up-next-mobile-preview.png
+  - all-tasks-unassigned-mobile-preview.png
+  - capture-retry-error-preview.png
+  - home-summaries-desktop-preview.png
+  - home-summaries-mobile-320-preview.png
+  All images identify the local preview as mock data only.
+
+MCP availability:
+  The configured tool inventory had no Playwright MCP or Chrome DevTools MCP. The required journey was exercised with Playwright CLI + Chromium; screenshots and this record provide the equivalent evidence. The six screenshots contain no real workspace data.

@@ -12,10 +12,14 @@ async function signIn(page: import('@playwright/test').Page): Promise<void> {
 }
 
 async function captureInboxTask(page: import('@playwright/test').Page, title: string): Promise<void> {
-  await page.getByTestId('home-inbox-title').fill(title);
-  await page.getByTestId('home-inbox-save').click();
-  await expect(page.getByTestId('home-inbox-saved')).toContainText('Saved to Inbox');
-  await page.getByRole('link', { name: 'View Inbox' }).click();
+  await page.getByTestId('home-add-task-toggle').click();
+  await page.getByTestId('home-task-title').fill(title);
+  await page.getByTestId('home-task-capture-submit').click();
+  await expect(page.getByTestId('home-task-capture-success')).toContainText('Task added.');
+  await page.getByTestId('home-view-all-tasks').click();
+  await expect(page).toHaveURL(/\/tasks$/u);
+  await page.getByLabel('Collection', { exact: true }).selectOption('inbox');
+  await page.getByRole('button', { name: 'Apply filters' }).click();
   await expect(page).toHaveURL(/\/tasks\?inboxOnly=true$/u);
   await expect(page.getByRole('link', { name: title })).toBeVisible();
   await page.getByRole('link', { name: title }).click();

@@ -65,6 +65,44 @@ test('global task capture is idempotent and increments the canonical Inbox count
   assert.equal((await detail.json()).data.task.id, firstBody.item.task.id);
 });
 
+test('global task capture assigns to an active planning workspace and keeps Inbox compatibility', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const projectResponse = await fetch(`${origin}/api/v1/projects`, {
+    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Home planning', workspaceMode: 'planning', objective: 'Plan work from Home' })
+  });
+  const workspace = (await projectResponse.json()).data;
+  assert.equal(projectResponse.status, 201);
+  assert.equal(workspace.workspaceMode, 'planning');
+
+  const countUrl = `${origin}/api/v1/tasks/inbox/count`;
+  const request = { title: '  Draft the agenda  ', details: null, workspaceId: workspace.id, importance: 'medium', deadline: null, subtasks: [] };
+  const create = () => fetch(`${origin}/api/v1/tasks`, { method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'home-planning-capture-1' }), body: JSON.stringify(request) });
+  const first = await create(); const firstBody = (await first.json()).data;
+  const replay = await create(); const replayBody = (await replay.json()).data;
+  assert.equal(first.status, 201);
+  assert.equal(firstBody.item.task.title, 'Draft the agenda');
+  assert.equal(firstBody.item.task.projectId, workspace.id);
+  assert.deepEqual(firstBody.item.workspace, { id: workspace.id, name: workspace.name, status: 'active' });
+  assert.equal(firstBody.item.collection, 'workspace');
+  assert.equal(replay.status, 200);
+  assert.equal(replayBody.replayed, true);
+  assert.equal(replayBody.item.task.id, firstBody.item.task.id);
+  const workspaceTasks = await (await fetch(`${origin}/api/v1/tasks?workspaceId=${workspace.id}`, { headers: headers(cookie) })).json();
+  assert.deepEqual(workspaceTasks.data.items.map(({ task }) => task.id), [firstBody.item.task.id]);
+  assert.equal((await (await fetch(countUrl, { headers: headers(cookie) })).json()).data.count, 0);
+
+  const archived = await fetch(`${origin}/api/v1/projects/${workspace.id}`, {
+    method: 'PATCH', headers: headers(cookie, { 'If-Match': '1' }), body: JSON.stringify({ status: 'archived' })
+  });
+  assert.equal(archived.status, 200);
+  const readOnlyCreate = await fetch(`${origin}/api/v1/tasks`, {
+    method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'home-planning-capture-archived' }), body: JSON.stringify({ ...request, title: 'A task that must fail' })
+  });
+  assert.equal(readOnlyCreate.status, 409);
+  assert.equal((await readOnlyCreate.json()).error.code, 'PROJECT_TASK_PROJECT_ARCHIVED');
+  assert.equal((await (await fetch(countUrl, { headers: headers(cookie) })).json()).data.count, 0);
+});
+
 test('global task reads filter collections, retain stable keyset pages, and reject cursor reuse', async () => {
   const { origin } = await startPreview(); const cookie = await signIn(origin);
   const first = await (await fetch(`${origin}/api/v1/tasks?limit=1`, { headers: headers(cookie) })).json();

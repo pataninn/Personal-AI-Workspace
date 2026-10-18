@@ -50,6 +50,7 @@ function renderDashboard(projectState: ProjectState = PROJECT_STATE, initialEntr
     <Route path="/dashboard" element={<DashboardPage />} />
     <Route path="/projects/:projectId" element={<h1>Selected project</h1>} />
     <Route path="/projects/:projectId/tasks" element={<h1>Project tasks</h1>} />
+    <Route path="/tasks" element={<h1>All tasks</h1>} />
     <Route path="/tasks/:taskId" element={<h1>Global task</h1>} />
   </Routes><LocationProbe /></MemoryRouter></Provider>);
   return store;
@@ -64,17 +65,20 @@ describe('DashboardPage chat and task Home', () => {
     listProjectsMock.mockResolvedValue({ projects: [ACTIVE_PROJECT] });
   });
 
-  it('places the Home conversation immediately after the hero and before Inbox capture', async () => {
+  it('places the Home conversation after the hero and Up next after the conversation', async () => {
     renderDashboard();
 
     const chat = await screen.findByTestId('home-chat-widget');
     const hero = screen.getByRole('heading', { name: 'Home' }).closest('header');
-    const inboxHeading = screen.getByRole('heading', { name: 'Inbox' });
+    const upNextHeading = screen.getByRole('heading', { name: 'Up next' });
 
     expect(chat).toHaveAttribute('data-scope', 'home');
     expect(chat).toHaveAttribute('aria-label', 'Home');
     expect(hero?.nextElementSibling).toBe(chat);
-    expect(Boolean(chat.compareDocumentPosition(inboxHeading) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(Boolean(chat.compareDocumentPosition(upNextHeading) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(screen.getByTestId('home-add-task-toggle')).toHaveAttribute('aria-controls', 'home-task-capture-form');
+    expect(screen.getByTestId('home-view-all-tasks')).toHaveAttribute('href', '/tasks');
+    expect(screen.queryByRole('heading', { name: 'Inbox' })).not.toBeInTheDocument();
   });
 
   it('shows the complete workspace list and opens a selected workspace', async () => {
@@ -160,7 +164,7 @@ describe('DashboardPage chat and task Home', () => {
     expect(await screen.findByTestId('workspace-boundary-error')).toHaveTextContent('authoritative workspace is unavailable');
     expect(screen.getByTestId('home-up-next-error')).toHaveTextContent('Up next is unavailable.');
     expect(screen.getByTestId(`home-workspace-link-${ACTIVE_PROJECT.id}`)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'All tasks' })).toHaveAttribute('href', '/tasks');
+    expect(screen.getByRole('link', { name: 'View all tasks' })).toHaveAttribute('href', '/tasks');
     expect(screen.getByTestId('project-create-trigger')).toBeDisabled();
     expect(screen.queryByTestId('project-empty-state')).not.toBeInTheDocument();
     expect(screen.queryByText('absolute host detail')).not.toBeInTheDocument();
@@ -177,7 +181,7 @@ describe('DashboardPage chat and task Home', () => {
     expect(await screen.findByTestId('home-up-next-error')).toHaveTextContent('Up next is unavailable.');
     expect(screen.getByTestId('home-up-next-retry')).toBeEnabled();
     expect(screen.getByTestId(`home-workspace-link-${ACTIVE_PROJECT.id}`)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'All tasks' })).toHaveAttribute('href', '/tasks');
+    expect(screen.getByRole('link', { name: 'View all tasks' })).toHaveAttribute('href', '/tasks');
     expect(screen.queryByText('internal detail')).not.toBeInTheDocument();
     expect(screen.getByTestId('project-create-trigger')).toBeDisabled();
   });
@@ -189,22 +193,21 @@ describe('DashboardPage chat and task Home', () => {
     expect(await screen.findByTestId('home-up-next-error')).toHaveTextContent('Up next is unavailable.');
     expect(screen.getByTestId(`home-workspace-link-${ACTIVE_PROJECT.id}`)).toBeInTheDocument();
     expect(screen.getByTestId('home-workspace-link-archived-project')).toHaveTextContent('Archived');
-    expect(screen.getByRole('link', { name: 'All tasks' })).toHaveAttribute('href', '/tasks');
+    expect(screen.getByRole('link', { name: 'View all tasks' })).toHaveAttribute('href', '/tasks');
     expect(screen.queryByText('internal detail')).not.toBeInTheDocument();
   });
 
-  it('refreshes the bounded overview, complete workspace list and Inbox count after a confirmed chat action', async () => {
+  it('refreshes the bounded overview and complete workspace list after a confirmed chat action', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ data: { count: 2 }, error: null }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     renderDashboard();
     await screen.findByTestId('home-chat-widget');
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).not.toHaveBeenCalled();
     await userEvent.setup().click(screen.getByTestId('simulate-confirmed-home-action'));
 
     await waitFor(() => expect(getProjectOverviewMock).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(listProjectsMock).toHaveBeenCalledOnce());
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    expect(fetchMock.mock.calls.every(([url]) => String(url) === '/api/v1/tasks/inbox/count')).toBe(true);
+    await waitFor(() => expect(listProjectsMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('clears the session when project list loading returns 401', async () => {

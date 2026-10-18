@@ -27,7 +27,7 @@ export function GlobalTaskList({ items, includeArchived, status, nextCursor, loa
       {items.map((item) => <li key={item.task.id}>
         <Link className="global-task-row" to={`/tasks/${encodeURIComponent(item.task.id)}${includeArchived || item.task.status === 'archived' ? '?includeArchived=true' : ''}`}>
           <span className="global-task-primary"><strong>{item.task.title}</strong>{item.task.status === 'archived' ? <span className="global-task-archived">Archived</span> : null}
-            <span className="supporting-copy">{item.collection === 'inbox' ? 'Inbox' : item.workspace?.name}</span></span>
+            <span className="supporting-copy">{item.workspace?.name ?? 'Unassigned'}</span></span>
           <span className="global-task-metadata"><ProjectTaskStatusLabel status={item.task.status} /><span>{TASK_IMPORTANCE_LABELS[item.task.importance]}</span><span>{item.task.deadline ? formatTaskDeadline(item.task.deadline) : 'No deadline'}</span></span>
         </Link>
       </li>)}

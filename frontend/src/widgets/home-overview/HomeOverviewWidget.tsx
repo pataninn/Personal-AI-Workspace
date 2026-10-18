@@ -1,7 +1,9 @@
+import { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { projectColor, type ProjectSnapshot, type HomeTaskSummary } from '@/entities/project';
 import { formatTaskDeadline, isTaskOverdue, TASK_IMPORTANCE_LABELS } from '@/entities/project-task';
+import { HomeTaskCapture } from '@/features/task-capture';
 import { Alert, Button, Card, ErrorState, Icon, Skeleton } from '@/shared/ui';
 
 export interface HomeWorkspaceSummary {
@@ -18,6 +20,8 @@ interface HomeOverviewWidgetProps {
   readonly workspaces: readonly HomeWorkspaceSummary[];
   readonly workspaceStatus: SummaryStatus;
   readonly onRetryWorkspaces: () => void;
+  readonly csrfToken?: string | null;
+  readonly onTaskCreated?: () => void;
 }
 
 const TASK_STATUS_LABELS: Readonly<Record<HomeTaskSummary['status'], string>> = {
@@ -33,10 +37,12 @@ export function HomeOverviewWidget({
   onRetryTasks,
   workspaces,
   workspaceStatus,
-  onRetryWorkspaces
+  onRetryWorkspaces,
+  csrfToken,
+  onTaskCreated
 }: HomeOverviewWidgetProps): React.JSX.Element {
   return <div className="home-overview-grid" data-testid="home-overview-widget">
-    <UpNextSection tasks={tasks} status={taskStatus} onRetry={onRetryTasks} />
+    <UpNextSection tasks={tasks} status={taskStatus} onRetry={onRetryTasks} workspaces={workspaces} workspaceStatus={workspaceStatus} csrfToken={csrfToken ?? null} onTaskCreated={onTaskCreated} />
     <WorkspaceSection workspaces={workspaces} status={workspaceStatus} onRetry={onRetryWorkspaces} />
   </div>;
 }
@@ -44,19 +50,45 @@ export function HomeOverviewWidget({
 function UpNextSection({
   tasks,
   status,
-  onRetry
+  onRetry,
+  workspaces,
+  workspaceStatus,
+  csrfToken,
+  onTaskCreated
 }: {
   readonly tasks: readonly HomeTaskSummary[];
   readonly status: SummaryStatus;
   readonly onRetry: () => void;
+  readonly workspaces: readonly HomeWorkspaceSummary[];
+  readonly workspaceStatus: SummaryStatus;
+  readonly csrfToken: string | null;
+  readonly onTaskCreated?: () => void;
 }): React.JSX.Element {
+  const [captureOpen, setCaptureOpen] = useState(false);
+  const addTaskButtonRef = useRef<HTMLButtonElement>(null);
+  const captureWorkspaces = workspaces.map(({ project }) => project);
+  function toggleCapture(): void {
+    if (captureOpen) addTaskButtonRef.current?.focus();
+    setCaptureOpen((open) => !open);
+  }
+  function closeCapture(): void {
+    setCaptureOpen(false);
+    addTaskButtonRef.current?.focus();
+  }
   return <section aria-labelledby="home-up-next-heading" aria-busy={status === 'loading'} data-testid="home-up-next-section">
     <Card className="home-task-card">
-      <header className="home-section-heading"><h2 id="home-up-next-heading">Up next</h2></header>
+      <header className="home-section-heading !flex-wrap">
+        <h2 id="home-up-next-heading">Up next</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button ref={addTaskButtonRef} type="button" data-testid="home-add-task-toggle" aria-expanded={captureOpen} aria-controls="home-task-capture-form" onClick={toggleCapture}>Add task</Button>
+          <Button asChild variant="secondary"><Link to="/tasks" data-testid="home-view-all-tasks">View all tasks</Link></Button>
+        </div>
+      </header>
+      <HomeTaskCapture isOpen={captureOpen} csrfToken={csrfToken} workspaces={captureWorkspaces} workspaceStatus={workspaceStatus} onCreated={onTaskCreated} onClose={closeCapture} />
       {status === 'loading' && tasks.length === 0 ? <div aria-busy="true"><p className="sr-only" role="status">Loading Up next tasks</p><Skeleton className="project-task-skeleton" /></div> : null}
       {status === 'loading' && tasks.length > 0 ? <p className="sr-only" role="status">Refreshing Up next tasks</p> : null}
       {status === 'error' ? <Alert tone="error" data-testid="home-up-next-error"><p>{tasks.length ? 'Up next could not be refreshed. Showing the last loaded tasks.' : 'Up next is unavailable.'}</p><Button type="button" variant="secondary" data-testid="home-up-next-retry" onClick={onRetry}>Try again</Button></Alert> : null}
-      {status === 'success' && tasks.length === 0 ? <p className="supporting-copy home-tasks-empty" data-testid="home-tasks-empty">No open tasks yet. Add one in a workspace to plan your next step.</p> : null}
+      {status === 'success' && tasks.length === 0 ? <p className="supporting-copy home-tasks-empty" data-testid="home-tasks-empty">No open tasks yet. Add a task to plan your next step.</p> : null}
       {tasks.length > 0 ? <ul className="home-task-list" data-testid="home-task-list">{tasks.map((task) => <TaskSummaryRow key={task.id} task={task} />)}</ul> : null}
     </Card>
   </section>;

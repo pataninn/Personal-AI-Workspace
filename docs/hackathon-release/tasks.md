@@ -5,7 +5,7 @@
 **Last Updated:** 2026-10-19
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Task 1.1 tester PASS; required task-scoped documentation commit in progress.
+**Status:** Execution active. Task 1.1 delivered; Task 2.1 identity and independent Task 5.2 Home capture implementation in progress.
 
 ## Plan Summary
 
@@ -42,7 +42,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 1.1 — Confirm baseline and define screen states
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** none
 **Risk:** Medium: existing work and migration assumptions
@@ -57,21 +57,21 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-1-1-baseline-and-ui-spec/artifacts/`
-- `Current status:` Developer baseline and release ui-spec.md complete. Live unauthenticated desktop/mobile screenshots plus isolated preview Home/task/editor screenshots and seven keyboard assertions collected; simulated API evidence is labeled. Focused filesystem suite rerun PASS 16/16. Original full-run timeout, stale Compose assertion, and 16 skipped PostgreSQL tests retained. Independent tester PASS recorded in qa-report.md; required commit pending (task not fully delivered until commit exists).
+- `Current status:` Developer baseline and release ui-spec.md complete. Live unauthenticated desktop/mobile screenshots plus isolated preview Home/task/editor screenshots and seven keyboard assertions collected; simulated API evidence is labeled. Focused filesystem suite rerun PASS 16/16. Original full-run timeout, stale Compose assertion, and 16 skipped PostgreSQL tests retained. Independent tester PASS recorded in qa-report.md; commit `721f0f26011147437f9d24c4749431169b309ad1` delivered.
 
 **Description:** Inspect current branch, existing Home task statuses/contracts, API conventions, auth ownership, runtime metering, and deployment assumptions. Capture baseline failures separately from new regressions. Write the release ui-spec.md before user-facing implementation.
 
 **Subtasks:**
 
-- [ ] Map every changed flow to existing slices/modules and identify all archive/approval callers.
-- [ ] Specify Home/Ask/history, task forms, demo, admin, memory/skills, automations, and usage screens with loading/empty/error/disabled states.
-- [ ] Document desktop/mobile spacing, keyboard/focus behavior, route transitions, and accessible labels.
+- [x] Map every changed flow to existing slices/modules and identify all archive/approval callers.
+- [x] Specify Home/Ask/history, task forms, demo, admin, memory/skills, automations, and usage screens with loading/empty/error/disabled states.
+- [x] Document desktop/mobile spacing, keyboard/focus behavior, route transitions, and accessible labels.
 
 **Definition of Done:**
 
-- [ ] Baseline report identifies existing failures; ui-spec.md covers every requested screen and dirty-form exit path; no migration or runtime readiness is inferred from old reports.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Baseline report identifies existing failures; ui-spec.md covers every requested screen and dirty-form exit path; no migration or runtime readiness is inferred from old reports.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
 
 **Upstream Outputs Needed:** Architecture sections 1–4; Task 1.1 ui-spec.md and relevant task contracts; completed dependency outputs (none required to start).
 
@@ -81,7 +81,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 2.1 — Migrate local identity to regular, admin, and demo accounts
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** developer, tester
 **Depends on:** 1.1
 **Risk:** High: authentication and existing owner data
@@ -96,7 +96,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-2-1-account-identity/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Contract/UI spec and identity/migration/session implementation written. Tester provisioned isolated PostgreSQL fixture (artifacts/qa-postgres-fixture.txt); developer reports20 integration suites/81 tests PASS with real PostgreSQL. Final checks/dev-summary and independent QA pending.
 
 **Description:** Extend user/session persistence and sign-in lookup for multiple regular accounts and passwordless demo principals. Preserve the current owner's password and data; assign initial admin role once.
 
@@ -542,7 +542,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 5.2 — Replace Inbox emphasis with Add task and View all
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 1.1
 **Risk:** Low: discoverability and unassigned task retention
@@ -557,7 +557,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-5-2-up-next-capture/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Developer implementation/dev-summary/screenshots complete. Focused Vitest38/38, previewAPI26/26, frontend typecheck and7 Playwright preview journeys PASS. Independent tester PASS in qa-report.md; independent38unit/2browser checks reproduced,320px smoke. Task-isolated commit pending; Home developer excludes identifier-login hunks from index so5.2 can commit first against existing auth. Task remains in progress until required commit.
 
 **Description:** Move compact task capture into Up next and make All tasks the destination for browsing/filtering, retaining unassigned tasks.
 
@@ -1077,8 +1077,8 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 | Task | Status | QA verdict |
 | --- | --- | --- |
-| 1.1 — Confirm baseline and define screen states | `[~]` | PASS; commit pending |
-| 2.1 — Migrate local identity to regular, admin, and demo accounts | `[ ]` | Pending |
+| 1.1 — Confirm baseline and define screen states | `[x]` | PASS; `721f0f26011147437f9d24c4749431169b309ad1` |
+| 2.1 — Migrate local identity to regular, admin, and demo accounts | `[~]` | Pending |
 | 2.2 — Enforce ownership across APIs, tools, storage, and streams | `[ ]` | Pending |
 | 3.1 — Implement atomic credit reservations and runtime metering | `[ ]` | Pending |
 | 3.2 — Enforce account storage limits on every persistent write | `[ ]` | Pending |
@@ -1090,7 +1090,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | 4.2 — Execute Home task and workspace actions through canonical use cases | `[ ]` | Pending |
 | 4.3 — Unify task deletion and remove archive behavior | `[ ]` | Pending |
 | 5.1 — Move Home assistant into a floating Ask panel | `[ ]` | Pending |
-| 5.2 — Replace Inbox emphasis with Add task and View all | `[ ]` | Pending |
+| 5.2 — Replace Inbox emphasis with Add task and View all | `[~]` | PASS; task-isolated commit pending |
 | 5.3 — Open task details editable with Save and dirty-exit protection | `[ ]` | Pending |
 | 5.4 — Audit spacing, responsiveness, and accessibility across release screens | `[ ]` | Pending |
 | 6.1 — Make memory and selected context visibly control future runs | `[ ]` | Pending |
@@ -1107,7 +1107,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Blocked Items and implementation-time inputs
 
-Task 1.1 execution is active. Architecture validation and developer baseline are complete; designer specification and tester gate are pending. Dependency ordering above applies.
+Task 1.1 is delivered. Task 2.1 is active. All subagent work delegated after the baseline commit uses GPT-6 Luna with maximum reasoning per user instruction. Dependency ordering above applies.
 
 - Task 8.1/8.2 needs the real deployment host/domain and DNS/certificate access. Do not claim the local self-signed setup fixes public browser trust.
 - Credit enforcement requires actual provider pricing and a way to bound/meter all Hermes calls. Public AI access stays disabled if that cannot be established.
@@ -1123,9 +1123,10 @@ Accepted baseline observations for Task 1.1 only; these do not waive any release
 | Severity | Baseline finding | Required resolution / owner |
 | --- | --- | --- |
 | Medium | Workspace mutation filesystem test exceeded 5000ms during concurrent baseline run | Tester focused serial rerun PASS (1 suite/16 tests, 4.84s) without edits; original full-run timeout retained as host-contention/flaky observation. Recheck in integrated acceptance. |
-| Medium | Six guarded PostgreSQL suites / 16 tests skipped without isolated database URL | Developer provision guarded disposable PostgreSQL fixtures and run genuinely before identity/persistence acceptance; skips are unverified. |
+| Medium | Six guarded PostgreSQL suites / 16 tests skipped without isolated database URL | Tester provisioned isolated loopback55441 fixture; developer reports full backend integration20 suites/81 tests PASS with PostgreSQL, pending Task2.1 independent QA verification. Original baseline skips retained as historical unverified baseline. |
 | Medium | Default Compose boundary test expects NVIDIA key despite Hermes-default topology | Developer reconcile supported default/direct topologies and retain secret isolation in deployment tasks; resolve before release. |
 | Medium | Task action rows touch metadata cards and mobile Back/action controls; editor title crowded by preview banner | Designer/developer address spacing under Tasks 5.3/5.4, verify desktop/mobile/keyboard. |
+| Medium | Task5.2 QA preview-only smoke observed404 GET /api/v1/home/conversations?scope=home&limit=50 and saved-conversation error; cause unverified | Existing capture/All tasks journey unaffected. Reproduce/resolve preview history fixture under Task5.1 Ask/history; do not infer live API failure or whole-page console PASS. |
 
 Do not defer account isolation, quota enforcement, expiry containment, trusted HTTPS, requested task/UX changes, or actual scheduled execution to meet a cosmetic launch date.
 
@@ -1133,5 +1134,5 @@ Do not defer account isolation, quota enforcement, expiry containment, trusted H
 
 - [x] Architecture and requirement traceability written.
 - [x] Dependency-ordered task list with ownership, contracts, evidence requirements, and acceptance checks written.
-- [x] Task 1.1 implementation baseline and detailed UI specification (tester PASS; delivery commit pending).
+- [x] Task 1.1 implementation baseline and detailed UI specification (tester PASS; commit `721f0f26011147437f9d24c4749431169b309ad1`).
 - [ ] All implementation and release verification tasks.

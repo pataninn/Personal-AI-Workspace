@@ -2,23 +2,23 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAppSelector } from '@/app/store/hooks';
 import { selectProjectState, useProjectOverview, type ProjectSnapshot } from '@/entities/project';
+import { selectCsrfToken } from '@/entities/user-session';
 import { CreateProjectDialog, useProjectListLoader } from '@/features/project-management';
-import { HomeInboxCapture } from '@/features/task-capture';
 import { Alert, Button, Icon } from '@/shared/ui';
 import { HomeChatWidget } from '@/widgets/home-chat';
 import { HomeOverviewWidget, type HomeWorkspaceSummary } from '@/widgets/home-overview';
 
-/** Compose Home chat, capture and independently refreshed task/workspace summaries. */
+/** Compose Home chat, Up next capture and independently refreshed task/workspace summaries. */
 export function DashboardPage(): React.JSX.Element {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const home = useProjectOverview();
   const { retry } = useProjectListLoader();
   const projectState = useAppSelector(selectProjectState);
+  const csrfToken = useAppSelector(selectCsrfToken);
   const [createOpen, setCreateOpen] = useState(false);
   const tasks = home.overview?.tasks ?? [];
   const boundaryUnavailable = home.errorCode === 'WORKSPACE_BOUNDARY_UNAVAILABLE';
-  const [summaryRefreshKey, setSummaryRefreshKey] = useState(0);
   const workspaces = mergeHomeWorkspaces(projectState.projects, home.overview?.projects ?? []);
   const workspaceStatus = projectState.listStatus === 'idle' || projectState.listStatus === 'loading'
     ? 'loading'
@@ -29,13 +29,11 @@ export function DashboardPage(): React.JSX.Element {
   }, [searchParams, setSearchParams]);
 
   function refreshWorkspaceData(): void { home.refresh(); retry(); }
-  function refreshSummaryData(): void { refreshWorkspaceData(); setSummaryRefreshKey((value) => value + 1); }
 
   return <div className="projects-page home-page">
     <header className="projects-page-header home-hero"><div><p className="product-label">Home · {new Date().toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' })}</p><h1 aria-label="Home">Pick up a <span>project</span> or<br className="hero-break" /> choose your <span>next task</span>.</h1></div><Button type="button" data-testid="project-create-trigger" disabled={home.status !== 'success' || boundaryUnavailable} onClick={() => { setCreateOpen(true); }}><Icon name="plus" size={18} />New project</Button></header>
-    <HomeChatWidget scope={{ kind: 'home' }} scopeLabel="Home" onSummaryRefreshRequested={refreshSummaryData} />
+    <HomeChatWidget scope={{ kind: 'home' }} scopeLabel="Home" onSummaryRefreshRequested={refreshWorkspaceData} />
     {boundaryUnavailable ? <Alert tone="error" data-testid="workspace-boundary-error" role="alert"><strong>The authoritative workspace is unavailable.</strong><p>Project actions are disabled until the local workspace setup is available.</p><Button type="button" variant="secondary" data-testid="workspace-boundary-retry-button" onClick={refreshWorkspaceData}>Try again</Button></Alert> : null}
-    <HomeInboxCapture onCreated={refreshWorkspaceData} summaryRefreshKey={summaryRefreshKey} />
     <HomeOverviewWidget
       tasks={tasks}
       taskStatus={home.status}
@@ -43,6 +41,8 @@ export function DashboardPage(): React.JSX.Element {
       workspaces={workspaces}
       workspaceStatus={workspaceStatus}
       onRetryWorkspaces={retry}
+      csrfToken={csrfToken}
+      onTaskCreated={refreshWorkspaceData}
     />
     <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} onRetryBoundary={refreshWorkspaceData} onCreated={(projectId) => { navigate(`/projects/${projectId}`); }} />
   </div>;

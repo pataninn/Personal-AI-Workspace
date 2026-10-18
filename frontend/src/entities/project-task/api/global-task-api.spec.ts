@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiClientError } from '@/shared/api';
-import { archiveGlobalTask, createInboxTask, getGlobalTask, getInboxTaskCount, getTaskActionReceipt, listGlobalTasks, moveGlobalTask, undoTaskAction, updateGlobalTask } from '@/entities/project-task/api/global-task-api';
+import { archiveGlobalTask, createGlobalTask, createInboxTask, getGlobalTask, getInboxTaskCount, getTaskActionReceipt, listGlobalTasks, moveGlobalTask, undoTaskAction, updateGlobalTask } from '@/entities/project-task/api/global-task-api';
 
 const WORKSPACE_ID = '11111111-1111-4111-8111-111111111111';
 const TASK_ID = '22222222-2222-4222-8222-222222222222';
@@ -48,6 +48,17 @@ describe('global task API', () => {
     expect(path).toBe('/api/v1/tasks');
     expect(JSON.parse(String(request?.body))).toEqual({ title: 'Send the proposal', details: null, workspaceId: null, importance: 'medium', deadline: null, subtasks: [] });
     expect(new Headers(request?.headers).get('Idempotency-Key')).toBe('intent-key');
+    expect(new Headers(request?.headers).get('X-CSRF-Token')).toBe('csrf-token');
+  });
+
+  it('creates a task in the requested workspace through the same canonical endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(envelope({ item: workspaceItem, replayed: false, receipt: { id: 'receipt' } }));
+    await expect(createGlobalTask({ title: '  Plan the launch  ', details: null, workspaceId: WORKSPACE_ID }, 'csrf-token', 'assigned-intent'))
+      .resolves.toEqual({ item: workspaceItem, replayed: false });
+    const [path, request] = fetchMock.mock.calls[0] ?? [];
+    expect(path).toBe('/api/v1/tasks');
+    expect(JSON.parse(String(request?.body))).toEqual({ title: 'Plan the launch', details: null, workspaceId: WORKSPACE_ID, importance: 'medium', deadline: null, subtasks: [] });
+    expect(new Headers(request?.headers).get('Idempotency-Key')).toBe('assigned-intent');
     expect(new Headers(request?.headers).get('X-CSRF-Token')).toBe('csrf-token');
   });
 

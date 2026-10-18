@@ -10,49 +10,84 @@ async function signIn(page: import('@playwright/test').Page): Promise<void> {
   await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);
 }
 
-test('captures from Home, refreshes Inbox, filters All tasks, and opens the stable task detail', async ({ page }, testInfo) => {
-  const title = 'Review release checklist';
+async function saveScreenshot(page: import('@playwright/test').Page, testInfo: import('@playwright/test').TestInfo, name: string): Promise<void> {
+  const path = testInfo.outputPath(name);
+  await mkdir(dirname(path), { recursive: true });
+  await page.screenshot({ path, fullPage: true });
+}
+
+test('captures assigned and unassigned tasks from Home and browses them through All tasks', async ({ page }, testInfo) => {
+  const suffix = Date.now().toString(36);
+  const workspaceName = `Home planning ${suffix}`;
+  const assignedTitle = `Review release checklist ${suffix}`;
+  const unassignedTitle = `Sort receipts ${suffix}`;
+
   await signIn(page);
-  await expect(page.getByTestId('home-inbox-count')).toHaveAttribute('aria-label', /Inbox tasks$/u);
-  const countBefore = Number(await page.getByTestId('home-inbox-count').textContent());
-  await page.getByTestId('home-inbox-title').focus();
-  await page.getByTestId('home-inbox-title').fill(title);
-  await page.getByTestId('home-inbox-title').press('Enter');
-  await expect(page.getByTestId('home-inbox-saved')).toContainText('Saved to Inbox');
-  await expect(page.getByTestId('home-inbox-count')).toHaveText(String(countBefore + 1).padStart(2, '0'));
-  const homeScreenshot = testInfo.outputPath('home-inbox-capture.png');
-  await mkdir(dirname(homeScreenshot), { recursive: true });
-  await page.screenshot({ path: homeScreenshot, fullPage: true });
-
-  await page.getByRole('link', { name: 'View Inbox' }).click();
-  await expect(page).toHaveURL(/\/tasks\?inboxOnly=true$/u);
-  await expect(page.getByRole('link', { name: new RegExp(title, 'u') })).toBeVisible();
+  const workspaceResponse = await page.request.post('/api/v1/projects', {
+    headers: { 'X-CSRF-Token': 'preview-only-csrf-token' },
+    data: { name: workspaceName, workspaceMode: 'planning', objective: 'Capture from the local mock preview.' }
+  });
+  expect(workspaceResponse.status()).toBe(201);
+  const workspace = (await workspaceResponse.json()).data as { readonly id: string; readonly workspaceMode: string };
+  expect(workspace.workspaceMode).toBe('planning');
   await page.reload();
-  await expect(page.getByRole('link', { name: new RegExp(title, 'u') })).toBeVisible();
+  await expect(page.getByTestId('home-add-task-toggle')).toBeVisible();
 
-  await page.getByRole('link', { name: 'All tasks' }).first().click();
-  await page.getByRole('searchbox', { name: 'Search' }).fill(title);
-  await page.getByRole('button', { name: 'Apply filters' }).click();
-  await expect.poll(() => new URL(page.url()).searchParams.get('q')).toBe(title);
-  const taskLink = page.getByRole('link', { name: new RegExp(title, 'u') });
-  await expect(taskLink).toBeVisible();
-  const allTasksScreenshot = testInfo.outputPath('all-tasks-filtered.png');
-  await mkdir(dirname(allTasksScreenshot), { recursive: true });
-  await page.screenshot({ path: allTasksScreenshot, fullPage: true });
-  const taskHref = await taskLink.getAttribute('href');
+  const addTask = page.getByTestId('home-add-task-toggle');
+  await addTask.focus();
+  await page.keyboard.press('Enter');
+  await expect(addTask).toHaveAttribute('aria-expanded', 'true');
+  const title = page.getByTestId('home-task-title');
+  await expect(title).toBeFocused();
+  await expect(page.getByLabel('Workspace (optional)')).toHaveValue('');
+  await page.getByLabel('Workspace (optional)').selectOption(workspace.id);
+  await title.fill(assignedTitle);
+  await saveScreenshot(page, testInfo, 'home-up-next-desktop.png');
+  await page.getByTestId('home-task-capture-submit').click();
+  await expect(page.getByTestId('home-task-capture-success')).toContainText('Task added.');
+  const viewTask = page.getByTestId('home-task-capture-view-task');
+  const taskHref = await viewTask.getAttribute('href');
   expect(taskHref).toMatch(/^\/tasks\/[^/]+$/u);
-  const taskId = taskHref?.slice('/tasks/'.length);
-  await taskLink.click();
-  await expect(page).toHaveURL(`/tasks/${taskId}`);
-  await expect(page.getByTestId('task-detail-page')).toContainText(title);
-  await expect(page.getByText('Inbox', { exact: true }).first()).toBeVisible();
+  await viewTask.click();
+  await expect(page).toHaveURL(taskHref!);
+  await expect(page.getByTestId('task-detail-page')).toContainText(assignedTitle);
+  await expect(page.getByTestId('task-detail-page')).toContainText(workspaceName);
+
+  await page.goto('/dashboard');
   await page.setViewportSize({ width: 375, height: 812 });
-  await page.screenshot({ path: testInfo.outputPath('task-detail-mobile.png'), fullPage: true });
-  await expect(page.getByRole('heading', { name: title })).toBeVisible();
+  const mobileAddTask = page.getByTestId('home-add-task-toggle');
+  await mobileAddTask.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('home-task-title')).toBeFocused();
+  await expect(page.getByLabel('Workspace (optional)')).toHaveValue('');
+  await page.getByTestId('home-task-title').fill(unassignedTitle);
+  await saveScreenshot(page, testInfo, 'home-up-next-mobile.png');
+  await page.getByTestId('home-task-title').press('Enter');
+  await expect(page.getByTestId('home-task-capture-success')).toContainText('Task added.');
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+  await mobileAddTask.click();
+  await expect(mobileAddTask).toHaveAttribute('aria-expanded', 'false');
+  await expect(mobileAddTask).toBeFocused();
+  await page.getByTestId('home-view-all-tasks').click();
+  await expect(page).toHaveURL(/\/tasks$/u);
+  await page.getByRole('searchbox', { name: 'Search' }).fill(unassignedTitle);
+  await page.getByRole('button', { name: 'Apply filters' }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get('q')).toBe(unassignedTitle);
+  const unassignedLink = page.getByRole('link', { name: new RegExp(unassignedTitle, 'u') });
+  await expect(unassignedLink).toContainText('Unassigned');
+  await expect(page.getByRole('link', { name: 'Inbox' })).toHaveCount(0);
+  await expect(page.getByLabel('Collection', { exact: true })).toContainText('Inbox');
+  await saveScreenshot(page, testInfo, 'all-tasks-unassigned-mobile.png');
+
+  await page.getByLabel('Collection', { exact: true }).selectOption('inbox');
+  await page.getByRole('button', { name: 'Apply filters' }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get('inboxOnly')).toBe('true');
+  await expect(page.getByRole('link', { name: new RegExp(unassignedTitle, 'u') })).toContainText('Unassigned');
 });
 
 test('keeps an uncertain capture available for retry with the same idempotency key', async ({ page }, testInfo) => {
-  const title = 'Retry capture after a temporary failure';
+  const title = `Retry capture after a temporary failure ${Date.now().toString(36)}`;
   const idempotencyKeys: string[] = [];
   let failedOnce = false;
   await page.route('**/api/v1/tasks', async (route) => {
@@ -67,16 +102,17 @@ test('keeps an uncertain capture available for retry with the same idempotency k
   });
 
   await signIn(page);
-  await page.getByTestId('home-inbox-title').fill(title);
-  await page.getByTestId('home-inbox-save').click();
-  await expect(page.getByTestId('home-inbox-save-error')).toBeVisible();
-  await expect(page.getByTestId('home-inbox-title')).toHaveValue(title);
-  await expect(page.getByTestId('home-inbox-retry')).toBeEnabled();
-  const failureScreenshot = testInfo.outputPath('capture-retry-error.png');
-  await mkdir(dirname(failureScreenshot), { recursive: true });
-  await page.screenshot({ path: failureScreenshot, fullPage: true });
-  await page.getByTestId('home-inbox-retry').click();
-  await expect(page.getByTestId('home-inbox-saved')).toContainText('Saved to Inbox');
+  await page.getByTestId('home-add-task-toggle').click();
+  const titleInput = page.getByTestId('home-task-title');
+  await expect(titleInput).toBeFocused();
+  await titleInput.fill(title);
+  await page.getByTestId('home-task-capture-submit').click();
+  await expect(page.getByTestId('home-task-capture-error')).toBeVisible();
+  await expect(titleInput).toHaveValue(title);
+  await expect(page.getByTestId('home-task-capture-retry')).toBeEnabled();
+  await saveScreenshot(page, testInfo, 'capture-retry-error.png');
+  await page.getByTestId('home-task-capture-retry').click();
+  await expect(page.getByTestId('home-task-capture-success')).toContainText('Task added.');
   expect(idempotencyKeys).toHaveLength(2);
   expect(idempotencyKeys[0]).toBeTruthy();
   expect(idempotencyKeys[1]).toBe(idempotencyKeys[0]);

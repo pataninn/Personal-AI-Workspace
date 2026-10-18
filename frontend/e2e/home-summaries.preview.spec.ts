@@ -48,7 +48,7 @@ test.afterEach(async ({ page }, testInfo) => {
   );
 });
 
-test('renders bounded Up next, canonical Inbox count, and complete active/archive workspace summaries', async ({ page }, testInfo) => {
+test('renders bounded Up next actions and complete active/archive workspace summaries', async ({ page }, testInfo) => {
   const homeApi = new HomeChatPreviewApi(page);
   await homeApi.install();
   homeFixtureByPage.set(page, homeApi);
@@ -67,8 +67,9 @@ test('renders bounded Up next, canonical Inbox count, and complete active/archiv
   await expect(upNext.getByText('No deadline', { exact: true })).toBeVisible();
   await expect(upNext).not.toContainText(/\b\d+\s+tasks?\b/iu);
 
-  await expect(page.getByTestId('home-inbox-count')).toHaveText('03');
-  await expect(page.getByRole('link', { name: 'All tasks', exact: true })).toHaveAttribute('href', '/tasks');
+  await expect(page.getByTestId('home-add-task-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByTestId('home-view-all-tasks')).toHaveAttribute('href', '/tasks');
+  await expect(page.getByTestId('home-inbox-count')).toHaveCount(0);
 
   const workspaces = page.getByTestId('home-workspace-list');
   await expect(workspaces.getByTestId(`home-workspace-link-${ACTIVE_WORKSPACE_ID}`)).toHaveAttribute('href', `/projects/${ACTIVE_WORKSPACE_ID}`);
@@ -83,7 +84,7 @@ test('renders bounded Up next, canonical Inbox count, and complete active/archiv
 
   expect(summaries.calls.overview).toEqual(['?taskLimit=6']);
   expect(summaries.calls.projectLists).toEqual(['?includeArchived=true']);
-  expect(summaries.calls.inboxCount).toBe(1);
+  expect(summaries.calls.inboxCount).toBe(0);
 
   await page.keyboard.press('Tab');
   setPreviewBrowserEvidenceMetadata(page, 'keyboardFocusAfterSummaryRender', await page.evaluate(() => ({
@@ -194,7 +195,8 @@ test('reloads saved receipt and draft state, supports keyboard edits, and retain
   expect(retryRequests[1]?.idempotencyKey).toBe(retryRequests[0]?.idempotencyKey);
   await expect.poll(() => summaries.calls.overview.length).toBe(summaryRefreshBeforeUndo.overview + 1);
   await expect.poll(() => summaries.calls.projectLists.length).toBe(summaryRefreshBeforeUndo.projectLists + 1);
-  await expect.poll(() => summaries.calls.inboxCount).toBe(summaryRefreshBeforeUndo.inboxCount + 1);
+  expect(summaries.calls.inboxCount).toBe(summaryRefreshBeforeUndo.inboxCount);
+  expect(summaries.calls.inboxCount).toBe(0);
 
   setPreviewBrowserEvidenceMetadata(page, 'proposalEditKeyboard', {
     editRequests: planning.calls.proposalEdits,
@@ -207,7 +209,7 @@ test('reloads saved receipt and draft state, supports keyboard edits, and retain
   expect(summaries.calls.overview.length).toBeGreaterThan(0);
 });
 
-test('accepts a synthetic proposal partially, exposes its unknown item, and refreshes each summary once for the receipt batch', async ({ page, browser }, testInfo) => {
+test('accepts a synthetic proposal partially, exposes its unknown item, and refreshes each Home summary once for the receipt batch', async ({ page, browser }, testInfo) => {
   const { homeApi, summaries, planning } = await installPlanningScenario(page, { includeInitialReceipts: false });
   await signIn(page);
   await page.goto(`/dashboard?conversation=${HOME_SUMMARY_CONVERSATION_ID}`);
@@ -217,7 +219,7 @@ test('accepts a synthetic proposal partially, exposes its unknown item, and refr
   await expect(page.getByTestId(`home-proposal-item-${ACCEPT_ITEM_ONE_ID}`)).toContainText('America/Los_Angeles');
   await expect.poll(() => summaries.calls.overview.length).toBe(2);
   await expect.poll(() => summaries.calls.projectLists.length).toBe(2);
-  await expect.poll(() => summaries.calls.inboxCount).toBe(2);
+  expect(summaries.calls.inboxCount).toBe(0);
 
   const beforeRefresh = {
     overview: summaries.calls.overview.length,
@@ -237,7 +239,8 @@ test('accepts a synthetic proposal partially, exposes its unknown item, and refr
 
   await expect.poll(() => summaries.calls.overview.length).toBe(beforeRefresh.overview + 1);
   await expect.poll(() => summaries.calls.projectLists.length).toBe(beforeRefresh.projectLists + 1);
-  await expect.poll(() => summaries.calls.inboxCount).toBe(beforeRefresh.inboxCount + 1);
+  expect(summaries.calls.inboxCount).toBe(beforeRefresh.inboxCount);
+  expect(summaries.calls.inboxCount).toBe(0);
   expect(planning.calls.undoRequests).toEqual([]);
   expect(planning.calls.proposalResumes).toEqual([]);
 

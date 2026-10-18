@@ -1,1 +1,1 @@
-export { HomeInboxCapture } from '@/features/task-capture/ui/HomeInboxCapture';
+export { HomeTaskCapture } from '@/features/task-capture/ui/HomeTaskCapture';

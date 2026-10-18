@@ -45,6 +45,7 @@ function renderOverview(options: {
   readonly taskStatus?: 'loading' | 'success' | 'error';
   readonly workspaces?: readonly HomeWorkspaceSummary[];
   readonly workspaceStatus?: 'loading' | 'success' | 'error';
+  readonly csrfToken?: string | null;
   readonly onRetryTasks?: () => void;
   readonly onRetryWorkspaces?: () => void;
 } = {}) {
@@ -54,6 +55,7 @@ function renderOverview(options: {
     onRetryTasks: options.onRetryTasks ?? vi.fn(),
     workspaces: options.workspaces ?? [],
     workspaceStatus: options.workspaceStatus ?? 'success',
+    csrfToken: options.csrfToken ?? 'csrf-token',
     onRetryWorkspaces: options.onRetryWorkspaces ?? vi.fn()
   };
   const result = render(<MemoryRouter><HomeOverviewWidget {...props} /></MemoryRouter>);
@@ -132,5 +134,23 @@ describe('HomeOverviewWidget', () => {
     rerender(<MemoryRouter><HomeOverviewWidget tasks={[]} taskStatus="success" onRetryTasks={vi.fn()} workspaces={[]} workspaceStatus="success" onRetryWorkspaces={vi.fn()} /></MemoryRouter>);
     expect(screen.getByTestId('home-tasks-empty')).toHaveTextContent('No open tasks yet.');
     expect(screen.getByTestId('home-workspaces-empty')).toBeInTheDocument();
+  });
+
+  it('keeps Add task and View all tasks available in an empty state and returns focus when capture closes', async () => {
+    renderOverview();
+    const addTask = screen.getByRole('button', { name: 'Add task' });
+    expect(screen.getByRole('link', { name: 'View all tasks' })).toHaveAttribute('href', '/tasks');
+    expect(addTask).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('home-task-capture-form')).not.toBeVisible();
+    expect(screen.getByTestId('home-tasks-empty')).toHaveTextContent('No open tasks yet. Add a task to plan your next step.');
+
+    const user = userEvent.setup();
+    await user.click(addTask);
+    expect(await screen.findByRole('textbox', { name: 'Task title' })).toHaveFocus();
+    expect(screen.getByTestId('home-task-capture-form')).toBeVisible();
+    expect(addTask).toHaveAttribute('aria-expanded', 'true');
+    await user.click(addTask);
+    expect(addTask).toHaveAttribute('aria-expanded', 'false');
+    expect(addTask).toHaveFocus();
   });
 });

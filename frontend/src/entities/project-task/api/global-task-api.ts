@@ -11,6 +11,10 @@ export interface GlobalTaskCreateResult {
   readonly replayed: boolean;
 }
 
+export interface GlobalTaskCreateDraft extends ProjectTaskDraft {
+  readonly workspaceId: string | null;
+}
+
 export type GlobalTaskPatch = Partial<ProjectTaskDraft>;
 export type TaskMutationKind = 'task.update' | 'task.move' | 'task.archive';
 export type TaskUndoStatus = 'available' | 'not_reversible' | 'undone';
@@ -76,12 +80,17 @@ export async function getInboxTaskCount(): Promise<InboxTaskCount> {
   return { count: readNonNegativeInteger(response?.count) };
 }
 
-export async function createInboxTask(title: string, csrfToken: string, idempotencyKey: string): Promise<GlobalTaskCreateResult> {
+export async function createGlobalTask(draft: GlobalTaskCreateDraft, csrfToken: string, idempotencyKey: string): Promise<GlobalTaskCreateResult> {
   const response = asRecord(await postJson<unknown>(TASKS_PATH, {
-    title: title.trim(), details: null, workspaceId: null, importance: 'medium', deadline: null, subtasks: []
+    title: draft.title.trim(), details: draft.details, workspaceId: draft.workspaceId,
+    importance: draft.importance ?? 'medium', deadline: draft.deadline ?? null, subtasks: draft.subtasks ?? []
   }, { 'X-CSRF-Token': csrfToken, 'Idempotency-Key': idempotencyKey }));
   if (typeof response?.replayed !== 'boolean') throw invalidResponse();
   return { item: normalizeGlobalTaskItem(response.item), replayed: response.replayed };
+}
+
+export function createInboxTask(title: string, csrfToken: string, idempotencyKey: string): Promise<GlobalTaskCreateResult> {
+  return createGlobalTask({ title, details: null, workspaceId: null }, csrfToken, idempotencyKey);
 }
 
 export async function updateGlobalTask(taskId: string, patch: GlobalTaskPatch, expectedVersion: number, csrfToken: string, idempotencyKey: string): Promise<GlobalTaskMutationResult> {

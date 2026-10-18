@@ -28,6 +28,7 @@ const workspaceTask = {
   collection: 'workspace', workspace: { id: WORKSPACE.id, name: WORKSPACE.name, status: 'active' }
 } as const;
 const anotherTask = { ...workspaceTask, task: { ...workspaceTask.task, id: 'task-2', title: 'Send summary' } };
+const unassignedTask = { ...workspaceTask, task: { ...workspaceTask.task, id: 'task-unassigned', projectId: null, title: 'Sort receipts' }, collection: 'inbox', workspace: null } as const;
 const archivedWorkspaceTask = {
   ...workspaceTask,
   workspace: { ...workspaceTask.workspace, status: 'archived' as const }
@@ -64,6 +65,22 @@ describe('AllTasksPage', () => {
 
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/tasks?status=done&q=proposal'));
     await waitFor(() => expect(listGlobalTasksMock).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'done', q: 'proposal' })));
+  });
+
+  it('keeps unassigned tasks in All tasks and leaves Inbox available as a collection filter', async () => {
+    listGlobalTasksMock.mockResolvedValue({ items: [workspaceTask, unassignedTask], nextCursor: null });
+    renderAllTasks();
+    const unassignedLink = await screen.findByRole('link', { name: /Sort receipts/ });
+
+    expect(unassignedLink).toHaveTextContent('Unassigned');
+    expect(screen.queryByRole('link', { name: 'Inbox' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Collection')).toHaveValue('all');
+
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByLabelText('Collection'), 'inbox');
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/tasks?inboxOnly=true'));
+    await waitFor(() => expect(listGlobalTasksMock).toHaveBeenLastCalledWith({ inboxOnly: true }));
   });
 
   it('appends cursor results only when requested by Load more', async () => {
