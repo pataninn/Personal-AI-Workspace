@@ -29,6 +29,10 @@ export interface HomeTurn {
   readonly sequence: number;
   readonly requestKey: string;
   readonly status: HomeTurnStatus;
+  /** Stored Home-policy revision bound when this turn was admitted; null marks a legacy turn. */
+  readonly homePolicyRevision: string | null;
+  /** Stored workspace-policy revision for workspace-scoped Home turns; null for Home or legacy turns. */
+  readonly workspacePolicyRevision: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -40,7 +44,7 @@ export function canTransitionHomeTurn(from: HomeTurnStatus, to: HomeTurnStatus):
   }
   const allowed: Readonly<Record<HomeTurnStatus, readonly HomeTurnStatus[]>> = {
     pending: ['running', 'cancel_requested', 'failed', 'cancelled', 'unknown', 'unsupported'],
-    running: ['cancel_requested', 'completed', 'partial', 'failed', 'cancelled', 'unknown'],
+    running: ['cancel_requested', 'completed', 'partial', 'failed', 'cancelled', 'unknown', 'unsupported'],
     cancel_requested: ['cancelled', 'unknown'],
     completed: [],
     partial: [],

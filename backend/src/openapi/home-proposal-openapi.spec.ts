@@ -7,6 +7,25 @@ function record(value: unknown, label: string): JsonRecord {
   return value as JsonRecord;
 }
 
+function expectRetiredOperation(paths: JsonRecord, pathName: string, method: string): void {
+  const operation = record(record(paths[pathName], pathName)[method], `${method} ${pathName}`);
+  const responses = record(operation.responses, `${method} ${pathName} responses`);
+  expect(Object.keys(responses).filter((status) => status.startsWith('2'))).toEqual([]);
+  const retired = record(responses['409'], `${method} ${pathName} 409 response`);
+  expect(retired.description).toEqual(expect.stringContaining('POLICY_ACTION_RETIRED'));
+  const schema = record(record(record(retired.content, '409 content')['application/json'], '409 JSON content').schema, '409 error schema');
+  expect(schema.$ref).toBe('#/components/schemas/ErrorEnvelope');
+  expect(operation.security).toEqual([{ sessionCookie: [] }]);
+  const parameters = Array.isArray(operation.parameters) ? operation.parameters : [];
+  expect(parameters).toEqual(expect.arrayContaining([
+    expect.objectContaining({ $ref: '#/components/parameters/OriginHeader' }),
+    expect.objectContaining({ $ref: '#/components/parameters/CsrfHeader' })
+  ]));
+  expect(responses['400']).toBeDefined();
+  expect(responses['401']).toBeDefined();
+  expect(responses['403']).toBeDefined();
+}
+
 describe('Home proposal OpenAPI contract', () => {
   it('documents owner-scoped proposal review, execution, and cancellation endpoints', () => {
     const document = record(openApiDocument, 'OpenAPI document');
@@ -14,10 +33,6 @@ describe('Home proposal OpenAPI contract', () => {
     const expected = [
       ['/api/v1/home/conversations/{conversationId}/proposals', 'get', '200'],
       ['/api/v1/home/conversations/{conversationId}/proposals/{proposalId}', 'get', '200'],
-      ['/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/items/{itemId}', 'patch', '200'],
-      ['/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/items/{itemId}', 'delete', '200'],
-      ['/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/acceptance', 'post', '201'],
-      ['/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/execution', 'post', '200'],
       ['/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/cancellation', 'post', '200']
     ] as const;
 
@@ -36,6 +51,10 @@ describe('Home proposal OpenAPI contract', () => {
         ]));
       }
     }
+    expectRetiredOperation(paths, '/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/items/{itemId}', 'patch');
+    expectRetiredOperation(paths, '/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/items/{itemId}', 'delete');
+    expectRetiredOperation(paths, '/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/acceptance', 'post');
+    expectRetiredOperation(paths, '/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/execution', 'post');
   });
 
   it('defines strict proposal revisions, bounded item states, and execution result schemas', () => {

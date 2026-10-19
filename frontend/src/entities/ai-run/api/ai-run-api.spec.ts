@@ -20,6 +20,18 @@ const factDisclosure = {
 };
 
 describe('AI run API normalizers', () => {
+  it('preserves stored policy authorization without treating it as a user approval', () => {
+    const snapshot = normalizeAiRunSnapshot({
+      runId: RUN_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID,
+      status: 'queued', phase: 'inference', decision: 'policy_authorized', manifestHash: HASH,
+      safeMessage: 'Assistant run is queued.', cleanup: 'not_started',
+      providerTransmission: 'not_started', stagingItemCount: 0
+    });
+
+    expect(snapshot.decision).toBe('policy_authorized');
+    expect(snapshot).not.toHaveProperty('providerApprovalMode');
+  });
+
   it('normalizes the disclosure envelope without rendering absolute or traversal paths', () => {
     const manifest = normalizeEgressManifest({
       runId: RUN_ID,

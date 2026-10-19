@@ -16,6 +16,7 @@ import type { AiRunActivityRecordPage, ListAiRunActivityInput } from '@/modules/
 import type { CancelRunUpdate, CompleteRunUpdate, IAiRunRepository, RunMutationResult, StartRunUpdate } from '@/modules/ai-runs/repositories/ai-run-repository';
 import { ProjectArchivedError } from '@/modules/conversations/domain/conversation-errors';
 import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
+import { AssistantExecutionPolicyChangedError } from '@/modules/assistant-policy/domain/assistant-execution-errors';
 import type { TaskSuggestionCompletionWriter } from '@/infrastructure/database/repositories/task-suggestion-completion-writer';
 
 interface AiRunRow {
@@ -33,6 +34,7 @@ interface AiRunRow {
   readonly status: AiRun['status'];
   readonly phase: AiRun['phase'];
   readonly decision: AiRun['decision'];
+  readonly policy_revision?: string | null;
   readonly cleanup: AiRun['cleanup'];
   readonly provider_transmission: AiRun['providerTransmission'];
   readonly staging_item_count: number;
@@ -68,19 +70,39 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
   ) {}
 
   public async recoverInterruptedRunsForReview(): Promise<number> {
-    const rows: unknown = await this.dataSource.query(
-      `UPDATE "ai_runs"
-       SET "status" = 'review_required', "phase" = 'review', "cleanup" = 'unknown',
-           "provider_transmission" = CASE
-             WHEN "provider_transmission" IN ('transmitted_confirmed', 'not_started_confirmed') THEN "provider_transmission"
-             ELSE 'unknown'
-           END,
-           "safe_message" = $1, "updated_at" = now()
-       WHERE "status" IN ('staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested')
-       RETURNING "id"`,
-      ['The app restarted while this run was active. Review its saved status; no work was resumed automatically.']
-    );
-    return returnedCount(rows);
+    const runner = this.dataSource.createQueryRunner();
+    await runner.connect();
+    await runner.startTransaction();
+    try {
+      await runner.query(
+        `UPDATE "sandbox_commands"
+         SET "status" = 'review_required', "safe_message" = $1, "updated_at" = now()
+         WHERE "run_id" IN (
+           SELECT "id" FROM "ai_runs" WHERE "decision"::text = 'policy_authorized'
+             AND "status" IN ('staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested')
+         ) AND "status" IN ('awaiting_approval', 'running', 'cancel_requested')`,
+        ['The app restarted while this command was active. Review its saved status; the command was not resumed.']
+      );
+      const rows: unknown = await runner.query(
+        `UPDATE "ai_runs"
+         SET "status" = 'review_required', "phase" = 'review', "cleanup" = 'unknown',
+             "provider_transmission" = CASE
+               WHEN "provider_transmission" IN ('transmitted_confirmed', 'not_started_confirmed') THEN "provider_transmission"
+               ELSE 'unknown'
+             END,
+             "safe_message" = $1, "updated_at" = now()
+         WHERE "status" IN ('staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested')
+         RETURNING "id"`,
+        ['The app restarted while this run was active. Review its saved status; no work was resumed automatically.']
+      );
+      await runner.commitTransaction();
+      return returnedCount(rows);
+    } catch (error: unknown) {
+      if (runner.isTransactionActive) await runner.rollbackTransaction();
+      throw error;
+    } finally {
+      await runner.release();
+    }
   }
 
   public async create(input: CreateAiRunRecord): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> {
@@ -99,11 +121,33 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
         return { resource: replay, replayed: true };
       }
       await assertProjectActive(queryRunner, input.ownerId, input.projectId);
+      if (input.policyRevision !== undefined) {
+        if (!/^\d+$/u.test(input.policyRevision) || BigInt(input.policyRevision) < 1n) {
+          throw new AssistantExecutionPolicyChangedError();
+        }
+        const policyRows: readonly { policy_profile: string; provider_profile: string | null; model: string | null; enabled: boolean; revoked_at: Date | string | null; revision: string }[] = await queryRunner.query(
+          `SELECT "policy_profile", "provider_profile", "model", "enabled", "revoked_at", "revision"
+           FROM "assistant_scope_policies" WHERE "owner_id" = $1 AND "scope_kind" = 'project' AND "project_id" = $2
+           LIMIT 1 FOR SHARE`,
+          [input.ownerId, input.projectId]
+        );
+        const policy = policyRows[0];
+        if (!policy || policy.policy_profile !== 'workspace_in_scope_v1' || !policy.enabled || policy.revoked_at !== null
+          || policy.revision !== input.policyRevision || policy.provider_profile !== input.manifest.providerProfile || policy.model !== input.manifest.model) {
+          throw new AssistantExecutionPolicyChangedError();
+        }
+      }
       const rows: readonly AiRunRow[] = await queryRunner.query(
-       `INSERT INTO "ai_runs" ("owner_id", "project_id", "conversation_id", "request", "relative_root", "storage_kind", "requested_paths", "manifest", "manifest_hash", "create_idempotency_key", "request_fingerprint", "safe_message")
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12)
+       `INSERT INTO "ai_runs" ("owner_id", "project_id", "conversation_id", "request", "relative_root", "storage_kind", "requested_paths", "manifest", "manifest_hash", "create_idempotency_key", "request_fingerprint", "decision", "policy_revision", "status", "phase", "safe_message")
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11,
+           CASE WHEN $12::bigint IS NULL THEN 'pending'::"ai_run_decision" ELSE 'policy_authorized'::"ai_run_decision" END,
+           $12::bigint,
+           CASE WHEN $12::bigint IS NULL THEN 'pending_approval'::"ai_run_status" ELSE 'staging'::"ai_run_status" END,
+           CASE WHEN $12::bigint IS NULL THEN 'decision'::"ai_run_phase" ELSE 'staging'::"ai_run_phase" END,
+           $13)
          RETURNING *`,
-        [input.ownerId, input.projectId, input.conversationId, input.request, input.relativeRoot, input.storageKind, JSON.stringify(input.requestedPaths), JSON.stringify(input.manifest), input.manifest.manifestHash, input.idempotencyKey, input.requestFingerprint, 'Review the provider disclosure before continuing.']
+        [input.ownerId, input.projectId, input.conversationId, input.request, input.relativeRoot, input.storageKind, JSON.stringify(input.requestedPaths), JSON.stringify(input.manifest), input.manifest.manifestHash, input.idempotencyKey, input.requestFingerprint, input.policyRevision ?? null,
+          input.policyRevision === undefined ? 'Review the provider disclosure before continuing.' : 'Preparing the assistant run under the saved workspace policy.']
       );
       const row = rows[0];
       if (!row) {
@@ -290,6 +334,7 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
         throw new AiRunNotFoundError();
       }
       await assertPrincipalActive(queryRunner, input.ownerId);
+      await assertPolicyBindingCurrent(queryRunner, toAiRun(row));
       if (row.start_idempotency_key) {
         if (row.start_idempotency_key !== input.idempotencyKey || row.start_fingerprint !== input.requestFingerprint) {
           throw new AiRunStateConflictError();
@@ -465,6 +510,7 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
         }
         const principalActive = await isPrincipalActive(queryRunner, input.ownerId);
         if (!principalActive) return toAiRun(row);
+        await assertPolicyBindingCurrent(queryRunner, toAiRun(row));
         const assistantText = input.assistantText ?? '';
         let assistantId = row.assistant_message_id;
         if (input.assistantText !== undefined && assistantText.length > 0 && !assistantId) {
@@ -723,6 +769,31 @@ async function assertProjectActive(queryRunner: QueryRunner, ownerId: string, pr
   }
 }
 
+async function assertPolicyBindingCurrent(queryRunner: QueryRunner, run: AiRun): Promise<void> {
+  if (run.decision !== 'policy_authorized') return;
+  if (!run.policyRevision) throw new AssistantExecutionPolicyChangedError();
+  const rows: readonly {
+    policy_profile: string;
+    provider_profile: string | null;
+    model: string | null;
+    enabled: boolean;
+    revoked_at: Date | string | null;
+    revision: string;
+  }[] = await queryRunner.query(
+    `SELECT "policy_profile", "provider_profile", "model", "enabled", "revoked_at", "revision"
+     FROM "assistant_scope_policies"
+     WHERE "owner_id" = $1 AND "scope_kind" = 'project' AND "project_id" = $2
+     LIMIT 1 FOR SHARE`,
+    [run.ownerId, run.projectId]
+  );
+  const policy = rows[0];
+  if (!policy || policy.policy_profile !== 'workspace_in_scope_v1' || !policy.enabled || policy.revoked_at !== null
+    || String(policy.revision) !== run.policyRevision
+    || policy.provider_profile !== run.manifest.providerProfile || policy.model !== run.manifest.model) {
+    throw new AssistantExecutionPolicyChangedError();
+  }
+}
+
 async function findProjectIdForRun(queryRunner: QueryRunner, ownerId: string, runId: string): Promise<string | null> {
   const rows: readonly { readonly project_id: string }[] = await queryRunner.query(
     'SELECT "project_id" FROM "ai_runs" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1',
@@ -748,6 +819,7 @@ function toAiRun(row: AiRunRow): AiRun {
     status: row.status,
     phase: row.phase,
     decision: row.decision,
+    ...(row.policy_revision !== null && row.policy_revision !== undefined ? { policyRevision: String(row.policy_revision) } : {}),
     ...(row.provider_permission_id ? { providerPermissionId: row.provider_permission_id } : {}),
     cleanup: row.cleanup,
     providerTransmission: row.provider_transmission,

@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { useAppSelector } from '@/app/store/hooks';
+import { getAssistantExecutionPolicy } from '@/entities/assistant-policy';
+import type { AssistantExecutionPolicyStatus } from '@/entities/assistant-policy';
 import { selectCsrfToken } from '@/entities/user-session';
 import {
   cancelHomeTurn,
   createHomeConversation,
-  decideHomeConsent,
   getHomeConversation,
   getHomeTurn,
   listHomeConversations,
@@ -16,7 +17,6 @@ import {
   submitHomeTurn
 } from '@/entities/home-conversation';
 import type {
-  HomeConsentDisclosure,
   HomeConversationEvent,
   HomeConversationScope,
   HomeConversationSnapshot,
@@ -45,7 +45,6 @@ interface CreateIntent {
 }
 
 const ACTIVE_STATUSES = new Set(['pending', 'running', 'cancel_requested']);
-const UNAVAILABLE_KEY = 'home-chat-runtime-unavailable';
 
 function scopeKey(scope: HomeConversationScope): string {
   return scope.kind === 'home' ? 'home' : `workspace:${scope.workspaceId}`;
@@ -57,10 +56,6 @@ function viewKey(scopeId: string, conversationId: string | null, isNew: boolean)
 
 function sameScope(left: HomeConversationScope, right: HomeConversationScope): boolean {
   return left.kind === right.kind && (left.kind === 'home' || (right.kind === 'workspace' && left.workspaceId === right.workspaceId));
-}
-
-function unavailableInSession(): boolean {
-  try { return window.sessionStorage.getItem(UNAVAILABLE_KEY) === 'true'; } catch { return false; }
 }
 
 function normalizeTitle(message: string): string {
@@ -111,44 +106,14 @@ async function readAllEvents(conversationId: string, afterSequence = 0): Promise
   return events;
 }
 
-function disclosureFromEvent(event: HomeConversationEvent): HomeConsentDisclosure | null {
-  const payload = event.payload;
-  if (event.type !== 'consent.requested' || !event.turnId || !event.entityId) return null;
-  const phase = payload.phase;
-  const profile = payload.providerProfile;
-  const model = payload.model;
-  const scopeKind = payload.scopeKind;
-  const categories = payload.categories;
-  const itemCount = payload.itemCount;
-  const byteLimit = payload.byteLimit;
-  if ((phase !== 'initial' && phase !== 'tool_result') || typeof profile !== 'string' || typeof model !== 'string' ||
-    (scopeKind !== 'home' && scopeKind !== 'workspace') || !Array.isArray(categories) ||
-    typeof itemCount !== 'number' || typeof byteLimit !== 'number') return null;
-  const scopeId = payload.scopeId;
-  if (scopeKind === 'workspace' && typeof scopeId !== 'string') return null;
-  const name = profile === 'nvidia-hosted-nim' ? 'NVIDIA hosted NIM' : profile === 'nebius-token-factory' ? 'Nebius Token Factory' : profile;
-  return {
-    disclosureId: event.entityId,
-    phase,
-    provider: { profile, name, model },
-    scope: scopeKind === 'home' ? { kind: 'home' } : { kind: 'workspace', workspaceId: scopeId as string },
-    categories: categories.filter((item): item is HomeConsentDisclosure['categories'][number] => typeof item === 'string'),
-    itemCount,
-    byteLimit
-  };
+function executionPolicyReady(policy: AssistantExecutionPolicyStatus | null, scope: HomeConversationScope): boolean {
+  const expectedKind = scope.kind === 'home' ? 'home' : 'workspace';
+  return policy?.scope.kind === expectedKind && policy.readiness.state === 'ready' &&
+    policy.policy?.enabled === true && policy.policy.provider !== null;
 }
 
-function pendingDisclosureFrom(events: readonly HomeConversationEvent[], scope: HomeConversationScope): { readonly turnId: string; readonly disclosure: HomeConsentDisclosure } | null {
-  let pending: { turnId: string; disclosure: HomeConsentDisclosure } | null = null;
-  for (const event of events) {
-    if (event.type === 'consent.requested') {
-      const disclosure = disclosureFromEvent(event);
-      if (disclosure && sameScope(disclosure.scope, scope)) pending = { turnId: event.turnId as string, disclosure };
-    } else if (event.type === 'consent.decided' && event.turnId === pending?.turnId && event.entityId === pending.disclosure.disclosureId) {
-      pending = null;
-    }
-  }
-  return pending;
+function legacyTurnIds(events: readonly HomeConversationEvent[]): ReadonlySet<string> {
+  return new Set(events.filter((event) => event.type === 'consent.requested' && event.turnId).map((event) => event.turnId as string));
 }
 
 function conversationError(error: unknown): string {
@@ -175,6 +140,10 @@ export interface UseHomeChatOptions {
 }
 
 export interface HomeChatController {
+  readonly policyStatus: AssistantExecutionPolicyStatus | null;
+  readonly policyLoadStatus: 'loading' | 'error' | 'loaded';
+  readonly policyReady: boolean;
+  readonly retryPolicy: () => void;
   readonly conversations: readonly HomeConversationSnapshot[];
   readonly listStatus: LoadStatus;
   readonly listError: string | null;
@@ -210,9 +179,7 @@ export interface HomeChatController {
   readonly canSend: boolean;
   readonly runtimeUnavailable: boolean;
   readonly activeTurn: HomeTurnSnapshot | null;
-  readonly pendingDisclosure: { readonly turnId: string; readonly disclosure: HomeConsentDisclosure } | null;
-  readonly decisionPending: boolean;
-  readonly decide: (decision: 'allow' | 'deny') => Promise<void>;
+  readonly isLegacyTurn: (turnId: string) => boolean;
   readonly cancelPending: boolean;
   readonly cancelNeedsCheck: boolean;
   readonly statusCheckPending: boolean;
@@ -222,7 +189,6 @@ export interface HomeChatController {
   readonly refreshConversation: () => void;
   readonly refreshEvents: () => Promise<void>;
   readonly loadStatus: (turnId: string) => string | null;
-  readonly wasKeptPrivate: (turnId: string) => boolean;
 }
 
 export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): HomeChatController {
@@ -270,15 +236,17 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
   const [sendError, setSendError] = useState<string | null>(null);
   const [createNeedsRetry, setCreateNeedsRetry] = useState(false);
   const [submitCanRetry, setSubmitCanRetry] = useState(false);
-  const [runtimeUnavailable, setRuntimeUnavailable] = useState(unavailableInSession);
-  const [pendingDisclosure, setPendingDisclosure] = useState<{ readonly turnId: string; readonly disclosure: HomeConsentDisclosure } | null>(null);
-  const [decisionPending, setDecisionPending] = useState(false);
+  const [runtimeUnavailable, setRuntimeUnavailable] = useState(false);
+  const [policyStatus, setPolicyStatus] = useState<AssistantExecutionPolicyStatus | null>(null);
+  const [policyLoadStatus, setPolicyLoadStatus] = useState<'loading' | 'error' | 'loaded'>('loading');
+  const [policyScopeId, setPolicyScopeId] = useState('');
+  const [policyAttempt, setPolicyAttempt] = useState(0);
+  const [locallyBlockedLegacyTurns, setLocallyBlockedLegacyTurns] = useState<ReadonlySet<string>>(() => new Set());
   const [cancelPending, setCancelPending] = useState(false);
   const [cancelNeedsCheck, setCancelNeedsCheck] = useState(false);
   const [statusCheckPending, setStatusCheckPending] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [reviewedUnknownTurnIds, setReviewedUnknownTurnIds] = useState<ReadonlySet<string>>(() => new Set());
-  const [deniedTurnIds, setDeniedTurnIds] = useState<ReadonlySet<string>>(() => new Set());
   const sendIntentRef = useRef<SendIntent | null>(null);
   const createIntentRef = useRef<CreateIntent | null>(null);
   const busyRef = useRef(false);
@@ -286,6 +254,10 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
   const previousViewKeyRef = useRef(selectedViewKey);
   const cancelAttemptRef = useRef(false);
   const prevScopeIdRef = useRef(scopeId);
+  const policyReady = policyLoadStatus === 'loaded' && policyScopeId === scopeId && executionPolicyReady(policyStatus, scope);
+  const policyReadyRef = useRef(policyReady);
+  policyReadyRef.current = policyReady;
+  const knownLegacyTurnIds = useMemo(() => new Set([...legacyTurnIds(events), ...locallyBlockedLegacyTurns]), [events, locallyBlockedLegacyTurns]);
 
   if (previousViewKeyRef.current !== selectedViewKey) {
     previousViewKeyRef.current = selectedViewKey;
@@ -312,7 +284,6 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
       setIsNewConversation(false);
       setDraft('');
       setSendError(null);
-      setPendingDisclosure(null);
       sendIntentRef.current = null;
       createIntentRef.current = null;
     }
@@ -327,10 +298,32 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     setCancelPending(false);
     setCancelNeedsCheck(false);
     setStatusCheckPending(false);
-    setDecisionPending(false);
     setSendError(null);
     setReconnecting(false);
   }, [selectedViewKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPolicyLoadStatus('loading');
+    setPolicyStatus(null);
+    setPolicyScopeId('');
+    void getAssistantExecutionPolicy(scope.kind === 'home' ? { scope: 'home' } : { scope: 'workspace', projectId: scope.workspaceId })
+      .then((status) => {
+        if (cancelled || scopeIdRef.current !== scopeId) return;
+        setPolicyStatus(status);
+        setPolicyScopeId(scopeId);
+        setPolicyLoadStatus('loaded');
+        setRuntimeUnavailable(false);
+      }).catch(() => {
+        if (cancelled || scopeIdRef.current !== scopeId) return;
+        setPolicyScopeId(scopeId);
+        setPolicyLoadStatus('error');
+        setRuntimeUnavailable(false);
+      });
+    return () => { cancelled = true; };
+  }, [policyAttempt, scopeId]);
+
+  const retryPolicy = useCallback((): void => setPolicyAttempt((attempt) => attempt + 1), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -373,7 +366,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
       setEvents([]);
       setLoadedEventsConversationId(null);
       setLastProcessedEventSequence(0);
-      setPendingDisclosure(null);
+      setLocallyBlockedLegacyTurns(new Set());
       setHistoryStatus('idle');
       setHistoryError(null);
       return;
@@ -390,7 +383,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     setMessages([]);
     setMessageCursor(null);
     setTurns([]);
-    setPendingDisclosure(null);
+    setLocallyBlockedLegacyTurns(new Set());
     setHistoryStatus('loading');
     setHistoryError(null);
     void Promise.all([
@@ -409,16 +402,11 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
       const sortedEvents = mergeEvents(eventsRef.current, loadedEvents);
       eventsRef.current = sortedEvents;
       setEvents(sortedEvents);
+      setLocallyBlockedLegacyTurns(legacyTurnIds(sortedEvents));
       setLoadedEventsConversationId(selectedConversationId);
       const cursor = Math.max(eventCursorRef.current, sortedEvents.at(-1)?.sequence ?? 0);
       eventCursorRef.current = cursor;
       setLastProcessedEventSequence(cursor);
-      setPendingDisclosure(pendingDisclosureFrom(sortedEvents, scopeRef.current));
-      const denied = new Set<string>();
-      for (const event of sortedEvents) {
-        if (event.type === 'consent.decided' && event.turnId && event.payload.decision === 'deny') denied.add(event.turnId);
-      }
-      setDeniedTurnIds((previous) => new Set([...previous, ...denied]));
       setLoadedForKey(requestKey);
       setHistoryStatus('success');
     }).catch((error: unknown) => {
@@ -437,9 +425,10 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     const reverse = [...turns].reverse();
     return reverse.find((turn) => ACTIVE_STATUSES.has(turn.status)) ?? reverse[0] ?? null;
   }, [turns]);
+  const isLegacyTurn = useCallback((turnId: string): boolean => knownLegacyTurnIds.has(turnId), [knownLegacyTurnIds]);
   const currentTurnNeedsReview = Boolean(activeTurn?.status === 'unknown' && !reviewedUnknownTurnIds.has(activeTurn.id));
   const activeTurnBlocksSend = Boolean(activeTurn && (ACTIVE_STATUSES.has(activeTurn.status) || currentTurnNeedsReview));
-  const pendingForActiveTurn = Boolean(pendingDisclosure && pendingDisclosure.turnId === activeTurn?.id);
+  const pendingForActiveTurn = Boolean(activeTurn && isLegacyTurn(activeTurn.id) && ACTIVE_STATUSES.has(activeTurn.status));
   const sendBusy = sendStatus === 'creating' || sendStatus === 'submitting' || sendStatus === 'reconciling' || sendStatus === 'retrying';
 
   const refreshEventFeed = useCallback(async (conversationId: string, requestKey: string): Promise<void> => {
@@ -460,12 +449,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
         const merged = mergeEvents(eventsRef.current, newEvents);
         eventsRef.current = merged;
         setEvents(merged);
-        setPendingDisclosure(pendingDisclosureFrom(merged, scopeRef.current));
-        const denied = new Set<string>();
-        for (const event of newEvents) {
-          if (event.type === 'consent.decided' && event.turnId && event.payload.decision === 'deny') denied.add(event.turnId);
-        }
-        if (denied.size) setDeniedTurnIds((previous) => new Set([...previous, ...denied]));
+        setLocallyBlockedLegacyTurns(legacyTurnIds(merged));
         setTurns((previous) => previous.map((turn) => {
           const statusEvent = [...newEvents].reverse().find((event) => event.type === 'turn.status_changed' && event.turnId === turn.id);
           const status = statusEvent?.payload.status;
@@ -547,7 +531,6 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
 
   const markUnsupported = useCallback((): void => {
     setRuntimeUnavailable(true);
-    try { window.sessionStorage.setItem(UNAVAILABLE_KEY, 'true'); } catch { /* session storage is optional */ }
   }, []);
 
   const refreshLatestFor = useCallback(async (conversationId: string, requestKey: string): Promise<HomeMessageSnapshot[]> => {
@@ -565,11 +548,10 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     setSubmitCanRetry(false);
     setSendError(null);
     if (submission.execution.state === 'consent_required') {
-      setPendingDisclosure({ turnId: submission.turn.id, disclosure: submission.execution.disclosure });
+      setLocallyBlockedLegacyTurns((previous) => new Set(previous).add(submission.turn.id));
       setSendStatus('idle');
       return;
     }
-    setPendingDisclosure(null);
     if (submission.execution.state === 'unsupported' || submission.turn.status === 'unsupported') markUnsupported();
     if ((submission.execution.state === 'running' || submission.execution.state === 'resumed') && submission.turn.status === 'running') {
       setDraft((previous) => previous === content ? '' : previous);
@@ -605,8 +587,6 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
       setSendError(null);
       setSubmitCanRetry(false);
       sendIntentRef.current = null;
-      const disclosure = pendingDisclosureFrom(eventsRef.current, scopeRef.current);
-      setPendingDisclosure(disclosure);
       if (found.turn.status === 'unsupported') markUnsupported();
       if (found.turn.status === 'running') setDraft((previous) => previous === intent.content ? '' : previous);
       return 'found';
@@ -694,6 +674,12 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
 
   const performSubmit = useCallback(async (intent: SendIntent, requestKey: string): Promise<void> => {
     if (!csrfToken || busyRef.current) return;
+    if (!policyReadyRef.current) {
+      setSendStatus('uncertain');
+      setSendError('Assistant availability changed before this request was sent. Refresh availability, then retry the same request.');
+      setSubmitCanRetry(true);
+      return;
+    }
     const operation = beginBusyOperation();
     setSendStatus('submitting');
     setSendError(null);
@@ -709,6 +695,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     } catch (error: unknown) {
       if (!current(requestKey)) return;
       setSendError(requestError(error));
+      if (error instanceof ApiClientError && error.statusCode === 503) setPolicyAttempt((attempt) => attempt + 1);
       if (definitiveClientRejection(error)) {
         sendIntentRef.current = null;
         setSendStatus('idle');
@@ -729,7 +716,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
   const send = useCallback(async (): Promise<void> => {
     const content = draft;
     const requestKey = viewKeyRef.current;
-    if (!content.trim() || content.length > 20000 || !csrfToken || disabled || runtimeUnavailable || busyRef.current || activeTurnBlocksSend || pendingDisclosure || createNeedsRetry || sendIntentRef.current ||
+    if (!content.trim() || content.length > 20000 || !csrfToken || disabled || !policyReady || runtimeUnavailable || busyRef.current || activeTurnBlocksSend || createNeedsRetry || sendIntentRef.current ||
       (selectedConversationId && (historyStatus !== 'success' || loadedForKey !== requestKey))) return;
     const operation = beginBusyOperation();
     setSendError(null);
@@ -753,7 +740,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     const targetKey = viewKey(scopeIdRef.current, conversationId, false);
     endBusyOperation(operation);
     await performSubmit(intent, targetKey);
-  }, [activeTurnBlocksSend, createForCurrentDraft, createNeedsRetry, csrfToken, disabled, draft, historyStatus, loadedForKey, pendingDisclosure, performSubmit, runtimeUnavailable, selectedConversationId, turns]);
+  }, [activeTurnBlocksSend, createForCurrentDraft, createNeedsRetry, csrfToken, disabled, draft, historyStatus, loadedForKey, performSubmit, policyReady, runtimeUnavailable, selectedConversationId, turns]);
 
   const checkSubmission = useCallback(async (): Promise<void> => {
     const intent = sendIntentRef.current;
@@ -775,7 +762,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
 
   const retrySameSubmission = useCallback(async (): Promise<void> => {
     const intent = sendIntentRef.current;
-    if (!intent || !submitCanRetry || busyRef.current || disabled) return;
+    if (!intent || !submitCanRetry || busyRef.current || disabled || !policyReady) return;
     const requestKey = viewKey(scopeIdRef.current, intent.conversationId, false);
     const operation = beginBusyOperation();
     setSendStatus('reconciling');
@@ -785,31 +772,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     setSendStatus('retrying');
     endBusyOperation(operation);
     await performSubmit(intent, requestKey);
-  }, [current, disabled, performSubmit, reconcileSubmission, submitCanRetry]);
-
-  const decide = useCallback(async (decision: 'allow' | 'deny'): Promise<void> => {
-    const pending = pendingDisclosure;
-    if (!pending || !csrfToken || decisionPending || disabled) return;
-    const requestKey = viewKeyRef.current;
-    setDecisionPending(true);
-    setSendError(null);
-    try {
-      const result = await decideHomeConsent(selectedConversationId ?? '', pending.turnId, pending.disclosure.disclosureId, decision, csrfToken);
-      if (!current(requestKey)) return;
-      setTurns((previous) => mergeTurns(previous, [result.turn]));
-      if (decision === 'deny') setDeniedTurnIds((previous) => new Set(previous).add(pending.turnId));
-      if (result.execution.state === 'unsupported' || result.turn.status === 'unsupported') markUnsupported();
-      setPendingDisclosure(null);
-      if (decision === 'allow' && result.turn.status === 'running') setDraft((previous) => previous === draft ? '' : previous);
-      await refreshEventFeed(selectedConversationId ?? '', requestKey);
-    } catch {
-      if (current(requestKey)) {
-        setSendError('Your decision could not be confirmed. Refresh the conversation before deciding again.');
-        setReconnecting(true);
-        setRefreshAttempt((value) => value + 1);
-      }
-    } finally { if (current(requestKey)) setDecisionPending(false); }
-  }, [current, csrfToken, decisionPending, disabled, draft, markUnsupported, pendingDisclosure, refreshEventFeed, selectedConversationId]);
+  }, [current, disabled, performSubmit, policyReady, reconcileSubmission, submitCanRetry]);
 
   const cancel = useCallback(async (): Promise<void> => {
     if (!selectedConversationId || !activeTurn || activeTurn.status !== 'running' || !csrfToken || disabled || cancelAttemptRef.current) return;
@@ -839,6 +802,17 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     setStatusCheckPending(true);
     setReconnecting(true);
     try {
+      if (isLegacyTurn(activeTurn.id)) {
+        const [savedTurns] = await Promise.all([readAllTurns(selectedConversationId), refreshEventFeed(selectedConversationId, requestKey), refreshLatestFor(selectedConversationId, requestKey)]);
+        if (!current(requestKey)) return;
+        setTurns((previous) => mergeTurns(previous, savedTurns));
+        const refreshed = savedTurns.find((turn) => turn.id === activeTurn.id);
+        if (refreshed?.status === 'running' || refreshed?.status === 'cancelled' || refreshed?.status === 'unknown') cancelAttemptRef.current = false;
+        setCancelNeedsCheck(false);
+        setReconnecting(false);
+        setSendError(null);
+        return;
+      }
       const result = await getHomeTurn(selectedConversationId, activeTurn.id);
       if (!current(requestKey)) return;
       setTurns((previous) => mergeTurns(previous, [result]));
@@ -857,10 +831,10 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     } finally {
       if (current(requestKey)) setStatusCheckPending(false);
     }
-  }, [activeTurn, current, refreshEventFeed, refreshLatestFor, selectedConversationId]);
+  }, [activeTurn, current, isLegacyTurn, refreshEventFeed, refreshLatestFor, selectedConversationId]);
 
   useEffect(() => {
-    if (!selectedConversationId || activeTurn?.status !== 'running' || pendingForActiveTurn || disabled) return;
+    if (!selectedConversationId || loadedEventsConversationId !== selectedConversationId || activeTurn?.status !== 'running' || pendingForActiveTurn || disabled) return;
     const requestKey = selectedViewKey;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -881,25 +855,28 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     };
     timer = setTimeout(() => { void poll(); }, 2000);
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [activeTurn?.id, activeTurn?.status, current, disabled, pendingForActiveTurn, refreshEventFeed, refreshLatestFor, selectedConversationId, selectedViewKey]);
+  }, [activeTurn?.id, activeTurn?.status, current, disabled, loadedEventsConversationId, pendingForActiveTurn, refreshEventFeed, refreshLatestFor, selectedConversationId, selectedViewKey]);
 
-  const wasKeptPrivate = useCallback((turnId: string): boolean => deniedTurnIds.has(turnId), [deniedTurnIds]);
   const loadStatus = useCallback((turnId: string): string | null => {
     const turn = turns.find((item) => item.id === turnId);
     if (!turn) return null;
-    if (turn.status === 'cancelled' && deniedTurnIds.has(turn.id)) return 'Cancelled — kept private';
+    if (isLegacyTurn(turn.id) && ['pending', 'running', 'cancel_requested', 'unknown'].includes(turn.status)) return 'Saved action cannot be resumed';
     const labels: Record<HomeTurnSnapshot['status'], string> = {
-      pending: 'Waiting for your decision', running: 'Assistant is responding…', cancel_requested: 'Stopping…',
+      pending: 'Waiting to start', running: 'Assistant is responding…', cancel_requested: 'Stopping…',
       completed: 'Completed', partial: 'Partially completed', failed: 'Failed', cancelled: 'Cancelled', unknown: 'Needs review', unsupported: 'Planning runtime unavailable'
     };
     return labels[turn.status];
-  }, [deniedTurnIds, turns]);
+  }, [isLegacyTurn, turns]);
 
-  const canSend = !disabled && !runtimeUnavailable && !sendBusy && !activeTurnBlocksSend && !pendingDisclosure && !createNeedsRetry && !sendIntentRef.current &&
+  const canSend = !disabled && policyReady && !runtimeUnavailable && !sendBusy && !activeTurnBlocksSend && !createNeedsRetry && !sendIntentRef.current &&
     Boolean(draft.trim()) && draft.length <= 20000 && (!selectedConversationId || (historyStatus === 'success' && loadedForKey === selectedViewKey));
   const navigationLocked = Boolean(sendIntentRef.current || createIntentRef.current);
 
   return {
+    policyStatus: policyScopeId === scopeId ? policyStatus : null,
+    policyLoadStatus: policyScopeId === scopeId ? policyLoadStatus : 'loading',
+    policyReady,
+    retryPolicy,
     conversations: loadedListScope === scopeId ? conversations : [], listStatus, listError,
     hasMoreConversations: Boolean(listCursor), loadMoreConversations, retryConversationList,
     selectedConversation, selectedConversationId, isNewConversation,
@@ -910,10 +887,10 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     draft, setDraft, send, retryCreate, checkSubmission, retrySameSubmission,
     sendStatus, createNeedsRetry, submitCanRetry, sendError,
     clearSendError: () => setSendError(null),
-    busy: sendBusy || decisionPending || cancelPending,
-    canSend, runtimeUnavailable, activeTurn, pendingDisclosure, decisionPending, decide,
+    busy: sendBusy || cancelPending,
+    canSend, runtimeUnavailable, activeTurn, isLegacyTurn,
     cancelPending, cancelNeedsCheck, statusCheckPending, cancel, checkTurnStatus, reconnecting, refreshConversation, refreshEvents,
-    loadStatus, wasKeptPrivate
+    loadStatus
   };
 }
 

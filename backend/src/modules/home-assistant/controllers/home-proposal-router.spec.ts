@@ -3,7 +3,6 @@ import express from 'express';
 import request from 'supertest';
 
 import { HomeConversationDomainError } from '@/modules/home-assistant/domain/home-conversation-errors';
-import { HomeProposalRevisionConflictError } from '@/modules/home-assistant/domain/home-planning-errors';
 import type { HomeChangeProposal } from '@/modules/home-assistant/domain/home-change-proposal-types';
 import type { HomeProposalExecutionResult } from '@/modules/home-assistant/use-cases/home-change-proposal-use-cases';
 import { createHomeProposalRouter, type HomeProposalRouterDependencies } from '@/modules/home-assistant/controllers/home-proposal-router';
@@ -117,29 +116,23 @@ describe('Home proposal routes', () => {
     expect(accept).not.toHaveBeenCalled();
   });
 
-  it('accepts the exact revision and returns the stable acceptance ID and execution result', async () => {
-    const { app, accept } = buildApp();
-    const response = await request(app)
-      .post(`/api/v1/home/conversations/${CONVERSATION_ID}/proposals/${PROPOSAL_ID}/acceptance`)
-      .set(mutationHeaders())
-      .send({ expectedRevision: 1 });
-
-    expect(response.status).toBe(201);
-    expect(response.headers.location).toBe(`/api/v1/home/conversations/${CONVERSATION_ID}/proposals/${PROPOSAL_ID}/acceptance/${ACCEPTANCE_ID}`);
-    expect(response.headers.etag).toBe('"1"');
-    expect(response.body.data).toMatchObject({ acceptance: { id: ACCEPTANCE_ID, revision: 1 }, execution: { state: 'completed' }, replayed: false });
-    expect(accept).toHaveBeenCalledWith({ ownerId: OWNER_ID, conversationId: CONVERSATION_ID, proposalId: PROPOSAL_ID, expectedRevision: 1 });
-  });
-
-  it('maps a stale proposal revision to a 409 conflict response', async () => {
-    const { app, accept } = buildApp();
-    accept.mockRejectedValueOnce(new HomeProposalRevisionConflictError());
-    const response = await request(app)
-      .post(`/api/v1/home/conversations/${CONVERSATION_ID}/proposals/${PROPOSAL_ID}/acceptance`)
-      .set(mutationHeaders())
-      .send({ expectedRevision: 2 });
+  it.each([
+    ['PATCH', 'items/' + ITEM_ID, 'patch'],
+    ['DELETE', 'items/' + ITEM_ID, 'delete'],
+    ['POST', 'acceptance', 'post'],
+    ['POST', 'execution', 'post']
+  ] as const)('retires proposal %s %s without invoking a mutation use case', async (method, suffix, operation) => {
+    const { app, editItem, removeItem, accept, execute } = buildApp();
+    const path = `/api/v1/home/conversations/${CONVERSATION_ID}/proposals/${PROPOSAL_ID}/${suffix}`;
+    const client = request(app);
+    const pending = operation === 'patch' ? client.patch(path) : operation === 'delete' ? client.delete(path) : client.post(path);
+    const response = await pending.set(mutationHeaders()).send(method === 'DELETE' ? undefined : method === 'PATCH' ? { expectedRevision: 1, changes: {} } : method === 'POST' && suffix === 'acceptance' ? { expectedRevision: 1 } : {});
 
     expect(response.status).toBe(409);
-    expect(response.body.error.code).toBe('HOME_PROPOSAL_REVISION_CONFLICT');
+    expect(response.body.error.code).toBe('POLICY_ACTION_RETIRED');
+    expect(editItem).not.toHaveBeenCalled();
+    expect(removeItem).not.toHaveBeenCalled();
+    expect(accept).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 });

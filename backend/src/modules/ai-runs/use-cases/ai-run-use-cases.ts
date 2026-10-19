@@ -27,6 +27,9 @@ import { ProjectFactNotFoundError } from '@/modules/memory/domain/project-fact-e
 import type { IProviderPermissionRepository } from '@/modules/ai-runs/repositories/provider-permission-repository';
 import { AiRunProviderPermissionRevokedError } from '@/modules/ai-runs/domain/ai-run-errors';
 import { assertAiRunProjectHasFileRoot } from '@/modules/ai-runs/use-cases/assert-ai-run-project';
+import type { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
+import { AssistantExecutionPolicyChangedError, AssistantExecutionUnavailableError } from '@/modules/assistant-policy/domain/assistant-execution-errors';
+import { PolicyActionRetiredError } from '@/modules/assistant-policy/domain/policy-action-retired-error';
 
 export interface CreateAiRunInput {
   readonly ownerId: string;
@@ -53,7 +56,8 @@ export class CreateAiRunUseCase {
     private readonly aiRunRepository: IAiRunRepository,
     private readonly providerProfile: string,
     private readonly model: string,
-    private readonly factRepository?: IProjectFactRepository
+    private readonly factRepository?: IProjectFactRepository,
+    private readonly executionPolicy?: Pick<AssertAssistantExecutionPolicyUseCase, 'assertWorkspace'>
   ) {}
 
   public async execute(input: CreateAiRunInput): Promise<CreateAiRunOutput> {
@@ -96,6 +100,12 @@ export class CreateAiRunUseCase {
       providerProfile: this.providerProfile,
       model: this.model
     });
+    const policy = await this.executionPolicy?.assertWorkspace({
+      ownerId: input.ownerId,
+      projectId: input.projectId,
+      providerProfile: this.providerProfile,
+      model: this.model
+    });
     const requestFingerprint = hashText(JSON.stringify({ conversationId: input.conversationId, request, relativePaths, factIds, includeRecentMessages: input.includeRecentMessages, includeProjectConversations: input.includeProjectConversations ?? false }));
     const created = await this.aiRunRepository.create({
       ownerId: input.ownerId,
@@ -107,7 +117,8 @@ export class CreateAiRunUseCase {
       requestedPaths: relativePaths,
       manifest: built.manifest,
       idempotencyKey,
-      requestFingerprint
+      requestFingerprint,
+      ...(policy?.revisions.workspace ? { policyRevision: policy.revisions.workspace } : {})
     });
     if (this.conversationRepository.addRunUserMessage && !created.resource.requestMessageId) {
       const message = await this.conversationRepository.addRunUserMessage({
@@ -179,7 +190,8 @@ export class DecideEgressUseCase {
     private readonly agentRuntime: IAgentRuntime,
     _workspaceRoot: string,
     private readonly factRepository?: IProjectFactRepository,
-    private readonly providerPermissionRepository?: IProviderPermissionRepository
+    private readonly providerPermissionRepository?: IProviderPermissionRepository,
+    private readonly executionPolicy?: Pick<AssertAssistantExecutionPolicyUseCase, 'assertWorkspace'>
   ) {}
 
   public async execute(input: DecideEgressInput): Promise<AiRun> {
@@ -276,7 +288,52 @@ export class DecideEgressUseCase {
     });
   }
 
+  /** Prepares a newly persisted policy-bound run without creating a user decision. */
+  public async preparePolicyAuthorizedRun(input: { readonly ownerId: string; readonly runId: string }): Promise<AiRun> {
+    const run = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
+    if (!run) throw new AiRunNotFoundError();
+    if (run.decision !== 'policy_authorized' || !run.policyRevision) throw new PolicyActionRetiredError();
+    if (run.status !== 'staging') return run;
+    try {
+      await this.assertCurrentExecutionPolicy(run);
+      await assertAiRunProjectHasFileRoot(this.projectRepository, run.ownerId, run.projectId);
+      return await this.prepareApprovedRun(run);
+    } catch (error: unknown) {
+      if (error instanceof AssistantExecutionPolicyChangedError || error instanceof AssistantExecutionUnavailableError) {
+        const changed = error instanceof AssistantExecutionPolicyChangedError;
+        const stopped: AiRun = {
+          ...run,
+          status: changed ? 'blocked' : 'failed',
+          phase: changed ? 'terminal' : 'staging',
+          cleanup: 'complete',
+          providerTransmission: 'not_started_confirmed',
+          safeMessage: changed
+            ? 'Workspace policy changed before the run started. Nothing was sent.'
+            : 'Provider execution is unavailable. Nothing was sent.',
+          updatedAt: new Date()
+        };
+        await this.aiRunRepository.save(stopped);
+        return stopped;
+      }
+      throw error;
+    }
+  }
+
+  private async assertCurrentExecutionPolicy(run: AiRun): Promise<void> {
+    if (!this.executionPolicy || run.decision !== 'policy_authorized' || !run.policyRevision) {
+      throw new AssistantExecutionUnavailableError();
+    }
+    await this.executionPolicy.assertWorkspace({
+      ownerId: run.ownerId,
+      projectId: run.projectId,
+      providerProfile: run.manifest.providerProfile,
+      model: run.manifest.model,
+      policyRevision: run.policyRevision
+    });
+  }
+
   private async prepareApprovedRun(run: AiRun): Promise<AiRun> {
+    if (run.decision === 'policy_authorized') await this.assertCurrentExecutionPolicy(run);
     const conversation = await this.conversationRepository.findWithMessagesForOwner({
       ownerId: run.ownerId,
       projectId: run.projectId,
@@ -308,6 +365,7 @@ export class DecideEgressUseCase {
       throw new AiRunReviewRequiredError();
     }
     if (this.agentRuntime.prepareDirectRun) {
+      if (run.decision === 'policy_authorized') await this.assertCurrentExecutionPolicy(run);
       return this.prepareDirectRun(run);
     }
     let stagingReference: string | undefined;
@@ -317,6 +375,7 @@ export class DecideEgressUseCase {
       throw new AiRunRuntimeUnavailableError();
     }
     try {
+      if (run.decision === 'policy_authorized') await this.assertCurrentExecutionPolicy(run);
       const files = await this.readApprovedFiles(run);
       const staged = await stagingGateway.stage({
         runId: run.id,
@@ -327,6 +386,7 @@ export class DecideEgressUseCase {
       stagingReference = staged.stagingReference;
       const runtime = await this.agentRuntime.create({ runId: run.id, stagedReference: staged.stagingReference, manifest: run.manifest });
       runtimeCreated = true;
+      if (run.decision === 'policy_authorized') await this.assertCurrentExecutionPolicy(run);
       const ready: AiRun = {
         ...run,
         status: 'ready',
@@ -335,7 +395,9 @@ export class DecideEgressUseCase {
         runtimeReference: staged.stagingReference,
         runtimeKind: runtime.kind,
         sandboxReady: runtime.sandboxReady,
-        safeMessage: 'Private run environment ready. Your approved context is isolated for this run. The assistant can now begin working.',
+        safeMessage: run.decision === 'policy_authorized'
+          ? 'The workspace policy allowed this run. Its selected context is ready for the assistant.'
+          : 'Private run environment ready. Your approved context is isolated for this run. The assistant can now begin working.',
         updatedAt: new Date()
       };
       await this.aiRunRepository.save(ready);
@@ -381,7 +443,9 @@ export class DecideEgressUseCase {
         stagingItemCount: 0,
         runtimeKind: runtime.kind,
         sandboxReady: runtime.sandboxReady,
-        safeMessage: 'Provider access approved. The assistant will receive only this run\'s bounded context.',
+        safeMessage: run.decision === 'policy_authorized'
+          ? 'The workspace policy allowed this run. Only its selected context can be sent.'
+          : 'Provider access approved. The assistant will receive only this run\'s bounded context.',
         updatedAt: new Date()
       };
       await this.aiRunRepository.save(ready);

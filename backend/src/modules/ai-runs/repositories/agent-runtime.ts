@@ -30,6 +30,9 @@ export interface RuntimeRunInput {
   readonly request: string;
   readonly manifest: EgressManifest;
   readonly stagedReference?: string;
+  /** Rechecked by the transport immediately before each provider attempt. */
+  readonly beforeProviderAttempt?: () => Promise<void>;
+  readonly policyRevision?: string;
 }
 
 export type RuntimeInferenceEvent =
@@ -44,7 +47,7 @@ export type RuntimeInferenceEvent =
   | { readonly type: 'tool.started'; readonly commandId: string }
   | { readonly type: 'tool.completed'; readonly commandId: string; readonly status: string }
   | { readonly type: 'tool.failed'; readonly commandId: string; readonly status: string }
-  | { readonly type: 'tool.progress'; readonly toolId: string; readonly title: string; readonly status: string }
+  | { readonly type: 'tool.progress'; readonly toolId: string; readonly title: string; readonly status: string; readonly commandId?: string }
   | { readonly type: 'changes.proposed'; readonly changes: readonly RuntimeChangeProposal[] }
   | { readonly type: 'completed'; readonly text: string; readonly taskSuggestions?: readonly TaskSuggestionDraft[] }
   | { readonly type: 'failed'; readonly message: string }
@@ -79,11 +82,19 @@ export interface RuntimeCommandCancellationInput {
 
 export interface IAgentRuntime {
   readonly directProvider?: true;
+  /** Trusted runtime evidence; user configuration cannot enable this capability. */
+  supportsPolicyExecution?(input: { readonly providerProfile: string; readonly model: string }): Promise<boolean>;
+  /** True only when the isolated bridge enforces the fixed command profile before model continuation. */
+  supportsPolicyCommandExecution?(input: { readonly providerProfile: string; readonly model: string }): Promise<boolean>;
   checkAvailability(): Promise<void>;
   create(input: RuntimeCreateInput): Promise<RuntimeReadyResult>;
   readonly prepareDirectRun?: (input: DirectRunPreparationInput) => Promise<RuntimeReadyResult>;
   readonly proposeCommand?: (input: RuntimeCommandProposalInput) => Promise<void>;
   readonly executeCommand?: (input: RuntimeCommandInput) => Promise<CommandResult>;
+  /** Private policy dispatch path; it must not be implemented through a user approval decision. */
+  readonly executePolicyCommand?: (input: RuntimeCommandInput) => Promise<CommandResult>;
+  /** Releases held command output only after a fresh policy fence and successful persistence. */
+  readonly completePolicyCommand?: (input: { readonly runId: string; readonly commandId: string }) => Promise<void>;
   readonly decideCommand?: (input: { readonly runId: string; readonly commandId: string; readonly approved: boolean }) => Promise<void>;
   readonly cancelCommand?: (input: RuntimeCommandCancellationInput) => Promise<void>;
   readonly startRun?: (input: RuntimeRunInput) => AsyncIterable<RuntimeInferenceEvent>;

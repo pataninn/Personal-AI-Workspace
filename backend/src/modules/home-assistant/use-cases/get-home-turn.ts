@@ -1,10 +1,11 @@
+import type { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
+import type { HomeConversationScope, HomeTurn } from '@/modules/home-assistant/domain/home-conversation-types';
 import { HomeConversationNotFoundError, HomeTurnNotFoundError } from '@/modules/home-assistant/domain/home-conversation-errors';
-import type { HomeTurn } from '@/modules/home-assistant/domain/home-conversation-types';
 import type { IHomeConversationRepository } from '@/modules/home-assistant/repositories/home-conversation-repository';
-import type { HomePlanningRuntimeEvent, IHomePlanningRuntime } from '@/modules/home-assistant/repositories/home-planning-runtime';
-import { redactEgressText } from '@/shared/egress/redaction';
+import type { HomePlanningProvider, HomePlanningRuntimeEvent, IHomePlanningRuntime } from '@/modules/home-assistant/repositories/home-planning-runtime';
 import type { HomeToolResultConsentGate } from '@/modules/home-assistant/use-cases/home-tool-result-consent-gate';
 import type { IHomePlanningToolRequestHandler } from '@/modules/home-assistant/repositories/home-planning-tool-request-handler';
+import { redactEgressText } from '@/shared/egress/redaction';
 
 const MAX_RUNTIME_EVENTS = 2000;
 const MAX_RUNTIME_HISTORY_BYTES = 4 * 1024 * 1024;
@@ -22,7 +23,13 @@ interface RuntimePollState {
   cleanupPending: boolean;
 }
 
-/** Reads a Home turn only when both its conversation and authenticated owner match. */
+export interface HomeTurnPolicyConfiguration {
+  readonly executionPolicy: Pick<AssertAssistantExecutionPolicyUseCase, 'assertHome'>;
+  readonly providerProfile: string;
+  readonly model: string;
+}
+
+/** Reads a Home turn only when its persisted policy binding remains current. */
 export class GetHomeTurnUseCase {
   private readonly pollStates = new Map<string, RuntimePollState>();
   private readonly activePolls = new Map<string, Promise<void>>();
@@ -30,8 +37,10 @@ export class GetHomeTurnUseCase {
   public constructor(
     private readonly conversations: IHomeConversationRepository,
     private readonly runtime?: IHomePlanningRuntime,
-    private readonly toolResults?: HomeToolResultConsentGate,
-    private readonly toolRequestHandler?: IHomePlanningToolRequestHandler
+    // Retained only as a positional compatibility slot; no consent result may continue a runtime.
+    _legacyConsentGate?: HomeToolResultConsentGate,
+    private readonly toolRequestHandler?: IHomePlanningToolRequestHandler,
+    private readonly policyConfiguration?: HomeTurnPolicyConfiguration
   ) {}
 
   public async execute(input: { readonly ownerId: string; readonly conversationId: string; readonly turnId: string }): Promise<HomeTurn> {
@@ -39,99 +48,145 @@ export class GetHomeTurnUseCase {
     if (!conversation) throw new HomeConversationNotFoundError();
     const turn = await this.conversations.findTurnForOwner(input.ownerId, input.conversationId, input.turnId);
     if (!turn) throw new HomeTurnNotFoundError();
-    if (this.runtime && turn.status === 'running') await this.pollRuntime(turn.id, input.ownerId, input.conversationId, conversation.scope);
-    else if (this.runtime && this.pollStates.get(turn.id)?.cleanupPending) await this.retryCleanup(turn.id);
+
+    if (!hasPolicyBinding(turn, conversation.scope)) {
+      return this.blockLegacyTurn(turn, input.ownerId, input.conversationId);
+    }
+    if (turn.status === 'running') {
+      if (this.runtime) await this.pollRuntime(turn, input.ownerId, input.conversationId, conversation.scope);
+      else return await this.blockActiveTurn(turn, input.ownerId, input.conversationId);
+    } else if (this.pollStates.get(turn.id)?.cleanupPending) {
+      await this.retryCleanup(turn.id);
+    }
     return await this.conversations.findTurnForOwner(input.ownerId, input.conversationId, input.turnId) ?? turn;
   }
 
-  private async pollRuntime(turnId: string, ownerId: string, conversationId: string, scope: NonNullable<Awaited<ReturnType<IHomeConversationRepository['findForOwner']>>>['scope']): Promise<void> {
-    const current = this.activePolls.get(turnId);
+  private async blockLegacyTurn(turn: HomeTurn, ownerId: string, conversationId: string): Promise<HomeTurn> {
+    if (turn.status === 'pending') return await this.updateStatus(ownerId, conversationId, turn.id, 'unsupported') ?? turn;
+    if (turn.status === 'running' || turn.status === 'cancel_requested') {
+      return await this.stopRuntimeAndMark(turn, ownerId, conversationId);
+    }
+    return turn;
+  }
+
+  private async blockActiveTurn(turn: HomeTurn, ownerId: string, conversationId: string): Promise<HomeTurn> {
+    return await this.stopRuntimeAndMark(turn, ownerId, conversationId);
+  }
+
+  private async pollRuntime(turn: HomeTurn, ownerId: string, conversationId: string, scope: HomeConversationScope): Promise<void> {
+    const current = this.activePolls.get(turn.id);
     if (current) return current;
-    const polling = this.readRuntime(turnId, ownerId, conversationId, scope);
-    this.activePolls.set(turnId, polling);
+    const polling = this.readRuntime(turn, ownerId, conversationId, scope);
+    this.activePolls.set(turn.id, polling);
     try {
       await polling;
     } finally {
-      this.activePolls.delete(turnId);
+      this.activePolls.delete(turn.id);
     }
   }
 
-  private async readRuntime(turnId: string, ownerId: string, conversationId: string, scope: NonNullable<Awaited<ReturnType<IHomeConversationRepository['findForOwner']>>>['scope']): Promise<void> {
-    const state = this.pollStates.get(turnId) ?? newPollState();
-    this.pollStates.set(turnId, state);
+  private async readRuntime(turn: HomeTurn, ownerId: string, conversationId: string, scope: HomeConversationScope): Promise<void> {
+    const state = this.pollStates.get(turn.id) ?? newPollState();
+    this.pollStates.set(turn.id, state);
     for (let pageIndex = 0; pageIndex < MAX_POLL_PAGES_PER_READ; pageIndex += 1) {
+      if (!await this.isAuthorized(turn, ownerId, conversationId, scope)) {
+        await this.stopRuntimeAndMark(turn, ownerId, conversationId);
+        return;
+      }
       let page: Awaited<ReturnType<IHomePlanningRuntime['poll']>> | undefined;
       try {
-        page = await this.runtime?.poll({ turnId, cursor: state.cursor });
+        page = await this.runtime?.poll({ turnId: turn.id, cursor: state.cursor });
       } catch {
         page = undefined;
       }
       if (!page) {
-        await this.updateStatus(ownerId, conversationId, turnId, 'unknown');
-        await this.clearRuntime(turnId);
+        await this.updateStatus(ownerId, conversationId, turn.id, 'unknown');
+        await this.clearRuntime(turn.id);
         return;
       }
       if (page.status === 'unknown') {
-        await this.updateStatus(ownerId, conversationId, turnId, 'unknown');
-        await this.clearRuntime(turnId);
+        await this.updateStatus(ownerId, conversationId, turn.id, 'unknown');
+        await this.clearRuntime(turn.id);
         return;
       }
-      const recorded = await this.recordRuntimeEvents(ownerId, conversationId, turnId, scope, state, page.events);
+      const recorded = await this.recordRuntimeEvents(turn, ownerId, conversationId, scope, state, page.events);
       if (recorded === 'invalid') {
-        await this.updateStatus(ownerId, conversationId, turnId, 'unknown');
-        await this.clearRuntime(turnId);
+        await this.updateStatus(ownerId, conversationId, turn.id, 'unknown');
+        await this.clearRuntime(turn.id);
+        return;
+      }
+      if (recorded === 'blocked') {
+        await this.stopRuntimeAndMark(turn, ownerId, conversationId);
         return;
       }
       if (!Number.isSafeInteger(page.nextCursor) || page.nextCursor < state.cursor || page.nextCursor < state.lastEventSequence
         || (page.hasMore && page.nextCursor === state.cursor)) {
-        await this.updateStatus(ownerId, conversationId, turnId, 'unknown');
-        await this.clearRuntime(turnId);
+        await this.updateStatus(ownerId, conversationId, turn.id, 'unknown');
+        await this.clearRuntime(turn.id);
         return;
       }
       state.cursor = page.nextCursor;
-      if (recorded === 'consent-required') {
-        if (page.status === 'cancelled' || page.status === 'failed') {
-          const turn = await this.updateStatus(ownerId, conversationId, turnId, page.status);
-          if (turn && ['failed', 'cancelled'].includes(turn.status)) await this.deleteTerminalRuntime(turnId);
-        } else if (page.status === 'completed') {
-          await this.updateStatus(ownerId, conversationId, turnId, 'unknown');
-          await this.clearRuntime(turnId);
-        }
-        return;
-      }
       if (page.status === 'completed') {
         if (page.hasMore) continue;
-        const turn = await this.conversations.completeTurnWithAssistant({
+        if (!await this.isAuthorized(turn, ownerId, conversationId, scope)) {
+          await this.stopRuntimeAndMark(turn, ownerId, conversationId);
+          return;
+        }
+        const completed = await this.conversations.completeTurnWithAssistant({
           ownerId,
           conversationId,
-          turnId,
+          turnId: turn.id,
           content: state.output,
           status: state.truncated ? 'partial' : 'completed'
         });
-        if (turn && ['completed', 'partial'].includes(turn.status)) await this.deleteTerminalRuntime(turnId);
+        if (completed && ['completed', 'partial'].includes(completed.status)) await this.deleteTerminalRuntime(turn.id);
         return;
       }
       if (page.status === 'failed' || page.status === 'cancelled') {
-        const turn = await this.updateStatus(ownerId, conversationId, turnId, page.status);
-        if (turn && ['failed', 'cancelled'].includes(turn.status)) await this.deleteTerminalRuntime(turnId);
+        const updated = await this.updateStatus(ownerId, conversationId, turn.id, page.status);
+        if (updated && ['failed', 'cancelled'].includes(updated.status)) await this.deleteTerminalRuntime(turn.id);
         return;
       }
       if (!page.hasMore) return;
     }
   }
 
-  private async updateStatus(ownerId: string, conversationId: string, turnId: string, status: 'failed' | 'cancelled' | 'unknown'): Promise<HomeTurn | null> {
-    return this.conversations.updateTurnStatus({ ownerId, conversationId, turnId, status });
+  private async isAuthorized(turn: HomeTurn, ownerId: string, conversationId: string, scope: HomeConversationScope, projectId?: string): Promise<boolean> {
+    if (!this.runtime || !this.policyConfiguration || !hasPolicyBinding(turn, scope)) return false;
+    const current = await this.conversations.findTurnForOwner(ownerId, conversationId, turn.id);
+    if (!current || current.status !== 'running' || !sameBinding(current, turn)) return false;
+    try {
+      if (!this.runtime.supportsPolicyExecution || !await this.runtime.supportsPolicyExecution({
+        providerProfile: this.policyConfiguration.providerProfile,
+        model: this.policyConfiguration.model
+      })) return false;
+      const expectedHomeRevision = turn.homePolicyRevision;
+      if (!isRevision(expectedHomeRevision)) return false;
+      const expectedWorkspaceRevision = scope.kind === 'workspace' ? turn.workspacePolicyRevision : null;
+      if (scope.kind === 'workspace' && !isRevision(expectedWorkspaceRevision)) return false;
+      if (scope.kind === 'workspace' && projectId !== undefined && projectId !== scope.workspaceId) return false;
+      await this.policyConfiguration.executionPolicy.assertHome({
+        ownerId,
+        ...(projectId ? { projectId } : scope.kind === 'workspace' ? { projectId: scope.workspaceId } : {}),
+        providerProfile: this.policyConfiguration.providerProfile,
+        model: this.policyConfiguration.model,
+        homePolicyRevision: expectedHomeRevision,
+        ...(scope.kind === 'workspace' && isRevision(expectedWorkspaceRevision) ? { workspacePolicyRevision: expectedWorkspaceRevision } : {})
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async recordRuntimeEvents(
+    turn: HomeTurn,
     ownerId: string,
     conversationId: string,
-    turnId: string,
-    scope: NonNullable<Awaited<ReturnType<IHomeConversationRepository['findForOwner']>>>['scope'],
+    scope: HomeConversationScope,
     state: RuntimePollState,
     events: readonly HomePlanningRuntimeEvent[]
-  ): Promise<'ok' | 'consent-required' | 'invalid'> {
+  ): Promise<'ok' | 'blocked' | 'invalid'> {
     let lastSequence = state.lastEventSequence;
     for (const [index, event] of events.entries()) {
       if (!Number.isSafeInteger(event.sequence) || event.sequence <= lastSequence) return 'invalid';
@@ -152,40 +207,49 @@ export class GetHomeTurnUseCase {
           state.outputBytes += bytes;
         }
       } else if (event.type === 'home.tool.requested') {
-        if (this.toolRequestHandler && this.toolResults) {
-          if (index !== events.length - 1) return 'invalid';
-          try {
-            const candidate = await this.toolRequestHandler.resolve({
-              ownerId, conversationId, turnId, requestId: event.requestId, name: event.name, args: event.args, scope
-            });
-            if (candidate?.kind === 'consented') {
-              const { candidate: resultCandidate } = candidate;
-              await this.toolResults.request({
-                ownerId, conversationId, turnId, requestId: event.requestId,
-                scope: resultCandidate.scope, categories: resultCandidate.categories, itemCount: resultCandidate.itemCount, data: resultCandidate.data
-              });
-              state.lastEventSequence = lastSequence;
-              return 'consent-required';
-            }
-            if (candidate?.kind === 'immediate') {
-              const sent = await this.runtime?.sendToolResult({ turnId, requestId: event.requestId, result: candidate.result });
-              if (!sent?.accepted) return 'invalid';
-              continue;
-            }
-          } catch {
-            return 'invalid';
-          }
-        }
+        if (index !== events.length - 1 || !this.toolRequestHandler
+          || !await this.isAuthorized(turn, ownerId, conversationId, scope)) return 'blocked';
+        let candidate;
         try {
-          const result = await this.runtime?.sendToolResult({ turnId, requestId: event.requestId, result: { outcome: 'denied', code: 'CONSENT_DENIED' } });
-          if (!result?.accepted) return 'invalid';
+          candidate = await this.toolRequestHandler.resolve({
+            ownerId, conversationId, turnId: turn.id, requestId: event.requestId, name: event.name, args: event.args, scope
+          });
         } catch {
-          return 'invalid';
+          return 'blocked';
+        }
+        if (!candidate || candidate.kind !== 'immediate') return 'blocked';
+        const targetProjectId = candidate.authorizationProjectId;
+        if (scope.kind === 'workspace' && targetProjectId !== undefined && targetProjectId !== scope.workspaceId) return 'blocked';
+        if (!await this.isAuthorized(turn, ownerId, conversationId, scope, targetProjectId)) return 'blocked';
+        try {
+          const sent = await this.runtime?.sendToolResult({ turnId: turn.id, requestId: event.requestId, result: candidate.result });
+          if (!sent?.accepted) return 'blocked';
+        } catch {
+          return 'blocked';
         }
       }
     }
     state.lastEventSequence = lastSequence;
     return 'ok';
+  }
+
+  private async stopRuntimeAndMark(turn: HomeTurn, ownerId: string, conversationId: string): Promise<HomeTurn> {
+    let cancelled = false;
+    try {
+      cancelled = (await this.runtime?.cancel(turn.id))?.outcome === 'confirmed';
+    } catch {
+      cancelled = false;
+    }
+    const current = await this.conversations.findTurnForOwner(ownerId, conversationId, turn.id);
+    if (!current) throw new HomeTurnNotFoundError();
+    if (current.status !== 'running' && current.status !== 'cancel_requested') return current;
+    const updated = await this.updateStatus(ownerId, conversationId, turn.id, cancelled ? 'cancelled' : 'unknown');
+    if (cancelled) await this.deleteTerminalRuntime(turn.id);
+    return updated ?? current;
+  }
+
+  private async updateStatus(ownerId: string, conversationId: string, turnId: string, status: 'failed' | 'cancelled' | 'unknown' | 'unsupported'): Promise<HomeTurn | null> {
+    return this.conversations.updateTurnStatus({ ownerId, conversationId, turnId, status });
   }
 
   private async deleteTerminalRuntime(turnId: string): Promise<void> {
@@ -212,6 +276,22 @@ export class GetHomeTurnUseCase {
   private async clearRuntime(turnId: string): Promise<void> {
     this.pollStates.delete(turnId);
   }
+}
+
+function hasPolicyBinding(turn: HomeTurn, scope: HomeConversationScope): boolean {
+  return isRevision(turn.homePolicyRevision)
+    && (scope.kind === 'home'
+      ? turn.workspacePolicyRevision === null
+      : isRevision(turn.workspacePolicyRevision));
+}
+
+function sameBinding(left: HomeTurn, right: HomeTurn): boolean {
+  return left.homePolicyRevision === right.homePolicyRevision
+    && left.workspacePolicyRevision === right.workspacePolicyRevision;
+}
+
+function isRevision(value: string | null): value is string {
+  return value !== null && /^[1-9][0-9]{0,18}$/u.test(value);
 }
 
 function newPollState(): RuntimePollState {

@@ -68,6 +68,26 @@ describe('sandbox command API normalizers', () => {
     expect(command.result?.outputTruncated).toBe(true);
   });
 
+  it('normalizes the private policy authorization provenance without changing the decision request contract', () => {
+    const command = normalizeSandboxCommand({
+      commandId: COMMAND_ID,
+      runId: RUN_ID,
+      proposalHash: HASH,
+      command: 'hermes-terminal',
+      summary: 'Read selected workspace files',
+      argumentCount: 1,
+      argumentSummaries: ['pwd'],
+      cwd: '.',
+      classification: 'safe',
+      decision: 'policy_authorized',
+      status: 'running',
+      limits,
+      safeMessage: 'The stored workspace policy authorized this bounded command.'
+    });
+
+    expect(command).toMatchObject({ decision: 'policy_authorized', status: 'running' });
+  });
+
   it('redacts generic assignments, service-account values, and embedded paths', () => {
     const command = normalizeSandboxCommand({
       commandId: COMMAND_ID,

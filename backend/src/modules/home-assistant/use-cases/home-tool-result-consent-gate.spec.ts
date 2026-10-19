@@ -11,7 +11,10 @@ const NOW = new Date('2026-10-16T00:00:00.000Z');
 const provider: HomePlanningProvider = { profile: 'nebius-token-factory', model: 'test-model', endpoint: 'https://example.invalid/v1' };
 
 function makeTurn(status: HomeTurn['status']): HomeTurn {
-  return { id: TURN, ownerId: OWNER, conversationId: CONVERSATION, sequence: 1, requestKey: 'submit-1', status, createdAt: NOW, updatedAt: NOW };
+  return {
+    id: TURN, ownerId: OWNER, conversationId: CONVERSATION, sequence: 1, requestKey: 'submit-1', status,
+    homePolicyRevision: null, workspacePolicyRevision: null, createdAt: NOW, updatedAt: NOW
+  };
 }
 
 function makeDisclosure(draft: Parameters<IHomeConversationRepository['createToolResultDisclosure']>[0]['draft']): HomeConsentDisclosureRecord {

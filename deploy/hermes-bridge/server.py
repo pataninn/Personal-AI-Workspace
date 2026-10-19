@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from common import BridgeError, CLI, MAX_BODY, STATE, profile, run_cli, run_id, sandbox_name
-from lifecycle import Run
+from lifecycle import Run, policy_capability
 from planning_lifecycle import MAX_PLANNING_PROMPT, PlanningRun
 from provider import assert_route
 
@@ -43,7 +43,7 @@ def dispatch(body):
             raise BridgeError('The OpenShell binary changed')
         run_cli(['whoami', '--output', 'json'])
         assert_route(p, body.get('payload', {}))
-        return {'ready': True, 'profile': p}
+        return {'ready': True, 'profile': p, 'policyCommand': policy_capability()}
     if isinstance(operation, str) and operation.startswith('planning-'):
         return dispatch_planning(operation, body)
     identity = run_id(body.get('runId'))
@@ -54,6 +54,11 @@ def dispatch(body):
     with LOCK:
         run = RUNS.get(identity)
         if operation == 'create':
+            if (not isinstance(payload, dict) or set(payload) - {
+                    'prompt', 'model', 'providerProfile', 'endpoint', 'files',
+                    'commandProfileVersion', 'manifestHash', 'snapshotHash'}
+                    or (('manifestHash' in payload or 'snapshotHash' in payload) and 'commandProfileVersion' not in payload)):
+                raise BridgeError('Invalid run create payload')
             if run or identity in PLANNING_RUNS:
                 raise BridgeError('This run was already created')
             if len(RUNS) + len(PLANNING_RUNS) >= 4:
@@ -79,6 +84,9 @@ def dispatch(body):
         if not isinstance(payload.get('approved'), bool):
             raise BridgeError('Invalid command decision')
         run.permission(payload['permissionId'], payload['approved'])
+        return {'accepted': True}
+    if operation in ('policy-command-permission', 'policy-command-result-permission'):
+        run.policy_permission(payload, result=operation == 'policy-command-result-permission')
         return {'accepted': True}
     if operation == 'project-task-result':
         if run.status != 'running' or not run.acp or run.cancelled.is_set():

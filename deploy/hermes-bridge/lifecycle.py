@@ -12,6 +12,7 @@ from pathlib import Path
 from acp import AcpSession
 from network import registry_grant, set_registry_grant
 from provider import assert_route
+from runtime.acp_runner import PROFILE_VERSION, PROFILE_HASH, COMMAND_LIMITS, digest
 from common import BridgeError, CLI, GATEWAY, MAX_BODY, MAX_FILE, MAX_TOTAL, STATE, inventory, profile, run_cli, safe_path, sandbox_name, write_private
 
 
@@ -36,8 +37,14 @@ class Run:
         self.finished = threading.Event()
         self.network_grant = None
         self.payload = payload
+        self.is_policy = 'commandProfileVersion' in payload
+        self.policy_binding = None
+        if self.is_policy:
+            self.policy_binding = validate_policy_snapshot(identity, payload)
 
     def push(self, event):
+        if self.cancelled.is_set():
+            return
         update = event.get('update', {})
         if self.network_grant and update.get('toolCallId') == self.network_grant and update.get('status') in ('completed', 'failed'):
             set_registry_grant(self, None)
@@ -69,11 +76,18 @@ class Run:
             if self.cancelled.is_set():
                 return
             self._upload()
-            self.acp = AcpSession(self.ssh_command('/usr/bin/env', 'PAI_PROJECT_ROOT=' + self.remote + '/project', 'PAI_MODEL=' + self.payload.get('model', 'nvidia/nemotron-3-super-120b-a12b'), '/opt/hermes/.venv/bin/python', '/opt/pai/acp_runner.py'), self)
+            environment = ['PAI_PROJECT_ROOT=' + self.remote + '/project', 'PAI_MODEL=' + self.payload.get('model', 'nvidia/nemotron-3-super-120b-a12b')]
+            if self.is_policy:
+                environment.append('PAI_POLICY_BINDING=' + base64.b64encode(json.dumps(self.policy_binding, separators=(',', ':')).encode()).decode())
+            self.acp = AcpSession(self.ssh_command('/usr/bin/env', *environment, '/opt/hermes/.venv/bin/python', '/opt/pai/acp_runner.py'), self)
             self.acp.open(self.remote + '/project')
             self.status = 'running'
             self.push({'type': 'started'})
             self.acp.prompt(self.payload['prompt'])
+            if self.is_policy:
+                with self.acp.policy_lock:
+                    if any(request['phase'] != 'complete' for request in self.acp.policy_requests.values()):
+                        raise BridgeError('Policy continuation did not complete')
             self.status = 'cancelled' if self.cancelled.is_set() else 'completed'
         except Exception as error:
             self.error = str(error) if isinstance(error, BridgeError) else 'The isolated Hermes run could not be completed.'
@@ -156,6 +170,8 @@ class Run:
         return value
 
     def permission(self, identity, approved):
+        if self.is_policy:
+            raise BridgeError('Generic permissions are forbidden for policy runs')
         self.assert_owned()
         if self.status != 'running' or not self.acp or self.cancelled.is_set():
             raise BridgeError('The run cannot accept a command decision')
@@ -172,6 +188,12 @@ class Run:
             threading.Thread(target=self._expire_network_grant, args=(self.network_grant,), daemon=True).start()
         self.acp.permission(identity, approved)
 
+    def policy_permission(self, payload, result=False):
+        self.assert_owned()
+        if not self.is_policy or self.status != 'running' or not self.acp or self.cancelled.is_set():
+            raise BridgeError('The run cannot accept a policy continuation')
+        self.acp.policy_permission(payload, result=result)
+
     def _expire_network_grant(self, tool_id):
         if self.cancelled.wait(timeout=75):
             return
@@ -182,7 +204,11 @@ class Run:
                 self.error = 'Command network cleanup needs manual review.'
 
     def close(self):
-        self.cancelled.set()
+        if self.acp:
+            with self.acp.policy_lock:
+                self.cancelled.set()
+        else:
+            self.cancelled.set()
         if self.acp:
             self.acp.close()
         if not self.finished.wait(timeout=120):
@@ -214,3 +240,41 @@ class Run:
                 raise BridgeError('Local cleanup boundary mismatch')
             shutil.rmtree(self.local)
         self.status = 'cancelled'
+
+
+def policy_capability():
+    return {'supported': False, 'profileVersion': PROFILE_VERSION, 'profileHash': PROFILE_HASH,
+            'limits': COMMAND_LIMITS,
+            'unavailableReasons': ['Pinned sandbox command enforcement has no verified runtime receipt.']}
+
+
+def validate_policy_snapshot(identity, payload):
+    import re
+    if payload.get('commandProfileVersion') != PROFILE_VERSION:
+        raise BridgeError('Unsupported command profile')
+    if any(key in payload for key in ('limits', 'commandLimits', 'policyEnabled', 'enforcementEnabled')):
+        raise BridgeError('Caller command limits and enablement are forbidden')
+    for key in ('manifestHash', 'snapshotHash'):
+        if not isinstance(payload.get(key), str) or not re.fullmatch(r'[0-9a-f]{64}', payload[key]):
+            raise BridgeError('Invalid policy snapshot binding')
+    files = payload.get('files')
+    if not isinstance(files, list) or len(files) > 100:
+        raise BridgeError('Invalid policy files')
+    selected = {}
+    for file in files:
+        if (not isinstance(file, dict) or not {'path', 'content', 'sha256'} <= set(file)
+                or set(file) - {'path', 'content', 'sha256', 'sourceHash'}):
+            raise BridgeError('Invalid policy snapshot file')
+        if 'sourceHash' in file and (not isinstance(file['sourceHash'], str) or not re.fullmatch(r'[0-9a-f]{64}', file['sourceHash'])):
+            raise BridgeError('Invalid policy source hash')
+        path = safe_path(file['path'])
+        if (path != file['path'] or not re.fullmatch(r'[A-Za-z0-9_./-]+', path)
+                or path in selected or not isinstance(file['sha256'], str)
+                or not re.fullmatch(r'[0-9a-f]{64}', file['sha256'])):
+            raise BridgeError('Invalid policy snapshot path or hash')
+        selected[path] = file['sha256']
+    snapshot_hash = digest([{'path': path, 'sha256': selected[path]} for path in sorted(selected)])
+    if snapshot_hash != payload['snapshotHash']:
+        raise BridgeError('Policy snapshot digest mismatch')
+    return {'runId': identity, 'manifestHash': payload['manifestHash'],
+            'snapshotHash': snapshot_hash, 'files': selected}

@@ -27,19 +27,21 @@ export function RunStatusCard({ state, conversationHref, onRetry, onRefresh }: R
   if (snapshot.status === 'pending_approval') return null;
 
   if (snapshot.status === 'ready') {
+    const policyAuthorized = snapshot.decision === 'policy_authorized';
     return <div data-testid="ai-run-status-card"><Card className="run-status-card">
-      <h3 ref={headingRef} tabIndex={-1} data-testid="run-ready">Provider access approved</h3>
+      <h3 ref={headingRef} tabIndex={-1} data-testid="run-ready">{policyAuthorized ? 'Assistant run ready' : 'Provider access approved'}</h3>
       <Alert tone="success" data-testid="run-ready-status" role="status" live="polite">
-        <p>The approved context is ready for a server-side model request. The authoritative project workspace is unchanged.</p>
+        <p>{policyAuthorized ? 'The run is bound to the current workspace policy and ready for the server-side model request. The authoritative project workspace is unchanged.' : 'The approved context is ready for a server-side model request. The authoritative project workspace is unchanged.'}</p>
         {state.manifest ? <p className="field-help">Provider: {state.manifest.provider}. Model: {formatModel(state.manifest.model)}. Selected files: {state.manifest.itemCount}. Recent messages: {state.manifest.messageCount}.</p> : null}
       </Alert>
     </Card></div>;
   }
 
   if (snapshot.status === 'staging') {
+    const policyAuthorized = snapshot.decision === 'policy_authorized';
     return <div data-testid="ai-run-status-card"><Card className="run-status-card" data-testid="run-staging">
-      <h3 ref={headingRef} tabIndex={-1}>Preparing the approved context</h3>
-      <Alert tone="info" role="status"><p>The selected context is being prepared locally. Refresh checks the saved status and does not restart the run.</p></Alert>
+      <h3 ref={headingRef} tabIndex={-1}>{policyAuthorized ? 'Preparing the policy-bound context' : 'Preparing the approved context'}</h3>
+      <Alert tone="info" role="status"><p>The selected context is being prepared locally under the recorded workspace policy. Refresh checks the saved status and does not restart the run.</p></Alert>
       <Button type="button" variant="secondary" data-testid="run-staging-refresh" onClick={onRefresh}>Refresh run status</Button>
     </Card></div>;
   }
@@ -65,9 +67,9 @@ export function RunStatusCard({ state, conversationHref, onRetry, onRefresh }: R
 }
 
 function errorMessage(errorCode: string | undefined, safeMessage: string): string {
-  if (errorCode === 'EGRESS_SOURCE_CHANGED') return 'The approved project context changed before the model request started. Review a fresh provider disclosure before trying again. No file changes were made.';
+  if (errorCode === 'EGRESS_SOURCE_CHANGED') return 'The selected project context changed before the model request started. Refresh the run status and review the current policy before trying again. No file changes were made.';
   if (errorCode === 'RUNTIME_UNAVAILABLE' || errorCode === 'NIM_UNAVAILABLE') return 'The model provider is unavailable. No provider request was started. No file changes were made. Try again when provider setup is available.';
-  if (errorCode === 'STAGING_FAILED') return 'The approved context could not be prepared for the model provider. No provider request was started. No file changes were made.';
+  if (errorCode === 'STAGING_FAILED') return 'The policy-bound context could not be prepared for the model provider. No provider request was started. No file changes were made.';
   if (safeMessage.startsWith('The local sandbox gateway is unavailable.') || safeMessage.startsWith('NVIDIA NIM is not ready')) return 'The model provider is unavailable. No provider request was started. No file changes were made. Try again when provider setup is available.';
   if (safeMessage.length > 0) return `${safeMessage} No file changes were made.`;
   return 'The model provider could not complete this request. No file changes were made.';

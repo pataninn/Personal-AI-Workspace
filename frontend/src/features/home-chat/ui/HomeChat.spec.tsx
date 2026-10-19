@@ -1,5 +1,5 @@
 import { configureStore } from '@reduxjs/toolkit';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { MemoryRouter, useNavigate } from 'react-router-dom';
@@ -9,11 +9,11 @@ import { userSessionReducer } from '@/entities/user-session';
 import type { HomeConversationEvent, HomeConversationScope, HomeConversationSnapshot, HomeTurnSnapshot, HomeTurnSubmission } from '@/entities/home-conversation';
 import { HomeChat } from '@/features/home-chat/ui/HomeChat';
 import { useHomeChat } from '@/features/home-chat/model/use-home-chat';
+import { ApiClientError } from '@/shared/api';
 
 const api = vi.hoisted(() => ({
   cancelHomeTurn: vi.fn(),
   createHomeConversation: vi.fn(),
-  decideHomeConsent: vi.fn(),
   getHomeConversation: vi.fn(),
   getHomeTurn: vi.fn(),
   acceptHomeProposal: vi.fn(),
@@ -29,10 +29,15 @@ const api = vi.hoisted(() => ({
   listHomeTurns: vi.fn(),
   submitHomeTurn: vi.fn()
 }));
+const policyApi = vi.hoisted(() => ({ getAssistantExecutionPolicy: vi.fn() }));
 
 vi.mock('@/entities/home-conversation', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/entities/home-conversation')>(),
   ...api
+}));
+vi.mock('@/entities/assistant-policy', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/entities/assistant-policy')>(),
+  ...policyApi
 }));
 
 const HOME_SCOPE: HomeConversationScope = { kind: 'home' };
@@ -41,7 +46,6 @@ const CONVERSATION_ID = '22222222-2222-4222-8222-222222222222';
 const SECOND_CONVERSATION_ID = '55555555-5555-4555-8555-555555555555';
 const TURN_ID = '33333333-3333-4333-8333-333333333333';
 const DISCLOSURE_ID = '44444444-4444-4444-8444-444444444444';
-const SECOND_TURN_ID = '66666666-6666-4666-8666-666666666666';
 const NOW = '2026-10-16T00:00:00.000Z';
 
 const conversation: HomeConversationSnapshot = {
@@ -54,16 +58,6 @@ const secondConversation: HomeConversationSnapshot = {
 
 const pendingTurn: HomeTurnSnapshot = {
   id: TURN_ID, conversationId: CONVERSATION_ID, sequence: 1, status: 'pending', createdAt: NOW, updatedAt: NOW
-};
-
-const disclosure = {
-  disclosureId: DISCLOSURE_ID,
-  phase: 'initial' as const,
-  provider: { profile: 'nvidia-hosted-nim', name: 'NVIDIA hosted NIM', model: 'test-model' },
-  scope: HOME_SCOPE,
-  categories: ['current_message'] as const,
-  itemCount: 1,
-  byteLimit: 1024
 };
 
 function consentEvent(sequence = 1, turnId = TURN_ID, entityId = DISCLOSURE_ID): HomeConversationEvent {
@@ -81,12 +75,28 @@ function consentDecisionEvent(sequence: number, turnId: string, entityId: string
   return { sequence, type: 'consent.decided', turnId, entityId, payload: { decision }, createdAt: NOW };
 }
 
-function submission(content: string, status: HomeTurnSnapshot['status'] = 'pending') {
+function submission(content: string, status: HomeTurnSnapshot['status'] = 'running') {
   return {
     turn: { ...pendingTurn, status },
     message: { id: 'message-1', turnId: TURN_ID, sequence: 1, role: 'user' as const, content, createdAt: NOW },
-    execution: { state: 'consent_required' as const, disclosure },
+    execution: { state: status === 'unknown' ? 'unknown' as const : 'running' as const },
     replayed: false
+  };
+}
+
+function policyFor(scope: 'home' | 'workspace') {
+  return {
+    scope: { kind: scope, label: scope === 'home' ? 'Home' : 'Planning workspace' },
+    policy: {
+      enabled: true,
+      revision: '1',
+      provider: { name: 'NVIDIA hosted NIM', model: 'test-model' },
+      included: { categories: ['current_message'], items: [] },
+      exclusionsEnforced: true,
+      capabilities: scope === 'home' ? ['home_task_read', 'home_action_undo'] : ['workspace_file_read']
+    },
+    fileAccess: false,
+    readiness: { state: 'ready' }
   };
 }
 
@@ -131,7 +141,6 @@ beforeEach(() => {
   window.sessionStorage.clear();
   api.cancelHomeTurn.mockReset().mockResolvedValue({ turn: { ...pendingTurn, status: 'cancel_requested' }, replayed: false });
   api.createHomeConversation.mockReset().mockResolvedValue({ ...conversation, replayed: false });
-  api.decideHomeConsent.mockReset().mockResolvedValue({ turn: { ...pendingTurn, status: 'cancelled' }, disclosureId: DISCLOSURE_ID, decision: 'deny', execution: { state: 'cancelled' }, replayed: false });
   api.getHomeConversation.mockReset().mockResolvedValue(conversation);
   api.getHomeTurn.mockReset().mockImplementation(async (_conversationId: string, turnId: string) => ({ ...pendingTurn, id: turnId, status: 'running' }));
   api.listHomeProposals.mockReset().mockResolvedValue({ proposals: [], nextCursor: null });
@@ -141,10 +150,41 @@ beforeEach(() => {
   api.listHomeMessages.mockReset().mockResolvedValue({ messages: [], nextBeforeSequence: null });
   api.listHomeTurns.mockReset().mockResolvedValue({ turns: [], nextAfterSequence: null });
   api.submitHomeTurn.mockReset().mockResolvedValue(submission('Plan a trip'));
+  policyApi.getAssistantExecutionPolicy.mockReset().mockImplementation(async (query: { readonly scope: 'home' | 'workspace' }) => policyFor(query.scope));
 });
 
 describe('Home chat', () => {
-  it('creates on the first send, uses separate stable identities, and keeps the draft through consent denial', async () => {
+  it('keeps a draft and its idempotency key while policy refresh is required after an unavailable response', async () => {
+    policyApi.getAssistantExecutionPolicy.mockImplementationOnce(async () => policyFor('home'))
+      .mockImplementationOnce(async () => ({ ...policyFor('home'), readiness: { state: 'unavailable', reasonCode: 'runtime_unverified' } }))
+      .mockImplementationOnce(async () => policyFor('home'));
+    api.listHomeConversations.mockResolvedValue({ conversations: [conversation], nextCursor: null });
+    api.submitHomeTurn.mockRejectedValueOnce(new ApiClientError(503, 'ASSISTANT_EXECUTION_UNAVAILABLE', 'Unavailable', []));
+    api.submitHomeTurn.mockResolvedValueOnce(submission('Keep this request while availability changes.'));
+    renderChat(`/dashboard?conversation=${CONVERSATION_ID}`);
+    const user = userEvent.setup();
+    const input = await screen.findByRole('textbox', { name: 'Message the assistant' });
+    await screen.findByText('Assistant is available.');
+    await waitFor(() => expect(input).toBeEnabled());
+    await user.type(input, 'Keep this request while availability changes.');
+    await user.click(await screen.findByRole('button', { name: 'Send' }));
+
+    await screen.findByTestId('home-chat-policy-unavailable');
+    expect(screen.getByRole('textbox', { name: 'Message the assistant' })).toHaveValue('Keep this request while availability changes.');
+    expect(screen.getByRole('button', { name: 'Retry same send' })).toBeDisabled();
+    expect(api.submitHomeTurn).toHaveBeenCalledTimes(1);
+    const originalKey = api.submitHomeTurn.mock.calls[0]?.[3];
+
+    await user.click(screen.getByRole('button', { name: 'Refresh availability' }));
+    await screen.findByText('Assistant is available.');
+    await user.click(await screen.findByRole('button', { name: 'Retry same send' }));
+
+    await waitFor(() => expect(api.submitHomeTurn).toHaveBeenCalledTimes(2));
+    expect(api.submitHomeTurn.mock.calls[1]?.[3]).toBe(originalKey);
+    expect(screen.getByRole('textbox', { name: 'Message the assistant' })).toHaveValue('');
+  });
+
+  it('creates on the first send and starts the automatic path without a consent decision', async () => {
     api.listHomeMessages.mockImplementation(async () => {
       const submittedContent = api.submitHomeTurn.mock.calls[0]?.[1];
       return {
@@ -154,32 +194,28 @@ describe('Home chat', () => {
         nextBeforeSequence: null
       };
     });
-    api.listHomeEvents.mockImplementation(async (_id: string, after: number) => after === 0
-      ? { events: [consentEvent()], nextAfterSequence: null, lastEventSequence: 1 }
-      : api.decideHomeConsent.mock.calls.length
-        ? { events: [consentDecisionEvent(2, TURN_ID, DISCLOSURE_ID, 'deny')], nextAfterSequence: null, lastEventSequence: 2 }
-        : { events: [], nextAfterSequence: null, lastEventSequence: 1 });
     renderChat();
     const user = userEvent.setup();
     await screen.findByTestId('home-chat-empty');
+    await screen.findByText('Assistant is available.');
+    const policySummary = screen.getByRole('region', { name: 'Assistant policy summary' });
+    expect(policySummary).toHaveTextContent('Workspace data is stored on the operator-managed deployment.');
+    expect(policySummary).toHaveTextContent('When you submit an assistant request, selected context is sent to NVIDIA hosted NIM for processing.');
+    expect(within(policySummary).getByRole('link', { name: 'Read NVIDIA API Trial Terms' })).toHaveAttribute('href', 'https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf');
+    expect(within(policySummary).queryByRole('button', { name: /approve|accept/u })).not.toBeInTheDocument();
     const input = screen.getByRole('textbox', { name: 'Message the assistant' });
     await user.type(input, 'Plan a trip');
     await user.click(screen.getByRole('button', { name: 'Send' }));
 
-    await screen.findByRole('dialog');
+    await waitFor(() => expect(api.submitHomeTurn).toHaveBeenCalledTimes(1));
     expect(api.createHomeConversation).toHaveBeenCalledWith(HOME_SCOPE, 'Plan a trip', 'csrf', expect.any(String));
     expect(api.submitHomeTurn).toHaveBeenCalledWith(CONVERSATION_ID, 'Plan a trip', 'csrf', expect.any(String));
     expect(api.createHomeConversation.mock.calls[0]?.[3]).not.toBe(api.submitHomeTurn.mock.calls[0]?.[3]);
-    expect(screen.getByTestId('home-chat-input')).toHaveValue('Plan a trip');
-    expect(screen.getByText('NVIDIA hosted NIM')).toBeInTheDocument();
-    expect(screen.getByText('1', { selector: 'dd' })).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Keep private' }));
-    expect(await screen.findByText('Cancelled — kept private')).toBeInTheDocument();
-    expect(await screen.findByText('Kept private. Your message remains in this conversation and in the composer.')).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Message the assistant' })).toHaveValue('Plan a trip');
-    expect(screen.getAllByText('Plan a trip')).toHaveLength(2);
-    expect(api.decideHomeConsent).toHaveBeenCalledWith(CONVERSATION_ID, TURN_ID, DISCLOSURE_ID, 'deny', 'csrf');
+    await waitFor(() => expect(screen.getByTestId('home-chat-input')).toHaveValue(''));
+    expect(screen.getByText('NVIDIA hosted NIM · test-model')).toBeInTheDocument();
+    expect(policyApi.getAssistantExecutionPolicy).toHaveBeenCalledWith({ scope: 'home' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(api.submitHomeTurn.mock.calls[0]?.[3]).toEqual(expect.any(String));
   });
 
   it('retries an uncertain conversation creation with the same key and does not submit automatically', async () => {
@@ -206,24 +242,21 @@ describe('Home chat', () => {
     expect(links[0]).toHaveAttribute('href', `/dashboard?conversation=${SECOND_CONVERSATION_ID}`);
   });
 
-  it('does not carry an older denial notice onto a later turn in the same conversation', async () => {
-    const laterTurn: HomeTurnSnapshot = { ...pendingTurn, id: SECOND_TURN_ID, sequence: 2, status: 'completed' };
+  it('blocks legacy consent turns without polling or presenting a decision control', async () => {
     api.listHomeConversations.mockResolvedValue({ conversations: [conversation], nextCursor: null });
-    api.listHomeTurns.mockResolvedValue({ turns: [{ ...pendingTurn, status: 'cancelled' }, laterTurn], nextAfterSequence: null });
+    api.listHomeTurns.mockResolvedValue({ turns: [{ ...pendingTurn, status: 'running' }], nextAfterSequence: null });
     api.listHomeEvents.mockResolvedValue({
-      events: [
-        consentEvent(1),
-        consentDecisionEvent(2, TURN_ID, DISCLOSURE_ID, 'deny'),
-        consentEvent(3, SECOND_TURN_ID, '77777777-7777-4777-8777-777777777777'),
-        consentDecisionEvent(4, SECOND_TURN_ID, '77777777-7777-4777-8777-777777777777', 'allow')
-      ],
-      nextAfterSequence: null,
-      lastEventSequence: 4
+      events: [consentEvent(1), consentDecisionEvent(2, TURN_ID, DISCLOSURE_ID, 'allow')],
+      nextAfterSequence: null, lastEventSequence: 2
     });
     renderChat(`/dashboard?conversation=${CONVERSATION_ID}`);
 
-    await screen.findByRole('textbox', { name: 'Message the assistant' });
-    expect(screen.queryByTestId('home-chat-kept-private')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('home-chat-legacy-blocked')).toHaveTextContent('This saved action cannot be resumed.');
+    expect(screen.getByTestId('home-chat-legacy-blocked')).toHaveTextContent('This saved action cannot be resumed.');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /allow this turn|keep private|share and continue/iu })).not.toBeInTheDocument();
+    expect(api.getHomeTurn).not.toHaveBeenCalled();
+    expect(api.cancelHomeTurn).not.toHaveBeenCalled();
   });
 
   it('reconciles before offering an explicit same-key retry after an uncertain submit', async () => {
@@ -338,7 +371,7 @@ describe('Home chat', () => {
     api.getHomeConversation.mockResolvedValue(workspaceConversation);
     renderChat(`/projects/${WORKSPACE_ID}/planning-chat?conversation=${CONVERSATION_ID}`, { kind: 'workspace', workspaceId: WORKSPACE_ID }, true);
     await screen.findByTestId('planning-chat-read-only');
-    expect(screen.getByText('Planning chat for this workspace. Files and shell tools are unavailable.')).toBeInTheDocument();
+    expect(screen.getByText('Planning chat for this workspace.')).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Message the assistant' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
     expect(api.createHomeConversation).not.toHaveBeenCalled();

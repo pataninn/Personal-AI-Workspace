@@ -151,7 +151,7 @@ interface SyntheticProposal {
   readonly id: string;
   readonly sourceTurnId: string;
   readonly scope: { readonly kind: 'home' };
-  state: 'review_required' | 'partial';
+  state: 'review_required' | 'accepted' | 'partial';
   revision: number;
   acceptedRevision: number | null;
   acceptanceId: string | null;
@@ -168,11 +168,7 @@ export interface HomePlanningPreviewCalls {
   readonly undoRequests: Array<{ readonly receiptId: string; readonly idempotencyKey: string; readonly body: unknown }>;
   readonly proposalListQueries: string[];
   readonly proposalDetails: string[];
-  readonly proposalEdits: Array<{ readonly proposalId: string; readonly itemId: string; readonly body: unknown }>;
-  readonly proposalRemovals: Array<{ readonly proposalId: string; readonly itemId: string; readonly ifMatch: string | null }>;
-  readonly proposalAcceptances: Array<{ readonly proposalId: string; readonly body: unknown }>;
-  readonly proposalResumes: string[];
-  readonly proposalCancellations: Array<{ readonly proposalId: string; readonly body: unknown }>;
+  retiredProposalMutationRequests: number;
 }
 
 const evidenceByPage = new WeakMap<Page, PreviewBrowserEvidence>();
@@ -249,7 +245,7 @@ export class HomeSummariesPreviewApi {
 export class HomePlanningRecordsPreviewApi {
   readonly calls: HomePlanningPreviewCalls = {
     eventCursors: [], receiptReads: [], targetReads: [], undoRequests: [], proposalListQueries: [], proposalDetails: [],
-    proposalEdits: [], proposalRemovals: [], proposalAcceptances: [], proposalResumes: [], proposalCancellations: []
+    retiredProposalMutationRequests: 0
   };
 
   private events: SyntheticHomeEvent[] = [];
@@ -296,11 +292,8 @@ export class HomePlanningRecordsPreviewApi {
     if (segments[0] !== 'proposals') return route.fallback();
     if (segments.length === 1 && request.method() === 'GET') return this.listProposals(route, url);
     if (segments.length === 2 && request.method() === 'GET') return this.getProposal(route, segments[1] ?? '');
-    if (segments.length === 4 && segments[2] === 'items' && request.method() === 'PATCH') return this.editProposalItem(route, segments[1] ?? '', segments[3] ?? '');
-    if (segments.length === 4 && segments[2] === 'items' && request.method() === 'DELETE') return this.removeProposalItem(route, segments[1] ?? '', segments[3] ?? '');
-    if (segments.length === 3 && segments[2] === 'acceptance' && request.method() === 'POST') return this.acceptProposal(route, segments[1] ?? '');
-    if (segments.length === 3 && segments[2] === 'execution' && request.method() === 'POST') return this.resumeProposal(route, segments[1] ?? '');
-    if (segments.length === 3 && segments[2] === 'cancellation' && request.method() === 'POST') return this.cancelProposal(route, segments[1] ?? '');
+    if (segments.length === 4 && segments[2] === 'items' && ['PATCH', 'DELETE'].includes(request.method())) return this.rejectRetiredProposalMutation(route);
+    if (segments.length === 3 && ['acceptance', 'execution', 'cancellation'].includes(segments[2] ?? '') && request.method() === 'POST') return this.rejectRetiredProposalMutation(route);
     return route.fallback();
   }
 
@@ -331,98 +324,9 @@ export class HomePlanningRecordsPreviewApi {
     await respond(route, { proposal });
   }
 
-  private async editProposalItem(route: Route, proposalId: string, itemId: string): Promise<void> {
-    const body = await readJsonBody(route);
-    this.calls.proposalEdits.push({ proposalId, itemId, body });
-    const proposal = this.proposals.get(proposalId);
-    const changes = asRecord(body)?.changes;
-    const item = proposal?.items.find((candidate) => candidate.id === itemId);
-    if (!proposal || !item || !isRecord(changes)) return respond(route, null, 404, { code: 'PREVIEW_NOT_FOUND', message: 'Synthetic proposal item not found.' });
-    proposal.revision += 1;
-    proposal.updatedAt = new Date(Date.parse(SYNTHETIC_SUMMARY_TIME) + proposal.revision * 1000).toISOString();
-    proposal.items = proposal.items.map((candidate) => candidate.id === itemId
-      ? { ...candidate, command: { ...candidate.command, ...changes } }
-      : candidate);
-    proposal.itemCount = proposal.items.length;
-    this.appendEvent('proposal.updated', proposal.id, { state: proposal.state });
-    await respond(route, { proposal });
-  }
-
-  private async removeProposalItem(route: Route, proposalId: string, itemId: string): Promise<void> {
-    this.calls.proposalRemovals.push({ proposalId, itemId, ifMatch: route.request().headers()['if-match'] ?? null });
-    const proposal = this.proposals.get(proposalId);
-    if (!proposal) return respond(route, null, 404, { code: 'PREVIEW_NOT_FOUND', message: 'Synthetic proposal not found.' });
-    proposal.revision += 1;
-    proposal.updatedAt = new Date(Date.parse(SYNTHETIC_SUMMARY_TIME) + proposal.revision * 1000).toISOString();
-    proposal.items = proposal.items.filter((candidate) => candidate.id !== itemId).map((candidate, position) => ({ ...candidate, position }));
-    proposal.itemCount = proposal.items.length;
-    this.appendEvent('proposal.updated', proposal.id, { state: proposal.state });
-    await respond(route, { proposal });
-  }
-
-  private async acceptProposal(route: Route, proposalId: string): Promise<void> {
-    const body = await readJsonBody(route);
-    this.calls.proposalAcceptances.push({ proposalId, body });
-    const proposal = this.proposals.get(proposalId);
-    if (!proposal) return respond(route, null, 404, { code: 'PREVIEW_NOT_FOUND', message: 'Synthetic proposal not found.' });
-    const acceptedRevision = Number(asRecord(body)?.expectedRevision ?? proposal.revision);
-    const items = proposal.items.map((item, index): SyntheticProposalItem => {
-      if (index === 0) return { ...item, state: 'saved', receiptId: ACCEPT_RECEIPT_ONE_ID, resultCode: null };
-      if (index === 1) return { ...item, state: 'saved', receiptId: ACCEPT_RECEIPT_TWO_ID, resultCode: null };
-      return { ...item, state: 'unknown', receiptId: null, resultCode: 'execution_not_confirmed' };
-    });
-    proposal.state = 'partial';
-    proposal.revision = acceptedRevision + 1;
-    proposal.acceptedRevision = acceptedRevision;
-    proposal.acceptanceId = 'b3200000-0000-4000-8000-000000000060';
-    proposal.updatedAt = new Date(Date.parse(SYNTHETIC_SUMMARY_TIME) + proposal.revision * 1000).toISOString();
-    proposal.items = items;
-    proposal.itemCount = items.length;
-    this.appendEvent('proposal.accepted', proposal.id, { state: proposal.state });
-    this.appendEvent('action.receipt', ACCEPT_RECEIPT_ONE_ID, { actionKind: 'task.create', targetKind: 'task', targetId: ACCEPT_TASK_ONE_ID });
-    this.appendEvent('action.receipt', ACCEPT_RECEIPT_TWO_ID, { actionKind: 'task.create', targetKind: 'task', targetId: ACCEPT_TASK_TWO_ID });
-    this.receipts.set(ACCEPT_RECEIPT_ONE_ID, receiptRecord(ACCEPT_RECEIPT_ONE_ID, ACCEPT_TASK_ONE_ID, 'success'));
-    this.receipts.set(ACCEPT_RECEIPT_TWO_ID, receiptRecord(ACCEPT_RECEIPT_TWO_ID, ACCEPT_TASK_TWO_ID, 'success'));
-    await respond(route, {
-      proposal,
-      acceptance: { id: proposal.acceptanceId, revision: acceptedRevision },
-      execution: { state: 'partial', items: items.map((item) => ({ itemId: item.id, state: item.state, receiptId: item.receiptId, resultCode: item.resultCode })) },
-      replayed: false
-    });
-  }
-
-  private async resumeProposal(route: Route, proposalId: string): Promise<void> {
-    this.calls.proposalResumes.push(proposalId);
-    const proposal = this.proposals.get(proposalId);
-    if (!proposal) return respond(route, null, 404, { code: 'PREVIEW_NOT_FOUND', message: 'Synthetic proposal not found.' });
-    const resumedItem = proposal.items.find((item) => item.state === 'unknown' && item.receiptId === null);
-    const items = proposal.items.map((item) => item.id === resumedItem?.id
-      ? { ...item, state: 'saved' as const, receiptId: 'b3200000-0000-4000-8000-000000000072', resultCode: null }
-      : item);
-    proposal.state = 'partial';
-    proposal.revision += 1;
-    proposal.updatedAt = new Date(Date.parse(SYNTHETIC_SUMMARY_TIME) + proposal.revision * 1000).toISOString();
-    proposal.items = items;
-    this.receipts.set('b3200000-0000-4000-8000-000000000072', receiptRecord('b3200000-0000-4000-8000-000000000072', ACCEPT_TASK_THREE_ID, 'success'));
-    this.appendEvent('action.receipt', 'b3200000-0000-4000-8000-000000000072', { actionKind: 'task.create', targetKind: 'task', targetId: ACCEPT_TASK_THREE_ID });
-    this.appendEvent('proposal.item_status_changed', proposal.id, { state: proposal.state });
-    await respond(route, {
-      proposal,
-      execution: { state: 'partial', items: items.map((item) => ({ itemId: item.id, state: item.state, receiptId: item.receiptId, resultCode: item.resultCode })) },
-      replayed: false
-    });
-  }
-
-  private async cancelProposal(route: Route, proposalId: string): Promise<void> {
-    const body = await readJsonBody(route);
-    this.calls.proposalCancellations.push({ proposalId, body });
-    const proposal = this.proposals.get(proposalId);
-    if (!proposal) return respond(route, null, 404, { code: 'PREVIEW_NOT_FOUND', message: 'Synthetic proposal not found.' });
-    proposal.state = 'partial';
-    proposal.revision += 1;
-    proposal.updatedAt = new Date(Date.parse(SYNTHETIC_SUMMARY_TIME) + proposal.revision * 1000).toISOString();
-    this.appendEvent('proposal.cancelled', proposal.id, { state: proposal.state });
-    await respond(route, { proposal });
+  private async rejectRetiredProposalMutation(route: Route): Promise<void> {
+    this.calls.retiredProposalMutationRequests += 1;
+    await respond(route, null, 409, { code: 'POLICY_ACTION_RETIRED', message: 'Saved planning previews are read-only.' });
   }
 
   private async handleActionRoute(route: Route): Promise<void> {
@@ -565,7 +469,7 @@ function makeDraftProposal(): SyntheticProposal {
 }
 
 function makeAcceptProposal(): SyntheticProposal {
-  return makeProposal(ACCEPT_PROPOSAL_ID, [
+  const proposal = makeProposal(ACCEPT_PROPOSAL_ID, [
     makeProposalItem(ACCEPT_ITEM_ONE_ID, 0, 'Prepare release checklist', ACCEPT_TASK_ONE_ID, {
       date: '2026-11-12',
       timeZone: 'America/Los_Angeles',
@@ -574,6 +478,13 @@ function makeAcceptProposal(): SyntheticProposal {
     makeProposalItem(ACCEPT_ITEM_TWO_ID, 1, 'Verify release handoff', ACCEPT_TASK_TWO_ID),
     makeProposalItem(ACCEPT_ITEM_THREE_ID, 2, 'Confirm the rollout window', ACCEPT_TASK_THREE_ID)
   ]);
+  proposal.state = 'accepted';
+  proposal.acceptedRevision = proposal.revision;
+  proposal.acceptanceId = 'b3200000-0000-4000-8000-000000000060';
+  proposal.items = proposal.items.map((item, index) => index === 0
+    ? { ...item, state: 'saved', receiptId: ACCEPT_RECEIPT_ONE_ID }
+    : index === 2 ? { ...item, state: 'unknown', resultCode: 'execution_not_confirmed' } : item);
+  return proposal;
 }
 
 function makeProposal(id: string, items: SyntheticProposalItem[]): SyntheticProposal {

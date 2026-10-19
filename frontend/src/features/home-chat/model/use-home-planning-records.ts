@@ -1,13 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
-  acceptHomeProposal,
-  cancelHomeProposal,
-  editHomeProposalItem,
   getHomeProposal,
-  listHomeProposals,
-  removeHomeProposalItem,
-  resumeHomeProposal
+  listHomeProposals
 } from '@/entities/home-conversation';
 import type { HomeConversationEvent, HomeProposal, HomeProposalItem } from '@/entities/home-conversation';
 import { getProject } from '@/entities/project';
@@ -45,7 +40,6 @@ interface UseHomePlanningRecordsOptions {
   readonly conversationId: string | null;
   readonly events: readonly HomeConversationEvent[];
   readonly eventsConversationId: string | null;
-  readonly refreshEvents: () => Promise<void>;
   readonly onSummaryRefreshRequested?: () => void;
 }
 
@@ -56,13 +50,7 @@ export interface HomePlanningRecordsController {
   readonly proposalsError: string | null;
   readonly refreshReceipt: (receiptId: string) => Promise<void>;
   readonly undoReceipt: (receiptId: string) => Promise<void>;
-  readonly editItem: (proposalId: string, itemId: string, changes: Readonly<Record<string, unknown>>) => Promise<void>;
-  readonly removeItem: (proposalId: string, itemId: string) => Promise<void>;
-  readonly acceptProposal: (proposalId: string) => Promise<void>;
-  readonly resumeProposal: (proposalId: string) => Promise<void>;
-  readonly cancelProposal: (proposalId: string) => Promise<void>;
   readonly retryProposals: () => void;
-  readonly refreshEvents: () => Promise<void>;
 }
 
 const RECEIPT_EVENT_TYPE = 'action.receipt';
@@ -91,16 +79,6 @@ function undoErrorMessage(error: unknown): string {
   return 'Undo could not be confirmed. Refresh the receipt before retrying.';
 }
 
-function isEligibleToResume(proposal: HomeProposal): boolean {
-  if (!['accepted', 'executing', 'partial', 'unknown'].includes(proposal.state)) return false;
-  return proposal.items.some((item) => ['ready', 'executing', 'unknown'].includes(item.state) && item.receiptId === null);
-}
-
-function isCancelable(proposal: HomeProposal): boolean {
-  return ['accepted', 'executing', 'partial', 'unknown'].includes(proposal.state) &&
-    proposal.items.some((item) => ['ready', 'executing', 'unknown'].includes(item.state) && item.receiptId === null);
-}
-
 async function loadAllProposalDetails(conversationId: string): Promise<readonly HomeProposal[]> {
   const ids: string[] = [];
   let cursor: string | undefined;
@@ -117,7 +95,6 @@ export function useHomePlanningRecords({
   conversationId,
   events,
   eventsConversationId,
-  refreshEvents,
   onSummaryRefreshRequested
 }: UseHomePlanningRecordsOptions): HomePlanningRecordsController {
   const csrfToken = useAppSelector(selectCsrfToken);
@@ -309,75 +286,6 @@ export function useHomePlanningRecords({
     }
   }, [csrfToken, loadReceipt, onSummaryRefreshRequested, receipts]);
 
-  const mutateProposal = useCallback(async (
-    proposalId: string,
-    mutation: (proposal: HomeProposal, token: string) => Promise<HomeProposal>,
-    itemId?: string,
-    canMutate: (proposal: HomeProposal) => boolean = (proposal) => proposal.state === 'review_required'
-  ): Promise<void> => {
-    const current = proposals.find((item) => item.proposal.id === proposalId);
-    if (!conversationId || !csrfToken || !current || current.busy || !canMutate(current.proposal)) return;
-    const requestConversation = conversationId;
-    setProposals((previous) => previous.map((item) => item.proposal.id === proposalId ? { ...item, busy: true, error: null, message: null, itemError: null } : item));
-    try {
-      const proposal = await mutation(current.proposal, csrfToken);
-      if (currentConversation.current !== requestConversation) return;
-      setProposals((previous) => previous.map((item) => item.proposal.id === proposalId ? { proposal, state: 'ready', error: null, busy: false, message: null, itemError: null } : item));
-    } catch (error: unknown) {
-      if (currentConversation.current !== requestConversation) return;
-      const validationMessage = error instanceof ApiClientError && error.statusCode === 400
-        ? error.details[0]?.message ?? 'Check this proposed item and try again.'
-        : null;
-      try {
-        const proposal = await getHomeProposal(requestConversation, proposalId);
-        setProposals((previous) => previous.map((item) => item.proposal.id === proposalId
-          ? { proposal, state: 'ready', error: validationMessage ? null : 'The change could not be confirmed. Current saved state was reloaded.', busy: false, message: null,
-            itemError: itemId && validationMessage ? { itemId, message: validationMessage } : null }
-          : item));
-      } catch {
-        setProposals((previous) => previous.map((item) => item.proposal.id === proposalId
-          ? { ...item, state: 'error', error: 'The change could not be confirmed. Refresh this preview before trying again.', busy: false,
-            itemError: itemId && validationMessage ? { itemId, message: validationMessage } : null }
-          : item));
-      }
-    }
-  }, [conversationId, csrfToken, proposals]);
-
-  const editItem = useCallback(async (proposalId: string, itemId: string, changes: Readonly<Record<string, unknown>>): Promise<void> => {
-    await mutateProposal(proposalId, (proposal, token) => editHomeProposalItem(conversationId ?? '', proposalId, itemId, proposal.revision, changes, token), itemId);
-  }, [conversationId, mutateProposal]);
-
-  const removeItem = useCallback(async (proposalId: string, itemId: string): Promise<void> => {
-    await mutateProposal(proposalId, (proposal, token) => removeHomeProposalItem(conversationId ?? '', proposalId, itemId, proposal.revision, token), itemId);
-  }, [conversationId, mutateProposal]);
-
-  const acceptProposal = useCallback(async (proposalId: string): Promise<void> => {
-    const existing = proposals.find((item) => item.proposal.id === proposalId)?.proposal;
-    if (!existing || !conversationId || existing.state !== 'review_required' || existing.items.length === 0) return;
-    await mutateProposal(proposalId, async (proposal, token) => {
-      const accepted = await acceptHomeProposal(conversationId, proposalId, proposal.revision, token);
-      await refreshEvents();
-      return accepted.proposal;
-    });
-  }, [conversationId, mutateProposal, proposals, refreshEvents]);
-
-  const resumeProposal = useCallback(async (proposalId: string): Promise<void> => {
-    if (!conversationId) return;
-    await mutateProposal(proposalId, async (_proposal, token) => {
-      const resumed = await resumeHomeProposal(conversationId, proposalId, token);
-      await refreshEvents();
-      return resumed.proposal;
-    }, undefined, isEligibleToResume);
-  }, [conversationId, mutateProposal, refreshEvents]);
-
-  const cancelProposal = useCallback(async (proposalId: string): Promise<void> => {
-    await mutateProposal(proposalId, async (proposal, token) => {
-      const cancelled = await cancelHomeProposal(conversationId ?? '', proposalId, proposal.revision, token);
-      await refreshEvents();
-      return cancelled;
-    }, undefined, isCancelable);
-  }, [conversationId, mutateProposal, refreshEvents]);
-
   return {
     receipts: receiptsConversationId === conversationId ? receipts : [],
     proposals: proposalsConversationId === conversationId ? proposals : [],
@@ -385,18 +293,8 @@ export function useHomePlanningRecords({
     proposalsError,
     refreshReceipt,
     undoReceipt,
-    editItem,
-    removeItem,
-    acceptProposal,
-    resumeProposal,
-    cancelProposal,
-    retryProposals: () => setProposalAttempt((attempt) => attempt + 1),
-    refreshEvents
+    retryProposals: () => setProposalAttempt((attempt) => attempt + 1)
   };
-}
-
-export function proposalCanResume(proposal: HomeProposal): boolean {
-  return isEligibleToResume(proposal);
 }
 
 export function hasProposalReceipt(item: HomeProposalItem): boolean {

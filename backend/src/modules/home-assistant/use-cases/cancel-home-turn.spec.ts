@@ -15,6 +15,8 @@ const activeTurn: HomeTurn = {
   sequence: 1,
   requestKey: 'submit-1',
   status: 'running',
+  homePolicyRevision: null,
+  workspacePolicyRevision: null,
   createdAt: NOW,
   updatedAt: NOW
 };

@@ -2,13 +2,19 @@ import type { Message, MessagePage } from '@/modules/conversations/domain/conver
 import type { IConversationRepository } from '@/modules/conversations/repositories/conversation-repository';
 import type { AiRun, EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
 import { InMemoryAiRunRepository } from '@/infrastructure/ai-runs/in-memory-ai-run-repository';
+import { InMemorySandboxCommandRepository } from '@/infrastructure/ai-runs/in-memory-sandbox-command-repository';
 import { InMemoryRunEventPublisher } from '@/infrastructure/ai-runs/in-memory-run-event-publisher';
 import { InMemoryProviderPermissionRepository } from '@/infrastructure/ai-runs/in-memory-provider-permission-repository';
 import { FakeAgentRuntime } from '@/infrastructure/sandbox/fake-agent-runtime';
+import type { RuntimeInferenceEvent, RuntimeRunInput } from '@/modules/ai-runs/repositories/agent-runtime';
 import { CancelAiRunUseCase } from '@/modules/ai-runs/use-cases/cancel-ai-run-use-case';
 import { ChangeSetReviewRequiredError } from '@/modules/ai-runs/domain/change-errors';
 import { AiRunCancellationReviewRequiredError, AiRunStagingFailedError } from '@/modules/ai-runs/domain/ai-run-errors';
 import { StartAiRunUseCase, type RuntimeCommandProposalPort } from '@/modules/ai-runs/use-cases/start-ai-run-use-case';
+import { DecideSandboxCommandUseCase, ProposeSandboxCommandUseCase } from '@/modules/ai-runs/use-cases/sandbox-command-use-cases';
+import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
+import type { Project } from '@/modules/projects/domain/project-types';
+import type { AssistantExecutionAuthorization } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
 import type { IStagingGateway } from '@/modules/ai-runs/repositories/staging-gateway';
 import { DemoRunStartRateLimitedError } from '@/modules/demo/domain/demo-admission-errors';
 
@@ -102,7 +108,92 @@ async function waitForStatus(repository: InMemoryAiRunRepository, runId: string,
   throw new Error(`Run did not reach ${status}.`);
 }
 
+class PolicyCommandEventRuntime extends FakeAgentRuntime {
+  public constructor(private readonly commands: InMemorySandboxCommandRepository) { super(); }
+
+  public override async *startRun(input: RuntimeRunInput): AsyncIterable<RuntimeInferenceEvent> {
+    this.startedRuns.push(input);
+    yield { type: 'started' };
+    yield { type: 'tool.proposed', proposal: { runId: input.runId, commandId: 'runtime-permission', command: 'hermes-terminal', args: ['pwd'], cwd: '.' } };
+    const commandId = this.proposedCommands[0]?.commandId;
+    if (!commandId) throw new Error('The bounded command proposal was not registered.');
+    yield { type: 'approval.required', commandId };
+    await waitUntil(async () => this.commands.isPolicyAuthorizedExecution(input.ownerId, input.runId, commandId));
+    yield { type: 'tool.started', commandId };
+    await waitUntil(async () => (await this.commands.findByIdForOwner(input.ownerId, input.runId, commandId))?.status === 'completed');
+    yield { type: 'tool.completed', commandId, status: 'completed' };
+    yield { type: 'completed', text: 'The selected workspace was inspected.' };
+  }
+}
+
+async function waitUntil(predicate: () => Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (await predicate()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error('The policy-authorized command did not reach its expected state.');
+}
+
 describe('StartAiRunUseCase', () => {
+  it('runs a bounded policy command through the async event loop without publishing a decision request', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const conversations = conversationRepository();
+    const events = new InMemoryRunEventPublisher();
+    const commands = new InMemorySandboxCommandRepository();
+    const runtime = new PolicyCommandEventRuntime(commands);
+    const run = await readyRun(repository);
+    await repository.save({ ...run, decision: 'policy_authorized', policyRevision: '7' });
+    const project: Project = {
+      id: PROJECT_ID,
+      ownerId: OWNER_ID,
+      name: 'Project',
+      slug: 'project',
+      relativeRoot: 'projects/project',
+      storageKind: 'managed',
+      objective: null,
+      status: 'active',
+      version: 1,
+      createdAt: new Date('2026-09-16T00:00:00.000Z'),
+      updatedAt: new Date('2026-09-16T00:00:00.000Z')
+    };
+    const projects: IProjectRepository = {
+      listByOwner: async () => [project],
+      findByIdForOwner: async (ownerId, projectId) => ownerId === OWNER_ID && projectId === PROJECT_ID ? project : null,
+      listActiveRoots: async () => ['projects/project'],
+      create: async (input) => ({ ...project, ...input, storageKind: input.storageKind }),
+      updateStatus: async (input) => ({ ...project, status: input.status, version: input.expectedVersion + 1 })
+    };
+    const authorization: AssistantExecutionAuthorization = {
+      policies: [],
+      effectiveCapabilities: ['workspace_file_read', 'bounded_sandbox_command'],
+      revisions: { workspace: '7' }
+    };
+    const executionPolicy = { assertWorkspace: jest.fn(async () => authorization) };
+    const propose = new ProposeSandboxCommandUseCase(repository, commands, runtime, projects, undefined, executionPolicy);
+    const execute = new DecideSandboxCommandUseCase(repository, commands, runtime, projects, undefined, executionPolicy);
+    const received: string[] = [];
+    events.subscribe(run.id, (event) => { received.push(event.type); });
+    const start = new StartAiRunUseCase(
+      repository, conversations, runtime, events, allowDemoRunStart, propose, projects,
+      undefined, undefined, undefined, undefined, undefined, executionPolicy, execute
+    );
+
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-policy-command-control-flow' });
+    const completed = await waitForStatus(repository, run.id, 'succeeded');
+    const [command] = await commands.listForRun(OWNER_ID, run.id);
+
+    expect(completed.decision).toBe('policy_authorized');
+    expect(command).toMatchObject({ decision: 'policy_authorized', status: 'completed', classification: 'safe' });
+    expect(command?.result?.termination).toBe('completed');
+    expect(runtime.policyExecutedCommands).toHaveLength(1);
+    expect(runtime.executedCommands).toHaveLength(0);
+    expect(received).toContain('tool.started');
+    expect(received).toContain('tool.completed');
+    expect(received).not.toContain('approval.required');
+    expect(received).not.toContain('tool.proposed');
+    expect(executionPolicy.assertWorkspace).toHaveBeenCalledWith(expect.objectContaining({ policyRevision: '7' }));
+  });
+
   it('checks a prepared local staging reference before starting it and cleans only after runtime destruction', async () => {
     const repository = new InMemoryAiRunRepository();
     const conversations = conversationRepository();

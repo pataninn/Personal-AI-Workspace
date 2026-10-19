@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   cancelSandboxCommand,
-  decideSandboxCommand,
   getSandboxCommand,
   getSandboxCommands,
   type SandboxCommandSnapshot
@@ -10,7 +9,7 @@ import {
 import { ApiClientError } from '@/shared/api';
 import { createIdempotencyKey } from '@/shared/lib/idempotency-key';
 
-export type SandboxCommandAction = 'approve' | 'reject' | 'cancel';
+export type SandboxCommandAction = 'cancel';
 
 export interface SandboxCommandActionError {
   readonly message: string;
@@ -36,7 +35,6 @@ interface UseSandboxCommandsResult {
   readonly refreshing: boolean;
   readonly actions: Readonly<Record<string, SandboxCommandActionState>>;
   readonly refresh: () => void;
-  readonly decide: (command: SandboxCommandSnapshot, decision: 'approve' | 'reject') => void;
   readonly cancel: (command: SandboxCommandSnapshot) => void;
 }
 
@@ -130,14 +128,14 @@ export function useSandboxCommands({ enabled, polling = false, runId, csrfToken 
     setActions((current) => ({ ...current, [commandId]: { action } }));
   }
 
-  function setActionError(commandId: string, action: SandboxCommandAction, cause: unknown): void {
+  function setActionError(commandId: string, cause: unknown): void {
     setActions((current) => ({
       ...current,
-      [commandId]: { action, error: mapActionError(cause, action) }
+      [commandId]: { action: 'cancel', error: mapActionError(cause) }
     }));
   }
 
-  async function reconcileAfterFailure(command: SandboxCommandSnapshot, action: SandboxCommandAction, cause: unknown): Promise<void> {
+  async function reconcileAfterFailure(command: SandboxCommandSnapshot, cause: unknown): Promise<void> {
     try {
       const authoritative = await getSandboxCommand(command.runId, command.commandId);
       replaceCommand(authoritative);
@@ -146,26 +144,10 @@ export function useSandboxCommands({ enabled, polling = false, runId, csrfToken 
         return;
       }
     } catch {
-      setActionError(command.commandId, action, cause);
+      setActionError(command.commandId, cause);
       return;
     }
-    setActionError(command.commandId, action, cause);
-  }
-
-  async function submitDecision(command: SandboxCommandSnapshot, decision: 'approve' | 'reject'): Promise<void> {
-    if (!csrfToken || actions[command.commandId] || actionLocks.current.has(command.commandId)) {
-      return;
-    }
-    actionLocks.current.add(command.commandId);
-    setAction(command.commandId, decision);
-    try {
-      const updated = await decideSandboxCommand(command.runId, command.commandId, { proposalHash: command.proposalHash, decision }, csrfToken, createIdempotencyKey());
-      replaceCommand(updated);
-      releaseAction(command.commandId);
-    } catch (cause: unknown) {
-      await reconcileAfterFailure(command, decision, cause);
-      actionLocks.current.delete(command.commandId);
-    }
+    setActionError(command.commandId, cause);
   }
 
   async function submitCancel(command: SandboxCommandSnapshot): Promise<void> {
@@ -179,7 +161,7 @@ export function useSandboxCommands({ enabled, polling = false, runId, csrfToken 
       replaceCommand(updated);
       releaseAction(command.commandId);
     } catch (cause: unknown) {
-      await reconcileAfterFailure(command, 'cancel', cause);
+      await reconcileAfterFailure(command, cause);
       actionLocks.current.delete(command.commandId);
     }
   }
@@ -191,7 +173,6 @@ export function useSandboxCommands({ enabled, polling = false, runId, csrfToken 
     refreshing,
     actions,
     refresh,
-    decide: (command, decision) => { void submitDecision(command, decision); },
     cancel: (command) => { void submitCancel(command); }
   };
 }
@@ -216,18 +197,9 @@ function mapSurfaceError(cause: unknown): string {
   return GENERIC_ERROR;
 }
 
-function mapActionError(cause: unknown, action: SandboxCommandAction): SandboxCommandActionError {
-  if (cause instanceof ApiClientError && cause.code === 'COMMAND_BLOCKED') {
-    return { message: 'Command blocked by sandbox policy. This command was not run.', ambiguous: false };
-  }
-  if (cause instanceof ApiClientError && cause.code === 'COMMAND_PROPOSAL_CONFLICT') {
-    return { message: 'This command proposal is no longer current. Refresh command status before deciding again.', ambiguous: false };
-  }
+function mapActionError(cause: unknown): SandboxCommandActionError {
   if (cause instanceof ApiClientError && cause.code === 'COMMAND_REVIEW_REQUIRED') {
     return { message: 'We could not confirm whether the command started or stopped. Do not retry automatically; refresh command status.', ambiguous: true };
   }
-  if (action === 'cancel') {
-    return { message: 'Command status could not be confirmed. Refresh command status before retrying.', ambiguous: true };
-  }
-  return { message: 'We could not confirm the command decision. Refresh command status before trying again.', ambiguous: true };
+  return { message: 'Command status could not be confirmed. Refresh command status before retrying.', ambiguous: true };
 }

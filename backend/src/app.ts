@@ -36,6 +36,7 @@ import { createAccountStorageRouter, type AccountStorageRouterDependencies } fro
 import { StorageQuotaError } from '@/modules/storage-quotas/domain/storage-quota-errors';
 import { createDemoAdmissionRouter, type DemoAdmissionRouterDependencies } from '@/modules/demo/controllers/demo-admission-router';
 import { DemoAdmissionError } from '@/modules/demo/domain/demo-admission-errors';
+import { createAssistantExecutionPolicyRouter, type AssistantExecutionPolicyRouterDependencies } from '@/modules/assistant-policy/controllers/assistant-execution-policy-router';
 
 export interface CreateAppOptions {
   readonly logger: AppLogger;
@@ -57,6 +58,7 @@ export interface CreateAppOptions {
   readonly homeProposals?: HomeProposalRouterDependencies;
   readonly accountStorage?: AccountStorageRouterDependencies;
   readonly demoAdmission?: DemoAdmissionRouterDependencies;
+  readonly assistantExecutionPolicy?: AssistantExecutionPolicyRouterDependencies;
   readonly trustedProxyCidrs?: readonly string[];
 }
 
@@ -219,6 +221,9 @@ export function createApp(options: CreateAppOptions): Express {
   }
   if (options.accountStorage) {
     app.use('/api/v1', createAccountStorageRouter(options.accountStorage));
+  }
+  if (options.assistantExecutionPolicy) {
+    app.use('/api/v1', createAssistantExecutionPolicyRouter(options.assistantExecutionPolicy));
   }
   if (options.workspace) {
     app.use('/api/v1/projects/:projectId/files', createWorkspaceRouter(options.workspace));

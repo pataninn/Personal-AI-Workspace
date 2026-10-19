@@ -168,6 +168,31 @@ describe('TypeOrmHomeConversationRepository', () => {
     expect(query.mock.calls[sequenceIndex]?.[1]).toEqual([OWNER_ID, CONVERSATION_ID]);
   });
 
+  it('persists Home and workspace policy revisions with the turn before the user message', async () => {
+    const submittedTurn = { ...turnRow, status: 'running' as const, home_policy_revision: '17', workspace_policy_revision: null };
+    const submittedMessage = { ...messageRow, sequence: 1 };
+    const { repository, query } = createRepository((statement) => {
+      if (statement.includes('FROM "home_conversations"') && statement.includes('FOR UPDATE')) return [conversationRow];
+      if (statement.includes('FROM "home_turns"') && statement.includes('request_key')) return [];
+      if (statement.includes('MAX("sequence")') && statement.includes('home_turns')) return [{ sequence: 1 }];
+      if (statement.includes('MAX("sequence")') && statement.includes('home_messages')) return [{ sequence: 1 }];
+      if (statement.startsWith('INSERT INTO "home_turns"')) return [submittedTurn];
+      if (statement.startsWith('INSERT INTO "home_messages"')) return [submittedMessage];
+      if (statement.includes('SELECT "id" FROM "home_messages"') && statement.includes('turn_id" = ANY')) return [{ id: messageRow.id }];
+      return [];
+    });
+
+    const result = await repository.submitTurn({
+      ownerId: OWNER_ID, conversationId: CONVERSATION_ID, requestKey: 'turn-request-1', requestFingerprint: 'fingerprint',
+      message: 'Plan today', initialStatus: 'running', homePolicyRevision: '17', workspacePolicyRevision: null
+    });
+
+    const insert = query.mock.calls.find(([statement]) => String(statement).startsWith('INSERT INTO "home_turns"'));
+    expect(insert?.[1]).toEqual([OWNER_ID, CONVERSATION_ID, 1, 'turn-request-1', 'fingerprint', 'running', '17', null]);
+    expect(result.turn).toMatchObject({ homePolicyRevision: '17', workspacePolicyRevision: null, status: 'running' });
+    expect(result.disclosure).toBeUndefined();
+  });
+
   it('does not expose or create turns for another owner', async () => {
     const { repository, query } = createRepository(() => []);
 

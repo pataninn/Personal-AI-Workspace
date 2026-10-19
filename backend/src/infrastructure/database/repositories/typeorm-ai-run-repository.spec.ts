@@ -6,6 +6,7 @@ import type { TaskSuggestionCompletionWriter } from '@/infrastructure/database/r
 import type { EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
 import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
 import { ProjectArchivedError } from '@/modules/conversations/domain/conversation-errors';
+import { AssistantExecutionPolicyChangedError } from '@/modules/assistant-policy/domain/assistant-execution-errors';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const RUN_ID = '22222222-2222-4222-8222-222222222222';
@@ -81,17 +82,26 @@ function row(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 
 describe('TypeOrmAiRunRepository', () => {
   it('moves interrupted persisted runs to manual review without changing confirmed transmission facts', async () => {
-    const query = jest.fn().mockResolvedValue([{ id: RUN_ID }, { id: '33333333-3333-4333-8333-333333333333' }]);
-    const repository = new TypeOrmAiRunRepository({ query } as unknown as DataSource);
+    const query = jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: RUN_ID }, { id: '33333333-3333-4333-8333-333333333333' }]);
+    const runner = {
+      connect: jest.fn(), startTransaction: jest.fn(), query, commitTransaction: jest.fn(), rollbackTransaction: jest.fn(), release: jest.fn(), isTransactionActive: false
+    };
+    const repository = new TypeOrmAiRunRepository({ createQueryRunner: () => runner } as unknown as DataSource);
 
     await expect(repository.recoverInterruptedRunsForReview()).resolves.toBe(2);
 
-    const sql = String(query.mock.calls[0]?.[0]);
+    const commandSql = String(query.mock.calls[0]?.[0]);
+    expect(commandSql).toContain('UPDATE "sandbox_commands"');
+    expect(commandSql).toContain('"decision"::text = \'policy_authorized\'');
+    expect(commandSql).toContain("IN ('awaiting_approval', 'running', 'cancel_requested')");
+    expect(query.mock.calls[0]?.[1]).toEqual(['The app restarted while this command was active. Review its saved status; the command was not resumed.']);
+    const sql = String(query.mock.calls[1]?.[0]);
     expect(sql).toContain("'staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested'");
     expect(sql).toContain("IN ('transmitted_confirmed', 'not_started_confirmed') THEN \"provider_transmission\"");
     expect(sql).toContain("'review_required'");
     expect(sql).toContain("'unknown'");
-    expect(query.mock.calls[0]?.[1]).toEqual(['The app restarted while this run was active. Review its saved status; no work was resumed automatically.']);
+    expect(query.mock.calls[1]?.[1]).toEqual(['The app restarted while this run was active. Review its saved status; no work was resumed automatically.']);
+    expect(runner.commitTransaction).toHaveBeenCalledTimes(1);
   });
 
   it('cancels an inactive principal run for internal cleanup without requiring user authorization', async () => {
@@ -268,6 +278,31 @@ describe('TypeOrmAiRunRepository', () => {
 
     expect(result?.status).toBe('running');
     expect(query.mock.calls.find(([sql]) => String(sql).startsWith('UPDATE "ai_runs"'))?.[0]).toContain("'queued', 'waiting_approval'");
+  });
+
+  it('rolls back start when the bound workspace policy was revoked before admission', async () => {
+    const bound = row({ decision: 'policy_authorized', policy_revision: '4', status: 'ready', phase: 'runtime' });
+    const businessQuery = jest.fn()
+      .mockResolvedValueOnce([{ id: OWNER_ID }])
+      .mockResolvedValueOnce([bound])
+      .mockResolvedValueOnce([{ id: OWNER_ID }])
+      .mockResolvedValueOnce([{ policy_profile: 'workspace_in_scope_v1', provider_profile: 'nvidia-hosted-nim', model: 'nvidia/nemotron-3-super-120b-a12b', enabled: false, revoked_at: new Date(), revision: '5' }]);
+    const query = withProjectRemovalBarrier(businessQuery);
+    const queryRunner = {
+      connect: jest.fn().mockResolvedValue(undefined), startTransaction: jest.fn().mockResolvedValue(undefined), query,
+      commitTransaction: jest.fn().mockResolvedValue(undefined), rollbackTransaction: jest.fn().mockResolvedValue(undefined), release: jest.fn().mockResolvedValue(undefined)
+    } as unknown as QueryRunner;
+    const repository = new TypeOrmAiRunRepository({ createQueryRunner: () => queryRunner } as unknown as DataSource);
+
+    await expect(repository.beginStart({ ownerId: OWNER_ID, runId: RUN_ID, idempotencyKey: 'start-key', requestFingerprint: 'f'.repeat(64) }))
+      .rejects.toBeInstanceOf(AssistantExecutionPolicyChangedError);
+
+    const policyRead = query.mock.calls.find(([sql]) => String(sql).includes('FROM "assistant_scope_policies"'));
+    expect(policyRead?.[0]).toContain('FOR SHARE');
+    expect(policyRead?.[1]).toEqual([OWNER_ID, PROJECT_ID]);
+    expect(query.mock.calls.some(([sql]) => String(sql).startsWith('UPDATE "ai_runs"'))).toBe(false);
+    expect(queryRunner.rollbackTransaction).toHaveBeenCalledTimes(1);
+    expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
   });
 
   it('persists task suggestions inside the existing run completion transaction', async () => {

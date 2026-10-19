@@ -233,7 +233,7 @@ function readClassification(value: unknown): SandboxCommandClassification | unde
 }
 
 function readDecision(value: unknown): SandboxCommandDecision | undefined {
-  return value === 'pending' || value === 'approved' || value === 'rejected' || value === 'not_applicable' ? value : undefined;
+  return value === 'pending' || value === 'approved' || value === 'rejected' || value === 'not_applicable' || value === 'policy_authorized' ? value : undefined;
 }
 
 function readStatus(value: unknown): SandboxCommandStatus | undefined {

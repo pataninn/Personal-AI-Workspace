@@ -6,6 +6,8 @@ import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-rep
 import type { Project } from '@/modules/projects/domain/project-types';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { ISandboxCommandRepository } from '@/modules/ai-runs/repositories/sandbox-command-repository';
+import type { AssistantExecutionAuthorization } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
+import { AssistantExecutionPolicyChangedError } from '@/modules/assistant-policy/domain/assistant-execution-errors';
 import { CancelSandboxCommandUseCase, DecideSandboxCommandUseCase, GetSandboxCommandUseCase, ListSandboxCommandsUseCase, ProposeSandboxCommandUseCase } from '@/modules/ai-runs/use-cases/sandbox-command-use-cases';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -141,6 +143,84 @@ class FailingResultRepository extends InMemorySandboxCommandRepository {
   }
 }
 
+class PausingPolicyCommandRuntime extends FakeAgentRuntime {
+  public readonly executionStarted: Promise<void>;
+  private resolveStarted!: () => void;
+  private releaseExecution!: () => void;
+  private readonly executionGate = new Promise<void>((resolve) => { this.releaseExecution = resolve; });
+
+  public constructor() {
+    super();
+    this.executionStarted = new Promise<void>((resolve) => { this.resolveStarted = resolve; });
+  }
+
+  public override async executePolicyCommand(input: Parameters<FakeAgentRuntime['executePolicyCommand']>[0]): ReturnType<FakeAgentRuntime['executePolicyCommand']> {
+    this.policyExecutedCommands.push(input);
+    this.resolveStarted();
+    await this.executionGate;
+    return {
+      exitCode: 0,
+      termination: 'completed',
+      durationMs: 1,
+      outputBytes: 18,
+      outputLineCount: 1,
+      outputTruncated: false,
+      outputSha256: 'a'.repeat(64),
+      outputPreview: 'bounded test output'
+    };
+  }
+
+  public release(): void { this.releaseExecution(); }
+}
+
+class PausingPolicyReadinessRuntime extends FakeAgentRuntime {
+  public readonly readinessStarted: Promise<void>;
+  private resolveReadinessStarted!: () => void;
+  private releaseReadiness!: () => void;
+
+  public constructor() {
+    super();
+    this.readinessStarted = new Promise<void>((resolve) => { this.resolveReadinessStarted = resolve; });
+  }
+
+  public override async supportsPolicyCommandExecution(): Promise<boolean> {
+    this.resolveReadinessStarted();
+    await new Promise<void>((resolve) => { this.releaseReadiness = resolve; });
+    return true;
+  }
+
+  public release(): void { this.releaseReadiness(); }
+}
+
+async function createPolicyCommandFixture(runtime: FakeAgentRuntime, policyOverride?: { assertWorkspace: (input: { ownerId: string; projectId?: string; providerProfile: string; model: string; policyRevision?: string }) => Promise<AssistantExecutionAuthorization> }): Promise<{
+  readonly runRepository: ReadyRunRepository;
+  readonly projectRepository: ProjectRepositoryFixture;
+  readonly repository: InMemorySandboxCommandRepository;
+  readonly proposal: SandboxCommand;
+  readonly decide: DecideSandboxCommandUseCase;
+}> {
+  const runRepository = new ReadyRunRepository();
+  const policyRun: AiRun = { ...runRepository.run, status: 'running', decision: 'policy_authorized', policyRevision: '8' };
+  jest.spyOn(runRepository, 'findByIdForOwner').mockResolvedValue(policyRun);
+  const projectRepository = new ProjectRepositoryFixture();
+  const repository = new InMemorySandboxCommandRepository();
+  const authorization: AssistantExecutionAuthorization = {
+    policies: [],
+    effectiveCapabilities: ['bounded_sandbox_command'],
+    revisions: { workspace: '8' }
+  };
+  const executionPolicy = policyOverride ?? { assertWorkspace: async () => authorization };
+  const propose = new ProposeSandboxCommandUseCase(runRepository, repository, runtime, projectRepository, undefined, executionPolicy);
+  const proposal = (await propose.execute({ ownerId: OWNER_ID, runId: RUN_ID, command: 'hermes-terminal', args: ['pwd'], idempotencyKey: 'policy-proposal' })).resource;
+  return {
+    runRepository,
+    projectRepository,
+    repository,
+    proposal,
+    decide: new DecideSandboxCommandUseCase(runRepository, repository, runtime, projectRepository, undefined, executionPolicy)
+  };
+}
+
 async function createFixture(): Promise<{ readonly repository: InMemorySandboxCommandRepository; readonly runtime: FakeAgentRuntime; readonly runRepository: ReadyRunRepository; readonly projectRepository: ProjectRepositoryFixture; readonly proposal: SandboxCommand }> {
   const runRepository = new ReadyRunRepository();
   const projectRepository = new ProjectRepositoryFixture();
@@ -152,6 +232,114 @@ async function createFixture(): Promise<{ readonly repository: InMemorySandboxCo
 }
 
 describe('sandbox command use cases', () => {
+  it('claims and stores a bounded policy result without using the legacy approval runtime path', async () => {
+    const runtime = new FakeAgentRuntime();
+    const fixture = await createPolicyCommandFixture(runtime);
+
+    const result = await fixture.decide.executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID, commandId: fixture.proposal.id });
+
+    expect(result).toMatchObject({ decision: 'policy_authorized', status: 'completed', result: { termination: 'completed' } });
+    expect(result.decisionIdempotencyKey).toBe(`policy-command-${fixture.proposal.id}`);
+    expect(runtime.policyExecutedCommands).toHaveLength(1);
+    expect(runtime.executedCommands).toHaveLength(0);
+  });
+
+  it('reloads the persisted run after runtime preflight so a concurrent run cancellation prevents dispatch', async () => {
+    const runtime = new PausingPolicyReadinessRuntime();
+    const fixture = await createPolicyCommandFixture(runtime);
+    const execution = fixture.decide.executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID, commandId: fixture.proposal.id });
+    await runtime.readinessStarted;
+    jest.spyOn(fixture.runRepository, 'findByIdForOwner').mockResolvedValue({
+      ...fixture.runRepository.run,
+      status: 'cancel_requested',
+      decision: 'policy_authorized',
+      policyRevision: '8'
+    });
+    runtime.release();
+
+    const result = await execution;
+
+    expect(result.status).toBe('review_required');
+    expect(result.result).toBeUndefined();
+    expect(runtime.policyExecutedCommands).toHaveLength(0);
+    expect(runtime.executedCommands).toHaveLength(0);
+  });
+
+  it('releases held runtime output only after its completed result was persisted', async () => {
+    const completePolicyCommand = jest.fn(async (): Promise<void> => {
+      const stored = await fixture.repository.findByIdForOwner(OWNER_ID, RUN_ID, fixture.proposal.id);
+      expect(stored).toMatchObject({ decision: 'policy_authorized', status: 'completed' });
+    });
+    const runtime = Object.assign(new FakeAgentRuntime(), { completePolicyCommand });
+    const fixture = await createPolicyCommandFixture(runtime);
+    await expect(fixture.decide.executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID, commandId: fixture.proposal.id })).resolves.toMatchObject({ status: 'completed' });
+    expect(completePolicyCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails the enclosing run when the result release acknowledgment is uncertain', async () => {
+    const completePolicyCommand = jest.fn().mockRejectedValue(new Error('synthetic uncertain acknowledgment'));
+    const runtime = Object.assign(new FakeAgentRuntime(), { completePolicyCommand });
+    const fixture = await createPolicyCommandFixture(runtime);
+    await expect(fixture.decide.executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID, commandId: fixture.proposal.id })).rejects.toMatchObject({ code: 'ASSISTANT_EXECUTION_UNAVAILABLE' });
+    expect(completePolicyCommand).toHaveBeenCalledTimes(1);
+    expect(runtime.policyExecutedCommands).toHaveLength(1);
+  });
+
+  it('withholds model continuation when policy changes after process-result persistence', async () => {
+    const completePolicyCommand = jest.fn();
+    const runtime = Object.assign(new FakeAgentRuntime(), { completePolicyCommand });
+    const fixture = await createPolicyCommandFixture(runtime);
+    const save = fixture.repository.saveExecutionResult.bind(fixture.repository);
+    jest.spyOn(fixture.repository, 'saveExecutionResult').mockImplementation(async (input) => {
+      const saved = await save(input);
+      jest.spyOn(fixture.runRepository, 'findByIdForOwner').mockResolvedValue({ ...fixture.runRepository.run, status: 'cancel_requested', decision: 'policy_authorized', policyRevision: '8' });
+      return saved;
+    });
+    await expect(fixture.decide.executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID, commandId: fixture.proposal.id })).rejects.toMatchObject({ code: 'ASSISTANT_EXECUTION_UNAVAILABLE' });
+    expect(completePolicyCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not persist a command result after cancellation wins during execution', async () => {
+    const runtime = new PausingPolicyCommandRuntime();
+    const fixture = await createPolicyCommandFixture(runtime);
+    const execution = fixture.decide.executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID, commandId: fixture.proposal.id });
+    await runtime.executionStarted;
+
+    const cancellation = await new CancelSandboxCommandUseCase(fixture.runRepository, fixture.repository, runtime, fixture.projectRepository)
+      .execute({ ownerId: OWNER_ID, runId: RUN_ID, commandId: fixture.proposal.id, idempotencyKey: 'policy-command-cancel' });
+    runtime.release();
+    const late = await execution;
+
+    expect(cancellation.status).toBe('cancel_requested');
+    expect(late.status).toBe('cancel_requested');
+    expect(late.result).toBeUndefined();
+  });
+
+  it('suppresses command output and records review when policy revision changes before result persistence', async () => {
+    const runtime = new FakeAgentRuntime();
+    let checks = 0;
+    const authorization: AssistantExecutionAuthorization = {
+      policies: [],
+      effectiveCapabilities: ['bounded_sandbox_command'],
+      revisions: { workspace: '8' }
+    };
+    const policy = {
+      assertWorkspace: async (): Promise<AssistantExecutionAuthorization> => {
+        checks += 1;
+        if (checks === 5) throw new AssistantExecutionPolicyChangedError();
+        return authorization;
+      }
+    };
+    const fixture = await createPolicyCommandFixture(runtime, policy);
+
+    const result = await fixture.decide.executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID, commandId: fixture.proposal.id });
+
+    expect(checks).toBe(5);
+    expect(result).toMatchObject({ decision: 'policy_authorized', status: 'review_required' });
+    expect(result.result).toBeUndefined();
+    expect(runtime.policyExecutedCommands).toHaveLength(1);
+  });
+
   it('persists the exact approval before invoking the fake runtime', async () => {
     const fixture = await createFixture();
     const decide = new DecideSandboxCommandUseCase(fixture.runRepository, fixture.repository, fixture.runtime, fixture.projectRepository);

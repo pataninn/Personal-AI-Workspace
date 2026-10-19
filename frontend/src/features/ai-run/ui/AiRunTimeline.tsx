@@ -28,7 +28,8 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
     projectId,
     conversationId,
     csrfToken,
-    enabled: !disabled && snapshot.decision === 'approved' && snapshot.status !== 'rejected',
+    enabled: !disabled && snapshot.status !== 'rejected'
+      && (snapshot.decision === 'policy_authorized' || snapshot.decision === 'approved' && snapshot.status !== 'ready'),
     onSnapshotChange,
     onConversationReconciled
   });
@@ -41,7 +42,7 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
   };
   const reviewRequired = timeline.snapshot.status === 'review_required' || (timeline.connection === 'error' && timeline.snapshot.providerTransmission === 'unknown');
   const showReconciliationNotice = timeline.connection === 'disconnected' || ['loading', 'partial', 'failed'].includes(timeline.reconciliationStatus);
-  const statusText = statusLabel(timeline.snapshot.status, timeline.connection);
+  const statusText = statusLabel(timeline.snapshot.status, timeline.connection, timeline.snapshot.decision);
   const partialResponse = timeline.assistantText.length > 0 && ['failed', 'blocked', 'cancelled', 'review_required'].includes(timeline.snapshot.status);
   const showTyping = compact && !terminal && ['ready', 'queued', 'running'].includes(timeline.snapshot.status) && timeline.connection !== 'disconnected' && timeline.connection !== 'error';
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -69,8 +70,11 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
       <Card className="ai-run-timeline-card">
         <h3 ref={headingRef} id="ai-run-timeline-heading" data-testid="ai-run-timeline-heading" className={compact ? 'sr-only' : undefined} tabIndex={-1}>{terminalHeading(timeline.snapshot.status, reviewRequired)}</h3>
         {!compact ? <Alert tone="info" data-testid="ai-run-provider-notice">
-          <p>{timeline.snapshot.runtime?.kind === 'hermes' ? 'Hermes works in an isolated project copy using the selected context. Completed file changes are validated and recorded in File history.' : DIRECT_PROVIDER_NOTICE}</p>
-          {timeline.snapshot.providerApprovalMode === 'remembered_permission' ? <p data-testid="ai-run-remembered-permission-notice">This run was approved by a saved project permission. Revoking it stops runs that have not started; a request already in progress or sent cannot be recalled.</p> : null}
+          <p>{timeline.snapshot.decision === 'policy_authorized'
+            ? 'This run follows the current stored workspace policy. Selected context and supported file boundaries remain enforced.'
+            : 'This older approval is retained as history and cannot authorize new execution. Submit a fresh request under the current workspace policy.'}</p>
+          {timeline.snapshot.runtime?.kind === 'hermes' ? <p>Hermes works in an isolated project copy using the selected context. Completed file changes are validated and recorded in File history.</p> : <p>{DIRECT_PROVIDER_NOTICE}</p>}
+          {timeline.snapshot.providerApprovalMode === 'remembered_permission' ? <p data-testid="ai-run-remembered-permission-notice">This saved provider permission is a legacy record. It does not authorize new automatic execution.</p> : null}
           {manifest ? <p className="field-help">Provider: {manifest.provider}. Model: {formatModel(manifest.model)}. Selected files: {manifest.itemCount}. Recent messages: {manifest.messageCount}.</p> : null}
         </Alert> : null}
         {timeline.snapshot.runtime?.kind === 'hermes' ? <HermesToolActivity events={timeline.events} /> : null}
@@ -108,9 +112,9 @@ export function AiRunTimeline({ snapshot, manifest = null, projectId, conversati
   );
 }
 
-function statusLabel(status: AiRunSnapshot['status'], connection: ReturnType<typeof useAiRunTimeline>['connection']): string {
+function statusLabel(status: AiRunSnapshot['status'], connection: ReturnType<typeof useAiRunTimeline>['connection'], decision: AiRunSnapshot['decision']): string {
   if (connection === 'starting') {
-    return 'Sending approved context to the model provider...';
+    return 'Starting the policy-authorized assistant run...';
   }
   if (connection === 'connecting') {
     return 'Connecting to live run updates...';
@@ -146,7 +150,9 @@ function statusLabel(status: AiRunSnapshot['status'], connection: ReturnType<typ
     return 'The run needs manual review.';
   }
   if (status === 'ready') {
-    return 'Sending approved context to the model provider...';
+    return decision === 'policy_authorized'
+      ? 'Starting the policy-authorized assistant run...'
+      : 'This older approved run is paused. Submit a fresh request to continue.';
   }
   return 'The assistant run is ready to start.';
 }

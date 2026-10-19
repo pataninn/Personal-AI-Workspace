@@ -76,7 +76,7 @@ function ActivityCard({ item, expanded, detailState, onToggle, onRetryDetail }: 
           <span className={`project-activity-status status-${item.status}`}>{formatStatus(item.status)}</span>
         </header>
         <dl className="project-activity-facts">
-          <div><dt>Approval</dt><dd>{formatStatus(item.decision)}</dd></div>
+          <div><dt>Execution authorization</dt><dd>{formatStatus(item.decision)}</dd></div>
           <div><dt>Provider transmission</dt><dd>{formatTransmission(item.providerTransmission)}</dd></div>
           <div><dt>Context</dt><dd>{item.context.fileCount} files · {item.context.factCount} facts · {item.context.messageCount} messages</dd></div>
           <div><dt>Estimated context</dt><dd>{formatTokens(item.context.estimatedTokens)} tokens (estimate)</dd></div>

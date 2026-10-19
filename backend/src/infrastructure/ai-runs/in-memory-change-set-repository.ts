@@ -10,6 +10,7 @@ import type {
   ChangeSetDecisionResult,
   ChangeSetDecisionUpdate,
   CreateProposedChangeSetRecord,
+  PolicyAuthorizedChangeSetApplyClaim,
   ProposedChangeSet
 } from '@/modules/ai-runs/domain/change-types';
 import type { IProposedChangeSetRepository } from '@/modules/ai-runs/repositories/change-set-repository';
@@ -111,6 +112,30 @@ export class InMemoryProposedChangeSetRepository implements IProposedChangeSetRe
       const updated: ProposedChangeSet = input.decision === 'reject'
         ? { ...changeSet, status: 'rejected', decision: 'rejected', decisionIdempotencyKey: input.idempotencyKey, decisionFingerprint: input.requestFingerprint, safeMessage: 'Change set rejected. No project files were changed.', updatedAt: new Date() }
         : { ...changeSet, status: 'applying', decision: 'approved', decisionIdempotencyKey: input.idempotencyKey, decisionFingerprint: input.requestFingerprint, safeMessage: 'Applying approved changes.', updatedAt: new Date() };
+      this.changeSets.set(updated.id, updated);
+      return { resource: updated, replayed: false };
+    });
+  }
+
+  public async claimPolicyAuthorizedApply(input: PolicyAuthorizedChangeSetApplyClaim): Promise<ChangeSetDecisionResult> {
+    return this.withLock(`decision:${input.runId}`, async () => {
+      const changeSet = await this.findByRunForOwner(input.ownerId, input.runId);
+      if (!changeSet || changeSet.projectId !== input.projectId) throw new ChangeSetNotFoundError();
+      if (changeSet.proposalHash !== input.proposalHash) throw new ChangeSetConflictError();
+      if (changeSet.decisionIdempotencyKey) {
+        if (changeSet.decisionIdempotencyKey !== input.idempotencyKey || changeSet.decisionFingerprint !== input.requestFingerprint) throw new ChangeSetIdempotencyReusedError();
+        return { resource: changeSet, replayed: true };
+      }
+      if (changeSet.decision !== 'pending' || changeSet.status !== 'awaiting_approval') throw new ChangeSetAlreadyDecidedError();
+      const updated: ProposedChangeSet = {
+        ...changeSet,
+        status: 'applying',
+        decision: 'policy_authorized',
+        decisionIdempotencyKey: input.idempotencyKey,
+        decisionFingerprint: input.requestFingerprint,
+        safeMessage: 'Applying workspace-policy authorized changes.',
+        updatedAt: new Date()
+      };
       this.changeSets.set(updated.id, updated);
       return { resource: updated, replayed: false };
     });

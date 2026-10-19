@@ -1,19 +1,19 @@
 import type { Page, Route } from '@playwright/test';
-import { SYNTHETIC_TIME, type HomeChatFixtureCalls, type HomeChatFixtureOptions, type SyntheticConversation, type SyntheticEvent, type SyntheticMessage, type SyntheticScope, type SyntheticTurn, type SyntheticTurnStatus } from './home-chat-preview-data';
+import { SYNTHETIC_TIME, type HomeChatFixtureCalls, type HomeChatFixtureOptions, type SyntheticConversation, type SyntheticEvent, type SyntheticMessage, type SyntheticPolicyState, type SyntheticScope, type SyntheticTurn, type SyntheticTurnStatus } from './home-chat-preview-data';
 
 const CONVERSATIONS_PATH = '/api/v1/home/conversations';
 const CREATED_CONVERSATION_ID = 'c3100000-0000-4000-8000-000000000001';
 const TURN_ID = 'c3100000-0000-4000-8000-000000000002';
 const MESSAGE_ID = 'c3100000-0000-4000-8000-000000000003';
-const INITIAL_DISCLOSURE_ID = 'c3100000-0000-4000-8000-000000000004';
-const DYNAMIC_DISCLOSURE_ID = 'c3100000-0000-4000-8000-000000000005';
 
 export class HomeChatPreviewApi {
   readonly calls: HomeChatFixtureCalls = {
     listQueries: [],
     createRequests: [],
     submitRequests: [],
-    consentDecisions: [],
+    policyReads: [],
+    retiredDecisionRequests: 0,
+    policyNetworkFailures: 0,
     eventCursors: [],
     cancellationRequests: 0,
     turnStatusReads: 0
@@ -26,22 +26,26 @@ export class HomeChatPreviewApi {
   private events: SyntheticEvent[];
   private failEventReads: number;
   private failTurnSubmissions: number;
+  private failPolicyReads: number;
+  private policyState: SyntheticPolicyState;
   private turnReadStatuses: SyntheticTurnStatus[];
-  private pendingDisclosure: { readonly id: string; readonly phase: 'initial' | 'tool_result' } | null = null;
 
-  constructor(private readonly page: Page, private readonly options: HomeChatFixtureOptions = {}) {
+  constructor(private readonly page: Page, options: HomeChatFixtureOptions = {}) {
     this.conversations = [...(options.conversations ?? [])];
     this.messages = [...(options.messages ?? [])];
     this.turns = [...(options.turns ?? [])];
     this.events = [...(options.events ?? [])];
     this.failEventReads = options.failEventReads ?? 0;
     this.failTurnSubmissions = options.failTurnSubmissions ?? 0;
+    this.failPolicyReads = options.failPolicyReads ?? 0;
+    this.policyState = options.policyState ?? 'ready';
     this.turnReadStatuses = [...(options.turnReadStatuses ?? [])];
   }
 
   async install(): Promise<void> {
     await this.page.route('**/*', async (route) => this.blockProviderOrBridge(route));
     await this.page.route('**/api/v1/home/conversations**', async (route) => this.handleHomeApi(route));
+    await this.page.route('**/api/v1/assistant/execution-policy**', async (route) => this.readExecutionPolicy(route));
   }
 
   getConversationId(): string | null {
@@ -78,9 +82,10 @@ export class HomeChatPreviewApi {
     if (segments.length === 2 && segments[1] === 'messages' && method === 'GET') return this.listMessages(route);
     if (segments.length === 2 && segments[1] === 'turns' && method === 'GET') return this.listTurns(route);
     if (segments.length === 2 && segments[1] === 'events' && method === 'GET') return this.listEvents(route, url);
-    if (segments.length === 2 && segments[1] === 'turns' && method === 'POST') return this.submitTurn(route);
+    if (segments.length === 2 && segments[1] === 'proposals' && method === 'GET') return this.listProposals(route, segments[0] ?? '');
+    if (segments.length === 2 && segments[1] === 'turns' && method === 'POST') return this.submitTurn(route, segments[0] ?? '');
     if (segments.length === 3 && segments[1] === 'turns' && method === 'GET') return this.getTurn(route);
-    if (segments.length === 4 && segments[1] === 'turns' && segments[3] === 'consent-decisions' && method === 'POST') return this.decideConsent(route);
+    if (segments.length === 4 && segments[1] === 'turns' && segments[3] === 'consent-decisions' && method === 'POST') return this.rejectRetiredDecision(route);
     if (segments.length === 4 && segments[1] === 'turns' && segments[3] === 'cancellation' && method === 'POST') return this.cancelTurn(route);
     await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ data: null, error: { code: 'PREVIEW_HOME_ROUTE_NOT_FOUND', message: 'Synthetic Home route not found.' } }) });
   }
@@ -91,6 +96,30 @@ export class HomeChatPreviewApi {
     const workspaceId = url.searchParams.get('workspaceId');
     const conversations = this.conversations.filter((item) => item.scope.kind === requestedScope && (requestedScope !== 'workspace' || (item.scope.kind === 'workspace' && item.scope.workspaceId === workspaceId)));
     await this.respond(route, { conversations, nextCursor: null });
+  }
+
+  private async readExecutionPolicy(route: Route, url = new URL(route.request().url())): Promise<void> {
+    const scope = url.searchParams.get('scope') === 'workspace' ? 'workspace' : 'home';
+    this.calls.policyReads.push(scope);
+    if (this.failPolicyReads > 0) {
+      this.failPolicyReads -= 1;
+      this.calls.policyNetworkFailures += 1;
+      await route.abort('failed');
+      return;
+    }
+    const ready = this.policyState === 'ready';
+    const policy = this.policyState === 'blocked'
+      ? { enabled: false, revision: 'fixture-policy-1', provider: null, included: { categories: [], items: [] }, exclusionsEnforced: true, capabilities: [] }
+      : { enabled: true, revision: 'fixture-policy-1', provider: { name: 'Synthetic browser fixture', model: 'preview-only' }, included: { categories: ['current_message'], items: [] }, exclusionsEnforced: true, capabilities: ['home_action_undo'] };
+    const readiness = ready ? { state: 'ready' }
+      : this.policyState === 'blocked' ? { state: 'blocked', reasonCode: 'policy_revoked' }
+        : { state: 'unavailable', reasonCode: 'runtime_unverified' };
+    await this.respond(route, {
+      scope: { kind: scope, label: scope === 'home' ? 'Home' : 'Synthetic workspace' },
+      policy,
+      fileAccess: false,
+      readiness
+    });
   }
 
   private async createConversation(route: Route): Promise<void> {
@@ -133,7 +162,12 @@ export class HomeChatPreviewApi {
     });
   }
 
-  private async submitTurn(route: Route): Promise<void> {
+  private async listProposals(route: Route, conversationId: string): Promise<void> {
+    if (!this.conversations.some((conversation) => conversation.id === conversationId)) return this.notFound(route);
+    await this.respond(route, { proposals: [], nextCursor: null });
+  }
+
+  private async submitTurn(route: Route, conversationId: string): Promise<void> {
     const body = await this.readBody(route);
     const idempotencyKey = route.request().headers()['idempotency-key'] ?? '';
     this.calls.submitRequests.push({ body, idempotencyKey });
@@ -142,50 +176,26 @@ export class HomeChatPreviewApi {
       await this.respond(route, null, 503, { code: 'PREVIEW_TEMPORARY_ERROR', message: 'Synthetic turn response was lost.' });
       return;
     }
-    const conversation = this.conversations[0];
+    const conversation = this.conversations.find((item) => item.id === conversationId);
     if (!conversation) return this.notFound(route);
     const messageText = typeof body.message === 'string' ? body.message : '';
     const sequence = Math.max(0, ...this.turns.map((turn) => turn.sequence)) + 1;
-    const turn = this.makeTurn(conversation.id, sequence, 'pending');
+    const turn = this.makeTurn(conversation.id, sequence, 'running');
     const message: SyntheticMessage = { id: MESSAGE_ID, turnId: turn.id, sequence: this.messages.length + 1, role: 'user', content: messageText, createdAt: SYNTHETIC_TIME };
     this.turns = [...this.turns, turn];
     this.messages = [...this.messages, message];
-    this.pendingDisclosure = { id: INITIAL_DISCLOSURE_ID, phase: 'initial' };
-    this.appendEvent('turn.created', turn.id, null, { status: 'pending' });
-    this.appendEvent('consent.requested', turn.id, this.pendingDisclosure.id, this.consentRequestedPayload('initial'));
+    this.appendEvent('turn.created', turn.id, null, { status: 'running' });
     await this.respond(route, {
       turn,
       message,
-      execution: { state: 'consent_required', disclosure: this.initialDisclosure(conversation.scope) },
+      execution: { state: 'running' },
       replayed: false
     }, 201);
   }
 
-  private async decideConsent(route: Route): Promise<void> {
-    const body = await this.readBody(route);
-    const decision = body.decision === 'allow' ? 'allow' : 'deny';
-    const disclosure = this.pendingDisclosure ?? { id: INITIAL_DISCLOSURE_ID, phase: 'initial' as const };
-    this.calls.consentDecisions.push({ body, phase: disclosure.phase });
-    const turn = this.turns.at(-1);
-    if (!turn) return this.notFound(route);
-    const status: SyntheticTurnStatus = disclosure.phase === 'initial' && decision === 'deny' ? 'cancelled' : 'running';
-    const updatedTurn = { ...turn, status, updatedAt: SYNTHETIC_TIME };
-    this.turns = [...this.turns.slice(0, -1), updatedTurn];
-    this.appendEvent('consent.decided', turn.id, disclosure.id, { decision });
-    this.appendEvent('turn.status_changed', turn.id, null, { status });
-    if (disclosure.phase === 'initial' && decision === 'allow' && this.options.dynamicConsentAfterAllow) {
-      this.pendingDisclosure = { id: DYNAMIC_DISCLOSURE_ID, phase: 'tool_result' };
-      this.appendEvent('consent.requested', turn.id, DYNAMIC_DISCLOSURE_ID, this.consentRequestedPayload('tool_result'));
-    } else {
-      this.pendingDisclosure = null;
-    }
-    await this.respond(route, {
-      turn: updatedTurn,
-      disclosureId: disclosure.id,
-      decision,
-      execution: { state: status === 'cancelled' ? 'cancelled' : 'running' },
-      replayed: false
-    });
+  private async rejectRetiredDecision(route: Route): Promise<void> {
+    this.calls.retiredDecisionRequests += 1;
+    await this.respond(route, null, 409, { code: 'POLICY_ACTION_RETIRED', message: 'Consent decision routes are retired.' });
   }
 
   private async cancelTurn(route: Route): Promise<void> {
@@ -207,36 +217,6 @@ export class HomeChatPreviewApi {
     this.turns = [...this.turns.slice(0, -1), turn];
     this.appendEvent('turn.status_changed', turn.id, null, { status: turn.status });
     await this.respond(route, turn);
-  }
-
-  private initialDisclosure(scope: SyntheticScope): Readonly<Record<string, unknown>> {
-    return {
-      disclosureId: INITIAL_DISCLOSURE_ID,
-      phase: 'initial',
-      provider: { profile: 'nvidia-hosted-nim', name: 'NVIDIA hosted NIM', model: 'synthetic-planner-1' },
-      scope,
-      categories: ['current_message'],
-      itemCount: 1,
-      byteLimit: 65536
-    };
-  }
-
-  private consentRequestedPayload(phase: 'initial' | 'tool_result'): SyntheticEvent['payload'] {
-    const conversation = this.conversations[0];
-    const scope = conversation?.scope ?? { kind: 'home' as const };
-    const scopeKind = scope.kind;
-    const scopeId = scope.kind === 'workspace' ? scope.workspaceId : null;
-    const categories = phase === 'initial' ? ['current_message'] : ['task_metadata'];
-    return {
-      phase,
-      categories,
-      providerProfile: 'nvidia-hosted-nim',
-      model: 'synthetic-planner-1',
-      scopeKind,
-      scopeId,
-      itemCount: phase === 'initial' ? 1 : 2,
-      byteLimit: 65536
-    };
   }
 
   private appendEvent(type: string, turnId: string | null, entityId: string | null, payload: SyntheticEvent['payload']): void {

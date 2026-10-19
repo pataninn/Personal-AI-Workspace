@@ -3,11 +3,12 @@ import { randomBytes } from 'node:crypto';
 import type { IAgentRuntime, RuntimeInferenceEvent, RuntimeRunInput, RuntimeCommandInput, RuntimeCommandProposalInput, RuntimeRunCancellationResult } from '@/modules/ai-runs/repositories/agent-runtime';
 import type { CommandResult } from '@/modules/ai-runs/domain/command-types';
 import { AiRunRuntimeUnavailableError } from '@/modules/ai-runs/domain/ai-run-errors';
-import { ApprovedContextReader, hash } from '@/infrastructure/hermes/approved-context-reader';
+import { ApprovedContextReader } from '@/infrastructure/hermes/approved-context-reader';
 import { HermesBridgeClient, isRecord } from '@/infrastructure/hermes/hermes-bridge-client';
 import { collectHermesChanges } from '@/infrastructure/hermes/hermes-file-changes';
 import { redactEgressText } from '@/shared/egress/redaction';
 import type { HermesProjectTaskTools } from '@/infrastructure/hermes/hermes-project-task-tools';
+import { HermesPolicyCommand, POLICY_COMMAND_VERSION, legacyHermesCommandResult, policyCommandReceiptAvailable, policySnapshotHash } from '@/infrastructure/hermes/hermes-policy-command';
 
 interface Permission {
   readonly identity: string;
@@ -25,6 +26,7 @@ interface ActiveRun {
   readonly permissions: Permission[];
   readonly commandEvents: RuntimeInferenceEvent[];
   cancelled: boolean;
+  policyBlocked?: boolean;
   cursor: number;
   cleaned?: boolean;
   responseReceived?: boolean;
@@ -32,6 +34,7 @@ interface ActiveRun {
   startup?: Promise<Record<string, unknown>>;
   stage?: string;
   readonly tools: Map<string, { readonly command?: string; readonly title: string; result?: CommandResult }>;
+  policyCommands?: HermesPolicyCommand;
 }
 
 interface HermesRuntimeOptions {
@@ -48,6 +51,20 @@ interface HermesRuntimeOptions {
 export class HermesAgentRuntime implements IAgentRuntime {
   private readonly runs = new Map<string, ActiveRun>();
   public constructor(private readonly bridge: HermesBridgeClient, private readonly context: ApprovedContextReader, private readonly options: HermesRuntimeOptions) {}
+
+  public async supportsPolicyExecution(_input: { readonly providerProfile: string; readonly model: string }): Promise<boolean> {
+    // ACP does not expose a verified per-attempt admission hook for this runtime.
+    return false;
+  }
+
+  public async supportsPolicyCommandExecution(input: { readonly providerProfile: string; readonly model: string }): Promise<boolean> {
+    if (this.options.providerEgressAdmissionEnforced !== true || input.providerProfile !== this.options.providerProfile || input.model !== this.options.model) return false;
+    try {
+      await this.checkAvailability();
+      const receipt = await this.bridge.call('probe', undefined, undefined, { ...input, endpoint: this.options.endpoint });
+      return policyCommandReceiptAvailable(receipt.policyCommand);
+    } catch { return false; }
+  }
 
   public async checkAvailability(): Promise<void> {
     if (this.options.providerEgressAdmissionEnforced !== true) throw new AiRunRuntimeUnavailableError();
@@ -73,15 +90,20 @@ export class HermesAgentRuntime implements IAgentRuntime {
     const active: ActiveRun = { input, taskResults: new Map(), capability: randomBytes(32).toString('base64url'), permissions: [], commandEvents: [], tools: new Map(), cancelled: false, cursor: 0 };
     this.runs.set(input.runId, active);
     try {
+      if (input.policyRevision && !await this.supportsPolicyCommandExecution({ providerProfile: input.manifest.providerProfile, model: input.manifest.model })) throw new AiRunRuntimeUnavailableError();
       const snapshot = await this.context.read(input);
+      if (input.policyRevision) active.policyCommands = new HermesPolicyCommand({ run: input, call: (operation, payload) => this.call(input.runId, operation, payload), cancelled: () => active.cancelled });
       yield { type: 'started' };
       if (active.cancelled) { yield { type: 'cancelled' }; return; }
-      active.startup = this.call(input.runId, 'create', { files: snapshot.files, prompt: snapshot.prompt, model: input.manifest.model, providerProfile: input.manifest.providerProfile, endpoint: this.options.endpoint });
+      active.startup = this.call(input.runId, 'create', { files: snapshot.files, prompt: snapshot.prompt, model: input.manifest.model, providerProfile: input.manifest.providerProfile, endpoint: this.options.endpoint,
+        ...(input.policyRevision ? { commandProfileVersion: POLICY_COMMAND_VERSION, manifestHash: input.manifest.manifestHash, snapshotHash: policySnapshotHash(snapshot.files) } : {}) });
       await active.startup;
       yield* this.follow(input.runId);
       if (active.cancelled) {
         await active.cancellation;
-        yield active.cleaned ? { type: 'cancelled' } : { type: 'needs_manual_review', message: 'Hermes shutdown could not be confirmed.' };
+        yield active.policyBlocked && active.cleaned
+          ? { type: 'blocked', message: 'This runtime action is not available under the stored workspace policy.' }
+          : active.cleaned ? { type: 'cancelled' } : { type: 'needs_manual_review', message: 'Hermes shutdown could not be confirmed.' };
         return;
       }
       const status = await this.call(input.runId, 'poll', { cursor: active.cursor });
@@ -96,7 +118,9 @@ export class HermesAgentRuntime implements IAgentRuntime {
       this.options.diagnose?.({ runId: input.runId, category: error instanceof Error ? error.name : 'unknown', stage: active.stage ?? 'preparing', trace: error instanceof Error ? (error.stack ?? '').split('\n').filter((line) => /^\s+at /u.test(line)).slice(0, 4).join('\n') : '' });
       if (active.cancelled) {
         await active.cancellation;
-        yield active.cleaned ? { type: 'cancelled' } : { type: 'needs_manual_review', message: 'Hermes shutdown could not be confirmed.' };
+        yield active.policyBlocked && active.cleaned
+          ? { type: 'blocked', message: 'This runtime action is not available under the stored workspace policy.' }
+          : active.cleaned ? { type: 'cancelled' } : { type: 'needs_manual_review', message: 'Hermes shutdown could not be confirmed.' };
       }
       else yield { type: 'needs_manual_review', message: 'The isolated Hermes run could not be confirmed. No generated changes were applied.' };
     }
@@ -130,7 +154,22 @@ export class HermesAgentRuntime implements IAgentRuntime {
   }
 
   private *projectBridgeEvent(runId: string, event: Record<string, unknown>): Iterable<RuntimeInferenceEvent> {
+    const policy = this.requireRun(runId).policyCommands;
+    if (event.type === 'policy-command-proposed') {
+      if (!policy) throw new AiRunRuntimeUnavailableError();
+      yield { type: 'tool.proposed', proposal: policy.propose(event) };
+      const commandId = typeof event.id === 'string' ? policy.boundCommand(event.id) : undefined;
+      if (!commandId) throw new AiRunRuntimeUnavailableError();
+      yield { type: 'approval.required', commandId };
+      return;
+    }
+    if (event.type === 'policy-command-result') {
+      if (!policy) throw new AiRunRuntimeUnavailableError();
+      policy.receive(event);
+      return;
+    }
     if (event.type === 'permission' && typeof event.id === 'string' && isRecord(event.params)) {
+      if (policy) throw new AiRunRuntimeUnavailableError();
       const tool = event.params.toolCall;
       if (!isRecord(tool) || !isRecord(tool.rawInput) || typeof tool.rawInput.command !== 'string') throw new AiRunRuntimeUnavailableError();
       const command = tool.rawInput.command;
@@ -151,23 +190,30 @@ export class HermesAgentRuntime implements IAgentRuntime {
       for (let offset = 0; offset < text.length; offset += 256) yield { type: 'assistant.delta', text: text.slice(offset, offset + 256) };
     }
     if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+      if (policy) return;
       const active = this.requireRun(runId);
       const toolId = String(update.toolCallId ?? '');
       const old = active.tools.get(toolId);
       const title = redactEgressText(String(update.title ?? old?.title ?? 'Hermes tool'));
       const command = isRecord(update.rawInput) && typeof update.rawInput.command === 'string' ? update.rawInput.command : old?.command ?? (title.startsWith('terminal: ') ? title.slice(10) : undefined);
       const item = { title, ...(command ? { command } : {}), ...(old?.result ? { result: old.result } : {}) };
+      const permission = active.permissions.find((candidate) => candidate.toolId === toolId);
       if (command && ['completed', 'failed'].includes(String(update.status))) {
-        item.result = commandResult(update);
+        item.result = legacyHermesCommandResult(update);
         for (const permission of active.permissions) if (permission.toolId === toolId) permission.result = item.result;
       }
       active.tools.set(toolId, item);
-      yield { type: 'tool.progress', toolId, title, status: String(update.status ?? 'running') };
+      yield { type: 'tool.progress', toolId, title, status: String(update.status ?? 'running'), ...(permission?.commandId ? { commandId: permission.commandId } : {}) };
     }
   }
 
   private async *handleTaskRequest(runId: string, requestId: string, params: Record<string, unknown>): AsyncIterable<RuntimeInferenceEvent> {
     const active = this.requireRun(runId);
+    if (active.input.policyRevision) {
+      active.policyBlocked = true;
+      await this.cancelRun({ runId });
+      throw new AiRunRuntimeUnavailableError();
+    }
     let result = active.taskResults.get(requestId);
     if (!result) {
       result = active.cancelled ? { error: 'The run was cancelled. No task change was made.' }
@@ -179,6 +225,8 @@ export class HermesAgentRuntime implements IAgentRuntime {
   }
 
   public async proposeCommand(input: RuntimeCommandProposalInput): Promise<void> {
+    const policy = this.requireRun(input.runId).policyCommands;
+    if (policy) { policy.bind(input); return; }
     const permission = this.requireRun(input.runId).permissions.find((item) => !item.commandId && item.command === input.args[0]);
     if (!permission) throw new AiRunRuntimeUnavailableError();
     permission.commandId = input.commandId;
@@ -186,6 +234,7 @@ export class HermesAgentRuntime implements IAgentRuntime {
 
   public async decideCommand(input: { readonly runId: string; readonly commandId: string; readonly approved: boolean }): Promise<void> {
     const active = this.requireRun(input.runId);
+    if (active.input.policyRevision) throw new AiRunRuntimeUnavailableError();
     const permission = active.permissions.find((item) => item.commandId === input.commandId);
     if (!permission || permission.decided || active.cancelled) throw new AiRunRuntimeUnavailableError();
     await this.call(input.runId, 'permission', { permissionId: permission.identity, approved: input.approved });
@@ -194,6 +243,7 @@ export class HermesAgentRuntime implements IAgentRuntime {
   }
 
   public async executeCommand(input: RuntimeCommandInput): Promise<CommandResult> {
+    if (this.requireRun(input.runId).input.policyRevision) throw new AiRunRuntimeUnavailableError();
     const start = Date.now();
     const active = this.requireRun(input.runId);
     const permission = active.permissions.find((item) => item.commandId === input.commandId);
@@ -202,6 +252,18 @@ export class HermesAgentRuntime implements IAgentRuntime {
     while (!permission.result && !active.cancelled && Date.now() - start < 90_000) await new Promise<void>((resolve) => setTimeout(resolve, 100));
     if (!permission.result) throw new Error('Hermes command completion could not be confirmed');
     return { ...permission.result, durationMs: Date.now() - start };
+  }
+
+  public async executePolicyCommand(input: RuntimeCommandInput): Promise<CommandResult> {
+    const policy = this.requireRun(input.runId).policyCommands;
+    if (!policy) throw new AiRunRuntimeUnavailableError();
+    return policy.execute(input);
+  }
+
+  public async completePolicyCommand(input: { readonly runId: string; readonly commandId: string }): Promise<void> {
+    const policy = this.requireRun(input.runId).policyCommands;
+    if (!policy) throw new AiRunRuntimeUnavailableError();
+    await policy.complete(input.commandId);
   }
 
   public async cancelCommand(input: { readonly runId: string; readonly commandId: string }): Promise<void> {
@@ -237,14 +299,4 @@ export class HermesAgentRuntime implements IAgentRuntime {
     this.requireRun(runId).stage = operation;
     return this.bridge.call(operation, runId, this.requireRun(runId).capability, payload);
   }
-}
-
-function commandResult(update: Record<string, unknown>): CommandResult {
-  let raw: unknown = update.rawOutput;
-  if (typeof raw === 'string') { try { raw = JSON.parse(raw) as unknown; } catch { /* The ACP result can also be plain text. */ } }
-  const data = isRecord(raw) ? raw : {};
-  const text = redactEgressText(typeof data.output === 'string' ? data.output : typeof update.rawOutput === 'string' ? update.rawOutput : 'Hermes confirmed tool completion.');
-  const preview = Buffer.from(text).subarray(0, 4096).toString('utf8');
-  const failed = update.status === 'failed';
-  return { exitCode: typeof data.exit_code === 'number' ? data.exit_code : null, termination: failed ? 'failed' : 'completed', durationMs: 0, outputBytes: Buffer.byteLength(text), outputLineCount: text.split('\n').length, outputTruncated: Buffer.byteLength(text) > 4096, outputSha256: hash(text), outputPreview: preview };
 }

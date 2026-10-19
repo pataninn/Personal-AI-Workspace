@@ -1,6 +1,6 @@
 export type CommandClassification = 'safe' | 'sensitive' | 'blocked';
 
-export type CommandDecision = 'pending' | 'approved' | 'rejected' | 'not_applicable';
+export type CommandDecision = 'pending' | 'approved' | 'rejected' | 'not_applicable' | 'policy_authorized';
 
 export type CommandStatus =
   | 'awaiting_approval'
@@ -90,6 +90,16 @@ export interface CommandDecisionUpdate {
   readonly commandId: string;
   readonly proposalHash: string;
   readonly decision: 'approve' | 'reject';
+  readonly idempotencyKey: string;
+  readonly requestFingerprint: string;
+}
+
+/** Private claim input; it is never accepted by an HTTP route. */
+export interface PolicyCommandExecutionClaim {
+  readonly ownerId: string;
+  readonly runId: string;
+  readonly commandId: string;
+  readonly proposalHash: string;
   readonly idempotencyKey: string;
   readonly requestFingerprint: string;
 }

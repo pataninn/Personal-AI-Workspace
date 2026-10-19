@@ -5,7 +5,7 @@
 **Last Updated:** 2026-10-19
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Tasks 1.1, 2.1, 2.2, 3.1, 3.2, and 5.2 delivered; Task 3.3 demo admission and Task 4.1 task-scoped design in progress.
+**Status:** Execution active. Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, and 5.2 delivered. Task4.1 automatic-execution implementation active; Task3.4 documentation gates complete, source held.
 
 ## Plan Summary
 
@@ -19,7 +19,7 @@
 
 ## Commit convention
 
-After tester PASS, developer stages only the task-owned implementation, tests, and documentation, then commits. Commit subjects omit task numbers and bracketed task tags, per user instruction. Record task IDs and commit hashes in this tracker. Preserve unrelated baseline changes; no push is authorized.
+After tester PASS, developer stages only the task-owned implementation, tests, and documentation, then commits. Commit subjects omit task numbers and bracketed task tags, per user instruction. Record task IDs and commit hashes in this tracker. Preserve unrelated baseline changes; no push is authorized. Future release commits use `feature/automatic-assistant-tools`, created from `3f4adabbe22a8303406cea9e4441b3e987f605d3` on user request; earlier commits remain on the original branch.
 
 ## Legend
 
@@ -37,6 +37,9 @@ Each task must record developer self-review, relevant tests and final QA outcome
 Every task below declares required MCP evidence and an artifact directory. Current collection status is Pending. Playwright MCP, Chrome DevTools MCP, and Context7 are not confirmed available in this session; when unavailable, record the reason and use Playwright CLI, available browser tooling, or official documentation as appropriate. Never claim a missing tool ran. An unavailable tool does not waive a required security/live-runtime acceptance criterion.
 
 Each API/full-stack contract file listed below is a **planned deliverable**, not an existing file. It must specify exact DTOs, runtime validation, ownership, errors, CSRF, optimistic versioning, idempotency, storage/credit behavior, and OpenAPI coverage where relevant. The developer owns this gate before code. UI-only tasks consume existing contracts and must not silently change them.
+
+
+**User priority update (2026-10-19):** Prioritize working end-to-end release flows and defer minor visual or test-precision issues for later fixes. QA may accept explicitly recorded Low visual debt when normal interaction is proven; failed checks remain labeled failed. This does not waive functional failures, missing requested features, authentication/isolation, credits/storage enforcement, data-loss safeguards, or safe cleanup. Avoid duplicate checks and cosmetic polishing that delay independent release work.
 
 ## Epic 1. Design and implementation baseline
 
@@ -235,7 +238,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 3.3 — Provision private one-click demo identities
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** developer, tester
 **Depends on:** 3.1, 3.2
 **Risk:** High: anonymous abuse and session isolation
@@ -250,7 +253,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-3-3-demo-admission/artifacts/`
-- `Current status:` Independent tester PASS in qa-report.md with Evidence Index. Developer unit140suites838tests, integration31suites114tests and typecheck PASS; independent unit4/55, HTTP1/6, guarded PostgreSQL1/3 and typecheck PASS. No blocking findings. Local task-only commit pending; delivery status remains in progress.
+- `Current status:` Independent tester PASS in qa-report.md with Evidence Index. Developer unit140suites838tests, integration31suites114tests and typecheck PASS; independent unit4/55, HTTP1/6, guarded PostgreSQL1/3 and typecheck PASS. No blocking findings. Delivered local commit `3f4adabbe22a8303406cea9e4441b3e987f605d3` (`feat(demo): provision private demo sessions`),40 reviewed paths. Only the six protected baseline files remain; index clean and no push.
 
 **Description:** Add demo session create/resume with fixed configurable 24-hour expiry and persistent admission/rate limits. A token reset must not reset an existing server ledger.
 
@@ -273,11 +276,11 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 3.4 — Publish a protected showcase and open editable demo copies
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 3.3
 **Risk:** Critical: public template disclosure and mutation
-**Contract:** `.codex/docs/hackathon-release/task-3-4-showcase-and-demo-entry/contract.md` (planned; developer owns the contract gate)
+**Contract:** `.codex/docs/hackathon-release/task-3-4-showcase-and-demo-entry/contract.md` (developer contract established; implementation held for shared-file handoff)
 
 **MCP Inputs & Required Evidence:**
 
@@ -288,7 +291,9 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-3-4-showcase-and-demo-entry/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Architecture preflight, UI spec, developer contract and source map complete. Application source is held until explicit shared-file handoff after Task4.1 delivery. No showcase runtime/browser evidence or implementation claim yet.
+
+**Current handoff:** Developer is finalizing the concrete DTO/OpenAPI contract against frozen Task4.1 source while its commit finishes. This is independent documentation work only; application source, tests, database and Git remain held until the explicit post-commit ownership transfer.
 
 **Description:** Implement admin preview/publish of a sanitized versioned example and a single-click Try demo flow that enters its private editable copy.
 
@@ -326,7 +331,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-3-5-demo-expiry/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Independent architecture-preflight.md complete against delivered auth/admission/cancellation/storage/maintenance seams and planned3.4 copy contract. Requires delivered3.4 schema revalidation and safe terminal admission replay/tombstone contract before owner purge. Source held until3.4 delivery; no cleanup execution or runtime evidence claimed.
 
 **Description:** Use a durable PostgreSQL-backed cleanup worker with ownership manifests and retryable phases. Expiry denies access immediately, independently of deletion lag. Include expired pending and failed admission owners from Task3.3: key replay never resumes bootstrap or recovers a session; durable restartable cleanup is their recovery path.
 
@@ -393,7 +398,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 2.2, 3.1, 3.2
 **Risk:** Critical: policy bypass or unintended tool scope
-**Contract:** `.codex/docs/hackathon-release/task-4-1-stored-tool-policy/contract.md` (planned; developer owns the contract gate)
+**Contract:** `.codex/docs/hackathon-release/task-4-1-stored-tool-policy/contract.md` (implemented and independently verified; local commit pending)
 
 **MCP Inputs & Required Evidence:**
 
@@ -404,22 +409,22 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-4-1-stored-tool-policy/artifacts/`
-- `Current status:` Task-scoped UI spec, architecture preflight, developer contract and source map complete and aligned. Application implementation is held until Task3.3 delivery because shared authentication/startup/run paths overlap; no Task4.1 code or runtime evidence yet.
+- `Current status:` Final independent tester PASS in qa-report.md with the user-accepted Low viewport/test debt recorded in Tech Debt Log. Implementation, contract, self-review, 152-path source mirror and protected three-line isolation verified. Backend151/902, frontend58files298tests, OpenAPI3suites5tests, PostgreSQL3suites6tests, Linux48 and typechecks PASS; broader evidence retained. Recovery exact1/1 and full2/2 PASS; six-spec preview17/18 remains explicit, while native Tab/Ctrl+Enter prove functional submit access. Source frozen; authorized task commit pending, so task remains in progress. No live provider/public HTTPS/scheduler proof claimed.
 
 **Description:** Implement stored provider/context/tool policy and remove routine approval gates in both Home and workspace execution paths while retaining containment.
 
 **Subtasks:**
 
-- [ ] Map every provider-consent/proposal/command gate; replace automatic-path transitions consistently in runtime, API, events, and UI.
-- [ ] Keep selected-context exclusions, protected paths, egress restrictions, sandbox command bounds, and promotion/hash/backup checks.
-- [ ] Show active provider and included scope; block unsupported/out-of-policy actions clearly rather than granting broad fallback access.
+- [x] Map every provider-consent/proposal/command gate; replace automatic-path transitions consistently in runtime, API, events, and UI.
+- [x] Keep selected-context exclusions, protected paths, egress restrictions, sandbox command bounds, and promotion/hash/backup checks.
+- [x] Show active provider and included scope; block unsupported/out-of-policy actions clearly rather than granting broad fallback access.
 
 **Definition of Done:**
 
-- [ ] Authorized chat reads/writes run without approval clicks; excluded files, foreign workspaces, host paths, admin actions, and forbidden destinations remain blocked.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
-- [ ] Developer-owned contract implemented and verified before task closure.
+- [x] Authorized chat reads/writes run without approval clicks; excluded files, foreign workspaces, host paths, admin actions, and forbidden destinations remain blocked.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Developer-owned contract implemented and verified before task closure.
 
 **Upstream Outputs Needed:** Architecture sections 5.2, 12; Task 1.1 ui-spec.md and relevant task contracts; completed dependency outputs.
 
@@ -444,7 +449,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-4-2-direct-home-actions/artifacts/`
 - `Current status:` Pending; no implementation or live validation performed.
 
-**Description:** Replace routine proposal acceptance with direct typed tool execution for user-requested in-scope actions, preserving receipts and version checks.
+**Description:** Replace routine proposal acceptance with direct typed tool execution for user-requested in-scope actions, preserving receipts and version checks. Architecture preflight is complete in `task-4-2-direct-home-actions/architecture-preflight.md`; developer contract/source-map and task-scoped receipt UI spec are complete, while application implementation remains held until Task4.1 delivery. Source inspection only, no runtime evidence.
 
 **Subtasks:**
 
@@ -594,7 +599,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-5-3-direct-task-editor/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Task-scoped ui-spec.md complete as independent design preparation during Task4.1 QA repair; conflict review reuses existing controls and preserves explicit upstream draft/latest requirements, with no custom merge interface. Application implementation remains held until dependencies4.3 and5.2 are delivered; no implementation or live validation claimed.
 
 **Description:** Replace view/edit toggling with a controlled editable task form and delete-only action.
 
@@ -1082,11 +1087,11 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | 2.2 — Enforce ownership across APIs, tools, storage, and streams | `[x]` | PASS; `6fb7278bc680a0df11e3f6e6cb8bd03a0090cb7c` |
 | 3.1 — Implement atomic credit reservations and runtime metering | `[x]` | PASS; `9b65d3c5b5906cb63033fed7bc2053e587d925b9` |
 | 3.2 — Enforce account storage limits on every persistent write | `[x]` | PASS; `b5d40315680b73afac3e04c1a52b8ceaba83a1bf` |
-| 3.3 — Provision private one-click demo identities | `[~]` | Independent QA PASS; local task commit pending |
-| 3.4 — Publish a protected showcase and open editable demo copies | `[ ]` | Pending |
+| 3.3 — Provision private one-click demo identities | `[x]` | PASS; `3f4adabbe22a8303406cea9e4441b3e987f605d3` |
+| 3.4 — Publish a protected showcase and open editable demo copies | `[~]` | Architecture/UI/contract complete; source held for4.1 delivery |
 | 3.5 — Expire and clean up demos safely | `[ ]` | Pending |
 | 3.6 — Build account, quota, and demo administration UI | `[ ]` | Pending |
-| 4.1 — Replace per-turn consent with workspace-scoped automatic execution | `[~]` | Design/preflight/contract complete; source handoff held for3.3 commit isolation |
+| 4.1 — Replace per-turn consent with workspace-scoped automatic execution | `[~]` | Policy/status slice and realPG1/4 PASS; automatic paths/UI underway |
 | 4.2 — Execute Home task and workspace actions through canonical use cases | `[ ]` | Pending |
 | 4.3 — Unify task deletion and remove archive behavior | `[ ]` | Pending |
 | 5.1 — Move Home assistant into a floating Ask panel | `[ ]` | Pending |
@@ -1107,7 +1112,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Blocked Items and implementation-time inputs
 
-Tasks 1.1, 2.1, 2.2, 3.1, 3.2, and 5.2 are delivered. Tasks 3.3 and 4.1 are active at their declared workflow stages. All subagent work delegated after the baseline commit uses GPT-6 Luna with maximum reasoning per user instruction. Dependency ordering above applies.
+Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, and 5.2 are delivered. Task4.1 code and Task3.4 architecture/design are active at their declared workflow stages. Latest user preference is GPT-6 Luna with maximum reasoning for subsequent subagents after current Sol medium handoffs finish safely. Existing work is preserved; model availability must be reported honestly. Dependency ordering above applies.
 
 - Task 8.1/8.2 needs the real deployment host/domain and DNS/certificate access. Do not claim the local self-signed setup fixes public browser trust.
 - Credit enforcement requires actual provider pricing and a way to bound/meter all Hermes calls. Public AI access stays disabled if that cannot be established.
@@ -1118,7 +1123,7 @@ Tasks 1.1, 2.1, 2.2, 3.1, 3.2, and 5.2 are delivered. Tasks 3.3 and 4.1 are acti
 
 ## Tech Debt Log
 
-Accepted baseline observations for Task 1.1 only; these do not waive any release acceptance gate:
+Accepted observations and follow-up work. The user priority update permits explicitly recorded Low visual/test debt; functional and security release gates remain required:
 
 | Severity | Baseline finding | Required resolution / owner |
 | --- | --- | --- |
@@ -1127,8 +1132,9 @@ Accepted baseline observations for Task 1.1 only; these do not waive any release
 | Medium | Default Compose boundary test expects NVIDIA key despite Hermes-default topology | Developer reconcile supported default/direct topologies and retain secret isolation in deployment tasks; resolve before release. |
 | Medium | Task action rows touch metadata cards and mobile Back/action controls; editor title crowded by preview banner | Designer/developer address spacing under Tasks 5.3/5.4, verify desktop/mobile/keyboard. |
 | Medium | Task5.2 QA preview-only smoke observed404 GET /api/v1/home/conversations?scope=home&limit=50 and saved-conversation error; cause unverified | Existing capture/All tasks journey unaffected. Reproduce/resolve preview history fixture under Task5.1 Ask/history; do not infer live API failure or whole-page console PASS. |
+| Low | Task4.1 provider-permissions.preview.spec.ts initial disabled-Send viewport assertion fails at1280x720; six-spec run17/18, explicitly not green | User accepted minor visual/test debt on2026-10-19 to prioritize working flows. Normal fill+Tab reaches enabled Send at ratio1 desktop/mobile; Ctrl+Enter submits exactly once with no approval/decision calls. Optional initial-frame/test-scroll cleanup later by developer; no further pixel work blocks this task. Evidence: task-4-1-stored-tool-policy/artifacts/provider-submit-diagnosis/validation.md. |
 
-Do not defer account isolation, quota enforcement, expiry containment, trusted HTTPS, requested task/UX changes, or actual scheduled execution to meet a cosmetic launch date.
+Do not defer account isolation, quota enforcement, expiry containment, trusted HTTPS, functional requested task/UX flows, or actual scheduled execution to meet a cosmetic launch date.
 
 ## Planning Deliverables
 
@@ -1136,3 +1142,38 @@ Do not defer account isolation, quota enforcement, expiry containment, trusted H
 - [x] Dependency-ordered task list with ownership, contracts, evidence requirements, and acceptance checks written.
 - [x] Task 1.1 implementation baseline and detailed UI specification (tester PASS; commit `721f0f26011147437f9d24c4749431169b309ad1`).
 - [ ] All implementation and release verification tasks.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -21,6 +21,7 @@ import type { IModelProvider, ModelProviderEvent, ModelProviderRequest } from '@
 import { hashText, toEgressProjectFact } from '@/modules/ai-runs/use-cases/manifest-builder';
 import { redactEgressText } from '@/shared/egress/redaction';
 import { AI_RUN_LIMITS } from '@/modules/ai-runs/domain/ai-run-validation';
+import { EXPECTED_NIM_MODEL } from '@/infrastructure/config/app-config';
 
 export interface DirectProviderAgentRuntimeOptions {
   readonly provider: IModelProvider;
@@ -46,8 +47,20 @@ export class DirectProviderAgentRuntime implements IAgentRuntime {
   public async checkAvailability(): Promise<void> {
     try {
       await this.provider.checkAvailability();
+      if (!this.provider.supportsBoundedAdmission?.({ providerProfile: 'nvidia-hosted-nim', model: EXPECTED_NIM_MODEL })) {
+        throw new AiRunRuntimeUnavailableError();
+      }
     } catch {
       throw new AiRunRuntimeUnavailableError();
+    }
+  }
+
+  public async supportsPolicyExecution(input: { readonly providerProfile: string; readonly model: string }): Promise<boolean> {
+    try {
+      await this.provider.checkAvailability();
+      return this.provider.supportsBoundedAdmission?.(input) === true;
+    } catch {
+      return false;
     }
   }
 
@@ -74,7 +87,8 @@ export class DirectProviderAgentRuntime implements IAgentRuntime {
         manifest: input.manifest,
         files: context.files,
         facts: context.facts,
-        messages: context.messages
+        messages: context.messages,
+        ...(input.beforeProviderAttempt ? { beforeProviderAttempt: input.beforeProviderAttempt } : {})
       };
       for await (const event of this.provider.stream(request)) {
         if (event.type === 'changes.proposed') await this.readApprovedContext(input);

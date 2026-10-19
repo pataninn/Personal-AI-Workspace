@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import { AiRunNotFoundError } from '@/modules/ai-runs/domain/ai-run-errors';
+import type { AiRun } from '@/modules/ai-runs/domain/ai-run-types';
 import {
   ChangeSetAlreadyDecidedError,
   ChangeSetBlockedError,
@@ -15,6 +16,7 @@ import type {
   ChangeOperationResult,
   ChangeSetDecisionResult,
   CreateProposedChangeSetRecord,
+  PolicyAuthorizedChangeSetApplyClaim,
   ProposedChangeOperation,
   ProposedChangeSet,
   RuntimeChangeProposal
@@ -33,6 +35,9 @@ import { isProtectedFileName } from '@/modules/files/domain/workspace-policy';
 import { containsCredentialLikeValue } from '@/shared/egress/redaction';
 import type { IPrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
 import { StorageQuotaError } from '@/modules/storage-quotas/domain/storage-quota-errors';
+import type { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
+import { AssistantExecutionPolicyChangedError, AssistantExecutionUnavailableError } from '@/modules/assistant-policy/domain/assistant-execution-errors';
+import { PolicyActionRetiredError } from '@/modules/assistant-policy/domain/policy-action-retired-error';
 
 export interface CollectChangeSetInput {
   readonly ownerId: string;
@@ -203,19 +208,48 @@ export class DecideProposedChangeSetUseCase {
     private readonly changeSets: IProposedChangeSetRepository,
     private readonly workspace: IWorkspaceMutationGateway,
     private readonly contexts?: IProjectChatContextRepository,
-    private readonly principalAuthorization?: IPrincipalAuthorization
+    private readonly principalAuthorization?: IPrincipalAuthorization,
+    private readonly executionPolicy?: Pick<AssertAssistantExecutionPolicyUseCase, 'assertWorkspace'>
   ) {}
 
   public async execute(input: ChangeSetDecisionInput): Promise<ProposedChangeSet> {
-    return this.executeDecision(input, false);
+    return this.executeDecision(input);
   }
 
-  /** Applies the user's standing file-edit authorization before a run completes. */
+  /** Applies the current persisted workspace policy without recording a user decision. */
   public async executeAutomatically(input: { readonly ownerId: string; readonly runId: string }): Promise<ProposedChangeSet | null> {
     await this.principalAuthorization?.assertActive(input.ownerId);
+    const run = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
+    if (!run) throw new AiRunNotFoundError();
+    if (run.decision !== 'policy_authorized' || !run.policyRevision) throw new PolicyActionRetiredError();
+    if (run.status !== 'running') throw new ChangeSetBlockedError('Workspace changes cannot be applied after the run stops.');
+    await assertActiveAiRunProject(this.aiRunRepository, this.projectRepository, input.ownerId, input.runId);
     const changeSet = await this.changeSets.findByRunForOwner(input.ownerId, input.runId);
     if (!changeSet) return null;
-    const applied = await this.executeDecision({ ...input, proposalHash: changeSet.proposalHash, decision: 'approve', idempotencyKey: `auto-apply-${changeSet.id}` }, true);
+    const authorization = await this.assertCurrentWorkspacePolicy(run);
+    if (!authorization.effectiveCapabilities.includes('workspace_file_write')) {
+      throw new ChangeSetBlockedError('The current workspace policy does not allow file changes.');
+    }
+    const claim: PolicyAuthorizedChangeSetApplyClaim = {
+      ownerId: input.ownerId,
+      projectId: run.projectId,
+      runId: run.id,
+      proposalHash: changeSet.proposalHash,
+      policyRevision: run.policyRevision,
+      providerProfile: run.manifest.providerProfile,
+      model: run.manifest.model,
+      idempotencyKey: `policy-apply-${changeSet.id}`,
+      requestFingerprint: hashText(JSON.stringify({
+        actor: 'policy_authorized', ownerId: input.ownerId, projectId: run.projectId, runId: run.id,
+        proposalHash: changeSet.proposalHash, policyRevision: run.policyRevision
+      }))
+    };
+    const claimed = await this.changeSets.claimPolicyAuthorizedApply(claim);
+    if (claimed.replayed) {
+      if (claimed.resource.status === 'applying') return this.saveManualReview(claimed.resource);
+      return claimed.resource;
+    }
+    const applied = await this.applyChangeSet(claimed, run);
     await this.refreshSelectedPaths(applied);
     return applied;
   }
@@ -232,18 +266,18 @@ export class DecideProposedChangeSetUseCase {
     if (JSON.stringify(relativePaths) !== JSON.stringify(context.relativePaths)) await this.contexts.update(changeSet.ownerId, changeSet.projectId, { relativePaths: [...new Set(relativePaths)] });
   }
 
-  private async executeDecision(input: ChangeSetDecisionInput, automatic: boolean): Promise<ProposedChangeSet> {
+  private async executeDecision(input: ChangeSetDecisionInput): Promise<ProposedChangeSet> {
     await this.principalAuthorization?.assertActive(input.ownerId);
-    return this.executeDecisionWhileActive(input, automatic);
+    return this.executeDecisionWhileActive(input);
   }
 
-  private async executeDecisionWhileActive(input: ChangeSetDecisionInput, automatic: boolean): Promise<ProposedChangeSet> {
+  private async executeDecisionWhileActive(input: ChangeSetDecisionInput): Promise<ProposedChangeSet> {
     const run = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
     if (!run) {
       throw new AiRunNotFoundError();
     }
     await assertActiveAiRunProject(this.aiRunRepository, this.projectRepository, input.ownerId, input.runId);
-    if (run.status !== 'succeeded' && !(automatic && run.status === 'running' && run.decision === 'approved')) {
+    if (run.status !== 'succeeded') {
       throw new ChangeSetBlockedError('Proposed changes can be applied only after the run completes successfully.');
     }
     const requestFingerprint = hashText(JSON.stringify({ proposalHash: input.proposalHash, decision: input.decision }));
@@ -256,16 +290,23 @@ export class DecideProposedChangeSetUseCase {
       await this.changeSets.save(rejected);
       return rejected;
     }
-    return this.applyApprovedSet(decision);
+    return this.applyChangeSet(decision);
   }
 
-  private async applyApprovedSet(decision: ChangeSetDecisionResult): Promise<ProposedChangeSet> {
+  private async applyChangeSet(decision: ChangeSetDecisionResult, policyAuthorizedRun?: AiRun): Promise<ProposedChangeSet> {
     let changeSet = decision.resource;
+    const policyAuthorized = changeSet.decision === 'policy_authorized';
     const scope = await this.projectFileScope(changeSet.ownerId, changeSet.projectId);
     let applied: WorkspaceApplyResult;
     try {
       applied = await this.workspace.applyChangeSet(scope, changeSet.operations, changeSet.runId, changeSet.proposalHash, {
-        ...(this.principalAuthorization ? { assertPrincipalActive: () => this.principalAuthorization!.assertActive(changeSet.ownerId) } : {}),
+        ...(this.principalAuthorization || policyAuthorizedRun ? { assertPrincipalActive: async () => {
+          await this.principalAuthorization?.assertActive(changeSet.ownerId);
+          if (policyAuthorizedRun) {
+            const authorization = await this.assertCurrentWorkspacePolicy(policyAuthorizedRun);
+            if (!authorization.effectiveCapabilities.includes('workspace_file_write')) throw new AssistantExecutionPolicyChangedError();
+          }
+        } } : {}),
         recordBackupCheckpoint: async (checkpoint) => {
           const checkpoints = [...(changeSet.backupCheckpoints ?? []), checkpoint];
           const checkpointed: ProposedChangeSet = { ...changeSet, backupCheckpoints: checkpoints, updatedAt: new Date() };
@@ -275,7 +316,9 @@ export class DecideProposedChangeSetUseCase {
       });
     } catch (error: unknown) {
       if (error instanceof StorageQuotaError && (error.code === 'STORAGE_QUOTA_EXCEEDED' || error.code === 'STORAGE_ACCOUNTING_UNAVAILABLE')) {
-        const failed = withResult(withStatus(changeSet, 'failed', 'The approved changes were not applied because storage could not admit them.'), {
+        const failed = withResult(withStatus(changeSet, 'failed', policyAuthorized
+          ? 'The workspace-policy authorized changes were not applied because storage could not admit them.'
+          : 'The approved changes were not applied because storage could not admit them.'), {
           persisted: true,
           operations: changeSet.operations.map((operation) => ({
             operationId: operation.operationId,
@@ -308,7 +351,7 @@ export class DecideProposedChangeSetUseCase {
     const result = toChangeSetResult(applied);
     const status = applied.outcome === 'needs_manual_review' ? 'needs_manual_review' : applied.outcome === 'failed' ? 'failed' : 'applied';
     const message = status === 'applied'
-      ? 'The approved change set was applied and its result was saved.'
+      ? policyAuthorized ? 'The workspace policy allowed these file changes. The result was saved.' : 'The approved change set was applied and its result was saved.'
       : status === 'failed'
         ? 'The change set did not complete. Inspect the listed results before retrying.'
         : 'The app could not confirm whether every file operation finished. Refresh apply status and inspect the project.';
@@ -330,6 +373,19 @@ export class DecideProposedChangeSetUseCase {
       throw new ChangeSetBlockedError('This project is archived and read-only.');
     }
     return requireProjectFileScope(project);
+  }
+
+  private async assertCurrentWorkspacePolicy(run: AiRun) {
+    if (!this.executionPolicy || run.decision !== 'policy_authorized' || !run.policyRevision) {
+      throw new AssistantExecutionUnavailableError();
+    }
+    return this.executionPolicy.assertWorkspace({
+      ownerId: run.ownerId,
+      projectId: run.projectId,
+      providerProfile: run.manifest.providerProfile,
+      model: run.manifest.model,
+      policyRevision: run.policyRevision
+    });
   }
 
   private async saveManualReview(changeSet: ProposedChangeSet): Promise<ProposedChangeSet> {

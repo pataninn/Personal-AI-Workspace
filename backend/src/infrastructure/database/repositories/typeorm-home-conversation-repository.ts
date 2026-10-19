@@ -304,7 +304,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         throw new HomeConversationNotFoundError();
       }
       const existingRows: readonly (HomeTurnRow & KeyedRow)[] = await queryRunner.query(
-        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"
          FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "request_key" = $3 LIMIT 1`,
         [input.ownerId, input.conversationId, input.requestKey]
       );
@@ -321,7 +321,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       const rows: readonly HomeTurnRow[] = await queryRunner.query(
         `INSERT INTO "home_turns" ("owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint")
          VALUES ($1, $2, $3, $4, $5)
-         RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"`,
+         RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"`,
         [input.ownerId, input.conversationId, sequence, input.requestKey, input.requestFingerprint]
       );
       const row = rows[0];
@@ -347,7 +347,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       if (!conversation) throw new HomeConversationNotFoundError();
 
       const existingRows: readonly (HomeTurnRow & KeyedRow)[] = await queryRunner.query(
-        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"
          FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "request_key" = $3 LIMIT 1`,
         [input.ownerId, input.conversationId, input.requestKey]
       );
@@ -390,10 +390,10 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       );
       const turnSequence = Number(turnSequenceRows[0]?.sequence ?? 1);
       const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
-        `INSERT INTO "home_turns" ("owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status")
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"`,
-        [input.ownerId, input.conversationId, turnSequence, input.requestKey, input.requestFingerprint, input.initialStatus]
+        `INSERT INTO "home_turns" ("owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "home_policy_revision", "workspace_policy_revision")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"`,
+        [input.ownerId, input.conversationId, turnSequence, input.requestKey, input.requestFingerprint, input.initialStatus, input.homePolicyRevision ?? null, input.workspacePolicyRevision ?? null]
       );
       const turnRow = turnRows[0];
       if (!turnRow) throw new HomeTurnNotFoundError();
@@ -460,7 +460,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
     return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       if (!await lockConversation(queryRunner, input.ownerId, input.conversationId)) return null;
       const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
-        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"
          FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
         [input.ownerId, input.conversationId, input.turnId]
       );
@@ -507,7 +507,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       const conversation = await lockConversation(queryRunner, input.ownerId, input.conversationId);
       if (!conversation) return null;
       const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
-        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"
          FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
         [input.ownerId, input.conversationId, input.turnId]
       );
@@ -564,7 +564,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
     return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       if (!await lockConversation(queryRunner, input.ownerId, input.conversationId)) return null;
       const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
-        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"
          FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
         [input.ownerId, input.conversationId, input.turnId]
       );
@@ -595,7 +595,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
     return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       if (!await lockConversation(queryRunner, input.ownerId, input.conversationId)) return null;
       const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
-        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"
          FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
         [input.ownerId, input.conversationId, input.turnId]
       );
@@ -654,7 +654,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
     }
     parameters.push(input.limit + 1);
     const rows: readonly HomeTurnRow[] = await this.dataSource.query(
-      `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"
+      `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"
        FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2${afterFilter}
        ORDER BY "sequence" ASC LIMIT $${parameters.length}`,
       parameters
@@ -668,7 +668,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
   /** Finds one turn only when both owner and conversation match. */
   public async findTurnForOwner(ownerId: string, conversationId: string, turnId: string): Promise<HomeTurn | null> {
     const rows: readonly HomeTurnRow[] = await this.dataSource.query(
-      `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"
+      `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"
        FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1`,
       [ownerId, conversationId, turnId]
     );
@@ -682,7 +682,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       if (!conversation) return null;
 
       const rows: readonly HomeTurnRow[] = await queryRunner.query(
-        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"
          FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
         [input.ownerId, input.conversationId, input.turnId]
       );
@@ -703,7 +703,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       const updatedRows = returnedRows<HomeTurnRow>(await queryRunner.query(
         `UPDATE "home_turns" SET "status" = $4, "updated_at" = now()
          WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3
-         RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"`,
+         RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"`,
         [input.ownerId, input.conversationId, input.turnId, status]
       ));
       const updated = updatedRows[0];
@@ -728,7 +728,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         return null;
       }
       const currentRows: readonly HomeTurnRow[] = await queryRunner.query(
-        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"
          FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
         [input.ownerId, input.conversationId, input.turnId]
       );
@@ -745,7 +745,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       const rows = returnedRows<HomeTurnRow>(await queryRunner.query(
         `UPDATE "home_turns" SET "status" = $4, "updated_at" = now()
          WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3
-         RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"`,
+         RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"`,
         [input.ownerId, input.conversationId, input.turnId, input.status]
       ));
       const row = rows[0];
@@ -770,7 +770,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
     return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       if (!await lockConversation(queryRunner, input.ownerId, input.conversationId)) return null;
       const rows: readonly HomeTurnRow[] = await queryRunner.query(
-        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"
          FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
         [input.ownerId, input.conversationId, input.turnId]
       );
@@ -904,7 +904,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         const conversation = await lockConversation(queryRunner, candidate.owner_id, candidate.conversation_id);
         if (!conversation) return false;
         const rows: readonly HomeTurnRow[] = await queryRunner.query(
-          `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"
+          `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"
            FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
           [candidate.owner_id, candidate.conversation_id, candidate.id]
         );
@@ -913,7 +913,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         const updatedRows = returnedRows<HomeTurnRow>(await queryRunner.query(
           `UPDATE "home_turns" SET "status" = 'unknown', "updated_at" = now()
            WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3
-           RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"`,
+           RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"`,
           [candidate.owner_id, candidate.conversation_id, candidate.id]
         ));
         const updated = updatedRows[0];
@@ -1034,7 +1034,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
     const rows = returnedRows<HomeTurnRow>(await queryRunner.query(
       `UPDATE "home_turns" SET "status" = $4, "updated_at" = now()
        WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3
-       RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "created_at", "updated_at"`,
+       RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "created_at", "updated_at"`,
       [ownerId, conversationId, current.id, status]
     ));
     const updated = rows[0];

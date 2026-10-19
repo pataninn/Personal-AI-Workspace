@@ -37,6 +37,8 @@ export interface HomeTurnRow {
   readonly sequence: number | string;
   readonly request_key: string;
   readonly status: HomeTurnStatus;
+  readonly home_policy_revision?: string | null;
+  readonly workspace_policy_revision?: string | null;
   readonly created_at: Timestamp;
   readonly updated_at: Timestamp;
 }
@@ -114,6 +116,8 @@ export function toHomeTurn(row: HomeTurnRow): HomeTurn {
     sequence: Number(row.sequence),
     requestKey: row.request_key,
     status: row.status,
+    homePolicyRevision: row.home_policy_revision ?? null,
+    workspacePolicyRevision: row.workspace_policy_revision ?? null,
     createdAt: toDate(row.created_at),
     updatedAt: toDate(row.updated_at)
   };

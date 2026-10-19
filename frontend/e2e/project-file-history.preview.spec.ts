@@ -26,7 +26,7 @@ test('opens file history from activity, shows all outcomes, and filters applied 
   await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);
 
   const item = {
-    runId: RUN_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, status: 'succeeded', decision: 'approved', providerTransmission: 'transmitted_confirmed',
+    runId: RUN_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, status: 'succeeded', decision: 'policy_authorized', providerTransmission: 'transmitted_confirmed',
     createdAt: '2026-09-30T00:00:00.000Z', updatedAt: '2026-09-30T00:00:02.000Z', provider: 'NVIDIA hosted NIM', model: 'preview-model',
     requestPreview: 'Review a file history fixture.', context: { categories: ['Request'], fileCount: 1, factCount: 0, messageCount: 0, estimatedTokens: 18 },
     usage: { status: 'reported', promptTokens: 12, completionTokens: 6, totalTokens: 18 },

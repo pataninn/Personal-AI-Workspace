@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { AssistantPolicySummary } from '@/features/assistant-policy-status';
 import type { HomeConversationScope } from '@/entities/home-conversation';
-import { Alert, Button, DialogContent, DialogDescription, DialogRoot, DialogTitle, Icon, Label, MarkdownContent, Skeleton, Spinner, Textarea } from '@/shared/ui';
+import { Alert, Button, Icon, Label, MarkdownContent, Skeleton, Spinner, Textarea } from '@/shared/ui';
 
 import { useHomePlanningRecords } from '../model/use-home-planning-records';
 import { useHomeChat } from '../model/use-home-chat';
@@ -16,20 +17,12 @@ interface HomeChatProps {
   readonly onSummaryRefreshRequested?: () => void;
 }
 
-const CATEGORY_LABELS: Record<string, string> = {
-  current_message: 'Current message',
-  bounded_home_history: 'Recent messages in this conversation',
-  task_metadata: 'Task metadata',
-  workspace_metadata: 'Workspace metadata'
-};
-
 export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason, onSummaryRefreshRequested }: HomeChatProps): React.JSX.Element {
   const chat = useHomeChat({ scope, disabled });
   const planningRecords = useHomePlanningRecords({
     conversationId: chat.selectedConversationId,
     events: chat.events,
     eventsConversationId: chat.eventsConversationId,
-    refreshEvents: chat.refreshEvents,
     onSummaryRefreshRequested
   });
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -37,14 +30,9 @@ export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason, 
   const archivedId = 'home-chat-archived-description';
   const isWorkspace = scope.kind === 'workspace';
   const currentTitle = chat.isNewConversation ? 'New conversation' : chat.selectedConversation?.title ?? 'Assistant conversation';
-  const composerDisabled = disabled || chat.busy || chat.runtimeUnavailable || Boolean(chat.pendingDisclosure) || chat.createNeedsRetry || chat.sendStatus === 'uncertain';
-  const currentTurnDecision = chat.activeTurn
-    ? [...chat.events].reverse().find((event) => event.type === 'consent.decided' && event.turnId === chat.activeTurn?.id)
-    : undefined;
-  const currentTurnDecisionIsPrivate = currentTurnDecision?.payload.decision === 'deny';
-  const currentDisclosurePhase = currentTurnDecisionIsPrivate
-    ? chat.events.find((event) => event.type === 'consent.requested' && event.entityId === currentTurnDecision.entityId)?.payload.phase
-    : undefined;
+  const composerDisabled = disabled || chat.busy || !chat.policyReady || chat.runtimeUnavailable || chat.createNeedsRetry || chat.sendStatus === 'uncertain';
+  const allowUndo = chat.policyReady && chat.policyStatus?.policy?.capabilities.includes('home_action_undo') === true;
+  const legacyActiveTurn = chat.activeTurn && chat.isLegacyTurn(chat.activeTurn.id) && ['pending', 'running', 'cancel_requested', 'unknown'].includes(chat.activeTurn.status);
 
   useEffect(() => {
     if (chat.eventsConversationId !== chat.selectedConversationId) return;
@@ -72,9 +60,14 @@ export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason, 
       </Button>
     </header>
 
+    <AssistantPolicySummary status={chat.policyLoadStatus} policy={chat.policyStatus} />
+    {(!chat.policyReady || chat.runtimeUnavailable) && chat.policyLoadStatus !== 'loading' ? <Alert tone="warning" data-testid="home-chat-policy-unavailable">
+      <span>Assistant execution is unavailable for this scope. Your draft is preserved until availability is confirmed.</span>
+      <Button type="button" variant="secondary" data-testid="home-chat-refresh-policy" onClick={chat.retryPolicy}>Refresh availability</Button>
+    </Alert> : null}
     {disabled && disabledReason ? <Alert id={archivedId} tone="warning" data-testid="planning-chat-read-only">{disabledReason}</Alert> : null}
-    {isWorkspace ? <p className="home-chat-scope-note">Planning chat for this workspace. Files and shell tools are unavailable.</p> : null}
-    {chat.runtimeUnavailable ? <Alert tone="error" data-testid="home-chat-runtime-unavailable" role="alert">The configured planning runtime is unavailable. Check its configuration or wait for it to reconnect, then reload Home chat to retry.</Alert> : null}
+    {isWorkspace ? <p className="home-chat-scope-note">Planning chat for this workspace.</p> : null}
+    {chat.runtimeUnavailable ? <Alert tone="error" data-testid="home-chat-runtime-unavailable" role="alert">The configured assistant runtime is unavailable. Refresh availability before trying again.</Alert> : null}
     {chat.reconnecting ? <p className="home-chat-reconnect" role="status" aria-live="polite"><Spinner label="Reconnecting" /> Reconnecting…</p> : null}
 
     <div className="home-chat-layout">
@@ -102,23 +95,27 @@ export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason, 
                 <span className="home-chat-message-role">{message.role === 'user' ? 'You' : 'Assistant'}</span>
                 <div className="home-chat-message-body">{message.role === 'assistant' ? <MarkdownContent content={message.content} /> : <p>{message.content}</p>}</div>
                 {status ? <span className={`home-chat-turn-status home-chat-turn-status-${statusClass(status)}`} data-turn-id={message.turnId}>{status}</span> : null}
-                {message.role === 'assistant' ? <HomePlanningRecords records={planningRecords} turnId={message.turnId} scope={scope} /> : null}
+                {message.role === 'assistant' ? <HomePlanningRecords records={planningRecords} turnId={message.turnId} allowUndo={allowUndo} /> : null}
               </li>;
             })}
           </ol>
-          <UnattachedHomePlanningRecords records={planningRecords} scope={scope} displayedTurnIds={new Set(chat.messages.filter((message) => message.role === 'assistant').map((message) => message.turnId))} />
+          <UnattachedHomePlanningRecords records={planningRecords} displayedTurnIds={new Set(chat.messages.filter((message) => message.role === 'assistant').map((message) => message.turnId))} allowUndo={allowUndo} />
         </> : null}
         {chat.historyStatus === 'idle' && (!chat.selectedConversationId && (chat.isNewConversation || chat.listStatus === 'success')) ? <div className="home-chat-empty" data-testid="home-chat-empty"><strong>{isWorkspace ? 'Start planning for this workspace.' : 'Start with a question or a task you want to plan.'}</strong>{!isWorkspace ? <p>Your saved messages will appear here.</p> : null}</div> : null}
 
-        {currentTurnDecisionIsPrivate && currentDisclosurePhase === 'initial' ? <Alert tone="info" live="polite" data-testid="home-chat-kept-private">Kept private. Your message remains in this conversation and in the composer.</Alert> : null}
-        {currentTurnDecisionIsPrivate && currentDisclosurePhase === 'tool_result' ? <Alert tone="info" live="polite" data-testid="home-chat-kept-private">Kept private.</Alert> : null}
+        {legacyActiveTurn ? <Alert tone="warning" data-testid="home-chat-legacy-blocked">
+          <span>This saved action cannot be resumed. Start a new request if it is supported for this scope.</span>
+          {chat.activeTurn?.status === 'unknown' || chat.activeTurn?.status === 'cancel_requested' || chat.cancelNeedsCheck
+            ? <Button type="button" variant="secondary" data-testid="home-chat-check-turn-status" disabled={chat.statusCheckPending} onClick={() => { void chat.checkTurnStatus(); }}>Refresh saved status</Button>
+            : null}
+        </Alert> : null}
 
         {chat.sendStatus === 'creating' ? <p className="home-chat-live-status" role="status" aria-live="polite">Saving conversation…</p> : null}
         {chat.sendStatus === 'submitting' || chat.sendStatus === 'retrying' ? <p className="home-chat-live-status" role="status" aria-live="polite">Sending your message…</p> : null}
         {chat.sendStatus === 'reconciling' ? <p className="home-chat-live-status" role="status" aria-live="polite">Checking whether your message was saved…</p> : null}
-        {chat.activeTurn?.status === 'running' ? <p className="home-chat-live-status" role="status" aria-live="polite">Assistant is responding…</p> : null}
+        {chat.activeTurn?.status === 'running' && !chat.isLegacyTurn(chat.activeTurn.id) ? <p className="home-chat-live-status" role="status" aria-live="polite">Assistant is responding…</p> : null}
         {chat.activeTurn?.status === 'cancel_requested' ? <p className="home-chat-live-status" role="status" aria-live="polite">Stopping…</p> : null}
-        {chat.activeTurn?.status === 'unknown' ? <Alert tone="warning" data-testid="home-chat-unknown-status">
+        {chat.activeTurn?.status === 'unknown' && !chat.isLegacyTurn(chat.activeTurn.id) ? <Alert tone="warning" data-testid="home-chat-unknown-status">
           <span>This response stopped before its result was confirmed. Refresh its status before starting a fresh request.</span>
           <Button type="button" variant="secondary" data-testid="home-chat-check-turn-status" disabled={chat.statusCheckPending} onClick={() => { void chat.checkTurnStatus(); }}>Check status</Button>
         </Alert> : null}
@@ -130,7 +127,7 @@ export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason, 
           {chat.createNeedsRetry ? <Button type="button" variant="secondary" data-testid="home-chat-retry-create" disabled={chat.busy || disabled} onClick={() => { void chat.retryCreate(); }}>Retry conversation creation</Button> : null}
           {chat.sendStatus === 'uncertain' && chat.submitCanRetry ? <>
             <Button type="button" variant="secondary" data-testid="home-chat-check-submission" disabled={chat.busy || disabled} onClick={() => { void chat.checkSubmission(); }}>Check status</Button>
-            <Button type="button" variant="secondary" data-testid="home-chat-retry-send" disabled={chat.busy || disabled} onClick={() => { void chat.retrySameSubmission(); }}>Retry same send</Button>
+            <Button type="button" variant="secondary" data-testid="home-chat-retry-send" disabled={chat.busy || disabled || !chat.policyReady} onClick={() => { void chat.retrySameSubmission(); }}>Retry same send</Button>
           </> : null}
           {chat.sendStatus === 'uncertain' && !chat.submitCanRetry ? <Button type="button" variant="secondary" data-testid="home-chat-refresh-submission" disabled={chat.busy} onClick={() => { void chat.checkSubmission(); }}>Refresh status</Button> : null}
         </Alert> : null}
@@ -160,7 +157,6 @@ export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason, 
       </div>
     </div>
 
-    {chat.pendingDisclosure && !disabled ? <ConsentDialog scopeLabel={scopeLabel} pending={chat.pendingDisclosure} busy={chat.decisionPending} onDecision={(decision) => { void chat.decide(decision); }} /> : null}
   </section>;
 }
 
@@ -187,48 +183,10 @@ function HistoryList({ chat, disabled, testIdPrefix }: HistoryListProps): React.
   </div>;
 }
 
-interface ConsentDialogProps {
-  readonly scopeLabel: string;
-  readonly pending: NonNullable<ReturnType<typeof useHomeChat>['pendingDisclosure']>;
-  readonly busy: boolean;
-  readonly onDecision: (decision: 'allow' | 'deny') => void;
-}
-
-function ConsentDialog({ scopeLabel, pending, busy, onDecision }: ConsentDialogProps): React.JSX.Element {
-  const { disclosure } = pending;
-  return <DialogRoot open onOpenChange={() => { /* A pending consent decision stays open until the server confirms it. */ }}>
-    <DialogContent className="home-chat-consent" onEscapeKeyDown={(event) => event.preventDefault()} onPointerDownOutside={(event) => event.preventDefault()}>
-      <DialogTitle>{disclosure.phase === 'initial' ? 'Allow this turn?' : 'Share this result?'}</DialogTitle>
-      <DialogDescription>
-        Your message is saved in this conversation. The provider will receive only the information listed here if you allow.
-      </DialogDescription>
-      <dl className="home-chat-disclosure">
-        <div><dt>Provider</dt><dd>{disclosure.provider.name}</dd></div>
-        <div><dt>Model</dt><dd>{disclosure.provider.model}</dd></div>
-        <div><dt>Scope</dt><dd>{scopeLabel}</dd></div>
-        <div><dt>Items</dt><dd>{disclosure.itemCount}</dd></div>
-        <div><dt>Categories</dt><dd><ul>{disclosure.categories.map((category) => <li key={category}>{CATEGORY_LABELS[category] ?? category}</li>)}</ul></dd></div>
-        {disclosure.byteLimit > 0 ? <div><dt>Maximum size</dt><dd>{formatBytes(disclosure.byteLimit)}</dd></div> : null}
-      </dl>
-      {disclosure.phase === 'initial' ? <p className="home-chat-disclosure-note">Recent messages, when included, are limited to at most 8 earlier user or assistant messages from this conversation (up to 64 KiB of redacted text). Files, shell access, project chats, project facts, and other conversations are outside this disclosure.</p> : <p className="home-chat-disclosure-note">The requested task or workspace result is not shown here. Denying keeps that result private.</p>}
-      <p className="home-chat-consent-saving" role="status" aria-live="polite">{busy ? 'Saving your decision…' : ''}</p>
-      <div className="home-chat-consent-actions">
-        <Button type="button" variant="secondary" data-testid="home-chat-consent-deny" disabled={busy} onClick={() => onDecision('deny')}>Keep private</Button>
-        <Button type="button" data-testid="home-chat-consent-allow" disabled={busy} onClick={() => onDecision('allow')}>{disclosure.phase === 'initial' ? 'Allow this turn' : 'Share and continue'}</Button>
-      </div>
-    </DialogContent>
-  </DialogRoot>;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} bytes maximum`;
-  return `${Math.round(bytes / 1024)} KiB maximum`;
-}
-
 function statusClass(status: string): string {
   if (status === 'Completed') return 'success';
-  if (status === 'Cancelled — kept private' || status === 'Cancelled') return 'neutral';
+  if (status === 'Cancelled') return 'neutral';
   if (status === 'Assistant is responding…' || status === 'Stopping…') return 'active';
-  if (status === 'Needs review' || status === 'Planning runtime unavailable' || status === 'Failed') return 'warning';
+  if (status === 'Needs review' || status === 'Saved action cannot be resumed' || status === 'Planning runtime unavailable' || status === 'Failed') return 'warning';
   return 'neutral';
 }

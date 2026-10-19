@@ -83,6 +83,11 @@ export class HermesHomePlanningRuntime implements IHomePlanningRuntime {
     this.providerEgressAdmissionEnforced = options.providerEgressAdmissionEnforced === true;
   }
 
+  public async supportsPolicyExecution(_input: { readonly providerProfile: string; readonly model: string }): Promise<boolean> {
+    // The ACP boundary cannot yet prove admission for every primary or auxiliary send.
+    return false;
+  }
+
   public async start(input: StartHomePlanningRunInput): Promise<StartHomePlanningRunResult> {
     if (!this.providerEgressAdmissionEnforced
       || !validTurnId(input.turnId) || !validPrompt(input.prompt) || !sameProvider(input.provider, this.provider)) {

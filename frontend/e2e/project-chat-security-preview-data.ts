@@ -1,14 +1,13 @@
 export const PROJECT_ID = '873c096a-bc57-4a0c-85da-10d4febde96b';
 export const CONVERSATION_ID = '489541da-57a5-416d-afb6-45b19ad7bc98';
 export const OWNER_ID = '116cfd7c-e76f-4de4-bda1-001d6c3fbf16';
-export const PERMISSION_ID = 'ac8a4caa-5f69-4f65-aece-5c8d201f9a17';
-export const PROVIDER_PROFILE = 'nvidia-hosted-nim';
-export const PROVIDER = 'NVIDIA hosted NIM';
-export const MODEL = 'nvidia/nemotron-3-super-120b-a12b';
+export const PROVIDER_PROFILE = 'synthetic-preview-provider';
+export const PROVIDER = 'Synthetic browser fixture';
+export const MODEL = 'preview-only';
 export const PREVIEW_CSRF_TOKEN = 'preview-only-csrf-token';
 export const PREVIEW_TIME = '2026-10-16T00:00:00.000Z';
 
-export type RunPlan = 'permissions' | 'cancellation' | 'recovery';
+export type RunPlan = 'policy' | 'policy-unavailable' | 'cancellation' | 'recovery';
 
 export interface RunSnapshot {
   readonly runId: string;
@@ -18,24 +17,10 @@ export interface RunSnapshot {
   readonly phase: string;
   readonly manifestHash: string;
   readonly decision: string;
-  readonly providerApprovalMode?: 'remembered_permission' | 'one_time';
   readonly safeMessage: string;
   readonly cleanup: string;
   readonly providerTransmission: string;
   readonly stagingItemCount: number;
-}
-
-export interface ProviderPermission {
-  readonly id: string;
-  readonly subject: { readonly ownerId: string };
-  readonly projectId: string;
-  readonly providerProfile: string;
-  readonly model: string;
-  readonly capability: 'send_selected_context';
-  readonly persistence: 'until_revoked';
-  readonly expiresAt: null;
-  readonly createdAt: string;
-  readonly revokedAt: string | null;
 }
 
 export interface ApiRequestRecord {

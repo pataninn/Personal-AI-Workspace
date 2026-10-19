@@ -8,6 +8,7 @@ import threading
 import time
 
 from common import BridgeError, MAX_BODY
+from runtime.acp_runner import PROFILE_VERSION, PROFILE_HASH, command_hash, parse_policy_command
 
 MAX_HOME_TOOL_RESULT = 256 * 1024
 MAX_HOME_TOOL_EVENT = 256 * 1024
@@ -23,6 +24,8 @@ class AcpSession:
         self.counter = 0
         self.session_id = None
         self.permissions = {}
+        self.policy_requests = {}
+        self.policy_lock = threading.Lock()
         self.task_requests = {}
         self.task_request_count = 0
         self.home_tool_requests = {}
@@ -72,6 +75,8 @@ class AcpSession:
             raise BridgeError('Hermes stopped without a confirmed complete result')
 
     def permission(self, identity, approved):
+        if getattr(self.state, 'is_policy', False):
+            raise BridgeError('Generic permissions are forbidden for policy runs')
         request = self.permissions.pop(str(identity), None)
         if not request:
             raise BridgeError('The command permission is no longer pending')
@@ -80,6 +85,32 @@ class AcpSession:
         choice = next((x for x in choices if x.get('kind') == kind), None)
         outcome = {'outcome': 'selected', 'optionId': choice['optionId']} if choice else {'outcome': 'cancelled'}
         self.send({'jsonrpc': '2.0', 'id': request['id'], 'result': {'outcome': outcome}})
+
+    def policy_permission(self, payload, result=False):
+        fields = {'commandId', 'requestId', 'commandHash', 'profileVersion', 'profileHash', 'manifestHash'}
+        if not isinstance(payload, dict) or set(payload) != fields:
+            raise BridgeError('Invalid policy continuation')
+        if not isinstance(payload['commandId'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', payload['commandId']):
+            raise BridgeError('Invalid policy command identity')
+        if not isinstance(payload['requestId'], str) or not re.fullmatch(r'[a-f0-9]{32}', payload['requestId']):
+            raise BridgeError('Invalid policy request identity')
+        with self.policy_lock:
+            request = self.policy_requests.get(payload['requestId'])
+            phase = 'result' if result else 'proposed'
+            if (not request or request['phase'] != phase or time.monotonic() >= request['expires']
+                    or self.state.cancelled.is_set()):
+                raise BridgeError('Policy continuation expired or already consumed')
+            params = request['params']
+            for key in fields - {'commandId'}:
+                if payload[key] != params[key]:
+                    raise BridgeError('Policy continuation binding mismatch')
+            if result and payload['commandId'] != request['commandId']:
+                raise BridgeError('Policy result command mismatch')
+            request['phase'] = 'complete' if result else 'authorized'
+            request['commandId'] = payload['commandId']
+            request['expires'] = time.monotonic() + 12
+            response = {'accepted': True} if result else {'accepted': True, 'commandId': payload['commandId']}
+            self.send({'jsonrpc': '2.0', 'id': request['frame']['id'], 'result': response})
 
     def cancel(self):
         if self.session_id and self.child.poll() is None:
@@ -154,7 +185,11 @@ class AcpSession:
                         self.state.push({'type': 'project-task-request', 'id': str(frame['id']), 'params': params})
                     elif frame['method'] == '_pai/home_tools' and 'id' in frame:
                         self._home_tool_request(frame)
+                    elif frame['method'] in ('_pai/policy_command', '_pai/policy_command_result') and 'id' in frame:
+                        self._policy_command_request(frame)
                     elif frame['method'] == 'session/request_permission':
+                        if getattr(self.state, 'is_policy', False):
+                            raise BridgeError('Policy command entered generic permissions')
                         self.permissions[str(frame['id'])] = frame
                         self.state.push({'type': 'permission', 'id': str(frame['id']), 'params': frame['params']})
                     elif frame['method'] == 'session/update':
@@ -178,6 +213,57 @@ class AcpSession:
                     target.put_nowait({'error': {'message': 'ACP stream ended'}})
                 except queue.Full:
                     pass
+
+    def _policy_command_request(self, frame):
+        rpc_id = frame.get('id')
+        if type(rpc_id) not in (str, int) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', str(rpc_id)):
+            raise BridgeError('Invalid policy RPC identity')
+        params = frame.get('params')
+        is_result = frame['method'] == '_pai/policy_command_result'
+        fields = {'sessionId', 'runId', 'requestId', 'commandHash', 'profileVersion', 'profileHash', 'manifestHash'}
+        fields |= {'commandId', 'result'} if is_result else {'command'}
+        binding = getattr(self.state, 'policy_binding', None)
+        if (not getattr(self.state, 'is_policy', False) or not binding or not isinstance(params, dict)
+                or set(params) != fields or self.state.cancelled.is_set()
+                or params['sessionId'] != self.session_id or params['runId'] != self.state.identity
+                or params['profileVersion'] != PROFILE_VERSION or params['profileHash'] != PROFILE_HASH
+                or params['manifestHash'] != binding['manifestHash']
+                or not isinstance(params['requestId'], str) or not re.fullmatch(r'[a-f0-9]{32}', params['requestId'])):
+            raise BridgeError('Invalid policy command request')
+        key = params['requestId']
+        with self.policy_lock:
+            request = self.policy_requests.get(key)
+            if is_result:
+                if (not request or request['phase'] != 'authorized' or params['commandId'] != request['commandId']
+                        or any(params[k] != request['params'][k] for k in fields - {'sessionId', 'commandId', 'result'})
+                        or time.monotonic() >= request['expires']):
+                    raise BridgeError('Unbound policy command result')
+                self._validate_policy_result(params['result'])
+                request.update({'phase': 'result', 'frame': frame, 'expires': time.monotonic() + 30})
+            else:
+                if key in self.policy_requests or len(self.policy_requests) >= 50 or any(r['phase'] != 'complete' for r in self.policy_requests.values()):
+                    raise BridgeError('Duplicate or excessive policy command')
+                try:
+                    parse_policy_command(params['command'], binding['files'])
+                except ValueError:
+                    raise BridgeError('Policy command not allowlisted') from None
+                if params['commandHash'] != command_hash(params['command'], binding['manifestHash']):
+                    raise BridgeError('Policy command hash mismatch')
+                self.policy_requests[key] = {'phase': 'proposed', 'frame': frame, 'params': params,
+                                             'expires': time.monotonic() + 30, 'commandId': None}
+        public = {k: v for k, v in params.items() if k != 'sessionId'}
+        self.state.push({'type': 'policy-command-result' if is_result else 'policy-command-proposed', 'id': key, 'params': public})
+
+    @staticmethod
+    def _validate_policy_result(result):
+        if not isinstance(result, dict) or set(result) != {'exitCode', 'stdout', 'stderr', 'timedOut', 'outputTruncated', 'durationMs'}:
+            raise BridgeError('Invalid policy result')
+        if (type(result['exitCode']) is not int or type(result['durationMs']) is not int
+                or not 0 <= result['durationMs'] <= 12000 or type(result['timedOut']) is not bool
+                or type(result['outputTruncated']) is not bool or not isinstance(result['stdout'], str)
+                or not isinstance(result['stderr'], str)
+                or len((result['stdout'] + result['stderr']).encode('utf-8')) > 32768):
+            raise BridgeError('Policy result exceeds bounds')
 
     def _home_tool_request(self, frame):
         request_id = frame.get('id')

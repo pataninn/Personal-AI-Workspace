@@ -9,13 +9,12 @@ import { authenticateRequest, requireCsrf, sameOrigin } from '@/modules/auth/con
 import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
 import type { HomeChangeProposalUseCases } from '@/modules/home-assistant/use-cases/home-change-proposal-use-cases';
 import { AppError } from '@/shared/errors/app-error';
+import { PolicyActionRetiredError } from '@/modules/assistant-policy/domain/policy-action-retired-error';
 import { sendData } from '@/shared/http/response';
 
 const UUID = z.string().uuid();
 const revisionSchema = z.number().int().positive().max(2147483647);
-const acceptBody = z.object({ expectedRevision: revisionSchema }).strict();
 const cancelBody = z.object({ expectedRevision: revisionSchema }).strict();
-const editBody = z.object({ expectedRevision: revisionSchema, changes: z.record(z.unknown()) }).strict();
 const listStates = z.enum(['review_required', 'accepted', 'executing', 'partial', 'completed', 'cancelled', 'unknown']);
 
 export interface HomeProposalRouterDependencies {
@@ -60,14 +59,6 @@ function parseLimit(value: unknown): number {
   const limit = Number(raw);
   if (!Number.isSafeInteger(limit) || limit > 50) throw new AppError('VALIDATION_ERROR', 400, 'limit must be between 1 and 50.');
   return limit;
-}
-
-function expectedIfMatch(request: Request): number {
-  const value = request.header('if-match');
-  const match = value?.match(/^"?([1-9][0-9]*)"?$/u);
-  const revision = match ? Number(match[1]) : Number.NaN;
-  if (!Number.isSafeInteger(revision) || revision > 2147483647) throw new AppError('VALIDATION_ERROR', 400, 'If-Match must contain the current proposal revision.');
-  return revision;
 }
 
 function serializeProposal(value: HomeChangeProposal): Record<string, unknown> {
@@ -118,41 +109,24 @@ export function createHomeProposalRouter(dependencies: HomeProposalRouterDepende
     sendData(response, { proposal: serializeProposal(await dependencies.proposals.get(ownerId(request), conversationId, proposalId)) });
   }));
 
-  router.patch(`${base}/:proposalId/items/:itemId`, sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, route(async (request, response) => {
-    const conversationId = uuid(request.params.conversationId, new HomeConversationNotFoundError());
-    const proposalId = uuid(request.params.proposalId, new HomeProposalNotFoundError());
-    const itemId = uuid(request.params.itemId, new HomeProposalNotFoundError());
-    const input = body(editBody, request.body);
-    const proposal = await dependencies.proposals.editItem({ ownerId: ownerId(request), conversationId, proposalId, itemId, expectedRevision: input.expectedRevision, changes: input.changes });
-    response.setHeader('ETag', `"${proposal.revision}"`);
-    sendData(response, { proposal: serializeProposal(proposal) });
+  router.patch(`${base}/:proposalId/items/:itemId`, sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, route(async (request, _response) => {
+    ownerId(request);
+    throw new PolicyActionRetiredError();
   }));
 
-  router.delete(`${base}/:proposalId/items/:itemId`, sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, route(async (request, response) => {
-    const conversationId = uuid(request.params.conversationId, new HomeConversationNotFoundError());
-    const proposalId = uuid(request.params.proposalId, new HomeProposalNotFoundError());
-    const itemId = uuid(request.params.itemId, new HomeProposalNotFoundError());
-    const proposal = await dependencies.proposals.removeItem({ ownerId: ownerId(request), conversationId, proposalId, itemId, expectedRevision: expectedIfMatch(request) });
-    response.setHeader('ETag', `"${proposal.revision}"`);
-    sendData(response, { proposal: serializeProposal(proposal) });
+  router.delete(`${base}/:proposalId/items/:itemId`, sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, route(async (request, _response) => {
+    ownerId(request);
+    throw new PolicyActionRetiredError();
   }));
 
-  router.post(`${base}/:proposalId/acceptance`, sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, route(async (request, response) => {
-    const conversationId = uuid(request.params.conversationId, new HomeConversationNotFoundError());
-    const proposalId = uuid(request.params.proposalId, new HomeProposalNotFoundError());
-    const input = body(acceptBody, request.body);
-    const result = await dependencies.proposals.accept({ ownerId: ownerId(request), conversationId, proposalId, expectedRevision: input.expectedRevision });
-    response.location(`/api/v1/home/conversations/${conversationId}/proposals/${proposalId}/acceptance/${result.proposal.acceptanceId ?? ''}`);
-    response.setHeader('ETag', `"${result.proposal.revision}"`);
-    sendData(response, { proposal: serializeProposal(result.proposal), acceptance: { id: result.proposal.acceptanceId, revision: result.proposal.acceptedRevision }, execution: result.execution, replayed: result.replayed }, result.replayed ? 200 : 201);
+  router.post(`${base}/:proposalId/acceptance`, sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, route(async (request, _response) => {
+    ownerId(request);
+    throw new PolicyActionRetiredError();
   }));
 
-  router.post(`${base}/:proposalId/execution`, sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, route(async (request, response) => {
-    body(z.object({}).strict(), request.body ?? {});
-    const conversationId = uuid(request.params.conversationId, new HomeConversationNotFoundError());
-    const proposalId = uuid(request.params.proposalId, new HomeProposalNotFoundError());
-    const result = await dependencies.proposals.execute({ ownerId: ownerId(request), conversationId, proposalId });
-    sendData(response, { proposal: serializeProposal(result.proposal), execution: result.execution, replayed: result.replayed });
+  router.post(`${base}/:proposalId/execution`, sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, route(async (request, _response) => {
+    ownerId(request);
+    throw new PolicyActionRetiredError();
   }));
 
   router.post(`${base}/:proposalId/cancellation`, sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, route(async (request, response) => {

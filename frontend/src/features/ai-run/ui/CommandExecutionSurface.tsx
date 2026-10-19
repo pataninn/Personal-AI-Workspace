@@ -23,12 +23,12 @@ export function CommandExecutionSurface({ run, conversationHref, readOnly = fals
   const canMutate = Boolean(csrfToken) && !readOnly && ['ready', 'queued', 'running', 'waiting_approval'].includes(run.status);
   return (
     <section className="command-execution-surface" data-testid="command-execution-surface" aria-labelledby="command-surface-heading">
-      <h2 id="command-surface-heading" data-testid="command-surface-heading">Command approvals</h2>
+      <h2 id="command-surface-heading" data-testid="command-surface-heading">Sandbox command history</h2>
       {readOnly ? <Alert tone="warning" data-testid="command-project-read-only">This project is archived. Existing sandbox commands are read-only.</Alert> : null}
       {commands.status === 'loading' ? <LoadingState /> : null}
       {commands.status === 'error' ? <SurfaceError onRefresh={commands.refresh} /> : null}
       {commands.status === 'success' && commands.commands.length === 0 ? <div data-testid="command-empty" className="command-empty-state"><p>{COMMAND_EMPTY_NOTICE}</p></div> : null}
-      {commands.status === 'success' && commands.commands.length > 0 ? <ol className="command-list">{commands.commands.map((command) => <li key={command.commandId}><CommandProposalCard command={command} runtimeKind={runtimeKind} actionState={commands.actions[command.commandId]} canMutate={canMutate} onDecision={(decision) => commands.decide(command, decision)} onCancel={() => commands.cancel(command)} onRefresh={commands.refresh} conversationHref={conversationHref} /></li>)}</ol> : null}
+      {commands.status === 'success' && commands.commands.length > 0 ? <ol className="command-list">{commands.commands.map((command) => <li key={command.commandId}><CommandProposalCard command={command} runtimeKind={runtimeKind} actionState={commands.actions[command.commandId]} canMutate={canMutate} onCancel={() => commands.cancel(command)} onRefresh={commands.refresh} conversationHref={conversationHref} /></li>)}</ol> : null}
     </section>
   );
 }

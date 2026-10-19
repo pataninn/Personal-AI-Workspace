@@ -459,7 +459,7 @@ function readPhase(value: unknown): AiRunPhase | undefined {
 }
 
 function readDecision(value: unknown): EgressDecision | undefined {
-  return value === 'pending' || value === 'approved' || value === 'rejected' ? value : undefined;
+  return value === 'pending' || value === 'approved' || value === 'rejected' || value === 'policy_authorized' ? value : undefined;
 }
 
 function readCleanup(value: unknown): CleanupStatus {

@@ -220,7 +220,7 @@ describeDatabase('R1 release HTTP and PostgreSQL regression', () => {
     await request(app).get(`/api/v1/home/conversations/${homeTurn.conversationId}/events?afterSequence=0`).set({ Cookie: USER_B }).expect(404);
   });
 
-  it('accepts a deterministic partial proposal, retains event history, and preserves archived, rootless, root-dot, and project-chat access rules', async () => {
+  it('blocks Home bulk proposals and legacy acceptance without writes while preserving other release access rules', async () => {
     const archivedTask = await createTask(USER_A, 'R1 archived workspace task', workspaces.archived, 'r1-archived-task');
     await dataSource.query('UPDATE "projects" SET "status" = \'archived\', "version" = "version" + 1 WHERE "owner_id" = $1 AND "id" = $2', [OWNER_A, workspaces.archived]);
     const archivedPage = await request(app).get(`/api/v1/tasks?workspaceId=${workspaces.archived}&includeArchived=true`).set({ Cookie: USER_A }).expect(200);
@@ -254,17 +254,6 @@ describeDatabase('R1 release HTTP and PostgreSQL regression', () => {
     await request(app).get(`/api/v1/projects/${workspaces.dot}/files/content?path=README.md`).set({ Cookie: USER_A }).expect(404);
 
     const turn = await createActiveHomeTurn('r1-partial-proposal-turn');
-    await dataSource.query(`
-      CREATE FUNCTION "r1_reject_proposal_sentinel"() RETURNS trigger LANGUAGE plpgsql AS $$
-      BEGIN
-        IF NEW."title" = 'R1 partial failure sentinel' THEN
-          RAISE EXCEPTION 'deterministic release fixture failure' USING ERRCODE = 'P0001';
-        END IF;
-        RETURN NEW;
-      END;
-      $$
-    `);
-    await dataSource.query('CREATE TRIGGER "r1_reject_proposal_sentinel" BEFORE INSERT ON "project_tasks" FOR EACH ROW EXECUTE FUNCTION "r1_reject_proposal_sentinel"()');
     const proposalResult = await planningHandler.resolve({
       ownerId: OWNER_A,
       conversationId: turn.conversationId,
@@ -273,44 +262,36 @@ describeDatabase('R1 release HTTP and PostgreSQL regression', () => {
       name: 'home_propose_bulk_changes',
       scope: { kind: 'home' },
       args: { items: [
-        { action: 'task.create', title: 'R1 accepted proposal task', workspaceId: null },
-        { action: 'task.create', title: 'R1 partial failure sentinel', workspaceId: null }
+        { action: 'task.create', title: 'R1 unsupported bulk task', workspaceId: null },
+        { action: 'task.create', title: 'R1 second unsupported bulk task', workspaceId: null }
       ] }
     });
-    if (!proposalResult || proposalResult.kind !== 'immediate') throw new Error('The deterministic proposal fixture did not create a review proposal.');
-    const proposalInfo = proposalResult.result.data.proposal;
-    if (!proposalInfo || typeof proposalInfo !== 'object' || !('id' in proposalInfo) || typeof proposalInfo.id !== 'string') throw new Error('The proposal response omitted its ID.');
-    const proposalId = proposalInfo.id;
-    const proposalPath = `/api/v1/home/conversations/${turn.conversationId}/proposals/${proposalId}`;
-    const detail = await request(app).get(proposalPath).set({ Cookie: USER_A }).expect(200);
-    const proposal = responseData<{ readonly proposal: { readonly revision: number; readonly items: readonly { readonly id: string }[] } }>(detail).proposal;
-    expect(proposal.items).toHaveLength(2);
-    await request(app).get(proposalPath).set({ Cookie: USER_B }).expect(404);
-    const accepted = await request(app).post(`${proposalPath}/acceptance`)
-      .set(mutationHeaders(USER_A)).send({ expectedRevision: proposal.revision }).expect(201);
-    const acceptance = responseData<{ readonly replayed: boolean; readonly proposal: { readonly state: string }; readonly execution: { readonly state: string; readonly items: readonly { readonly itemId: string; readonly state: string; readonly receiptId: string | null }[] } }>(accepted);
-    expect(acceptance).toMatchObject({ replayed: false, proposal: { state: 'partial' }, execution: { state: 'partial' } });
-    expect(acceptance.execution.items.map(({ state }) => state)).toEqual(['saved', 'failed']);
-    expect(acceptance.execution.items[0]?.receiptId).toBeTruthy();
-    expect(acceptance.execution.items[1]?.receiptId).toBeNull();
-    const replay = await request(app).post(`${proposalPath}/acceptance`)
-      .set(mutationHeaders(USER_A)).send({ expectedRevision: proposal.revision }).expect(200);
-    expect(responseData<{ readonly replayed: boolean }>(replay).replayed).toBe(true);
+    expect(proposalResult).toBeNull();
+    const proposalPath = `/api/v1/home/conversations/${turn.conversationId}/proposals`;
+    const history = await request(app).get(proposalPath).set({ Cookie: USER_A }).expect(200);
+    expect(responseData<{ readonly proposals: readonly unknown[] }>(history).proposals).toEqual([]);
+    const retiredAcceptance = await request(app).post(`${proposalPath}/11111111-1111-4111-8111-111111111111/acceptance`)
+      .set(mutationHeaders(USER_A)).send({ expectedRevision: 1 }).expect(409);
+    expect(retiredAcceptance.body.error.code).toBe('POLICY_ACTION_RETIRED');
     const savedRows: readonly { readonly count: string }[] = await dataSource.query(
       'SELECT COUNT(*)::text AS "count" FROM "project_tasks" WHERE "owner_id" = $1 AND "title" = $2',
-      [OWNER_A, 'R1 accepted proposal task']
+      [OWNER_A, 'R1 unsupported bulk task']
+    );
+    const secondSavedRows: readonly { readonly count: string }[] = await dataSource.query(
+      'SELECT COUNT(*)::text AS "count" FROM "project_tasks" WHERE "owner_id" = $1 AND "title" = $2',
+      [OWNER_A, 'R1 second unsupported bulk task']
     );
     const receiptRows: readonly { readonly count: string }[] = await dataSource.query(
-      'SELECT COUNT(*)::text AS "count" FROM "action_ledger_records" WHERE "owner_id" = $1 AND "id" = $2',
-      [OWNER_A, acceptance.execution.items[0]?.receiptId]
+      'SELECT COUNT(*)::text AS "count" FROM "action_ledger_records" WHERE "owner_id" = $1 AND "turn_id" = $2',
+      [OWNER_A, turn.turnId]
     );
-    expect(Number(savedRows[0]?.count)).toBe(1);
-    expect(Number(receiptRows[0]?.count)).toBe(1);
+    expect(Number(savedRows[0]?.count)).toBe(0);
+    expect(Number(secondSavedRows[0]?.count)).toBe(0);
+    expect(Number(receiptRows[0]?.count)).toBe(0);
     const events = await request(app).get(`/api/v1/home/conversations/${turn.conversationId}/events?afterSequence=0`).set({ Cookie: USER_A }).expect(200);
     const actionEvents = responseData<{ readonly events: readonly { readonly type: string; readonly entityId: string | null }[] }>(events).events;
-    expect(actionEvents.some(({ type }) => type === 'proposal.created')).toBe(true);
-    expect(actionEvents.some(({ type }) => type === 'proposal.item_status_changed')).toBe(true);
-    expect(actionEvents.some(({ type, entityId }) => type === 'action.receipt' && entityId === acceptance.execution.items[0]?.receiptId)).toBe(true);
+    expect(actionEvents.some(({ type }) => type.startsWith('proposal.'))).toBe(false);
+    expect(actionEvents.some(({ type }) => type === 'action.receipt')).toBe(false);
   });
 
   function initializeApp(): void {
@@ -327,13 +308,18 @@ describeDatabase('R1 release HTTP and PostgreSQL regression', () => {
     const homeProposalUseCases = new HomeChangeProposalUseCases(homeRepository, homeProposalsRepository, taskQuery, taskMutations, workspacePlanning, ledger);
     planningHandler = new HomePlanningToolRequestHandler({
       principalAuthorization: { assertActive: async () => undefined },
+      executionPolicy: { assertHome: async () => ({
+        policies: [],
+        effectiveCapabilities: ['home_task_read', 'home_task_write', 'home_workspace_read', 'home_workspace_write', 'home_action_undo'],
+        revisions: { home: '1' }
+      }) },
+      provider: { profile: 'test-provider', model: 'test-model' },
       conversations: homeRepository,
       listTasks: new ListGlobalTasksUseCase(taskRepository),
       getTask: taskQuery,
       taskMutations,
       workspaces: workspacePlanning,
-      undo: new ActionUndoUseCases(ledger, taskRepository, projectRepository),
-      proposals: homeProposalUseCases
+      undo: new ActionUndoUseCases(ledger, taskRepository, projectRepository)
     });
     const readiness = new InMemoryReadinessState();
     readiness.markReady();
@@ -436,7 +422,9 @@ describeDatabase('R1 release HTTP and PostgreSQL regression', () => {
       requestKey: `${key}-turn`,
       requestFingerprint: `${key}-turn-fingerprint`,
       message: 'Deterministic release regression fixture; no provider is invoked.',
-      initialStatus: 'pending'
+      initialStatus: 'pending',
+      homePolicyRevision: '1',
+      workspacePolicyRevision: null
     });
     const running = await homeRepository.updateTurnStatus({
       ownerId: OWNER_A,

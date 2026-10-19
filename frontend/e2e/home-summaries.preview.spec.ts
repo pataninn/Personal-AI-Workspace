@@ -7,8 +7,6 @@ import {
   ACCEPT_ITEM_ONE_ID,
   ACCEPT_ITEM_THREE_ID,
   ACCEPT_PROPOSAL_ID,
-  ACCEPT_RECEIPT_ONE_ID,
-  ACCEPT_RECEIPT_TWO_ID,
   ACTIVE_WORKSPACE_ID,
   ARCHIVED_WORKSPACE_ID,
   CONFLICT_RECEIPT_ID,
@@ -21,8 +19,6 @@ import {
   HOME_SUMMARY_TURN_ID,
   HomePlanningRecordsPreviewApi,
   HomeSummariesPreviewApi,
-  PARTIAL_UPDATE_ITEM_ID,
-  STATUS_ONLY_UPDATE_ITEM_ID,
   RETRY_RECEIPT_ID,
   SECOND_UP_NEXT_TASK_ID,
   savePreviewBrowserEvidence,
@@ -73,7 +69,7 @@ test('renders bounded Up next actions and complete active/archive workspace summ
 
   const workspaces = page.getByTestId('home-workspace-list');
   await expect(workspaces.getByTestId(`home-workspace-link-${ACTIVE_WORKSPACE_ID}`)).toHaveAttribute('href', `/projects/${ACTIVE_WORKSPACE_ID}`);
-  await expect(workspaces.getByTestId(`home-workspace-link-${ACTIVE_WORKSPACE_ID}`)).toContainText('Planning workspace');
+  await expect(workspaces.getByTestId(`home-workspace-link-${ACTIVE_WORKSPACE_ID}`)).toContainText('Synthetic Planning Workspace');
   await expect(workspaces.getByTestId(`home-workspace-link-${ACTIVE_WORKSPACE_ID}`)).toContainText('Last active');
 
   const archived = workspaces.getByTestId(`home-workspace-link-${ARCHIVED_WORKSPACE_ID}`);
@@ -108,144 +104,76 @@ test('renders bounded Up next actions and complete active/archive workspace summ
   expect(homeApi.getBlockedExternalRequests()).toEqual([]);
 });
 
-test('reloads saved receipt and draft state, supports keyboard edits, and retains a specific undo conflict', async ({ page }, testInfo) => {
+test('keeps saved previews read-only while supported receipt undo stays available', async ({ page }, testInfo) => {
   const { homeApi, summaries, planning } = await installPlanningScenario(page);
   await signIn(page);
-  await page.goto(`/dashboard?conversation=${HOME_SUMMARY_CONVERSATION_ID}`);
+  await page.goto('/dashboard?conversation=' + HOME_SUMMARY_CONVERSATION_ID);
 
-  const conflictReceipt = page.getByTestId(`home-receipt-card-${CONFLICT_RECEIPT_ID}`);
-  await expect(conflictReceipt.getByTestId(`home-receipt-target-${CONFLICT_RECEIPT_ID}`)).toHaveText('Synthetic task with a changed version');
-  const draftCard = page.getByTestId(`home-proposal-card-${DRAFT_PROPOSAL_ID}`);
-  const draftItem = page.getByTestId(`home-proposal-item-${DRAFT_ITEM_ONE_ID}`);
-  const titleInput = draftItem.getByTestId(`home-proposal-${DRAFT_ITEM_ONE_ID}-title`);
-  await expect(titleInput).toHaveValue('Prepare release checklist');
+  const draftCard = page.getByTestId('home-proposal-card-' + DRAFT_PROPOSAL_ID);
+  await expect(draftCard).toContainText('Saved planning preview');
+  await expect(draftCard).toContainText('read-only and cannot be applied or resumed');
+  await expect(draftCard.getByTestId('home-proposal-item-' + DRAFT_ITEM_ONE_ID)).toContainText('Prepare release checklist');
+  await expect(draftCard.getByTestId('home-proposal-item-' + DRAFT_ITEM_TWO_ID)).toContainText('Confirm reviewer availability');
+  await expect(draftCard.getByRole('button')).toHaveCount(0);
+  await expect(draftCard.getByRole('textbox')).toHaveCount(0);
 
-  await titleInput.fill('Edited synthetic release checklist');
-  const saveItem = page.getByTestId(`home-proposal-edit-${DRAFT_ITEM_ONE_ID}`);
-  await saveItem.focus();
-  await expect(saveItem).toBeFocused();
-  await page.keyboard.press('Enter');
-  await expect.poll(() => planning.calls.proposalEdits.length).toBe(1);
-  await expect(draftItem).toContainText('Edited synthetic release checklist');
+  const legacyAccepted = page.getByTestId('home-proposal-card-' + ACCEPT_PROPOSAL_ID);
+  await expect(legacyAccepted).toContainText('Legacy accepted · blocked');
+  await expect(legacyAccepted).toContainText('Verify release handoff');
+  await expect(legacyAccepted.getByRole('button')).toHaveCount(0);
+  expect(planning.calls.retiredProposalMutationRequests).toBe(0);
 
-  const partialUpdateItem = page.getByTestId(`home-proposal-item-${PARTIAL_UPDATE_ITEM_ID}`);
-  const partialDeadline = partialUpdateItem.getByTestId(`home-proposal-${PARTIAL_UPDATE_ITEM_ID}-deadline`);
-  await expect(partialDeadline).toBeVisible();
-  await expect(partialUpdateItem.getByTestId(`home-proposal-${PARTIAL_UPDATE_ITEM_ID}-status`)).toHaveCount(0);
-  await partialDeadline.fill('2026-12-01');
-  await page.getByTestId(`home-proposal-edit-${PARTIAL_UPDATE_ITEM_ID}`).click();
-  await expect.poll(() => planning.calls.proposalEdits.length).toBe(2);
-  expect(planning.calls.proposalEdits[1]).toEqual({
-    proposalId: DRAFT_PROPOSAL_ID,
-    itemId: PARTIAL_UPDATE_ITEM_ID,
-    body: { expectedRevision: 2, changes: { deadline: '2026-12-01' } }
-  });
-
-  const statusOnlyItem = page.getByTestId(`home-proposal-item-${STATUS_ONLY_UPDATE_ITEM_ID}`);
-  await expect(statusOnlyItem.getByTestId(`home-proposal-${STATUS_ONLY_UPDATE_ITEM_ID}-status`)).toBeVisible();
-  await expect(statusOnlyItem.getByTestId(`home-proposal-${STATUS_ONLY_UPDATE_ITEM_ID}-title`)).toHaveCount(0);
-  await expect(statusOnlyItem.getByTestId(`home-proposal-${STATUS_ONLY_UPDATE_ITEM_ID}-deadline`)).toHaveCount(0);
-  await statusOnlyItem.getByTestId(`home-proposal-${STATUS_ONLY_UPDATE_ITEM_ID}-status`).selectOption('done');
-  await page.getByTestId(`home-proposal-edit-${STATUS_ONLY_UPDATE_ITEM_ID}`).click();
-  await expect.poll(() => planning.calls.proposalEdits.length).toBe(3);
-  expect(planning.calls.proposalEdits[2]).toEqual({
-    proposalId: DRAFT_PROPOSAL_ID,
-    itemId: STATUS_ONLY_UPDATE_ITEM_ID,
-    body: { expectedRevision: 3, changes: { status: 'done' } }
-  });
-
-  const removeItem = page.getByTestId(`home-proposal-remove-${DRAFT_ITEM_TWO_ID}`);
-  await removeItem.focus();
-  await expect(removeItem).toBeFocused();
-  await page.keyboard.press('Enter');
-  await expect(page.getByTestId(`home-proposal-item-${DRAFT_ITEM_TWO_ID}`)).toHaveCount(0);
-  expect(planning.calls.proposalRemovals).toEqual([{ proposalId: DRAFT_PROPOSAL_ID, itemId: DRAFT_ITEM_TWO_ID, ifMatch: '"4"' }]);
-  await expect(draftCard.getByTestId(`home-proposal-accept-${DRAFT_PROPOSAL_ID}`)).toBeEnabled();
-
-  await page.reload();
-  await expect(page.getByTestId(`home-proposal-item-${DRAFT_ITEM_ONE_ID}`)).toContainText('Edited synthetic release checklist');
-  await expect(page.getByTestId(`home-proposal-item-${DRAFT_ITEM_TWO_ID}`)).toHaveCount(0);
-  await expect(page.getByTestId(`home-proposal-${PARTIAL_UPDATE_ITEM_ID}-deadline`)).toHaveValue('2026-12-01');
-  await expect(page.getByTestId(`home-proposal-${STATUS_ONLY_UPDATE_ITEM_ID}-status`)).toHaveValue('done');
-  await expect(page.getByTestId(`home-receipt-target-${CONFLICT_RECEIPT_ID}`)).toHaveText('Synthetic task with a changed version');
-  expect(planning.calls.receiptReads.filter((id) => id === CONFLICT_RECEIPT_ID).length).toBeGreaterThanOrEqual(2);
-  await expect(page.getByTestId(`home-receipt-target-${RETRY_RECEIPT_ID}`)).toHaveText('Synthetic task with an uncertain undo');
-  const summaryRefreshBeforeUndo = {
-    overview: summaries.calls.overview.length,
-    projectLists: summaries.calls.projectLists.length,
-    inboxCount: summaries.calls.inboxCount
-  };
-
-  await page.getByTestId(`home-receipt-undo-${CONFLICT_RECEIPT_ID}`).click();
-  const conflict = page.getByTestId(`home-receipt-undo-conflict-${CONFLICT_RECEIPT_ID}`);
+  const conflictReceipt = page.getByTestId('home-receipt-card-' + CONFLICT_RECEIPT_ID);
+  await expect(conflictReceipt.getByTestId('home-receipt-target-' + CONFLICT_RECEIPT_ID)).toHaveText('Synthetic task with a changed version');
+  await page.getByTestId('home-receipt-undo-' + CONFLICT_RECEIPT_ID).click();
+  const conflict = page.getByTestId('home-receipt-undo-conflict-' + CONFLICT_RECEIPT_ID);
   await expect(conflict).toBeVisible();
   await expect(conflict).toContainText('changed after the action');
   expect(planning.calls.undoRequests).toHaveLength(1);
   expect(planning.calls.undoRequests[0]?.body).toEqual({});
   expect(planning.calls.undoRequests[0]?.idempotencyKey).toBeTruthy();
 
-  await page.getByTestId(`home-receipt-undo-${RETRY_RECEIPT_ID}`).click();
-  await expect(page.getByTestId(`home-receipt-retry-${RETRY_RECEIPT_ID}`)).toBeVisible();
-  await page.getByTestId(`home-receipt-retry-${RETRY_RECEIPT_ID}`).click();
-  await expect(page.getByTestId(`home-receipt-card-${RETRY_RECEIPT_ID}`)).toContainText('Undo completed');
+  const retryReceipt = page.getByTestId('home-receipt-card-' + RETRY_RECEIPT_ID);
+  await expect(retryReceipt.getByTestId('home-receipt-target-' + RETRY_RECEIPT_ID)).toHaveText('Synthetic task with an uncertain undo');
+  await page.getByTestId('home-receipt-undo-' + RETRY_RECEIPT_ID).click();
+  await expect(page.getByTestId('home-receipt-retry-' + RETRY_RECEIPT_ID)).toBeVisible();
+  await page.getByTestId('home-receipt-retry-' + RETRY_RECEIPT_ID).click();
+  await expect(page.getByTestId('home-receipt-card-' + RETRY_RECEIPT_ID)).toContainText('Undo completed');
   const retryRequests = planning.calls.undoRequests.filter((request) => request.receiptId === RETRY_RECEIPT_ID);
   expect(retryRequests).toHaveLength(2);
-  expect(retryRequests[0]?.body).toEqual({});
-  expect(retryRequests[1]?.body).toEqual({});
   expect(retryRequests[1]?.idempotencyKey).toBe(retryRequests[0]?.idempotencyKey);
-  await expect.poll(() => summaries.calls.overview.length).toBe(summaryRefreshBeforeUndo.overview + 1);
-  await expect.poll(() => summaries.calls.projectLists.length).toBe(summaryRefreshBeforeUndo.projectLists + 1);
-  expect(summaries.calls.inboxCount).toBe(summaryRefreshBeforeUndo.inboxCount);
+  await page.reload();
+  await expect(page.getByTestId('home-proposal-card-' + DRAFT_PROPOSAL_ID)).toContainText('Saved planning preview');
+  await expect(page.getByTestId('home-proposal-card-' + ACCEPT_PROPOSAL_ID)).toContainText('Legacy accepted · blocked');
+  await expect(page.getByTestId('home-receipt-card-' + RETRY_RECEIPT_ID)).toContainText('Undo completed');
+  await expect.poll(() => planning.calls.proposalDetails.length).toBeGreaterThan(0);
+  expect(planning.calls.retiredProposalMutationRequests).toBe(0);
   expect(summaries.calls.inboxCount).toBe(0);
-
-  setPreviewBrowserEvidenceMetadata(page, 'proposalEditKeyboard', {
-    editRequests: planning.calls.proposalEdits,
-    removeRequests: planning.calls.proposalRemovals
-  });
-  setPreviewBrowserEvidenceMetadata(page, 'undoConflict', planning.calls.undoRequests);
-  setPreviewBrowserEvidenceMetadata(page, 'undoSameKeyRetry', retryRequests);
-  await captureScreenshot(page, testInfo, 'home-planning-undo-conflict.png');
+  setPreviewBrowserEvidenceMetadata(page, 'proposalMutations', planning.calls.retiredProposalMutationRequests);
+  setPreviewBrowserEvidenceMetadata(page, 'receiptUndoRetry', retryRequests);
+  await captureScreenshot(page, testInfo, 'home-planning-read-only-preview-and-receipts.png');
+  expect(homeApi.calls.retiredDecisionRequests).toBe(0);
   expect(homeApi.getBlockedExternalRequests()).toEqual([]);
-  expect(summaries.calls.overview.length).toBeGreaterThan(0);
 });
 
-test('accepts a synthetic proposal partially, exposes its unknown item, and refreshes each Home summary once for the receipt batch', async ({ page, browser }, testInfo) => {
+test('shows saved proposal outcomes and receipts at mobile and zoom-equivalent sizes without retired actions', async ({ page, browser }, testInfo) => {
   const { homeApi, summaries, planning } = await installPlanningScenario(page, { includeInitialReceipts: false });
   await signIn(page);
-  await page.goto(`/dashboard?conversation=${HOME_SUMMARY_CONVERSATION_ID}`);
+  await page.goto('/dashboard?conversation=' + HOME_SUMMARY_CONVERSATION_ID);
 
-  await expect(page.getByTestId(`home-proposal-item-${ACCEPT_ITEM_ONE_ID}`)).toBeVisible();
-  await expect(page.getByTestId(`home-proposal-item-${ACCEPT_ITEM_ONE_ID}`)).toContainText('Resolved date: 2026-11-12');
-  await expect(page.getByTestId(`home-proposal-item-${ACCEPT_ITEM_ONE_ID}`)).toContainText('America/Los_Angeles');
-  await expect.poll(() => summaries.calls.overview.length).toBe(2);
-  await expect.poll(() => summaries.calls.projectLists.length).toBe(2);
-  expect(summaries.calls.inboxCount).toBe(0);
+  const legacyAccepted = page.getByTestId('home-proposal-card-' + ACCEPT_PROPOSAL_ID);
+  const savedItem = page.getByTestId('home-proposal-item-' + ACCEPT_ITEM_ONE_ID);
+  await expect(legacyAccepted).toContainText('Legacy accepted · blocked');
+  await expect(savedItem).toContainText('Prepare release checklist');
+  await expect(savedItem).toContainText('Saved');
+  const unknownItem = page.getByTestId('home-proposal-item-' + ACCEPT_ITEM_THREE_ID);
+  await expect(unknownItem).toContainText('Needs review');
+  await expect(legacyAccepted.getByRole('button')).toHaveCount(0);
+  await expect(legacyAccepted.getByRole('textbox')).toHaveCount(0);
+  expect(planning.calls.retiredProposalMutationRequests).toBe(0);
 
-  const beforeRefresh = {
-    overview: summaries.calls.overview.length,
-    projectLists: summaries.calls.projectLists.length,
-    inboxCount: summaries.calls.inboxCount
-  };
-  await page.getByTestId(`home-proposal-accept-${ACCEPT_PROPOSAL_ID}`).click();
-  await expect.poll(() => planning.calls.proposalAcceptances.length).toBe(1);
-  expect(planning.calls.proposalAcceptances[0]?.body).toEqual({ expectedRevision: 1 });
-
-  const acceptedProposal = page.getByTestId(`home-proposal-card-${ACCEPT_PROPOSAL_ID}`);
-  await expect(acceptedProposal.getByText('Partially completed')).toBeVisible();
-  await expect(page.getByTestId(`home-receipt-target-${ACCEPT_RECEIPT_ONE_ID}`)).toHaveText('Prepare release checklist');
-  await expect(page.getByTestId(`home-receipt-target-${ACCEPT_RECEIPT_TWO_ID}`)).toHaveText('Verify release handoff');
-  await expect(page.getByTestId(`home-proposal-item-outcome-${ACCEPT_ITEM_THREE_ID}`)).toContainText('Needs review');
-  await expect(acceptedProposal.getByTestId(`home-proposal-resume-${ACCEPT_PROPOSAL_ID}`)).toBeEnabled();
-
-  await expect.poll(() => summaries.calls.overview.length).toBe(beforeRefresh.overview + 1);
-  await expect.poll(() => summaries.calls.projectLists.length).toBe(beforeRefresh.projectLists + 1);
-  expect(summaries.calls.inboxCount).toBe(beforeRefresh.inboxCount);
-  expect(summaries.calls.inboxCount).toBe(0);
-  expect(planning.calls.undoRequests).toEqual([]);
-  expect(planning.calls.proposalResumes).toEqual([]);
-
-  const chat = page.getByTestId('home-chat');
   await page.setViewportSize({ width: 320, height: 780 });
+  const chat = page.getByTestId('home-chat');
   const mobileMetrics = await chat.evaluate((element) => ({
     clientWidth: element.clientWidth,
     scrollWidth: element.scrollWidth,
@@ -254,18 +182,13 @@ test('accepts a synthetic proposal partially, exposes its unknown item, and refr
   }));
   expect(mobileMetrics.scrollWidth).toBeLessThanOrEqual(mobileMetrics.clientWidth + 1);
   expect(mobileMetrics.pageScrollWidth).toBeLessThanOrEqual(mobileMetrics.pageClientWidth + 1);
-  setPreviewBrowserEvidenceMetadata(page, 'receiptBatchSummaryInvalidation', {
-    before: beforeRefresh,
-    after: { overview: summaries.calls.overview.length, projectLists: summaries.calls.projectLists.length, inboxCount: summaries.calls.inboxCount },
-    events: planning.calls.eventCursors
-  });
   setPreviewBrowserEvidenceMetadata(page, 'mobile320Width', mobileMetrics);
-  await captureScreenshot(page, testInfo, 'home-proposal-partial-mobile-320.png');
-
+  await captureScreenshot(page, testInfo, 'home-proposal-read-only-mobile-320.png');
   await verifyTwoHundredPercentEquivalent(browser, testInfo);
+  expect(homeApi.calls.retiredDecisionRequests).toBe(0);
   expect(homeApi.getBlockedExternalRequests()).toEqual([]);
+  expect(summaries.calls.overview.length).toBeGreaterThan(0);
 });
-
 async function installPlanningScenario(page: Page, options: { readonly includeInitialReceipts?: boolean } = {}): Promise<{
   readonly homeApi: HomeChatPreviewApi;
   readonly summaries: HomeSummariesPreviewApi;

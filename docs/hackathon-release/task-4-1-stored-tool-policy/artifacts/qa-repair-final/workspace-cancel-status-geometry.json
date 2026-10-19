@@ -1,0 +1,374 @@
+[
+  {
+    "viewport": {
+      "width": 1280,
+      "height": 720
+    },
+    "beforeEnd": {
+      "rect": {
+        "x": 629,
+        "y": 423.390625,
+        "width": 206,
+        "height": 22.5,
+        "top": 423.390625,
+        "bottom": 445.890625
+      },
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "intersectionRatio": 1,
+      "enabled": null,
+      "focused": false,
+      "hitCenter": true,
+      "activeElementTag": "BODY",
+      "ancestors": [
+        {
+          "tag": "DIV",
+          "className": "chat-history-viewport",
+          "scrollTop": 281,
+          "clientHeight": 127,
+          "scrollHeight": 408,
+          "overflow": "auto"
+        },
+        {
+          "tag": "DIV",
+          "className": "card conversation-pane",
+          "scrollTop": 0,
+          "clientHeight": 462,
+          "scrollHeight": 462,
+          "overflow": "hidden"
+        },
+        {
+          "tag": "SECTION",
+          "className": "conversation-workspace",
+          "scrollTop": 0,
+          "clientHeight": 464,
+          "scrollHeight": 464,
+          "overflow": "hidden"
+        }
+      ]
+    },
+    "afterEnd": {
+      "rect": {
+        "x": 629,
+        "y": 416.390625,
+        "width": 206,
+        "height": 22.5,
+        "top": 416.390625,
+        "bottom": 438.890625
+      },
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "intersectionRatio": 1,
+      "enabled": null,
+      "focused": false,
+      "hitCenter": true,
+      "activeElementTag": "BODY",
+      "ancestors": [
+        {
+          "tag": "DIV",
+          "className": "chat-history-viewport",
+          "scrollTop": 281,
+          "clientHeight": 127,
+          "scrollHeight": 408,
+          "overflow": "auto"
+        },
+        {
+          "tag": "DIV",
+          "className": "card conversation-pane",
+          "scrollTop": 0,
+          "clientHeight": 462,
+          "scrollHeight": 462,
+          "overflow": "hidden"
+        },
+        {
+          "tag": "SECTION",
+          "className": "conversation-workspace",
+          "scrollTop": 0,
+          "clientHeight": 464,
+          "scrollHeight": 464,
+          "overflow": "hidden"
+        }
+      ]
+    },
+    "afterScroll": {
+      "rect": {
+        "x": 629,
+        "y": 351.390625,
+        "width": 206,
+        "height": 22.5,
+        "top": 351.390625,
+        "bottom": 373.890625
+      },
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "intersectionRatio": 1,
+      "enabled": null,
+      "focused": false,
+      "hitCenter": true,
+      "activeElementTag": "BODY",
+      "ancestors": [
+        {
+          "tag": "DIV",
+          "className": "chat-history-viewport",
+          "scrollTop": 281,
+          "clientHeight": 127,
+          "scrollHeight": 408,
+          "overflow": "auto"
+        },
+        {
+          "tag": "DIV",
+          "className": "card conversation-pane",
+          "scrollTop": 0,
+          "clientHeight": 462,
+          "scrollHeight": 462,
+          "overflow": "hidden"
+        },
+        {
+          "tag": "SECTION",
+          "className": "conversation-workspace",
+          "scrollTop": 0,
+          "clientHeight": 464,
+          "scrollHeight": 464,
+          "overflow": "hidden"
+        }
+      ]
+    },
+    "diagnosticDisclosureHidden": {
+      "rect": {
+        "x": 629,
+        "y": 351.390625,
+        "width": 206,
+        "height": 22.5,
+        "top": 351.390625,
+        "bottom": 373.890625
+      },
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "intersectionRatio": 1,
+      "enabled": null,
+      "focused": false,
+      "hitCenter": true,
+      "activeElementTag": "BODY",
+      "ancestors": [
+        {
+          "tag": "DIV",
+          "className": "chat-history-viewport",
+          "scrollTop": 281,
+          "clientHeight": 127,
+          "scrollHeight": 408,
+          "overflow": "auto"
+        },
+        {
+          "tag": "DIV",
+          "className": "card conversation-pane",
+          "scrollTop": 0,
+          "clientHeight": 462,
+          "scrollHeight": 462,
+          "overflow": "hidden"
+        },
+        {
+          "tag": "SECTION",
+          "className": "conversation-workspace",
+          "scrollTop": 0,
+          "clientHeight": 464,
+          "scrollHeight": 464,
+          "overflow": "hidden"
+        }
+      ]
+    }
+  },
+  {
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "beforeEnd": {
+      "rect": {
+        "x": 35,
+        "y": 728.75,
+        "width": 320,
+        "height": 22.5,
+        "top": 728.75,
+        "bottom": 751.25
+      },
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "intersectionRatio": 1,
+      "enabled": null,
+      "focused": false,
+      "hitCenter": true,
+      "activeElementTag": "BODY",
+      "ancestors": [
+        {
+          "tag": "DIV",
+          "className": "chat-history-viewport",
+          "scrollTop": 164,
+          "clientHeight": 187,
+          "scrollHeight": 351,
+          "overflow": "auto"
+        },
+        {
+          "tag": "DIV",
+          "className": "card conversation-pane",
+          "scrollTop": 0,
+          "clientHeight": 578,
+          "scrollHeight": 578,
+          "overflow": "hidden"
+        },
+        {
+          "tag": "SECTION",
+          "className": "conversation-workspace",
+          "scrollTop": 0,
+          "clientHeight": 745,
+          "scrollHeight": 745,
+          "overflow": "hidden"
+        }
+      ]
+    },
+    "afterEnd": {
+      "rect": {
+        "x": 35,
+        "y": 673.75,
+        "width": 320,
+        "height": 22.5,
+        "top": 673.75,
+        "bottom": 696.25
+      },
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "intersectionRatio": 1,
+      "enabled": null,
+      "focused": false,
+      "hitCenter": true,
+      "activeElementTag": "BODY",
+      "ancestors": [
+        {
+          "tag": "DIV",
+          "className": "chat-history-viewport",
+          "scrollTop": 164,
+          "clientHeight": 187,
+          "scrollHeight": 351,
+          "overflow": "auto"
+        },
+        {
+          "tag": "DIV",
+          "className": "card conversation-pane",
+          "scrollTop": 0,
+          "clientHeight": 578,
+          "scrollHeight": 578,
+          "overflow": "hidden"
+        },
+        {
+          "tag": "SECTION",
+          "className": "conversation-workspace",
+          "scrollTop": 0,
+          "clientHeight": 745,
+          "scrollHeight": 745,
+          "overflow": "hidden"
+        }
+      ]
+    },
+    "afterScroll": {
+      "rect": {
+        "x": 35,
+        "y": 424.75,
+        "width": 320,
+        "height": 22.5,
+        "top": 424.75,
+        "bottom": 447.25
+      },
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "intersectionRatio": 1,
+      "enabled": null,
+      "focused": false,
+      "hitCenter": true,
+      "activeElementTag": "BODY",
+      "ancestors": [
+        {
+          "tag": "DIV",
+          "className": "chat-history-viewport",
+          "scrollTop": 164,
+          "clientHeight": 187,
+          "scrollHeight": 351,
+          "overflow": "auto"
+        },
+        {
+          "tag": "DIV",
+          "className": "card conversation-pane",
+          "scrollTop": 0,
+          "clientHeight": 578,
+          "scrollHeight": 578,
+          "overflow": "hidden"
+        },
+        {
+          "tag": "SECTION",
+          "className": "conversation-workspace",
+          "scrollTop": 0,
+          "clientHeight": 745,
+          "scrollHeight": 745,
+          "overflow": "hidden"
+        }
+      ]
+    },
+    "diagnosticDisclosureHidden": {
+      "rect": {
+        "x": 35,
+        "y": 532.75,
+        "width": 320,
+        "height": 22.5,
+        "top": 532.75,
+        "bottom": 555.25
+      },
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "intersectionRatio": 1,
+      "enabled": null,
+      "focused": false,
+      "hitCenter": true,
+      "activeElementTag": "BODY",
+      "ancestors": [
+        {
+          "tag": "DIV",
+          "className": "chat-history-viewport",
+          "scrollTop": 56,
+          "clientHeight": 295,
+          "scrollHeight": 351,
+          "overflow": "auto"
+        },
+        {
+          "tag": "DIV",
+          "className": "card conversation-pane",
+          "scrollTop": 0,
+          "clientHeight": 578,
+          "scrollHeight": 578,
+          "overflow": "hidden"
+        },
+        {
+          "tag": "SECTION",
+          "className": "conversation-workspace",
+          "scrollTop": 0,
+          "clientHeight": 745,
+          "scrollHeight": 745,
+          "overflow": "hidden"
+        }
+      ]
+    }
+  }
+]

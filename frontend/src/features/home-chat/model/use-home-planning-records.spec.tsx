@@ -83,7 +83,7 @@ function receiptEvent(): HomeConversationEvent {
 }
 
 function baseOptions(conversationId: string | null = CONVERSATION_ID) {
-  return { conversationId, events: [] as readonly HomeConversationEvent[], eventsConversationId: null as string | null, refreshEvents: vi.fn(async () => undefined) };
+  return { conversationId, events: [] as readonly HomeConversationEvent[], eventsConversationId: null as string | null };
 }
 
 beforeEach(() => {
@@ -134,7 +134,7 @@ describe('useHomePlanningRecords', () => {
     expect(api.undoTaskAction).toHaveBeenCalledTimes(1);
   });
 
-  it('resumes only an eligible unresolved proposal after an explicit action', async () => {
+  it('loads unresolved legacy proposals as read-only history and never resumes them', async () => {
     const unresolved: HomeProposal = {
       ...reviewProposal,
       state: 'unknown', revision: 2, acceptedRevision: 1, acceptanceId: '99999999-9999-4999-8999-999999999999',
@@ -142,14 +142,13 @@ describe('useHomePlanningRecords', () => {
     };
     api.listHomeProposals.mockResolvedValue({ proposals: [{ id: PROPOSAL_ID, sourceTurnId: TURN_ID, state: 'unknown', revision: 2, itemCount: 1, createdAt: NOW, updatedAt: NOW }], nextCursor: null });
     api.getHomeProposal.mockResolvedValue(unresolved);
-    api.resumeHomeProposal.mockResolvedValue({ proposal: { ...unresolved, state: 'completed', items: [{ ...unresolved.items[0], state: 'saved', receiptId: RECEIPT_ID }] }, execution: { state: 'completed', items: [] }, replayed: false });
-    const refreshEvents = vi.fn(async () => undefined);
-    const { result } = renderHook(() => useHomePlanningRecords({ ...baseOptions(), refreshEvents }), { wrapper });
+    const { result } = renderHook(() => useHomePlanningRecords(baseOptions()), { wrapper });
     await waitFor(() => expect(result.current.proposals[0]?.proposal.state).toBe('unknown'));
     expect(api.resumeHomeProposal).not.toHaveBeenCalled();
-    await act(async () => { await result.current.resumeProposal(PROPOSAL_ID); });
-    expect(api.resumeHomeProposal).toHaveBeenCalledWith(CONVERSATION_ID, PROPOSAL_ID, 'csrf');
-    expect(refreshEvents).toHaveBeenCalledTimes(1);
-    expect(result.current.proposals[0]?.proposal.state).toBe('completed');
+    expect(result.current).not.toHaveProperty('resumeProposal');
+    expect(result.current).not.toHaveProperty('acceptProposal');
+    expect(result.current).not.toHaveProperty('editItem');
+    expect(result.current).not.toHaveProperty('removeItem');
+    expect(result.current.proposals[0]?.proposal.state).toBe('unknown');
   });
 });

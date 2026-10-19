@@ -24,7 +24,7 @@ export interface AiRunActivityItem {
   readonly projectId: string;
   readonly conversationId: string;
   readonly status: AiRunStatus;
-  readonly decision: 'pending' | 'approved' | 'rejected';
+  readonly decision: 'pending' | 'approved' | 'rejected' | 'policy_authorized';
   readonly providerTransmission: 'not_started' | 'not_started_confirmed' | 'transmitted_confirmed' | 'unknown';
   readonly createdAt: string;
   readonly updatedAt: string;

@@ -97,6 +97,10 @@ import { GetStorageUsage } from '@/modules/storage-quotas/use-cases/get-storage-
 import { TypeOrmDemoAdmissionRepository } from '@/infrastructure/database/repositories/typeorm-demo-admission-repository';
 import { TypeOrmDemoStorageBootstrap } from '@/infrastructure/database/typeorm-demo-storage-bootstrap';
 import { CreateDemoSessionUseCase } from '@/modules/demo/use-cases/create-demo-session';
+import { TypeOrmAssistantScopePolicyRepository } from '@/infrastructure/database/repositories/typeorm-assistant-scope-policy-repository';
+import { GetAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/get-assistant-execution-policy';
+import { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
+import { RuntimeCapabilityAdapter } from '@/infrastructure/assistant-policy/runtime-capability-adapter';
 
 export interface Application {
   readonly app: Express;
@@ -138,6 +142,11 @@ export async function createApplication(
       agentRuntimeMode: config.agentRuntimeMode,
       ...(modelProvider ? { providerCheck: () => modelProvider.checkAvailability() } : {}),
       ...(config.agentRuntimeMode === 'hermes' ? { providerCheck: async () => { await createHermesBridge(config).call('probe', undefined, undefined, { providerProfile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint }); } } : {})
+    });
+    const assistantScopePolicyRepository = new TypeOrmAssistantScopePolicyRepository(dataSource);
+    await assistantScopePolicyRepository.synchronizeProviderConfiguration({
+      providerProfile: config.nimProfile,
+      model: config.nimModel
     });
     const storageQuotaRepository = new TypeOrmStorageQuotaRepository(dataSource);
     const storageRootMappingRepository = new TypeOrmStorageRootMappingRepository(dataSource);
@@ -231,6 +240,10 @@ export async function createApplication(
         providerEgressAdmissionEnforced: false
       })
       : undefined;
+    const assistantRuntimeCapability = new RuntimeCapabilityAdapter(agentRuntime, homePlanningRuntime);
+    const assistantExecutionPolicy = new AssertAssistantExecutionPolicyUseCase(
+      assistantScopePolicyRepository, projectRepository, principalAuthorization, assistantRuntimeCapability
+    );
     const homeToolResultConsentGate = new HomeToolResultConsentGate(homeConversationRepository, homePlanningProvider);
     const homeChangeProposals = new HomeChangeProposalUseCases(
       homeConversationRepository, homeChangeProposalRepository, new GetGlobalTaskUseCase(projectTaskRepository),
@@ -238,13 +251,14 @@ export async function createApplication(
     );
     const homePlanningToolHandler = new HomePlanningToolRequestHandler({
       principalAuthorization,
+      executionPolicy: assistantExecutionPolicy,
+      provider: { profile: homePlanningProvider.profile, model: homePlanningProvider.model },
       conversations: homeConversationRepository,
       listTasks: new ListGlobalTasksUseCase(projectTaskRepository),
       getTask: new GetGlobalTaskUseCase(projectTaskRepository),
       taskMutations: taskMutationUseCases,
       workspaces: workspacePlanning,
       undo: new ActionUndoUseCases(actionLedgerRepository, projectTaskRepository, projectRepository),
-      proposals: homeChangeProposals,
       ...(config.homePlanningTimeZone ? { timeZone: config.homePlanningTimeZone } : {})
     });
     const stagingGateway = config.agentRuntimeMode === 'openshell'
@@ -253,13 +267,14 @@ export async function createApplication(
     const runEvents = new InMemoryRunEventPublisher();
     const chatContextRepository = new TypeOrmProjectChatContextRepository(dataSource);
     const projectChatContext = new ProjectChatContextUseCases(projectRepository, chatContextRepository, projectFactRepository, workspaceGateway);
-    const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel, projectFactRepository);
-    const proposeSandboxCommand = new ProposeSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger);
+    const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel, projectFactRepository, assistantExecutionPolicy);
+    const proposeSandboxCommand = new ProposeSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger, assistantExecutionPolicy);
+    const decideSandboxCommand = new DecideSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger, assistantExecutionPolicy);
     const collectProposedChangeSet = new CollectProposedChangeSetUseCase(aiRunRepository, projectRepository, workspaceMutationGateway, changeSetRepository);
-    const decideProposedChangeSet = new DecideProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository, workspaceMutationGateway, chatContextRepository, principalAuthorization);
-    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, demoAdmissionRepository, proposeSandboxCommand, projectRepository, collectProposedChangeSet, providerPermissionRepository, decideProposedChangeSet, principalAuthorization, stagingGateway);
-    const decideEgress = new DecideEgressUseCase(aiRunRepository, projectRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot, projectFactRepository, providerPermissionRepository);
-    const sendChatMessage = new SendChatMessageUseCase(projectChatContext, projectFactRepository, createAiRun, decideEgress);
+    const decideProposedChangeSet = new DecideProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository, workspaceMutationGateway, chatContextRepository, principalAuthorization, assistantExecutionPolicy);
+    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, demoAdmissionRepository, proposeSandboxCommand, projectRepository, collectProposedChangeSet, providerPermissionRepository, decideProposedChangeSet, principalAuthorization, stagingGateway, assistantExecutionPolicy, decideSandboxCommand);
+    const decideEgress = new DecideEgressUseCase(aiRunRepository, projectRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot, projectFactRepository, providerPermissionRepository, assistantExecutionPolicy);
+    const sendChatMessage = new SendChatMessageUseCase(projectChatContext, projectFactRepository, createAiRun, decideEgress, startAiRun);
     const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository, commandRepository, stagingGateway);
     const passwordHasher = new BcryptPasswordHasher();
     const tokenProvider = new OpaqueTokenProvider(config.sessionSecret);
@@ -335,9 +350,9 @@ export async function createApplication(
             mode: config.agentRuntimeMode,
             provider: homePlanningProvider,
             ...(homePlanningRuntime ? { runtime: homePlanningRuntime } : {})
-          }),
+          }, { executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel }),
           decideConsent: new DecideHomeConsentUseCase(homeConversationRepository, homePlanningRuntime, homePlanningProvider, homeToolResultConsentGate),
-          getTurn: new GetHomeTurnUseCase(homeConversationRepository, homePlanningRuntime, homeToolResultConsentGate, homePlanningToolHandler),
+          getTurn: new GetHomeTurnUseCase(homeConversationRepository, homePlanningRuntime, homeToolResultConsentGate, homePlanningToolHandler, { executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel }),
           cancelTurn: new CancelHomeTurnUseCase(homeConversationRepository, homePlanningRuntime),
           listMessages: new ListHomeMessagesUseCase(homeConversationRepository),
           listEvents: new ListHomeEventsUseCase(homeConversationRepository),
@@ -353,6 +368,13 @@ export async function createApplication(
         accountStorage: {
           getSession,
           getStorageUsage: new GetStorageUsage(storageQuotaRepository),
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
+        assistantExecutionPolicy: {
+          getSession,
+          getExecutionPolicy: new GetAssistantExecutionPolicyUseCase(
+            assistantScopePolicyRepository, projectRepository, principalAuthorization, projectChatContext, assistantRuntimeCapability
+          ),
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },
         workspace: {
@@ -372,6 +394,7 @@ export async function createApplication(
           createAiRun,
           getAiRun: new GetAiRunUseCase(aiRunRepository, projectRepository),
           decideEgress,
+          startAiRun,
           getProposedChangeSet: new GetProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository),
           decideProposedChangeSet,
           taskSuggestionsForRun: taskSuggestionRepository,
@@ -387,7 +410,7 @@ export async function createApplication(
           getSession,
           listCommands: new ListSandboxCommandsUseCase(aiRunRepository, commandRepository, projectRepository),
            getCommand: new GetSandboxCommandUseCase(aiRunRepository, commandRepository, projectRepository),
-           decideCommand: new DecideSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger),
+           decideCommand: decideSandboxCommand,
            cancelCommand: new CancelSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger),
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')

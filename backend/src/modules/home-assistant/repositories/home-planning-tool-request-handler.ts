@@ -21,7 +21,12 @@ export interface HomePlanningToolResultCandidate {
 
 export type HomePlanningToolResolution =
   | { readonly kind: 'consented'; readonly candidate: HomePlanningToolResultCandidate }
-  | { readonly kind: 'immediate'; readonly result: { readonly outcome: 'shared'; readonly data: Readonly<Record<string, unknown>> } };
+  | {
+    readonly kind: 'immediate';
+    readonly result: { readonly outcome: 'shared'; readonly data: Readonly<Record<string, unknown>> };
+    /** Internal owner-checked target used to recheck scope policy before runtime continuation. */
+    readonly authorizationProjectId?: string;
+  };
 
 /** Optional application boundary for registered Home tools; no handler means deny all requests. */
 export interface IHomePlanningToolRequestHandler {

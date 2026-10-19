@@ -1,6 +1,6 @@
 import { Alert, AlertDialogContent, AlertDialogDescription, AlertDialogRoot, AlertDialogTitle, Button, Spinner } from '@/shared/ui';
 import { DEFAULT_MODEL, REQUEST_ONLY_NOTICE, type EgressManifest } from '@/entities/ai-run';
-import { ProviderTerms } from '@/features/ai-run/ui/ProviderTerms';
+import { ProviderTerms } from '@/entities/assistant-policy';
 
 interface ProviderConsentDialogProps {
   readonly manifest: EgressManifest | null;
@@ -82,7 +82,7 @@ export function ProviderConsentDialog({
         </Alert>
 
         <div className="provider-consent-terms" data-testid="provider-consent-provider-terms">
-          <ProviderTerms providerProfile={manifest.providerProfile} />
+          <ProviderTerms providerName={manifest.provider} />
         </div>
 
         <div className="provider-consent-manifest" data-testid="provider-consent-manifest">

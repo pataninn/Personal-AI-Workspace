@@ -17,7 +17,7 @@ const NOW = new Date('2026-10-16T00:00:00.000Z');
 
 const turn: HomeTurn = {
   id: TURN_ID, ownerId: OWNER_ID, conversationId: CONVERSATION_ID, sequence: 1, requestKey: 'submit-1',
-  status: 'unsupported', createdAt: NOW, updatedAt: NOW
+  status: 'unsupported', homePolicyRevision: null, workspacePolicyRevision: null, createdAt: NOW, updatedAt: NOW
 };
 const message: HomeMessage = {
   id: MESSAGE_ID, ownerId: OWNER_ID, conversationId: CONVERSATION_ID, turnId: TURN_ID,
@@ -178,25 +178,16 @@ describe('Home conversation routes', () => {
     expect(submitTurn).toHaveBeenCalledTimes(1);
   });
 
-  it('records one owner-scoped consent decision behind origin and CSRF checks', async () => {
+  it.each(['allow', 'deny'] as const)('retires the legacy Home %s consent decision without invoking its use case', async (decision) => {
     const { app, decideConsent } = buildApp();
     const response = await request(app)
       .post(`/api/v1/home/conversations/${CONVERSATION_ID}/turns/${TURN_ID}/consent-decisions`)
       .set(mutationHeaders())
-      .send({ disclosureId: '55555555-5555-4555-8555-555555555555', decision: 'allow' });
+      .send({ disclosureId: '55555555-5555-4555-8555-555555555555', decision });
 
-    expect(response.status).toBe(200);
-    expect(response.body.data).toMatchObject({
-      turn: { id: TURN_ID, status: 'running' },
-      disclosureId: '55555555-5555-4555-8555-555555555555',
-      decision: 'allow',
-      execution: { state: 'running' },
-      replayed: false
-    });
-    expect(decideConsent).toHaveBeenCalledWith({
-      ownerId: OWNER_ID, conversationId: CONVERSATION_ID, turnId: TURN_ID,
-      disclosureId: '55555555-5555-4555-8555-555555555555', decision: 'allow'
-    });
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe('POLICY_ACTION_RETIRED');
+    expect(decideConsent).not.toHaveBeenCalled();
   });
 
   it('returns a validation response for an invalid activity cursor', async () => {

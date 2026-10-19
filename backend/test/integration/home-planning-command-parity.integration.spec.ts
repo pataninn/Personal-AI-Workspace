@@ -94,13 +94,18 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
     );
     handler = new HomePlanningToolRequestHandler({
       principalAuthorization: { assertActive: async () => undefined },
+      executionPolicy: { assertHome: async ({ projectId }: { readonly projectId?: string }) => ({
+        policies: [],
+        effectiveCapabilities: ['home_task_read', 'home_task_write', 'home_workspace_read', 'home_workspace_write', 'home_action_undo'],
+        revisions: { home: '1', ...(projectId ? { workspace: '1' } : {}) }
+      }) },
+      provider: { profile: 'test-provider', model: 'test-model' },
       conversations,
       listTasks: new ListGlobalTasksUseCase(tasks),
       getTask: taskQuery,
       taskMutations,
       workspaces,
-      undo: new ActionUndoUseCases(ledger, tasks, projects),
-      proposals: changeProposals
+      undo: new ActionUndoUseCases(ledger, tasks, projects)
     });
     fileWorkspaceId = await createWorkspace(OWNER_ID, 'file-backed');
     dotWorkspaceId = await createWorkspace(OTHER_OWNER_ID, 'managed-workspace');
@@ -294,7 +299,7 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
     expect(eventPage?.events.some((event) => event.type === 'action.receipt')).toBe(false);
   });
 
-  it('defaults omitted create destinations to the persisted workspace scope for direct and accepted bulk tasks', async () => {
+  it('defaults direct task creation to the persisted workspace and blocks bulk proposals without side effects', async () => {
     const homeTurn = await createActiveHomeTurn(OWNER_ID, 'workspace-create-defaults-home');
     const selectedWorkspace = immediateData(await resolveCommand({
       turn: homeTurn, name: 'home_create_workspace', requestId: 'workspace-create-defaults-selected',
@@ -326,18 +331,8 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
         { action: 'task.create', title: 'Workspace scoped bulk create two' }
       ] }
     });
-    const draftData = draftResolution?.kind === 'immediate' ? draftResolution.result.data : null;
-    const proposalData = isRecord(draftData) && isRecord(draftData.proposal) ? draftData.proposal : null;
-    if (!proposalData || typeof proposalData.id !== 'string' || typeof proposalData.revision !== 'number') {
-      throw new Error('The Home bulk proposal did not return its persisted proposal identity.');
-    }
-    const proposalId = proposalData.id;
-    const accepted = await changeProposals.accept({
-      ownerId: OWNER_ID, conversationId: workspaceTurn.conversationId, proposalId,
-      expectedRevision: proposalData.revision
-    });
-    expect(accepted.execution.state).toBe('completed');
-    expect(accepted.proposal.items.map((item) => item.state)).toEqual(['saved', 'saved']);
+    expect(draftResolution).toBeNull();
+    expect((await changeProposals.list({ ownerId: OWNER_ID, conversationId: workspaceTurn.conversationId, limit: 20 })).proposals).toEqual([]);
 
     await expect(resolveCommand({
       turn: workspaceTurn, name: 'home_propose_bulk_changes', requestId: 'workspace-create-defaults-bulk-null',
@@ -345,14 +340,14 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
         { action: 'task.create', title: 'Denied bulk null create', workspaceId: null },
         { action: 'task.create', title: 'Denied bulk null create two', workspaceId: null }
       ] }
-    })).rejects.toBeInstanceOf(HomePlanningScopeConflictError);
+    })).resolves.toBeNull();
     await expect(resolveCommand({
       turn: workspaceTurn, name: 'home_propose_bulk_changes', requestId: 'workspace-create-defaults-bulk-other',
       args: { items: [
         { action: 'task.create', title: 'Denied bulk other workspace', workspaceId: otherWorkspace },
         { action: 'task.create', title: 'Denied bulk other workspace two', workspaceId: otherWorkspace }
       ] }
-    })).rejects.toBeInstanceOf(HomePlanningScopeConflictError);
+    })).resolves.toBeNull();
 
     const inbox = immediateData(await resolveCommand({
       turn: homeTurn, name: 'home_create_task', requestId: 'workspace-create-defaults-home-inbox',
@@ -361,18 +356,16 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
     const taskRows: readonly { title: string; project_id: string | null }[] = await dataSource.query(
       'SELECT "title", "project_id" FROM "project_tasks" WHERE "owner_id" = $1 AND "title" = ANY($2::text[])',
       [OWNER_ID, [
-        'Workspace scoped direct create', 'Workspace scoped bulk create one', 'Workspace scoped bulk create two',
+        'Workspace scoped direct create',
         'Denied direct null create', 'Denied direct other workspace', 'Denied bulk null create',
         'Denied bulk null create two', 'Denied bulk other workspace', 'Denied bulk other workspace two',
         'Home omitted create stays in Inbox'
       ]]
     );
-    expect(taskRows).toHaveLength(4);
-    expect(taskRows.filter((row) => row.title !== 'Home omitted create stays in Inbox').every((row) => row.project_id === selectedWorkspace)).toBe(true);
+    expect(taskRows).toHaveLength(2);
+    expect(taskRows.find((row) => row.title === 'Workspace scoped direct create')?.project_id).toBe(selectedWorkspace);
     expect(taskRows.find((row) => row.title === 'Home omitted create stays in Inbox')?.project_id).toBeNull();
 
-    const savedProposals = await changeProposals.list({ ownerId: OWNER_ID, conversationId: workspaceTurn.conversationId, limit: 20 });
-    expect(savedProposals.proposals.map((proposal) => proposal.id)).toEqual([proposalId]);
     expect(inbox.receipt.targetKind).toBe('task');
     expect(direct.receipt.targetKind).toBe('task');
   });
@@ -439,7 +432,8 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
     })).resource;
     const submission = await conversations.submitTurn({
       ownerId, conversationId: conversation.id, requestKey: `${key}-submit`, requestFingerprint: `${key}-submit-fingerprint`,
-      message: 'Synthetic command parity turn.', initialStatus: 'pending'
+      message: 'Synthetic command parity turn.', initialStatus: 'pending', homePolicyRevision: '1',
+      workspacePolicyRevision: scope.kind === 'workspace' ? '1' : null
     });
     const running = await conversations.updateTurnStatus({ ownerId, conversationId: conversation.id, turnId: submission.turn.id, status: 'running' });
     if (!running) throw new Error('The Home command parity fixture turn did not enter running state.');
@@ -503,6 +497,7 @@ function immediateData(resolution: HomePlanningToolResolution | null): {
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+
 
 async function reconcileMappedOwners(
   dataSource: DataSource,

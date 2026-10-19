@@ -48,6 +48,10 @@ export interface SubmitHomeTurnInput {
   readonly requestFingerprint: string;
   readonly message: string;
   readonly initialStatus: HomeTurnStatus;
+  /** Current Home policy binding; optional for trusted legacy fixtures/replays only. */
+  readonly homePolicyRevision?: string | null;
+  /** Current workspace policy binding for a workspace-scoped turn; null for Home scope. */
+  readonly workspacePolicyRevision?: string | null;
   readonly initialDisclosure?: HomeConsentDisclosureDraft;
 }
 

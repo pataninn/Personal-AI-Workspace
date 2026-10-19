@@ -15,6 +15,7 @@ import type {
   ChangeSetResult,
   ChangeSetStatus,
   CreateProposedChangeSetRecord,
+  PolicyAuthorizedChangeSetApplyClaim,
   ProposedChangeOperation,
   ProposedChangeSet
 } from '@/modules/ai-runs/domain/change-types';
@@ -149,6 +150,43 @@ export class TypeOrmProposedChangeSetRepository implements IProposedChangeSetRep
     }
   }
 
+  public async claimPolicyAuthorizedApply(input: PolicyAuthorizedChangeSetApplyClaim): Promise<ChangeSetDecisionResult> {
+    const queryRunner = await this.startTransaction();
+    try {
+      const result = await this.storageAccounting.runMutation(queryRunner, input.ownerId, async () => {
+        await assertPrincipalActive(queryRunner, input.ownerId);
+        await assertPolicyAuthorizedRun(queryRunner, input);
+        await assertWorkspacePolicyCurrent(queryRunner, input);
+        await assertProjectActive(queryRunner, input.ownerId, input.projectId);
+        const row = await this.findForUpdate(queryRunner, input.ownerId, input.runId);
+        if (!row) throw new ChangeSetNotFoundError();
+        if (row.project_id !== input.projectId || row.proposal_hash !== input.proposalHash) throw new ChangeSetConflictError();
+        if (row.decision_idempotency_key) {
+          if (row.decision_idempotency_key !== input.idempotencyKey || row.decision_fingerprint !== input.requestFingerprint) throw new ChangeSetIdempotencyReusedError();
+          return { resource: toChangeSet(row), replayed: true };
+        }
+        if (row.decision !== 'pending' || row.status !== 'awaiting_approval') throw new ChangeSetAlreadyDecidedError();
+        const rows: readonly ChangeSetRow[] = await queryRunner.query(
+          `UPDATE "ai_run_change_sets" SET "status" = 'applying', "decision" = 'policy_authorized',
+             "decision_idempotency_key" = $1, "decision_fingerprint" = $2,
+             "safe_message" = 'Applying workspace-policy authorized changes.', "updated_at" = now()
+           WHERE "owner_id" = $3 AND "project_id" = $4 AND "run_id" = $5 AND "id" = $6 RETURNING *`,
+          [input.idempotencyKey, input.requestFingerprint, input.ownerId, input.projectId, input.runId, row.id]
+        );
+        const updated = returningRow(rows);
+        if (!updated) throw new ChangeSetNotFoundError();
+        return { resource: toChangeSet(updated), replayed: false };
+      }, resultContentScope((value: ChangeSetDecisionResult) => [{ entity: 'ai_run_change_sets', id: value.resource.id }]));
+      await queryRunner.commitTransaction();
+      return result;
+    } catch (error: unknown) {
+      if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
   public async save(changeSet: ProposedChangeSet): Promise<void> {
     const queryRunner = await this.startTransaction();
     try {
@@ -272,6 +310,48 @@ async function assertProjectActive(queryRunner: QueryRunner, ownerId: string, pr
   const project = await lockProjectWriteState(queryRunner, ownerId, projectId);
   if (!project || project.status === 'archived' || project.removalPending) {
     throw new ProjectArchivedError();
+  }
+}
+
+async function assertPolicyAuthorizedRun(queryRunner: QueryRunner, input: PolicyAuthorizedChangeSetApplyClaim): Promise<void> {
+  const rows: readonly {
+    project_id: string;
+    status: string;
+    decision: string;
+    policy_revision: string | null;
+    provider_profile: string | null;
+    model: string | null;
+  }[] = await queryRunner.query(
+    `SELECT "project_id", "status", "decision"::text AS "decision", "policy_revision",
+       "manifest"->>'providerProfile' AS "provider_profile", "manifest"->>'model' AS "model"
+     FROM "ai_runs" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1 FOR SHARE`,
+    [input.ownerId, input.runId]
+  );
+  const run = rows[0];
+  if (!run || run.project_id !== input.projectId || run.status !== 'running' || run.decision !== 'policy_authorized'
+    || String(run.policy_revision) !== input.policyRevision || run.provider_profile !== input.providerProfile || run.model !== input.model) {
+    throw new ChangeSetConflictError('This run is no longer authorized for workspace changes.');
+  }
+}
+
+async function assertWorkspacePolicyCurrent(queryRunner: QueryRunner, input: PolicyAuthorizedChangeSetApplyClaim): Promise<void> {
+  const rows: readonly {
+    policy_profile: string;
+    provider_profile: string | null;
+    model: string | null;
+    enabled: boolean;
+    revoked_at: Date | string | null;
+    revision: string;
+  }[] = await queryRunner.query(
+    `SELECT "policy_profile", "provider_profile", "model", "enabled", "revoked_at", "revision"
+     FROM "assistant_scope_policies" WHERE "owner_id" = $1 AND "scope_kind" = 'project' AND "project_id" = $2
+     LIMIT 1 FOR SHARE`,
+    [input.ownerId, input.projectId]
+  );
+  const policy = rows[0];
+  if (!policy || policy.policy_profile !== 'workspace_in_scope_v1' || !policy.enabled || policy.revoked_at !== null
+    || String(policy.revision) !== input.policyRevision || policy.provider_profile !== input.providerProfile || policy.model !== input.model) {
+    throw new ChangeSetConflictError('Workspace policy changed before the file changes were applied.');
   }
 }
 

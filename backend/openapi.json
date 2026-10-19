@@ -108,6 +108,26 @@
         }
       }
     },
+    "/api/v1/assistant/execution-policy": {
+      "get": {
+        "tags": ["Assistant policy"],
+        "summary": "Read the authenticated Home or workspace policy and readiness",
+        "operationId": "getAssistantExecutionPolicy",
+        "description": "Returns a display-only policy snapshot. The snapshot is not authorization for a later dispatch. Home requires scope=home without projectId; workspace requires scope=workspace and the exact projectId. No owner, provider endpoint, or policy update input is accepted. This GET does not require Origin or CSRF headers.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "scope", "in": "query", "required": true, "schema": { "type": "string", "enum": ["home", "workspace"] } },
+          { "name": "projectId", "in": "query", "required": false, "schema": { "$ref": "#/components/schemas/Uuid" }, "description": "Required exactly when scope=workspace; forbidden for scope=home." }
+        ],
+        "responses": {
+          "200": { "description": "Owner-scoped stored policy, safe included context and a separate fail-closed readiness state.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AssistantExecutionPolicyEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "description": "The requested workspace is not visible to this principal.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
     "/api/v1/account/storage": {
       "get": {
         "tags": [
@@ -417,8 +437,9 @@
     "/api/v1/home/conversations/{conversationId}/turns/{turnId}/consent-decisions": {
       "post": {
         "tags": ["Home conversations"],
-        "summary": "Record a one-turn provider context consent decision",
+        "summary": "Retired Home provider consent decision endpoint",
         "operationId": "decideHomeConsent",
+        "description": "Retired for every allow or deny value. The authenticated request returns 409 POLICY_ACTION_RETIRED; no consent decision or runtime call is recorded.",
         "security": [{ "sessionCookie": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/HomeConversationIdPath" },
@@ -426,17 +447,14 @@
           { "$ref": "#/components/parameters/OriginHeader" },
           { "$ref": "#/components/parameters/CsrfHeader" }
         ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeConsentDecisionRequest" } } } },
+        "requestBody": { "required": false, "description": "Ignored by this retired endpoint. Every decision value returns 409 POLICY_ACTION_RETIRED.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeConsentDecisionRequest" } } } },
         "responses": {
-          "200": { "description": "Decision committed or matching decision replayed without another runtime call.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeConsentDecisionEnvelope" } } } },
           "400": { "$ref": "#/components/responses/ValidationError" },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "403": { "$ref": "#/components/responses/MutationForbidden" },
-          "404": { "$ref": "#/components/responses/ConversationNotFound" },
-          "409": { "description": "Disclosure decision is stale or conflicts with the stored decision.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
-          "500": { "$ref": "#/components/responses/InternalError" },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
-          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
+          "409": { "description": "POLICY_ACTION_RETIRED: every allow or deny value is rejected; no consent decision or runtime call is recorded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "413": { "description": "The request body exceeds the configured JSON parser size limit.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
         }
       }
     },
@@ -523,8 +541,9 @@
     "/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/items/{itemId}": {
       "patch": {
         "tags": ["Home conversations"],
-        "summary": "Edit one item in a reviewable Home proposal",
+        "summary": "Retired Home proposal item edit endpoint",
         "operationId": "editHomeProposalItem",
+        "description": "Retired. The item and proposal path values and request body do not authorize a change; the authenticated request returns 409 POLICY_ACTION_RETIRED with no state change.",
         "security": [{ "sessionCookie": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/HomeConversationIdPath" },
@@ -533,23 +552,21 @@
           { "$ref": "#/components/parameters/OriginHeader" },
           { "$ref": "#/components/parameters/CsrfHeader" }
         ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalEditRequest" } } } },
+        "requestBody": { "required": false, "description": "Ignored by this retired endpoint; no proposal item is edited.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalEditRequest" } } } },
         "responses": {
-          "200": { "description": "Edited item and incremented proposal revision.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalEnvelope" } } } },
           "400": { "$ref": "#/components/responses/ValidationError" },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "403": { "$ref": "#/components/responses/MutationForbidden" },
-          "404": { "$ref": "#/components/responses/ProposalNotFound" },
-          "409": { "$ref": "#/components/responses/ProposalConflict" },
-          "500": { "$ref": "#/components/responses/InternalError" },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
-          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
+          "409": { "description": "POLICY_ACTION_RETIRED: proposal-item editing is retired; no item or proposal state changes.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "413": { "description": "The request body exceeds the configured JSON parser size limit.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
         }
       },
       "delete": {
         "tags": ["Home conversations"],
-        "summary": "Remove one item from a reviewable Home proposal",
+        "summary": "Retired Home proposal item removal endpoint",
         "operationId": "removeHomeProposalItem",
+        "description": "Retired. The item and proposal path values and If-Match header do not authorize a change; the authenticated request returns 409 POLICY_ACTION_RETIRED with no state change.",
         "security": [{ "sessionCookie": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/HomeConversationIdPath" },
@@ -560,22 +577,20 @@
           { "$ref": "#/components/parameters/HomeProposalIfMatchHeader" }
         ],
         "responses": {
-          "200": { "description": "Proposal without the removed item.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalEnvelope" } } } },
           "400": { "$ref": "#/components/responses/ValidationError" },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "403": { "$ref": "#/components/responses/MutationForbidden" },
-          "404": { "$ref": "#/components/responses/ProposalNotFound" },
-          "409": { "$ref": "#/components/responses/ProposalConflict" },
-          "500": { "$ref": "#/components/responses/InternalError" },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
+          "409": { "description": "POLICY_ACTION_RETIRED: proposal-item removal is retired; no item or proposal state changes.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
         }
       }
     },
     "/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/acceptance": {
       "post": {
         "tags": ["Home conversations"],
-        "summary": "Seal and synchronously execute the displayed Home proposal revision",
+        "summary": "Retired Home proposal acceptance endpoint",
         "operationId": "acceptHomeProposal",
+        "description": "Retired for every acceptance request. The path values and request body do not authorize work; the authenticated request returns 409 POLICY_ACTION_RETIRED with no acceptance or execution side effect.",
         "security": [{ "sessionCookie": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/HomeConversationIdPath" },
@@ -583,26 +598,23 @@
           { "$ref": "#/components/parameters/OriginHeader" },
           { "$ref": "#/components/parameters/CsrfHeader" }
         ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalRevisionRequest" } } } },
+        "requestBody": { "required": false, "description": "Ignored by this retired endpoint; no proposal revision is accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalRevisionRequest" } } } },
         "responses": {
-          "201": { "description": "Proposal accepted and execution started.", "headers": { "Location": { "$ref": "#/components/headers/Location" }, "ETag": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalAcceptanceEnvelope" } } } },
-          "200": { "description": "Matching acceptance replay or current persisted outcome.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalAcceptanceEnvelope" } } } },
           "400": { "$ref": "#/components/responses/ValidationError" },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "403": { "$ref": "#/components/responses/MutationForbidden" },
-          "404": { "$ref": "#/components/responses/ProposalNotFound" },
-          "409": { "$ref": "#/components/responses/ProposalConflict" },
-          "500": { "$ref": "#/components/responses/InternalError" },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
-          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
+          "409": { "description": "POLICY_ACTION_RETIRED: every acceptance request is rejected; no acceptance is recorded and no proposal item is executed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "413": { "description": "The request body exceeds the configured JSON parser size limit.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
         }
       }
     },
     "/api/v1/home/conversations/{conversationId}/proposals/{proposalId}/execution": {
       "post": {
         "tags": ["Home conversations"],
-        "summary": "Explicitly reconcile and resume unresolved accepted proposal items",
+        "summary": "Retired Home proposal execution endpoint",
         "operationId": "executeHomeProposal",
+        "description": "Retired. The path values and request body do not authorize work; the authenticated request returns 409 POLICY_ACTION_RETIRED with no proposal state change or item execution.",
         "security": [{ "sessionCookie": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/HomeConversationIdPath" },
@@ -610,17 +622,14 @@
           { "$ref": "#/components/parameters/OriginHeader" },
           { "$ref": "#/components/parameters/CsrfHeader" }
         ],
-        "requestBody": { "required": false, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false } } } },
+        "requestBody": { "required": false, "description": "Ignored by this retired endpoint; no proposal item is executed.", "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false } } } },
         "responses": {
-          "200": { "description": "Current proposal outcome after explicit receipt reconciliation.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HomeProposalExecutionEnvelope" } } } },
           "400": { "$ref": "#/components/responses/ValidationError" },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "403": { "$ref": "#/components/responses/MutationForbidden" },
-          "404": { "$ref": "#/components/responses/ProposalNotFound" },
-          "409": { "$ref": "#/components/responses/ProposalConflict" },
-          "500": { "$ref": "#/components/responses/InternalError" },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
-          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
+          "409": { "description": "POLICY_ACTION_RETIRED: proposal execution is retired; no proposal state changes and no item is executed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "413": { "description": "The request body exceeds the configured JSON parser size limit.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
         }
       }
     },
@@ -2083,8 +2092,9 @@
         "tags": [
           "AI runs"
         ],
-        "summary": "Approve or reject the exact provider disclosure",
+        "summary": "Retired provider egress decision endpoint",
         "operationId": "decideAiRunEgress",
+        "description": "Retired for every approve or reject value. The authenticated request returns 409 POLICY_ACTION_RETIRED; no decision is stored, provider context is sent, or runtime is started.",
         "security": [
           {
             "sessionCookie": []
@@ -2102,7 +2112,8 @@
           }
         ],
         "requestBody": {
-          "required": true,
+          "required": false,
+          "description": "Ignored by this retired endpoint. Every decision value returns 409 POLICY_ACTION_RETIRED.",
           "content": {
             "application/json": {
               "schema": {
@@ -2112,16 +2123,6 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "Decision recorded; approval may return staging/runtime readiness.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EgressDecisionEnvelope"
-                }
-              }
-            }
-          },
           "400": {
             "$ref": "#/components/responses/ValidationError"
           },
@@ -2131,17 +2132,12 @@
           "403": {
             "$ref": "#/components/responses/MutationForbidden"
           },
-          "404": {
-            "$ref": "#/components/responses/AiRunNotFound"
-          },
           "409": {
-            "$ref": "#/components/responses/EgressConflict"
+            "description": "POLICY_ACTION_RETIRED: every approve or reject value is rejected; no decision is stored, provider context is sent, or runtime is started.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
           },
-          "500": {
-            "$ref": "#/components/responses/InternalError"
-          },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
-          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
+          "413": { "description": "The request body exceeds the configured JSON parser size limit.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
         }
       }
     },
@@ -2195,8 +2191,9 @@
         "tags": [
           "AI runs"
         ],
-        "summary": "Approve or reject the exact proposed workspace change set",
+        "summary": "Retired proposed change set decision endpoint",
         "operationId": "decideAiRunProposedChangeSet",
+        "description": "Retired for every approve or reject value. The authenticated request returns 409 POLICY_ACTION_RETIRED; no decision is stored and no workspace change is applied.",
         "security": [
           {
             "sessionCookie": []
@@ -2214,7 +2211,8 @@
           }
         ],
         "requestBody": {
-          "required": true,
+          "required": false,
+          "description": "Ignored by this retired endpoint. Every decision value returns 409 POLICY_ACTION_RETIRED.",
           "content": {
             "application/json": {
               "schema": {
@@ -2224,16 +2222,6 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "Decision and the persisted apply result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProposedChangeSetEnvelope"
-                }
-              }
-            }
-          },
           "400": {
             "$ref": "#/components/responses/ValidationError"
           },
@@ -2243,14 +2231,11 @@
           "403": {
             "$ref": "#/components/responses/MutationForbidden"
           },
-          "404": {
-            "$ref": "#/components/responses/ChangeSetNotFound"
-          },
           "409": {
-            "$ref": "#/components/responses/ChangeSetConflict"
+            "description": "POLICY_ACTION_RETIRED: every approve or reject value is rejected; no decision is stored and no workspace change is applied.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
           },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
-          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
+          "413": { "description": "The request body exceeds the configured JSON parser size limit.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
         }
       }
     },
@@ -2350,8 +2335,9 @@
         "tags": [
           "AI runs"
         ],
-        "summary": "Approve or reject an exact sandbox command proposal",
+        "summary": "Retired sandbox command decision endpoint",
         "operationId": "decideSandboxCommand",
+        "description": "Retired for every approve or reject value. The authenticated request returns 409 POLICY_ACTION_RETIRED; no decision is stored and no command is executed.",
         "security": [
           {
             "sessionCookie": []
@@ -2369,7 +2355,8 @@
           }
         ],
         "requestBody": {
-          "required": true,
+          "required": false,
+          "description": "Ignored by this retired endpoint. Every decision value returns 409 POLICY_ACTION_RETIRED.",
           "content": {
             "application/json": {
               "schema": {
@@ -2379,16 +2366,6 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "Decision persisted before any runtime execution.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SandboxCommandEnvelope"
-                }
-              }
-            }
-          },
           "400": {
             "$ref": "#/components/responses/ValidationError"
           },
@@ -2398,17 +2375,12 @@
           "403": {
             "$ref": "#/components/responses/MutationForbidden"
           },
-          "404": {
-            "$ref": "#/components/responses/CommandNotFound"
-          },
           "409": {
-            "$ref": "#/components/responses/CommandConflict"
+            "description": "POLICY_ACTION_RETIRED: every approve or reject value is rejected; no decision is stored and no command is executed.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
           },
-          "500": {
-            "$ref": "#/components/responses/InternalError"
-          },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
-          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
+          "413": { "description": "The request body exceeds the configured JSON parser size limit.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
         }
       }
     },
@@ -5741,6 +5713,50 @@
         },
         "additionalProperties": false
       },
+      "AssistantExecutionPolicyEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["scope", "policy", "fileAccess", "readiness"],
+            "properties": {
+              "scope": { "type": "object", "required": ["kind", "label"], "properties": { "kind": { "type": "string", "enum": ["home", "workspace"] }, "label": { "type": "string" } }, "additionalProperties": false },
+              "policy": { "nullable": true, "allOf": [{ "$ref": "#/components/schemas/AssistantExecutionPolicy" }] },
+              "fileAccess": { "type": "boolean" },
+              "readiness": { "type": "object", "required": ["state", "reasonCode"], "properties": { "state": { "type": "string", "enum": ["blocked", "unavailable"] }, "reasonCode": { "type": "string", "enum": ["policy_unavailable", "policy_revoked", "provider_unconfigured", "runtime_unverified"] } }, "additionalProperties": false }
+            },
+            "additionalProperties": false
+          },
+          "error": { "type": "null" }
+        },
+        "additionalProperties": false
+      },
+      "AssistantExecutionPolicy": {
+        "type": "object",
+        "required": ["enabled", "revision", "provider", "included", "exclusionsEnforced", "capabilities"],
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "revision": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+          "provider": { "nullable": true, "allOf": [{ "$ref": "#/components/schemas/AssistantPolicyProvider" }] },
+          "included": { "type": "object", "required": ["categories", "items"], "properties": { "categories": { "type": "array", "items": { "type": "string", "enum": ["current_message", "bounded_home_history", "task_metadata", "workspace_metadata", "request", "recent_conversation", "project_files", "project_facts"] } }, "items": { "type": "array", "items": { "$ref": "#/components/schemas/AssistantPolicyIncludedItem" } } }, "additionalProperties": false },
+          "exclusionsEnforced": { "type": "boolean", "enum": [true] },
+          "capabilities": { "type": "array", "items": { "type": "string", "enum": ["home_task_read", "home_task_write", "home_workspace_read", "home_workspace_write", "home_action_undo", "workspace_file_read", "workspace_file_write", "bounded_sandbox_command"] } }
+        },
+        "additionalProperties": false
+      },
+      "AssistantPolicyProvider": {
+        "type": "object",
+        "required": ["name", "model"],
+        "properties": { "name": { "type": "string", "enum": ["NVIDIA hosted NIM", "Nebius Token Factory"] }, "model": { "type": "string" } },
+        "additionalProperties": false
+      },
+      "AssistantPolicyIncludedItem": {
+        "type": "object",
+        "required": ["kind", "name"],
+        "properties": { "kind": { "type": "string", "enum": ["file"] }, "name": { "type": "string", "description": "A validated project-relative selection; never a host path." } },
+        "additionalProperties": false
+      },
       "AccountStorageUsage": {
         "type": "object",
         "description": "Owner-scoped logical storage usage. When state is reconciling or unavailable, unverified totals and asOf are null while the configured limit remains visible.",
@@ -6457,7 +6473,8 @@
             "enum": [
               "pending",
               "approved",
-              "rejected"
+              "rejected",
+              "policy_authorized"
             ]
           },
           "providerApprovalMode": {
@@ -6837,7 +6854,8 @@
             "enum": [
               "pending",
               "approved",
-              "rejected"
+              "rejected",
+              "policy_authorized"
             ]
           },
           "providerTransmission": {
@@ -7991,7 +8009,8 @@
               "pending",
               "approved",
               "rejected",
-              "not_applicable"
+              "not_applicable",
+              "policy_authorized"
             ]
           },
           "status": {

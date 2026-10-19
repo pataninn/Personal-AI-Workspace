@@ -252,7 +252,7 @@ describe('AiRunEntry', () => {
     expect(listPermissionsMock).toHaveBeenCalledWith(PROJECT_ID);
   });
 
-  it('uses an active remembered permission on a later Ask AI action without showing the consent dialog again', async () => {
+  it('keeps a remembered-approved legacy run paused without starting it again', async () => {
     createAiRunMock.mockResolvedValue({ ...pending, status: 'ready', phase: 'runtime', decision: 'approved', providerApprovalMode: 'remembered_permission', manifest } satisfies AiRunIntent);
     listPermissionsMock.mockResolvedValue([{
       id: '66666666-6666-4666-8666-666666666666',
@@ -272,9 +272,10 @@ describe('AiRunEntry', () => {
     expect(await screen.findByTestId('provider-permission-active-notice')).toHaveTextContent('without another provider approval');
     await user.click(screen.getByTestId('ai-run-submit'));
 
-    await waitFor(() => expect(startAiRunMock).toHaveBeenCalledWith(RUN_ID, 'csrf-token', expect.any(String)));
+    await waitFor(() => expect(screen.getByTestId('run-connection-status')).toHaveTextContent('This older approved run is paused'));
+    expect(startAiRunMock).not.toHaveBeenCalled();
     expect(screen.queryByTestId('provider-consent-alert-dialog')).not.toBeInTheDocument();
-    expect(await screen.findByTestId('ai-run-remembered-permission-notice')).toHaveTextContent('saved project permission');
+    expect(await screen.findByTestId('ai-run-remembered-permission-notice')).toHaveTextContent('legacy record');
   });
 
   it('revokes the active permission with the current CSRF token', async () => {

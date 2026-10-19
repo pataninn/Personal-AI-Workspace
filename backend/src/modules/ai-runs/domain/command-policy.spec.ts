@@ -1,4 +1,4 @@
-import { normalizeCommandProposal, summarizeArgument } from '@/modules/ai-runs/domain/command-policy';
+import { normalizeCommandProposal, normalizePolicyHermesPermission, summarizeArgument } from '@/modules/ai-runs/domain/command-policy';
 
 describe('sandbox command policy', () => {
   it('allows bounded read-only commands but denies every option in the MVP1 grammar', () => {
@@ -34,5 +34,18 @@ describe('sandbox command policy', () => {
   it('rejects malformed proposal fields before policy classification', () => {
     expect(() => normalizeCommandProposal({ command: 'rg', args: ['ok', '\u0000'] })).toThrow('invalid');
     expect(() => normalizeCommandProposal({ command: 'rg', args: 'src' })).toThrow('at most 32');
+  });
+
+  it('accepts only simple read commands against exact selected manifest paths', () => {
+    const selected = ['src/main.ts', 'README.md'];
+    expect(normalizePolicyHermesPermission({ command: 'hermes-terminal', args: ['cat src/main.ts'] }, selected, 'a'.repeat(64))).toMatchObject({ classification: 'safe', command: 'hermes-terminal', args: ['cat src/main.ts'], limits: { network: 'denied', maxOutputBytes: 32768 } });
+    expect(normalizePolicyHermesPermission({ command: 'hermes-terminal', args: ['rg TODO src/main.ts'] }, selected, 'a'.repeat(64)).classification).toBe('safe');
+  });
+
+  it('blocks shell composition, options, sensitive commands, and non-selected paths', () => {
+    const selected = ['src/main.ts'];
+    for (const command of ['cat .env', 'cat ../outside', 'cat src/other.ts', 'cat src/main.ts; pwd', 'cat "src/main.ts"', 'cat --help', 'npm install package', 'rg x $(pwd)']) {
+      expect(normalizePolicyHermesPermission({ command: 'hermes-terminal', args: [command] }, selected, 'b'.repeat(64)).classification).toBe('blocked');
+    }
   });
 });

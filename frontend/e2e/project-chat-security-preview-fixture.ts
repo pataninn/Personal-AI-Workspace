@@ -3,9 +3,9 @@ import { join, resolve } from 'node:path';
 
 import type { Page, Route, TestInfo } from '@playwright/test';
 import {
-  CONVERSATION_ID, MODEL, OWNER_ID, PERMISSION_ID, PREVIEW_CSRF_TOKEN, PREVIEW_TIME,
+  CONVERSATION_ID, MODEL, OWNER_ID, PREVIEW_CSRF_TOKEN, PREVIEW_TIME,
   PROJECT_ID, PROVIDER, PROVIDER_PROFILE, type ApiRequestRecord, type BrowserEvidence,
-  type ProviderPermission, type RunPlan, type RunSnapshot, readRecord, readString, safeBody
+  type RunPlan, type RunSnapshot, readRecord, readString, safeBody
 } from './project-chat-security-preview-data';
 
 interface SyntheticMessage {
@@ -23,7 +23,7 @@ export class ProjectChatPreviewFixture {
   readonly runReadStatuses: string[] = [];
   readonly disclosedManifestHashes: string[] = [];
   readonly unhandledApiCalls: string[] = [];
-  readonly providerPermissionsRevoked: string[] = [];
+  readonly policyReads: ApiRequestRecord[] = [];
   readonly evidence: BrowserEvidence = {
     requests: [], responses: [], lifecycle: [], failedRequests: [], consoleErrors: [], pageErrors: [], blockedExternalRequests: []
   };
@@ -34,7 +34,6 @@ export class ProjectChatPreviewFixture {
   private readonly startRequests: ApiRequestRecord[] = [];
   private readonly cancelRequests: ApiRequestRecord[] = [];
   private readonly consentDecisions: ApiRequestRecord[] = [];
-  private readonly permissions: ProviderPermission[] = [];
   private readonly submissions: ApiRequestRecord[] = [];
   private readonly messages: SyntheticMessage[] = [];
   private signedIn = false;
@@ -87,7 +86,7 @@ export class ProjectChatPreviewFixture {
       apiRequests: this.apiRequests,
       runReadStatuses: this.runReadStatuses,
       unhandledApiCalls: this.unhandledApiCalls,
-      providerPermissionsRevoked: this.providerPermissionsRevoked,
+      policyReads: this.policyReads,
       syntheticState: {
         runIds: this.runIds,
         submissions: this.submissions,
@@ -138,28 +137,47 @@ export class ProjectChatPreviewFixture {
     if (path === '/api/v1/projects/overview' && method === 'GET') return this.respond(route, { projects: [{ ...this.project(), lastActivityAt: PREVIEW_TIME }], tasks: [] });
     if (path === '/api/v1/tasks/inbox/count' && method === 'GET') return this.respond(route, { count: 0 });
     if (path === `/api/v1/projects/${PROJECT_ID}` && method === 'GET') return this.respond(route, this.project());
+    if (path === '/api/v1/assistant/execution-policy' && method === 'GET') return this.getPolicy(route, url);
     if (path === `/api/v1/projects/${PROJECT_ID}/conversations` && method === 'GET') return this.respond(route, { conversations: [this.conversation()], nextCursor: null });
     if (path === `/api/v1/conversations/${CONVERSATION_ID}` && method === 'GET') return this.respond(route, { conversation: this.conversation(), messages: [...this.messages], nextBeforeSequence: null });
     if (path === `/api/v1/projects/${PROJECT_ID}/files/tree` && method === 'GET') return this.respond(route, { directory: 'fixture/project', depth: 4, entries: [], truncated: false });
     if (path === `/api/v1/projects/${PROJECT_ID}/tasks` && method === 'GET') return this.respond(route, { tasks: [], orderVersion: 1 });
     if (path === `/api/v1/projects/${PROJECT_ID}/task-suggestions` && method === 'GET') return this.respond(route, { taskSuggestions: [] });
-    const permissionPath = `/api/v1/projects/${PROJECT_ID}/provider-permissions`;
-    if (path === permissionPath || path.startsWith(`${permissionPath}/`)) return this.handlePermissions(route, method);
     if (path === `/api/v1/projects/${PROJECT_ID}/chat-runs` && method === 'POST') return this.createRun(route);
     if (path.startsWith('/api/v1/ai-runs/')) return this.handleRun(route, path, method);
     this.unhandledApiCalls.push(`${method} ${path}`);
     await this.respond(route, null, 501, { code: 'PREVIEW_ROUTE_NOT_FOUND', message: 'No synthetic handler for this API route.' });
   }
 
-  private async handlePermissions(route: Route, method: string): Promise<void> {
-    if (method === 'GET') return this.respond(route, { permissions: this.permissions });
-    const permissionId = route.request().url().split('/').at(-1) ?? '';
-    if (method !== 'DELETE') return this.unhandled(route);
-    this.providerPermissionsRevoked.push(permissionId);
-    const index = this.permissions.findIndex((item) => item.id === permissionId);
-    const permission = this.permissions[index];
-    if (permission) this.permissions[index] = { ...permission, revokedAt: PREVIEW_TIME };
-    await route.fulfill({ status: 204 });
+  private async getPolicy(route: Route, url: URL): Promise<void> {
+    const request = this.recordRead(route);
+    this.policyReads.push(request);
+    if (url.searchParams.get('scope') === 'home' && [...url.searchParams.keys()].length === 1) {
+      return this.respond(route, { scope: { kind: 'home', label: 'Synthetic Home fixture' },
+        policy: { enabled: true, revision: 'preview-home-policy-revision', provider: { name: PROVIDER, model: MODEL },
+          included: { categories: ['current_message'], items: [] }, exclusionsEnforced: true, capabilities: ['home_task_read'] },
+        fileAccess: false, readiness: { state: 'unavailable', reasonCode: 'runtime_unverified' } });
+    }
+    const expected = url.searchParams.get('scope') === 'workspace'
+      && url.searchParams.get('projectId') === PROJECT_ID
+      && [...url.searchParams.keys()].length === 2;
+    if (!expected) return this.respond(route, null, 400, { code: 'VALIDATION_ERROR', message: 'A workspace scope is required.' });
+    const unavailable = this.plan === 'policy-unavailable';
+    return this.respond(route, {
+      scope: { kind: 'workspace', label: 'Synthetic project workspace' },
+      policy: {
+        enabled: true,
+        revision: 'preview-policy-revision',
+        provider: { name: PROVIDER, model: MODEL },
+        included: { categories: ['request', 'project_files'], items: [] },
+        exclusionsEnforced: true,
+        capabilities: ['workspace_file_read']
+      },
+      fileAccess: true,
+      readiness: unavailable
+        ? { state: 'unavailable', reasonCode: 'runtime_unverified' }
+        : { state: 'ready' }
+    });
   }
 
   private async createRun(route: Route): Promise<void> {
@@ -169,13 +187,14 @@ export class ProjectChatPreviewFixture {
     const runId = this.nextRunId();
     const manifestHash = this.hashFor(this.runIds.length);
     this.disclosedManifestHashes.push(manifestHash);
-    const matchingPermission = this.permissions.some((permission) => permission.revokedAt === null
-      && permission.subject.ownerId === OWNER_ID && permission.projectId === PROJECT_ID
-      && permission.providerProfile === PROVIDER_PROFILE && permission.model === MODEL
-      && permission.capability === 'send_selected_context');
-    const remembered = this.plan === 'permissions' && matchingPermission;
-    const run = this.snapshot(runId, manifestHash, remembered ? 'ready' : 'pending_approval', remembered ? 'approved' : 'pending', remembered ? 'remembered_permission' : undefined);
-    const manifest = this.manifest(runId, manifestHash, remembered ? 'ready' : 'pending_approval');
+    const index = this.runIds.length - 1;
+    const status = this.plan === 'cancellation' ? 'running'
+      : this.plan === 'recovery' ? 'review_required' : 'succeeded';
+    const transmission = this.plan === 'cancellation' ? 'transmitted_confirmed'
+      : this.plan === 'recovery' ? index === 0 ? 'not_started_confirmed' : 'unknown'
+        : 'transmitted_confirmed';
+    const run = this.snapshot(runId, manifestHash, status, 'policy_authorized', transmission);
+    const manifest = this.manifest(runId, manifestHash, status);
     this.runs.set(runId, run);
     this.manifests.set(runId, manifest);
     await this.respond(route, { run, manifest }, 202);
@@ -196,51 +215,44 @@ export class ProjectChatPreviewFixture {
       return;
     }
     if (method === 'GET' && suffix === 'egress-manifest' && current) return this.respond(route, this.manifests.get(runId) ?? null);
-    if (method === 'POST' && suffix === 'egress-decision' && current) return this.decide(route, runId, current);
+    if (method === 'POST' && suffix === 'egress-decision' && current) return this.retireDecision(route);
     if (method === 'POST' && suffix === 'start' && current) return this.start(route, runId, current);
     if (method === 'POST' && suffix === 'cancel' && current) return this.cancel(route, runId, current);
     await this.unhandled(route);
   }
 
-  private async decide(route: Route, runId: string, current: RunSnapshot): Promise<void> {
+  private async retireDecision(route: Route): Promise<void> {
     const request = this.recordMutation(route);
     this.consentDecisions.push(request);
-    const body = readRecord(request.body);
-    const approved = body?.decision === 'approve';
-    const remembered = approved && body?.rememberProviderPermission === true;
-    const next = this.snapshot(runId, current.manifestHash, approved ? 'ready' : 'rejected', approved ? 'approved' : 'rejected', remembered ? 'one_time' : approved ? 'one_time' : undefined);
-    this.runs.set(runId, next);
-    this.manifests.set(runId, this.manifest(runId, current.manifestHash, approved ? 'ready' : 'rejected'));
-    if (remembered) this.permissions.push(this.permission());
-    await this.respond(route, next);
+    await this.respond(route, null, 409, { code: 'POLICY_ACTION_RETIRED', message: 'Per-run egress decisions are no longer available.' });
   }
 
   private async start(route: Route, runId: string, current: RunSnapshot): Promise<void> {
     this.startRequests.push(this.recordMutation(route));
     let next: RunSnapshot;
-    if (this.plan === 'cancellation') next = this.snapshot(runId, current.manifestHash, 'running', 'approved', current.providerApprovalMode ?? 'one_time', 'transmitted_confirmed');
+    if (this.plan === 'cancellation') next = this.snapshot(runId, current.manifestHash, 'running', 'policy_authorized', 'transmitted_confirmed');
     else if (this.plan === 'recovery') {
       const outcomeIndex = this.startRequests.length - 1;
       next = outcomeIndex === 0
-        ? this.snapshot(runId, current.manifestHash, 'review_required', 'approved', 'one_time', 'not_started_confirmed')
-        : this.snapshot(runId, current.manifestHash, 'review_required', 'approved', 'one_time', 'unknown');
-    } else next = this.snapshot(runId, current.manifestHash, 'succeeded', 'approved', current.providerApprovalMode ?? 'one_time', 'transmitted_confirmed');
+        ? this.snapshot(runId, current.manifestHash, 'review_required', 'policy_authorized', 'not_started_confirmed')
+        : this.snapshot(runId, current.manifestHash, 'review_required', 'policy_authorized', 'unknown');
+    } else next = this.snapshot(runId, current.manifestHash, 'succeeded', 'policy_authorized', 'transmitted_confirmed');
     this.runs.set(runId, next);
     await this.respond(route, next);
   }
 
   private async cancel(route: Route, runId: string, current: RunSnapshot): Promise<void> {
     this.cancelRequests.push(this.recordMutation(route));
-    const next = this.snapshot(runId, current.manifestHash, 'cancel_requested', 'approved', current.providerApprovalMode ?? 'one_time', 'transmitted_confirmed');
+    const next = this.snapshot(runId, current.manifestHash, 'cancel_requested', 'policy_authorized', 'transmitted_confirmed');
     this.runs.set(runId, next);
     await this.respond(route, next);
   }
 
-  private snapshot(runId: string, manifestHash: string, status: string, decision: string, providerApprovalMode?: 'remembered_permission' | 'one_time', providerTransmission = 'not_started'): RunSnapshot {
+  private snapshot(runId: string, manifestHash: string, status: string, decision: string, providerTransmission = 'not_started'): RunSnapshot {
     return {
       runId, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, status,
       phase: status === 'pending_approval' ? 'decision' : status === 'review_required' ? 'review' : status === 'cancelled' || status === 'rejected' || status === 'succeeded' ? 'terminal' : status === 'running' || status === 'cancel_requested' ? 'inference' : 'runtime',
-      manifestHash, decision, ...(providerApprovalMode ? { providerApprovalMode } : {}),
+      manifestHash, decision,
       safeMessage: status === 'review_required' ? 'The synthetic run requires a status review.' : status === 'cancel_requested' ? 'Cancellation is pending.' : 'Synthetic preview state.',
       cleanup: status === 'cancelled' || status === 'succeeded' || status === 'rejected' ? 'complete' : 'unknown',
       providerTransmission, stagingItemCount: 0
@@ -255,18 +267,13 @@ export class ProjectChatPreviewFixture {
     };
   }
 
-  private permission(): ProviderPermission {
-    return { id: PERMISSION_ID, subject: { ownerId: OWNER_ID }, projectId: PROJECT_ID, providerProfile: PROVIDER_PROFILE,
-      model: MODEL, capability: 'send_selected_context', persistence: 'until_revoked', expiresAt: null, createdAt: PREVIEW_TIME, revokedAt: null };
-  }
-
   private project(): Record<string, unknown> {
     return { id: PROJECT_ID, name: 'Website redesign', slug: 'website-redesign', workspaceMode: 'file_backed',
       objective: 'Keep the synthetic project isolated.', capabilities: { planning: true, fileAccess: true }, status: 'active', version: 1, createdAt: PREVIEW_TIME, updatedAt: PREVIEW_TIME };
   }
 
   private conversation(): Record<string, unknown> {
-    return { id: CONVERSATION_ID, projectId: PROJECT_ID, title: 'Consent regression fixture', status: 'active', lastActivityAt: PREVIEW_TIME, createdAt: PREVIEW_TIME, updatedAt: PREVIEW_TIME };
+    return { id: CONVERSATION_ID, projectId: PROJECT_ID, title: 'Policy preview fixture', status: 'active', lastActivityAt: PREVIEW_TIME, createdAt: PREVIEW_TIME, updatedAt: PREVIEW_TIME };
   }
 
   private session(): Record<string, unknown> {
@@ -291,6 +298,12 @@ export class ProjectChatPreviewFixture {
     const url = new URL(request.url());
     const body = safeBody(request.postData());
     return { method: request.method(), path: url.pathname, body, idempotencyKey: request.headers()['idempotency-key'] ?? null, csrfToken: request.headers()['x-csrf-token'] ?? null };
+  }
+
+  private recordRead(route: Route): ApiRequestRecord {
+    const request = route.request();
+    const url = new URL(request.url());
+    return { method: request.method(), path: url.pathname, body: null, idempotencyKey: null, csrfToken: null };
   }
 
   private captureLifecycle(request: import('@playwright/test').Request, step: 'finished' | 'failed', failure?: string | null): void {

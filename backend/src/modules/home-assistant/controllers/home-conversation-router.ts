@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 import { HomeConversationNotFoundError, HomeTurnNotFoundError } from '@/modules/home-assistant/domain/home-conversation-errors';
 import type { HomeConversation, HomeConversationEvent, HomeMessage, HomeTurn, HomeTurnSubmission } from '@/modules/home-assistant/domain/home-conversation-types';
-import type { HomeConsentDecisionResponse, DecideHomeConsentUseCase } from '@/modules/home-assistant/use-cases/decide-home-consent';
+import type { DecideHomeConsentUseCase } from '@/modules/home-assistant/use-cases/decide-home-consent';
 import type { CreateHomeConversationUseCase } from '@/modules/home-assistant/use-cases/create-home-conversation';
 import type { GetHomeConversationUseCase } from '@/modules/home-assistant/use-cases/get-home-conversation';
 import type { ListHomeConversationsUseCase } from '@/modules/home-assistant/use-cases/list-home-conversations';
@@ -17,6 +17,7 @@ import type { ListHomeEventsUseCase } from '@/modules/home-assistant/use-cases/l
 import { authenticateRequest, requireCsrf, sameOrigin } from '@/modules/auth/controllers/request-auth';
 import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
 import { AppError } from '@/shared/errors/app-error';
+import { PolicyActionRetiredError } from '@/modules/assistant-policy/domain/policy-action-retired-error';
 import { sendData } from '@/shared/http/response';
 
 const UUID = z.string().uuid();
@@ -28,7 +29,6 @@ const createConversationBody = z.object({
   title: z.string().min(1).max(160)
 }).strict();
 const submitTurnBody = z.object({ message: z.string().min(1).max(20000) }).strict();
-const consentDecisionBody = z.object({ disclosureId: UUID, decision: z.enum(['allow', 'deny']) }).strict();
 
 export interface HomeConversationRouterDependencies {
   readonly getSession: GetSessionUseCase;
@@ -237,20 +237,9 @@ export function createHomeConversationRouter(dependencies: HomeConversationRoute
     sendData(response, { turn: serializeTurn(result.resource), replayed: result.replayed });
   }));
 
-  router.post('/home/conversations/:conversationId/turns/:turnId/consent-decisions', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, route(async (request, response) => {
-    const conversationId = parseUuid(request.params.conversationId, new HomeConversationNotFoundError());
-    const turnId = parseUuid(request.params.turnId, new HomeTurnNotFoundError());
-    const body = parseBody(consentDecisionBody, request.body, 'The Home consent decision is invalid.');
-    const result: HomeConsentDecisionResponse = await dependencies.decideConsent.execute({
-      ownerId: ownerId(request), conversationId, turnId, ...body
-    });
-    sendData(response, {
-      turn: serializeTurn(result.turn),
-      disclosureId: result.disclosure.disclosureId,
-      decision: result.disclosure.decision,
-      execution: result.execution,
-      replayed: result.replayed
-    });
+  router.post('/home/conversations/:conversationId/turns/:turnId/consent-decisions', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, route(async (request, _response) => {
+    ownerId(request);
+    throw new PolicyActionRetiredError();
   }));
 
   router.get('/home/conversations/:conversationId/messages', authenticate, route(async (request, response) => {

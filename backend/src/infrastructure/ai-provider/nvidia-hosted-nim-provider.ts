@@ -80,6 +80,16 @@ export class NvidiaHostedNimProvider implements IModelProvider {
     }
   }
 
+  public supportsBoundedAdmission(input: { readonly providerProfile: string; readonly model: string }): boolean {
+    const configuration = this.creditConfiguration;
+    const bounder = this.inputTokenBounder;
+    return input.providerProfile === 'nvidia-hosted-nim' && input.model === this.model
+      && Boolean(this.creditAdmission && bounder?.version.trim() && configuration
+        && Number.isSafeInteger(configuration.maxInputTokens) && configuration.maxInputTokens > 0
+        && Number.isSafeInteger(configuration.maxOutputTokens) && configuration.maxOutputTokens > 0
+        && Number.isSafeInteger(configuration.maxAttemptsForSource) && configuration.maxAttemptsForSource > 0);
+  }
+
   public async *stream(input: ModelProviderRequest): AsyncIterable<ModelProviderEvent> {
     await this.checkAvailability();
     const controller = new AbortController();
@@ -153,9 +163,14 @@ export class NvidiaHostedNimProvider implements IModelProvider {
         return;
       }
       yield { type: 'started' };
-      yield { type: 'provider.request_started' };
+      try {
+        await input.beforeProviderAttempt?.();
+      } catch {
+        yield { type: 'failed', message: 'Workspace policy changed before the provider request was sent.' };
+        return;
+      }
       sendInvoked = true;
-      const response = await this.fetchImplementation(`${this.endpoint}/chat/completions`, {
+      const responsePromise = this.fetchImplementation(`${this.endpoint}/chat/completions`, {
         method: 'POST',
         headers: {
           Accept: 'text/event-stream',
@@ -165,6 +180,8 @@ export class NvidiaHostedNimProvider implements IModelProvider {
         body: encoded,
         signal: controller.signal
       });
+      yield { type: 'provider.request_started' };
+      const response = await responsePromise;
       yield { type: 'provider.response_received' };
       if (!response.ok || response.status === 202) {
         yield { type: 'failed', message: providerRejectionMessage(response.status) };

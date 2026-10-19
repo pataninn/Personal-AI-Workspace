@@ -31,6 +31,12 @@ describe('AI run activity API', () => {
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'GET', credentials: 'include' });
   });
 
+  it('preserves the stored-policy decision in activity history', async () => {
+    fetchMock.mockResolvedValueOnce(envelope({ projectId: PROJECT_ID, items: [{ ...item, decision: 'policy_authorized' }], nextCursor: null }));
+
+    await expect(listAiRunActivity(PROJECT_ID, 'all')).resolves.toMatchObject({ items: [{ decision: 'policy_authorized' }] });
+  });
+
   it('rejects a response for a different project and malformed token counts', async () => {
     fetchMock.mockResolvedValueOnce(envelope({ projectId: 'other-project', items: [], nextCursor: null }));
     await expect(listAiRunActivity(PROJECT_ID, 'all')).rejects.toBeInstanceOf(ApiClientError);

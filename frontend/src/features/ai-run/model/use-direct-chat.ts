@@ -161,7 +161,7 @@ export function useDirectChat(input: UseDirectChatInput) {
     setParams((previous) => updateRunParam(previous, created.runId), { replace: true });
     setError(null);
     setErrorAction(null);
-    if (created.decision === 'approved') clearApprovedDraft(created.runId);
+    if (created.decision === 'approved' || created.decision === 'policy_authorized') clearApprovedDraft(created.runId);
 
     let disclosure = created.manifest ?? null;
     if (isPendingApproval(created) && !disclosure) {

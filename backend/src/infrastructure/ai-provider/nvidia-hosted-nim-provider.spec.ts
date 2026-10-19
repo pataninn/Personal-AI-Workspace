@@ -52,6 +52,43 @@ function createProvider(options: ConstructorParameters<typeof NvidiaHostedNimPro
 }
 
 describe('NvidiaHostedNimProvider', () => {
+  it('rechecks policy immediately before invoking the provider transport', async () => {
+    const order: string[] = [];
+    const beforeProviderAttempt = jest.fn(async () => { order.push('policy'); });
+    const fetchImplementation = jest.fn(async (): Promise<Response> => {
+      order.push('send');
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    });
+    const provider = createProvider({
+      endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', fetchImplementation
+    });
+
+    await collect(provider.stream({ ...request, beforeProviderAttempt }));
+
+    expect(beforeProviderAttempt).toHaveBeenCalledTimes(1);
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['policy', 'send']);
+  });
+
+  it('releases the credit reservation and never sends when policy changes before transport', async () => {
+    const creditAdmission: IProviderCallCreditAdmission = {
+      reserveBeforeSend: jest.fn(async () => ({ reservationId: 'not-sent-policy-changed', maximumUnits: 100n })),
+      settleReportedUsage: jest.fn(async () => ({ outcome: 'settled' as const, chargedUnits: 0n })),
+      retainUnknown: jest.fn(async () => undefined),
+      releaseKnownNotSent: jest.fn(async () => undefined)
+    };
+    const fetchImplementation = jest.fn(async () => new Response('{}'));
+    const beforeProviderAttempt = jest.fn(async () => { throw new Error('Policy revision changed.'); });
+    const provider = createProvider({ endpoint: 'https://example.test/v1', model: request.manifest.model, apiKey: 'test-key', creditAdmission, fetchImplementation });
+
+    const events = await collect(provider.stream({ ...request, beforeProviderAttempt }));
+
+    expect(fetchImplementation).not.toHaveBeenCalled();
+    expect(creditAdmission.releaseKnownNotSent).toHaveBeenCalledWith('not-sent-policy-changed');
+    expect(creditAdmission.retainUnknown).not.toHaveBeenCalled();
+    expect(events.at(-1)).toEqual({ type: 'failed', message: 'Workspace policy changed before the provider request was sent.' });
+  });
+
   it('reserves from the trusted owner and exact assembled messages before sending, then settles usage', async () => {
     const order: string[] = [];
     const creditAdmission: IProviderCallCreditAdmission = {

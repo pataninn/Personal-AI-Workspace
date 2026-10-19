@@ -59,6 +59,8 @@ export interface CancelHomePlanningRunResult {
 
 /** Narrow Home-owned boundary to the dedicated planning runtime, separate from project IAgentRuntime. */
 export interface IHomePlanningRuntime {
+  /** Trusted runtime evidence for automatic dispatch under a stored Home policy. */
+  supportsPolicyExecution?(input: { readonly providerProfile: string; readonly model: string }): Promise<boolean>;
   /** Resolves only when planning-create is accepted; failures before acceptance are unavailable or unknown. */
   start(input: StartHomePlanningRunInput): Promise<StartHomePlanningRunResult>;
 

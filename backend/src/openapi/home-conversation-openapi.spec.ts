@@ -7,6 +7,16 @@ function record(value: unknown, label: string): JsonRecord {
   return value as JsonRecord;
 }
 
+function expectRetiredOperation(paths: JsonRecord, pathName: string, method: string): void {
+  const operation = record(record(paths[pathName], pathName)[method], `${method} ${pathName}`);
+  const responses = record(operation.responses, `${method} ${pathName} responses`);
+  expect(Object.keys(responses).filter((status) => status.startsWith('2'))).toEqual([]);
+  const retired = record(responses['409'], `${method} ${pathName} 409 response`);
+  expect(retired.description).toEqual(expect.stringContaining('POLICY_ACTION_RETIRED'));
+  const schema = record(record(record(retired.content, '409 content')['application/json'], '409 JSON content').schema, '409 error schema');
+  expect(schema.$ref).toBe('#/components/schemas/ErrorEnvelope');
+}
+
 describe('Home conversation OpenAPI contract', () => {
   it('documents owner-scoped history, submission, cancellation, and event replay routes', () => {
     const document = record(openApiDocument, 'OpenAPI document');
@@ -19,7 +29,6 @@ describe('Home conversation OpenAPI contract', () => {
       ['/api/v1/home/conversations/{conversationId}/turns', 'post'],
       ['/api/v1/home/conversations/{conversationId}/turns/{turnId}', 'get'],
       ['/api/v1/home/conversations/{conversationId}/turns/{turnId}/cancellation', 'post'],
-      ['/api/v1/home/conversations/{conversationId}/turns/{turnId}/consent-decisions', 'post'],
       ['/api/v1/home/conversations/{conversationId}/messages', 'get'],
       ['/api/v1/home/conversations/{conversationId}/events', 'get']
     ] as const;
@@ -33,6 +42,7 @@ describe('Home conversation OpenAPI contract', () => {
       expect(responses['401']).toBeDefined();
       if (method === 'post') expect(responses['403']).toBeDefined();
     }
+    expectRetiredOperation(paths, '/api/v1/home/conversations/{conversationId}/turns/{turnId}/consent-decisions', 'post');
   });
 
   it('defines bounded sequence replay and the honest unsupported runtime submission result', () => {

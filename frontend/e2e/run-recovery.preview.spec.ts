@@ -8,14 +8,16 @@ test('reports cancellation only after the saved run confirms it', async ({ page 
   await fixture.install();
   try {
     await openConversation(page);
-    await approveMessage(page, 'Cancel only after the server has saved the result.');
-    await expect.poll(() => fixture.starts.length).toBe(1);
+    await submitMessage(page, 'Cancel only after the server has saved the result.');
+    await expect.poll(() => fixture.submissionsCreated.length).toBe(1);
+    expect(fixture.starts).toEqual([]);
     await expect(page.getByTestId('ai-run-cancel')).toBeEnabled();
 
     const runId = fixture.createdRunIds[0] ?? '';
     expect(runId).not.toBe('');
     await page.getByTestId('ai-run-cancel').click();
     await expect(page.getByTestId('ai-run-cancel-status')).toContainText('Stopping assistant run');
+    await assertReachableAcrossViewports(page, page.getByTestId('ai-run-cancel-status'));
     await expect(page.getByTestId('run-cancelled')).toHaveCount(0);
     expect(fixture.cancellations).toHaveLength(1);
     expect(fixture.cancellations[0]?.csrfToken).toBe('preview-only-csrf-token');
@@ -25,6 +27,7 @@ test('reports cancellation only after the saved run confirms it', async ({ page 
     fixture.confirmSavedCancellation(runId);
     await page.reload();
     await expect(page.getByTestId('run-cancelled')).toContainText('Run cancelled. No further assistant work will be applied.');
+    await assertReachableAcrossViewports(page, page.getByTestId('run-cancelled').locator('p').first());
     expect(fixture.runReadStatuses).toContain('cancelled');
     expect(fixture.cancellations).toHaveLength(1);
     await fixture.screenshot(testInfo, 'project-chat-cancellation-confirmed.png');
@@ -35,22 +38,23 @@ test('reports cancellation only after the saved run confirms it', async ({ page 
   }
 });
 
-test('allows live confirmed-not-sent retry with fresh consent and blocks a mismatched restored request', async ({ page }, testInfo) => {
+test('retries only a confirmed-not-sent synthetic run without consent and blocks a mismatched restored request', async ({ page }, testInfo) => {
   const fixture = new ProjectChatPreviewFixture(page, 'recovery');
   await fixture.install();
   try {
     await openConversation(page);
     const requestText = 'Review the project and return the result.';
-    await approveMessage(page, requestText);
+    await submitMessage(page, requestText);
     await expect(page.getByTestId('ai-run-review-required')).toBeVisible();
     await expect(page.getByTestId('ai-run-safe-retry')).toBeEnabled();
+    await assertReachableAcrossViewports(page, page.getByTestId('ai-run-review-refresh'));
+    await assertReachableAcrossViewports(page, page.getByTestId('ai-run-safe-retry'));
     await expect(page.getByTestId('ai-run-separate-request')).toHaveCount(0);
     const originalRunId = new URL(page.url()).searchParams.get('runId') ?? '';
     expect(originalRunId).not.toBe('');
 
     await page.getByTestId('ai-run-safe-retry').click();
-    const retryConsent = page.getByTestId('provider-consent-alert-dialog');
-    await expect(retryConsent).toBeVisible();
+    await expect(page.getByTestId('provider-consent-alert-dialog')).toHaveCount(0);
     const retryRunId = new URL(page.url()).searchParams.get('runId') ?? '';
     expect(retryRunId).not.toBe('');
     expect(retryRunId).not.toBe(originalRunId);
@@ -60,15 +64,14 @@ test('allows live confirmed-not-sent retry with fresh consent and blocks a misma
     expect(readRecord(fixture.submissionsCreated[1]?.body)?.request).toBe(requestText);
     expect(fixture.disclosedManifestHashes).toHaveLength(2);
     expect(new Set(fixture.disclosedManifestHashes).size).toBe(2);
-    expect(fixture.starts).toHaveLength(1);
-    await expect(retryConsent.getByTestId('provider-consent-manifest')).toContainText('Request included');
+    expect(fixture.starts).toEqual([]);
     await fixture.screenshot(testInfo, 'project-chat-safe-retry-fresh-disclosure.png');
 
-    await retryConsent.getByTestId('provider-consent-approve').click();
-    await expect(retryConsent).toBeHidden();
+    await expect(page.getByTestId('provider-consent-alert-dialog')).toHaveCount(0);
     await expect(page.getByTestId('ai-run-review-required')).toBeVisible();
     await expect(page.getByTestId('ai-run-safe-retry')).toHaveCount(0);
     await expect(page.getByTestId('ai-run-separate-request')).toBeVisible();
+    await assertReachableAcrossViewports(page, page.getByTestId('ai-run-separate-request'));
     await page.getByTestId('ai-run-separate-request').click();
     const duplicateWarning = page.getByTestId('ai-run-duplicate-work-warning');
     await expect(duplicateWarning).toBeVisible();
@@ -83,14 +86,17 @@ test('allows live confirmed-not-sent retry with fresh consent and blocks a misma
     await expect(page.getByTestId('conversation-history').getByTestId('message-content').last()).toHaveText('A later unrelated request from another open session.');
     await expect(page.getByTestId('ai-run-restored-request-unavailable')).toContainText('cannot be safely matched to its original request');
     await expect(page.getByTestId('ai-run-restored-request-refresh')).toBeEnabled();
+    await assertReachableAcrossViewports(page, page.getByTestId('ai-run-restored-request-refresh'));
     await expect(page.getByTestId('ai-run-safe-retry')).toHaveCount(0);
     await expect(page.getByTestId('ai-run-separate-request')).toHaveCount(0);
     await fixture.screenshot(testInfo, 'project-chat-restored-request-review-only.png');
     await page.getByTestId('ai-run-restored-request-refresh').click();
     await expect(page.getByTestId('ai-run-restored-request-unavailable')).toBeVisible();
     expect(fixture.submissionsCreated).toHaveLength(2);
-    expect(fixture.starts).toHaveLength(2);
+    expect(fixture.starts).toEqual([]);
     expect(fixture.runReadStatuses).toContain('review_required');
+    expect(fixture.decisions).toEqual([]);
+    expect(fixture.apiRequests.some((entry) => entry.path.includes('/provider-permissions'))).toBe(false);
     expect(fixture.unhandledApiCalls).toEqual([]);
     expect(fixture.evidence.blockedExternalRequests).toEqual([]);
   } finally {
@@ -98,20 +104,30 @@ test('allows live confirmed-not-sent retry with fresh consent and blocks a misma
   }
 });
 
+async function assertReachableAcrossViewports(page: import('@playwright/test').Page, control: import('@playwright/test').Locator): Promise<void> {
+  const originalViewport = page.viewportSize() ?? { width: 1280, height: 720 };
+  for (const viewport of [originalViewport, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await control.evaluate((element) => element.scrollIntoView({ block: 'center', inline: 'nearest' }));
+    await expect(control).toBeInViewport({ ratio: 1 });
+    await control.focus();
+  }
+  await page.setViewportSize(originalViewport);
+  await control.evaluate((element) => element.scrollIntoView({ block: 'center', inline: 'nearest' }));
+  await expect(control).toBeInViewport({ ratio: 1 });
+}
+
 async function openConversation(page: import('@playwright/test').Page): Promise<void> {
   await signInToProjectChat(page);
   await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);
   await page.goto(`/projects/${PROJECT_ID}/conversations/${CONVERSATION_ID}`);
-  await expect(page.getByTestId('provider-permission-manager')).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Assistant policy summary' })).toBeVisible();
   await expect(page.getByTestId('message-input')).toBeEnabled();
 }
 
-async function approveMessage(page: import('@playwright/test').Page, message: string): Promise<void> {
+async function submitMessage(page: import('@playwright/test').Page, message: string): Promise<void> {
   await page.getByTestId('message-input').fill(message);
   await page.getByTestId('ai-run-submit').click();
-  const consent = page.getByTestId('provider-consent-alert-dialog');
-  await expect(consent).toBeVisible();
-  await expect(consent.getByTestId('provider-consent-approve')).toBeEnabled();
-  await consent.getByTestId('provider-consent-approve').click();
-  await expect(consent).toBeHidden();
+  await expect.poll(async () => page.getByTestId('ai-run-submit').isDisabled()).toBeTruthy();
+  await expect(page.getByTestId('provider-consent-alert-dialog')).toHaveCount(0);
 }

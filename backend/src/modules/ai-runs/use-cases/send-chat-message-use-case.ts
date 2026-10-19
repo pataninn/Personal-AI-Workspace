@@ -1,7 +1,7 @@
 import type { IProjectChatContextRepository } from '@/modules/ai-runs/repositories/project-chat-context-repository';
 import type { IProjectFactRepository } from '@/modules/memory/repositories/project-fact-repository';
-import { AiRunProviderPermissionRevokedError } from '@/modules/ai-runs/domain/ai-run-errors';
 import type { CreateAiRunUseCase, DecideEgressUseCase, CreateAiRunOutput } from '@/modules/ai-runs/use-cases/ai-run-use-cases';
+import type { StartAiRunUseCase } from '@/modules/ai-runs/use-cases/start-ai-run-use-case';
 
 export interface SendChatMessageInput {
   readonly ownerId: string;
@@ -16,7 +16,8 @@ export class SendChatMessageUseCase {
     private readonly contexts: Pick<IProjectChatContextRepository, 'get'>,
     private readonly facts: IProjectFactRepository,
     private readonly createRun: Pick<CreateAiRunUseCase, 'execute'>,
-    private readonly decideEgress: Pick<DecideEgressUseCase, 'approveWithRememberedPermission'>
+    private readonly preparePolicyRun: Pick<DecideEgressUseCase, 'preparePolicyAuthorizedRun'>,
+    private readonly startRun: Pick<StartAiRunUseCase, 'execute'>
   ) {}
 
   public async execute(input: SendChatMessageInput): Promise<CreateAiRunOutput> {
@@ -28,12 +29,17 @@ export class SendChatMessageUseCase {
       includeRecentMessages: context.includeProjectConversations, includeProjectConversations: context.includeProjectConversations
     });
     let run = created.resource;
-    if (run.decision === 'pending' && run.status === 'pending_approval') {
-      try {
-        run = await this.decideEgress.approveWithRememberedPermission({ ownerId: input.ownerId, runId: run.id }) ?? run;
-      } catch (error: unknown) {
-        // A grant revoked between exact-scope lookup and decision stays pending for explicit review.
-        if (!(error instanceof AiRunProviderPermissionRevokedError)) throw error;
+    if (run.decision === 'policy_authorized') {
+      if (run.status === 'staging') {
+        run = await this.preparePolicyRun.preparePolicyAuthorizedRun({ ownerId: input.ownerId, runId: run.id });
+      }
+      if (run.status === 'ready') {
+        const started = await this.startRun.execute({
+          ownerId: input.ownerId,
+          runId: run.id,
+          idempotencyKey: `policy-start-${run.id}`
+        });
+        run = started.resource;
       }
     }
     return { resource: run, replayed: created.replayed };

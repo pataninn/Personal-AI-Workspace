@@ -1,7 +1,7 @@
-# Architecture: Personal AI Workspace hackathon release
+﻿# Architecture: Personal AI Workspace hackathon release
 
-Date: 2026-10-19
-Status: Proposed implementation architecture; no application changes or deployment verified by this document.
+Date: 2026-10-19  
+Status: Proposed implementation architecture; no application changes or deployment verified by this document.  
 Work order: [tasks.md](tasks.md). Application source root: `Personal-AI-Workspace/`.
 
 ## Change History

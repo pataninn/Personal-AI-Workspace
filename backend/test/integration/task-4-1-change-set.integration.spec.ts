@@ -16,6 +16,7 @@ import { GetReadinessUseCase } from '@/modules/health';
 import { CollectProposedChangeSetUseCase, DecideProposedChangeSetUseCase, GetProposedChangeSetUseCase } from '@/modules/ai-runs/use-cases/change-set-use-cases';
 import type { IWorkspaceMutationGateway, WorkspaceApplyResult, WorkspaceMutationApplyOptions, WorkspaceMutationScope, WorkspaceFileSnapshot } from '@/modules/ai-runs/repositories/workspace-mutation-gateway';
 import type { CreateProposedChangeSetRecord } from '@/modules/ai-runs/domain/change-types';
+import type { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
 
 const APP_ORIGIN = 'https://127.0.0.1:8443';
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -39,46 +40,44 @@ describe('Task 4.1 proposed change-set Express boundary (integration)', () => {
     expect(crossOwner.body.error.code).toBe('CHANGE_SET_NOT_FOUND');
   });
 
-  it('requires origin and CSRF, persists rejection before replay, and rejects idempotency-key reuse', async () => {
+  it('requires origin and CSRF, then retires every legacy decision without changing proposal state', async () => {
     const context = await buildContext();
     const headers = authHeaders();
     await request(context.app).post(`/api/v1/ai-runs/${context.runId}/proposed-change-set/decision`).set({ ...headers, Origin: 'https://evil.invalid' }).set('Idempotency-Key', 'reject-1').send({ proposalHash: context.proposalHash, decision: 'reject' }).expect(403);
     await request(context.app).post(`/api/v1/ai-runs/${context.runId}/proposed-change-set/decision`).set({ ...headers, 'X-CSRF-Token': 'wrong' }).set('Idempotency-Key', 'reject-1').send({ proposalHash: context.proposalHash, decision: 'reject' }).expect(403);
 
-    const rejected = await request(context.app).post(`/api/v1/ai-runs/${context.runId}/proposed-change-set/decision`).set(headers).set('Idempotency-Key', 'reject-1').send({ proposalHash: context.proposalHash, decision: 'reject' }).expect(200);
-    expect(rejected.body.data.status).toBe('rejected');
+    for (const [decision, key] of [['approve', 'approve-1'], ['reject', 'reject-1'], ['deny', 'deny-1']] as const) {
+      await request(context.app).post(`/api/v1/ai-runs/${context.runId}/proposed-change-set/decision`).set(headers).set('Idempotency-Key', key)
+        .send({ proposalHash: context.proposalHash, decision }).expect(409)
+        .expect(({ body }) => expect(body.error.code).toBe('POLICY_ACTION_RETIRED'));
+    }
+    expect(await context.changeSets.findByRunForOwner(OWNER_ID, context.runId)).toMatchObject({ status: 'awaiting_approval', decision: 'pending' });
     expect(context.gateway.applyCalls).toBe(0);
-    const replay = await request(context.app).post(`/api/v1/ai-runs/${context.runId}/proposed-change-set/decision`).set(headers).set('Idempotency-Key', 'reject-1').send({ proposalHash: context.proposalHash, decision: 'reject' }).expect(200);
-    expect(replay.body.data.status).toBe('rejected');
-    await request(context.app).post(`/api/v1/ai-runs/${context.runId}/proposed-change-set/decision`).set(headers).set('Idempotency-Key', 'reject-1').send({ proposalHash: context.proposalHash, decision: 'approve' }).expect(409).expect(({ body }) => expect(body.error.code).toBe('CHANGE_SET_IDEMPOTENCY_REUSED'));
+    expect(context.gateway.events).toEqual([]);
   });
 
-  it('records applying before filesystem work and persists stale, known failure, and manual-review outcomes', async () => {
-    const stale = await buildContext({ outcome: 'stale' });
-    const headers = authHeaders();
-    await request(stale.app).post(`/api/v1/ai-runs/${stale.runId}/proposed-change-set/decision`).set(headers).set('Idempotency-Key', 'approve-stale').send({ proposalHash: stale.proposalHash, decision: 'approve' }).expect(409);
-    expect(stale.gateway.events).toEqual(['decision-visible', 'apply']);
-    expect((await stale.changeSets.findByRunForOwner(OWNER_ID, stale.runId))?.status).toBe('stale');
-
-    const failed = await buildContext({ outcome: 'failed' });
-    const failedResponse = await request(failed.app).post(`/api/v1/ai-runs/${failed.runId}/proposed-change-set/decision`).set(headers).set('Idempotency-Key', 'approve-failed').send({ proposalHash: failed.proposalHash, decision: 'approve' }).expect(200);
-    expect(failedResponse.body.data.status).toBe('failed');
-    expect(failedResponse.body.data.result.persisted).toBe(true);
-
-    const manual = await buildContext({ outcome: 'needs_manual_review' });
-    await request(manual.app).post(`/api/v1/ai-runs/${manual.runId}/proposed-change-set/decision`).set(headers).set('Idempotency-Key', 'approve-manual').send({ proposalHash: manual.proposalHash, decision: 'approve' }).expect(503);
-    expect((await manual.changeSets.findByRunForOwner(OWNER_ID, manual.runId))?.status).toBe('needs_manual_review');
-    const refreshed = await request(manual.app).get(`/api/v1/ai-runs/${manual.runId}/proposed-change-set`).set(headers).expect(200);
-    expect(refreshed.body.data.status).toBe('needs_manual_review');
+  it('applies a supported change through the policy path without recording an approval', async () => {
+    const context = await buildContext({ policyAuthorized: true });
+    const recordDecision = jest.spyOn(context.changeSets, 'recordDecision');
+    const applied = await context.decideChangeSet.executeAutomatically({ ownerId: OWNER_ID, runId: context.runId });
+    expect(applied).toMatchObject({ status: 'applied', decision: 'policy_authorized' });
+    expect(context.gateway.events).toEqual(['decision-visible', 'apply']);
+    expect(context.gateway.applyCalls).toBe(1);
+    expect(recordDecision).not.toHaveBeenCalled();
+    await expect(context.changeSets.findByRunForOwner(OWNER_ID, context.runId)).resolves.toMatchObject({ status: 'applied', decision: 'policy_authorized' });
   });
 
-  it('blocks an archived project and malformed requests before the gateway', async () => {
-    const context = await buildContext();
+  it('blocks archived automatic work and keeps even malformed legacy decision calls side-effect free', async () => {
+    const context = await buildContext({ policyAuthorized: true });
     context.projects.status = 'archived';
     const headers = authHeaders();
-    await request(context.app).post(`/api/v1/ai-runs/${context.runId}/proposed-change-set/decision`).set(headers).set('Idempotency-Key', 'archived').send({ proposalHash: context.proposalHash, decision: 'approve' }).expect(409);
+    await expect(context.decideChangeSet.executeAutomatically({ ownerId: OWNER_ID, runId: context.runId })).rejects.toMatchObject({ code: 'PROJECT_ARCHIVED' });
+    await request(context.app).post(`/api/v1/ai-runs/${context.runId}/proposed-change-set/decision`).set(headers).set('Idempotency-Key', 'archived').send({ proposalHash: context.proposalHash, decision: 'approve' }).expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('POLICY_ACTION_RETIRED'));
     expect(context.gateway.applyCalls).toBe(0);
-    await request(context.app).post(`/api/v1/ai-runs/${context.runId}/proposed-change-set/decision`).set(headers).set('Idempotency-Key', 'bad-body').send({ proposalHash: 'bad', decision: 'maybe' }).expect(400);
+    await request(context.app).post(`/api/v1/ai-runs/${context.runId}/proposed-change-set/decision`).set(headers).set('Idempotency-Key', 'bad-body').send({ proposalHash: 'bad', decision: 'maybe' }).expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('POLICY_ACTION_RETIRED'));
+    expect(await context.changeSets.findByRunForOwner(OWNER_ID, context.runId)).toMatchObject({ status: 'awaiting_approval', decision: 'pending' });
     expect(context.gateway.applyCalls).toBe(0);
   });
 });
@@ -90,18 +89,23 @@ interface TestContext {
   readonly changeSets: InMemoryProposedChangeSetRepository;
   readonly gateway: MutationFixture;
   readonly projects: ProjectFixture;
+  readonly decideChangeSet: DecideProposedChangeSetUseCase;
 }
 
-async function buildContext(options: { readonly outcome?: WorkspaceApplyResult['outcome'] } = {}): Promise<TestContext> {
+async function buildContext(options: { readonly outcome?: WorkspaceApplyResult['outcome']; readonly policyAuthorized?: boolean } = {}): Promise<TestContext> {
   const projects = new ProjectFixture();
   const runs = new InMemoryAiRunRepository();
   const run = await createSucceededRun(runs);
+  if (options.policyAuthorized) {
+    await runs.save({ ...run, status: 'running', phase: 'runtime', decision: 'policy_authorized', policyRevision: '1', safeMessage: 'Processing under workspace policy.' });
+  }
   const changeSets = new InMemoryProposedChangeSetRepository();
   const gateway = new MutationFixture(runs, changeSets, run.id, options.outcome ?? 'applied');
   const collector = new CollectProposedChangeSetUseCase(runs, projects, gateway, changeSets);
     const collected = await collector.execute({ ownerId: OWNER_ID, runId: run.id, changes: [{ operation: 'edit', path: SOURCE, content: 'const replacement = "bounded-proposed-content";', summary: 'Replace the implementation' }], fakeRuntime: true });
   const getChangeSet = new GetProposedChangeSetUseCase(runs, projects, changeSets);
-  const decideChangeSet = new DecideProposedChangeSetUseCase(runs, projects, changeSets, gateway);
+  const executionPolicy = { assertWorkspace: jest.fn(async () => ({ policies: [], effectiveCapabilities: ['workspace_file_write'], revisions: { workspace: '1' } })) } as unknown as Pick<AssertAssistantExecutionPolicyUseCase, 'assertWorkspace'>;
+  const decideChangeSet = new DecideProposedChangeSetUseCase(runs, projects, changeSets, gateway, undefined, undefined, executionPolicy);
   const readiness = new InMemoryReadinessState();
   readiness.markReady();
   const getSession = { execute: jest.fn().mockImplementation((cookie?: string) => Promise.resolve({ sessionId: 'session', principal: { id: cookie === 'other' ? OTHER_OWNER_ID : OWNER_ID, displayName: 'Local user', accountKind: 'regular', role: 'admin' }, csrfToken: 'csrf-token', expiresAt: new Date(Date.now() + 60_000) })) } as unknown as GetSessionUseCase;
@@ -120,7 +124,7 @@ async function buildContext(options: { readonly outcome?: WorkspaceApplyResult['
       clearSessionCookie: () => undefined
     }
   });
-  return { app, runId: run.id, proposalHash: collected.proposalHash, changeSets, gateway, projects };
+  return { app, runId: run.id, proposalHash: collected.proposalHash, changeSets, gateway, projects, decideChangeSet };
 }
 
 async function createSucceededRun(repository: InMemoryAiRunRepository): Promise<AiRun> {

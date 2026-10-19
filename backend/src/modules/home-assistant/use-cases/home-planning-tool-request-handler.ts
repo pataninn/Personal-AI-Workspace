@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 
 import { HomeConversationInputInvalidError, HomeConversationNotFoundError, HomeTurnNotActiveError, HomeTurnNotFoundError } from '@/modules/home-assistant/domain/home-conversation-errors';
 import { HomePlanningScopeConflictError } from '@/modules/home-assistant/domain/home-planning-errors';
-import type { HomeConversationScope } from '@/modules/home-assistant/domain/home-conversation-types';
+import type { HomeConversationScope, HomeTurn } from '@/modules/home-assistant/domain/home-conversation-types';
 import type { IHomeConversationRepository } from '@/modules/home-assistant/repositories/home-conversation-repository';
 import type { HomePlanningToolRequest, HomePlanningToolResultCandidate, HomePlanningToolResolution, IHomePlanningToolRequestHandler } from '@/modules/home-assistant/repositories/home-planning-tool-request-handler';
 import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
@@ -15,25 +15,29 @@ import type { Project } from '@/modules/projects/domain/project-types';
 import type { IWorkspacePlanningUseCases } from '@/modules/projects/use-cases/workspace-planning-use-cases';
 import type { IActionUndoUseCases } from '@/modules/home-assistant/use-cases/action-undo-use-cases';
 import type { IPrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
+import type { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
+import type { AssistantToolCapability } from '@/modules/assistant-policy/domain/assistant-scope-policy';
 import { parseHomePlanningToolArgs, resolveDeadline, stableJson, type HomePlanningToolName } from '@/modules/home-assistant/use-cases/home-planning-command-validation';
 
 const MAX_TASK_LIST_BYTES = 64 * 1024;
 const MAX_TASK_DETAIL_BYTES = 16 * 1024;
 const MAX_WORKSPACE_BYTES = 64 * 1024;
 
+/** Retained for the read-only legacy proposal/history application boundary. */
 export interface HomeProposalDraftCreator {
-  createFromTool(input: HomePlanningToolRequest, args: { readonly items: readonly unknown[] }): Promise<{ readonly id: string; readonly revision: number; readonly itemCount: number }>;
+  createFromTool(input: HomePlanningToolRequest, value: { readonly items: readonly unknown[] }): Promise<{ readonly id: string; readonly revision: number; readonly itemCount: number }>;
 }
 
 export interface HomePlanningToolRequestHandlerDependencies {
   readonly principalAuthorization: Pick<IPrincipalAuthorization, 'assertActive'>;
+  readonly executionPolicy: Pick<AssertAssistantExecutionPolicyUseCase, 'assertHome'>;
+  readonly provider: { readonly profile: string; readonly model: string };
   readonly conversations: IHomeConversationRepository;
   readonly listTasks: ListGlobalTasksUseCase;
   readonly getTask: GetGlobalTaskUseCase;
   readonly taskMutations: ITaskMutationCommands;
   readonly workspaces: IWorkspacePlanningUseCases;
   readonly undo: IActionUndoUseCases;
-  readonly proposals: HomeProposalDraftCreator;
   readonly timeZone?: string;
 }
 
@@ -56,21 +60,30 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
       throw new HomeConversationNotFoundError();
     }
 
+    const capability = capabilityForTool(input.name);
+    if (!capability) return null;
+    if (!await this.policyAllows(input, turn, capability, conversation.scope.kind === 'workspace' ? conversation.scope.workspaceId : undefined)) return null;
+
     const operationKey = directOperationKey(input);
     switch (input.name as HomePlanningToolName) {
       case 'home_list_tasks':
-        return this.readResolution(input.scope, await this.listTasks(input.ownerId, input.scope, args));
+        return this.readResolution(input, turn, capability, await this.listTasks(input.ownerId, input.scope, args),
+          input.scope.kind === 'workspace' ? input.scope.workspaceId : (args.workspaceId as string | undefined));
       case 'home_get_task':
-        return this.readResolution(input.scope, await this.getTaskResult(input.ownerId, input.scope, args));
+        return this.readResolution(input, turn, capability, await this.getTaskResult(input.ownerId, input.scope, args),
+          input.scope.kind === 'workspace' ? input.scope.workspaceId : undefined);
       case 'home_search_workspaces':
-        return this.readResolution(input.scope, await this.searchWorkspaces(input.ownerId, input.scope, args));
+        return this.readResolution(input, turn, capability, await this.searchWorkspaces(input.ownerId, input.scope, args),
+          input.scope.kind === 'workspace' ? input.scope.workspaceId : undefined);
       case 'home_reuse_workspace':
-        return this.readResolution(input.scope, await this.reuseWorkspace(input.ownerId, input.scope, args));
+        return this.readResolution(input, turn, capability, await this.reuseWorkspace(input.ownerId, input.scope, args),
+          input.scope.kind === 'workspace' ? input.scope.workspaceId : (args.workspaceId as string));
       case 'home_create_task': {
         const workspaceId = args.workspaceId === undefined && input.scope.kind === 'workspace'
           ? input.scope.workspaceId
           : (args.workspaceId as string | null | undefined) ?? null;
         await this.assertTaskWorkspace(input.ownerId, input.scope, workspaceId);
+        if (!await this.policyAllows(input, turn, capability, workspaceId ?? undefined)) return null;
         const receipt = await this.dependencies.taskMutations.create({
           ownerId: input.ownerId,
           projectId: workspaceId,
@@ -89,6 +102,7 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
         const taskId = args.taskId as string;
         const current = await this.scopedTask(input.ownerId, input.scope, taskId, false);
         const subtasks = args.subtasks === undefined ? undefined : normalizeSubtaskPatch(args.subtasks, current.task.subtasks.map((item) => item.id));
+        if (!await this.policyAllows(input, turn, capability, current.task.projectId ?? undefined)) return null;
         const receipt = await this.dependencies.taskMutations.update({
           ownerId: input.ownerId, taskId, expectedVersion: args.expectedVersion as number,
           ...(current.task.projectId ? { expectedProjectId: current.task.projectId } : {}),
@@ -107,6 +121,8 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
         const current = await this.scopedTask(input.ownerId, input.scope, taskId, false);
         const destination = args.workspaceId as string | null;
         await this.assertTaskWorkspace(input.ownerId, input.scope, destination);
+        if (!await this.policyAllows(input, turn, capability, current.task.projectId ?? undefined)
+          || !await this.policyAllows(input, turn, capability, destination ?? undefined)) return null;
         const receipt = await this.dependencies.taskMutations.move({
           ownerId: input.ownerId, taskId, expectedVersion: args.expectedVersion as number, workspaceId: destination,
           operationKey, actorKind: 'assistant', turnId: turn.id,
@@ -119,6 +135,7 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
         const taskId = args.taskId as string;
         // An archived task is still needed to re-enter the canonical ledger for an identical retry.
         const current = await this.scopedTask(input.ownerId, input.scope, taskId, true);
+        if (!await this.policyAllows(input, turn, capability, current.task.projectId ?? undefined)) return null;
         const receipt = await this.dependencies.taskMutations.archive({
           ownerId: input.ownerId, taskId, expectedVersion: args.expectedVersion as number,
           ...(current.task.projectId ? { expectedProjectId: current.task.projectId } : {}),
@@ -129,6 +146,7 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
       }
       case 'home_create_workspace': {
         if (input.scope.kind !== 'home') throw new HomePlanningScopeConflictError();
+        if (!await this.policyAllows(input, turn, capability)) return null;
         const result = await this.dependencies.workspaces.createPlanning({
           ownerId: input.ownerId, operationKey, name: args.name,
           ...(args.objective === undefined ? {} : { objective: args.objective }), actorKind: 'assistant', turnId: turn.id
@@ -138,6 +156,7 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
       case 'home_update_workspace_objective': {
         const workspaceId = args.workspaceId as string;
         await this.assertWorkspace(input.ownerId, input.scope, workspaceId);
+        if (!await this.policyAllows(input, turn, capability, workspaceId)) return null;
         const result = await this.dependencies.workspaces.updateObjective({
           ownerId: input.ownerId, projectId: workspaceId, expectedVersion: args.expectedVersion as number,
           operationKey, objective: args.objective, actorKind: 'assistant', turnId: turn.id
@@ -147,16 +166,15 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
       case 'home_undo_action': {
         const actionId = args.actionId as string;
         const original = await this.dependencies.undo.getReceipt({ ownerId: input.ownerId, actionId });
-        if (input.scope.kind === 'workspace') await this.assertUndoScope(input.ownerId, input.scope, original);
+        const targetProjectId = await this.assertUndoScope(input.ownerId, input.scope, original);
+        if (!await this.policyAllows(input, turn, capability, targetProjectId ?? undefined)) return null;
         const result = await this.dependencies.undo.undo({
           ownerId: input.ownerId, actionId, operationKey, actorKind: 'assistant', turnId: turn.id
         });
         return immediate(result.undoReceipt, result.replayed);
       }
-      case 'home_propose_bulk_changes': {
-        const result = await this.dependencies.proposals.createFromTool(input, args as unknown as { readonly items: readonly unknown[] });
-        return { kind: 'immediate', result: { outcome: 'shared', data: { proposal: { id: result.id, state: 'review_required', revision: result.revision, itemCount: result.itemCount }, execution: { state: 'proposal_saved' } } } };
-      }
+      case 'home_propose_bulk_changes':
+        return null;
       default:
         return null;
     }
@@ -245,23 +263,107 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
     return boundedCandidate(scope, ['workspace_metadata'], 1, { workspace: workspaceMetadata(project) }, 16 * 1024);
   }
 
-  private async assertUndoScope(ownerId: string, scope: HomeConversationScope, original: ActionLedgerRecord): Promise<void> {
-    if (scope.kind !== 'workspace') throw new HomePlanningScopeConflictError();
-    await this.assertWorkspace(ownerId, scope, scope.workspaceId);
+  private async assertUndoScope(ownerId: string, scope: HomeConversationScope, original: ActionLedgerRecord): Promise<string | null> {
     if (original.targetKind === 'workspace') {
-      if (original.targetId !== scope.workspaceId) throw new HomePlanningScopeConflictError();
-      return;
+      const workspaceId = original.targetId;
+      if (scope.kind === 'workspace' && workspaceId !== scope.workspaceId) throw new HomePlanningScopeConflictError();
+      await this.assertWorkspace(ownerId, scope, workspaceId);
+      return workspaceId;
     }
     const current = await this.dependencies.getTask.execute({ ownerId, taskId: original.targetId, includeArchived: true });
-    if (current.task.projectId !== scope.workspaceId) throw new HomePlanningScopeConflictError();
+    if (scope.kind === 'workspace') {
+      await this.assertWorkspace(ownerId, scope, scope.workspaceId);
+      if (current.task.projectId !== scope.workspaceId) throw new HomePlanningScopeConflictError();
+    }
+    return current.task.projectId;
   }
 
-  private readResolution(scope: HomeConversationScope, candidate: HomePlanningToolResultCandidate): HomePlanningToolResolution {
-    if (candidate.scope.kind !== scope.kind || (scope.kind === 'workspace' && candidate.scope.kind === 'workspace' && candidate.scope.workspaceId !== scope.workspaceId)) {
+  private async readResolution(
+    input: HomePlanningToolRequest,
+    turn: HomeTurn,
+    capability: AssistantToolCapability,
+    candidate: HomePlanningToolResultCandidate,
+    authorizationProjectId?: string
+  ): Promise<HomePlanningToolResolution | null> {
+    if (input.scope.kind !== candidate.scope.kind
+      || (input.scope.kind === 'workspace' && candidate.scope.kind === 'workspace' && candidate.scope.workspaceId !== input.scope.workspaceId)) {
       throw new HomePlanningScopeConflictError();
     }
-    if (candidate.itemCount === 0) return { kind: 'immediate', result: { outcome: 'shared', data: candidate.data } };
-    return { kind: 'consented', candidate };
+    if (!await this.policyAllows(input, turn, capability, authorizationProjectId)) return null;
+    if (input.scope.kind === 'home') {
+      const targetIds = candidateProjectIds(candidate);
+      if (targetIds.length > 1) return null;
+      authorizationProjectId ??= targetIds[0];
+      if (authorizationProjectId && !await this.policyAllows(input, turn, capability, authorizationProjectId)) return null;
+    }
+    return {
+      kind: 'immediate',
+      result: { outcome: 'shared', data: candidate.data },
+      ...(authorizationProjectId ? { authorizationProjectId } : {})
+    };
+  }
+
+  private async policyAllows(
+    input: HomePlanningToolRequest,
+    turn: HomeTurn,
+    capability: AssistantToolCapability,
+    projectId?: string
+  ): Promise<boolean> {
+    const homePolicyRevision = turn.homePolicyRevision;
+    if (!isPolicyRevision(homePolicyRevision)) return false;
+    const workspacePolicyRevision = turn.workspacePolicyRevision;
+    let expectedWorkspaceRevision: string | undefined;
+    if (input.scope.kind === 'workspace') {
+      if (!isPolicyRevision(workspacePolicyRevision)
+        || (projectId !== undefined && projectId !== input.scope.workspaceId)) return false;
+      expectedWorkspaceRevision = workspacePolicyRevision;
+    }
+    if (input.scope.kind === 'home' && workspacePolicyRevision !== null) return false;
+    try {
+      const authorization = await this.dependencies.executionPolicy.assertHome({
+        ownerId: input.ownerId,
+        ...(projectId ? { projectId } : input.scope.kind === 'workspace' ? { projectId: input.scope.workspaceId } : {}),
+        providerProfile: this.dependencies.provider.profile,
+        model: this.dependencies.provider.model,
+        homePolicyRevision,
+        ...(expectedWorkspaceRevision ? { workspacePolicyRevision: expectedWorkspaceRevision } : {})
+      });
+      return authorization.effectiveCapabilities.includes(capability);
+    } catch {
+      return false;
+    }
+  }
+}
+
+function isPolicyRevision(value: string | null): value is string {
+  return value !== null && /^[1-9][0-9]{0,18}$/u.test(value);
+}
+
+function candidateProjectIds(candidate: HomePlanningToolResultCandidate): string[] {
+  const rows = Array.isArray(candidate.data.items) ? candidate.data.items : [candidate.data.task];
+  const ids = rows.flatMap((row) => {
+    if (!row || typeof row !== 'object') return [];
+    const item = row as Record<string, unknown>;
+    if (candidate.categories.includes('workspace_metadata') && typeof item.id === 'string') return [item.id];
+    return typeof item.workspaceId === 'string' ? [item.workspaceId] : [];
+  });
+  return [...new Set(ids)];
+}
+
+function capabilityForTool(name: string): AssistantToolCapability | null {
+  switch (name as HomePlanningToolName) {
+    case 'home_list_tasks':
+    case 'home_get_task': return 'home_task_read';
+    case 'home_create_task':
+    case 'home_update_task':
+    case 'home_move_task':
+    case 'home_archive_task': return 'home_task_write';
+    case 'home_search_workspaces':
+    case 'home_reuse_workspace': return 'home_workspace_read';
+    case 'home_create_workspace':
+    case 'home_update_workspace_objective': return 'home_workspace_write';
+    case 'home_undo_action': return 'home_action_undo';
+    default: return null;
   }
 }
 

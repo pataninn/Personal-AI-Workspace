@@ -15,6 +15,8 @@ export type SyntheticTurnStatus =
   | 'unknown'
   | 'unsupported';
 
+export type SyntheticPolicyState = 'ready' | 'unavailable' | 'blocked';
+
 export interface SyntheticConversation {
   readonly id: string;
   readonly scope: SyntheticScope;
@@ -60,7 +62,8 @@ export interface HomeChatFixtureOptions {
   readonly events?: readonly SyntheticEvent[];
   readonly failEventReads?: number;
   readonly failTurnSubmissions?: number;
-  readonly dynamicConsentAfterAllow?: boolean;
+  readonly policyState?: SyntheticPolicyState;
+  readonly failPolicyReads?: number;
   readonly turnReadStatuses?: readonly SyntheticTurnStatus[];
 }
 
@@ -68,7 +71,9 @@ export interface HomeChatFixtureCalls {
   readonly listQueries: Array<{ readonly scope: string | null; readonly workspaceId: string | null }>;
   readonly createRequests: Array<{ readonly body: Readonly<Record<string, unknown>>; readonly idempotencyKey: string }>;
   readonly submitRequests: Array<{ readonly body: Readonly<Record<string, unknown>>; readonly idempotencyKey: string }>;
-  readonly consentDecisions: Array<{ readonly body: Readonly<Record<string, unknown>>; readonly phase: 'initial' | 'tool_result' }>;
+  readonly policyReads: Array<'home' | 'workspace'>;
+  readonly retiredDecisionRequests: number;
+  readonly policyNetworkFailures: number;
   readonly eventCursors: number[];
   cancellationRequests: number;
   turnStatusReads: number;
