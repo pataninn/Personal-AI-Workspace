@@ -34,6 +34,8 @@ import { createHomeProposalRouter, type HomeProposalRouterDependencies } from '@
 import { HomeConversationDomainError } from '@/modules/home-assistant/domain/home-conversation-errors';
 import { createAccountStorageRouter, type AccountStorageRouterDependencies } from '@/modules/storage-quotas/controllers/account-storage-router';
 import { StorageQuotaError } from '@/modules/storage-quotas/domain/storage-quota-errors';
+import { createDemoAdmissionRouter, type DemoAdmissionRouterDependencies } from '@/modules/demo/controllers/demo-admission-router';
+import { DemoAdmissionError } from '@/modules/demo/domain/demo-admission-errors';
 
 export interface CreateAppOptions {
   readonly logger: AppLogger;
@@ -54,6 +56,8 @@ export interface CreateAppOptions {
   readonly homeConversations?: HomeConversationRouterDependencies;
   readonly homeProposals?: HomeProposalRouterDependencies;
   readonly accountStorage?: AccountStorageRouterDependencies;
+  readonly demoAdmission?: DemoAdmissionRouterDependencies;
+  readonly trustedProxyCidrs?: readonly string[];
 }
 
 const requestIdMiddleware: RequestHandler = (request, response, next) => {
@@ -136,6 +140,9 @@ function toAppError(error: unknown): AppError | null {
     const details = Object.entries(error.details).map(([field, value]) => ({ field, message: String(value) }));
     return new AppError(error.code, error.statusCode, error.message, details);
   }
+  if (error instanceof DemoAdmissionError) {
+    return new AppError(error.code, error.statusCode, error.message);
+  }
   if (isMalformedJsonError(error)) {
     return new AppError('VALIDATION_ERROR', 400, 'The request body is not valid JSON.');
   }
@@ -156,6 +163,7 @@ export function createApp(options: CreateAppOptions): Express {
   const getLiveness = new GetLivenessUseCase();
 
   app.disable('x-powered-by');
+  app.set('trust proxy', options.trustedProxyCidrs ?? false);
   app.use(helmet({
     contentSecurityPolicy: {
       useDefaults: false,
@@ -177,7 +185,13 @@ export function createApp(options: CreateAppOptions): Express {
     }
   }));
   app.use(requestIdMiddleware);
-  app.use(pinoHttp({ logger: options.logger }));
+  app.use(pinoHttp({
+    logger: options.logger,
+    serializers: {
+      req: (request) => ({ method: request.method }),
+      res: (response) => ({ statusCode: response.statusCode })
+    }
+  }));
   app.use(express.json({ limit: '1mb' }));
   app.use(cookieParser());
   app.use(createHealthRouter({
@@ -187,6 +201,9 @@ export function createApp(options: CreateAppOptions): Express {
   }));
   if (options.auth) {
     app.use('/api/v1/auth', createAuthRouter(options.auth));
+  }
+  if (options.demoAdmission) {
+    app.use('/api/v1/demo', createDemoAdmissionRouter(options.demoAdmission));
   }
   if (options.projects) {
     app.use('/api/v1/projects', createProjectRouter(options.projects));

@@ -319,6 +319,19 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
     }
   }
 
+  public async abortStart(input: StartRunUpdate): Promise<boolean> {
+    const rows: readonly { readonly id: string }[] = await this.dataSource.query(`
+      UPDATE "ai_runs" SET "status" = 'ready', "phase" = 'runtime',
+        "start_idempotency_key" = NULL, "start_fingerprint" = NULL,
+        "safe_message" = 'Private run environment ready.', "updated_at" = now()
+      WHERE "owner_id" = $1 AND "id" = $2 AND "status" = 'queued'
+        AND "start_idempotency_key" = $3 AND "start_fingerprint" = $4
+        AND "provider_transmission" = 'not_started_confirmed'
+      RETURNING "id"
+    `, [input.ownerId, input.runId, input.idempotencyKey, input.requestFingerprint]);
+    return rows.length > 0;
+  }
+
   public async markRunning(ownerId: string, runId: string): Promise<AiRun | null> {
     const queryRunner = await this.startTransaction();
     try {

@@ -238,6 +238,27 @@ export class InMemoryAiRunRepository implements IAiRunRepository, IProjectTaskSu
     });
   }
 
+  public async abortStart(input: StartRunUpdate): Promise<boolean> {
+    return this.withLock(`start:${input.runId}`, async () => {
+      const run = this.runs.get(input.runId);
+      if (!run) return false;
+      const { startIdempotencyKey, startFingerprint, ...withoutStartIdempotency } = run;
+      if (run.ownerId !== input.ownerId || run.status !== 'queued'
+        || startIdempotencyKey !== input.idempotencyKey || startFingerprint !== input.requestFingerprint) {
+        return false;
+      }
+      const ready: AiRun = {
+        ...withoutStartIdempotency,
+        status: 'ready',
+        phase: 'runtime',
+        safeMessage: 'Private run environment ready.',
+        updatedAt: new Date()
+      };
+      this.runs.set(ready.id, ready);
+      return true;
+    });
+  }
+
   public async markRunning(ownerId: string, runId: string): Promise<AiRun | null> {
     return this.withLock(`start:${runId}`, async () => {
       const run = this.runs.get(runId);

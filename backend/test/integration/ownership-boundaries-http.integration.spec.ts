@@ -293,7 +293,7 @@ beforeAll(async () => {
       getSession,
       principalAuthorization: new PrincipalAuthorization(userRepository, new TestClock()),
       getAiRun: new GetAiRunUseCase(runs, projects),
-      startAiRun: new StartAiRunUseCase(runs, conversationRepository, runtime, runEvents),
+      startAiRun: new StartAiRunUseCase(runs, conversationRepository, runtime, runEvents, { admitDemoRunStart: async () => undefined }),
       cancelAiRun: new CancelAiRunUseCase(runs, runtime, runEvents),
       events: runEvents,
       appOrigin: APP_ORIGIN,

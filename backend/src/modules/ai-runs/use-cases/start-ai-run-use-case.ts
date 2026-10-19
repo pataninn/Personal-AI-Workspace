@@ -17,6 +17,8 @@ import type { TaskSuggestionDraft } from '@/modules/ai-runs/domain/task-suggesti
 import type { IProviderPermissionRepository } from '@/modules/ai-runs/repositories/provider-permission-repository';
 import type { IPrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
 import type { IStagingGateway } from '@/modules/ai-runs/repositories/staging-gateway';
+import type { IDemoRunStartAdmission } from '@/modules/demo/domain/demo-admission-types';
+import { DemoAdmissionUnavailableError } from '@/modules/demo/domain/demo-admission-errors';
 
 export interface RuntimeCommandProposalPort {
   execute(input: {
@@ -51,6 +53,7 @@ export class StartAiRunUseCase {
     private readonly conversationRepository: IConversationRepository,
     private readonly agentRuntime: IAgentRuntime,
     private readonly events: IRunEventPublisher,
+    private readonly demoRunStartAdmission: IDemoRunStartAdmission,
     private readonly commandProposals?: RuntimeCommandProposalPort,
     private readonly projectRepository?: IProjectRepository,
     private readonly changeSetProposals?: RuntimeChangeSetProposalPort,
@@ -79,33 +82,23 @@ export class StartAiRunUseCase {
         throw new AiRunProviderPermissionRevokedError();
       }
     }
-    const result = this.aiRunRepository.beginStart
-      ? await this.aiRunRepository.beginStart({ ownerId: input.ownerId, runId: input.runId, idempotencyKey, requestFingerprint })
-      : await this.beginWithLegacyRepository(input, idempotencyKey, requestFingerprint);
+    const startInput = { ownerId: input.ownerId, runId: input.runId, idempotencyKey, requestFingerprint };
+    const result = await this.aiRunRepository.beginStart(startInput);
     if (!result.replayed) {
+      try {
+        await this.demoRunStartAdmission.admitDemoRunStart(input.ownerId, input.runId);
+      } catch (error: unknown) {
+        try {
+          await this.aiRunRepository.abortStart(startInput);
+        } catch {
+          throw new DemoAdmissionUnavailableError();
+        }
+        throw error;
+      }
       await this.publishStatus(result.resource, 'run.status_changed');
       void this.runSafely(result.resource);
     }
     return result;
-  }
-
-  private async beginWithLegacyRepository(input: StartAiRunInput, idempotencyKey: string, requestFingerprint: string): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> {
-    const current = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
-    if (!current) {
-      throw new AiRunStateConflictError();
-    }
-    if (current.startIdempotencyKey) {
-      if (current.startIdempotencyKey !== idempotencyKey || current.startFingerprint !== requestFingerprint) {
-        throw new AiRunStateConflictError();
-      }
-      return { resource: current, replayed: true };
-    }
-    if (current.status !== 'ready') {
-      throw new AiRunStateConflictError();
-    }
-    const updated: AiRun = { ...current, status: 'queued', phase: 'inference', startIdempotencyKey: idempotencyKey, startFingerprint: requestFingerprint, safeMessage: 'Starting assistant run.', updatedAt: new Date() };
-    await this.aiRunRepository.save(updated);
-    return { resource: updated, replayed: false };
   }
 
   private async runSafely(run: AiRun): Promise<void> {

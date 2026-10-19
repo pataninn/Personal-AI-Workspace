@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isIP } from 'node:net';
 import { NEBIUS_PROVIDER_PROFILE, NVIDIA_PROVIDER_PROFILE } from '@/modules/ai-runs/domain/model-provider-profile';
 import { parseCreditRate, parseTokenLimit } from '@/modules/credits/domain/credit-calculation';
 import type { ProviderCallCreditConfiguration } from '@/modules/credits/repositories/provider-call-credit-admission';
@@ -49,6 +50,19 @@ const appEnvironmentSchema = z.object({
     .default('12')
     .transform((value: string) => Number(value))
     .refine((value: number) => Number.isInteger(value) && value >= 1 && value <= 168, 'SESSION_TTL_HOURS must be 1..168'),
+  DEMO_SESSION_TTL_HOURS: z
+    .string()
+    .default('24')
+    .transform((value: string) => Number(value))
+    .refine((value: number) => Number.isInteger(value) && value >= 1 && value <= 24, 'DEMO_SESSION_TTL_HOURS must be 1..24'),
+  DEMO_GLOBAL_ADMISSION_MAX: z.string().optional(),
+  DEMO_GLOBAL_ADMISSION_WINDOW_SECONDS: z.string().optional(),
+  DEMO_NETWORK_ADMISSION_MAX: z.string().optional(),
+  DEMO_NETWORK_ADMISSION_WINDOW_SECONDS: z.string().optional(),
+  DEMO_RUN_START_MAX: z.string().optional(),
+  DEMO_RUN_START_WINDOW_SECONDS: z.string().optional(),
+  DEMO_NETWORK_HASH_SECRET: z.string().optional(),
+  TRUSTED_PROXY_CIDRS: z.string().optional(),
   LOCAL_USER_PASSWORD: z.string().min(1).max(1024).optional(),
   LOCAL_USER_PASSWORD_FILE: z.string().min(1).optional(),
   LOCAL_USER_DISPLAY_NAME: z.string().min(1).max(120).default('Local user'),
@@ -107,6 +121,10 @@ export interface AppConfig {
   readonly accountWorkspacesIdentity?: string;
   readonly sessionSecret: string;
   readonly sessionLifetimeMs: number;
+  readonly demoSessionLifetimeMs: number;
+  readonly demoAbuseLimits?: DemoAbuseLimits;
+  readonly demoNetworkHashSecret?: string;
+  readonly trustedProxyCidrs?: readonly string[];
   readonly localUserPassword?: string;
   readonly localUserPasswordFile?: string;
   readonly localUserDisplayName: string;
@@ -138,6 +156,15 @@ export interface AppConfig {
   readonly database: DatabaseConfig;
 }
 
+export interface DemoAbuseLimits {
+  readonly globalAdmissionMax: number;
+  readonly globalAdmissionWindowSeconds: number;
+  readonly networkAdmissionMax: number;
+  readonly networkAdmissionWindowSeconds: number;
+  readonly runStartMax: number;
+  readonly runStartWindowSeconds: number;
+}
+
 function configurationDetails(error: z.ZodError): readonly ErrorDetail[] {
   return error.issues.map((issue: z.ZodIssue) => ({
     field: issue.path.join('.') || 'environment',
@@ -148,6 +175,9 @@ function configurationDetails(error: z.ZodError): readonly ErrorDetail[] {
 function validateCrossFieldConfiguration(value: z.infer<typeof appEnvironmentSchema>): readonly ErrorDetail[] {
   const details: ErrorDetail[] = [];
   const appOrigin = new URL(value.APP_ORIGIN);
+  if (value.TRUSTED_PROXY_CIDRS !== undefined && parseTrustedProxyCidrs(value.TRUSTED_PROXY_CIDRS) === null) {
+    details.push({ field: 'TRUSTED_PROXY_CIDRS', message: 'Use a comma-separated list of IPv4/IPv6 CIDRs.' });
+  }
   if (value.HOME_PLANNING_TIME_ZONE) {
     try {
       new Intl.DateTimeFormat('en-US', { timeZone: value.HOME_PLANNING_TIME_ZONE });
@@ -230,6 +260,56 @@ function validateCrossFieldConfiguration(value: z.infer<typeof appEnvironmentSch
   return details;
 }
 
+function parseBoundedPositiveInteger(value: string | undefined, minimum: number, maximum: number): number | null {
+  if (!value || !/^[1-9][0-9]*$/u.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : null;
+}
+
+function parseDemoAbuseLimits(value: z.infer<typeof appEnvironmentSchema>): DemoAbuseLimits | undefined {
+  const globalAdmissionMax = parseBoundedPositiveInteger(value.DEMO_GLOBAL_ADMISSION_MAX, 1, 1_000_000);
+  const globalAdmissionWindowSeconds = parseBoundedPositiveInteger(value.DEMO_GLOBAL_ADMISSION_WINDOW_SECONDS, 60, 604_800);
+  const networkAdmissionMax = parseBoundedPositiveInteger(value.DEMO_NETWORK_ADMISSION_MAX, 1, 1_000_000);
+  const networkAdmissionWindowSeconds = parseBoundedPositiveInteger(value.DEMO_NETWORK_ADMISSION_WINDOW_SECONDS, 60, 604_800);
+  const runStartMax = parseBoundedPositiveInteger(value.DEMO_RUN_START_MAX, 1, 1_000_000);
+  const runStartWindowSeconds = parseBoundedPositiveInteger(value.DEMO_RUN_START_WINDOW_SECONDS, 60, 604_800);
+  if (!globalAdmissionMax || !globalAdmissionWindowSeconds || !networkAdmissionMax || !networkAdmissionWindowSeconds || !runStartMax || !runStartWindowSeconds
+    || !value.DEMO_NETWORK_HASH_SECRET || value.DEMO_NETWORK_HASH_SECRET.trim().length === 0
+    || Buffer.byteLength(value.DEMO_NETWORK_HASH_SECRET, 'utf8') < 32
+    || networkAdmissionWindowSeconds > globalAdmissionWindowSeconds) return undefined;
+  return {
+    globalAdmissionMax, globalAdmissionWindowSeconds,
+    networkAdmissionMax, networkAdmissionWindowSeconds,
+    runStartMax, runStartWindowSeconds
+  };
+}
+
+function parseTrustedProxyCidrs(value: string | undefined): readonly string[] | null | undefined {
+  if (value === undefined) return undefined;
+  const entries = value.split(',').map((entry) => entry.trim());
+  if (entries.length === 0 || entries.some((entry) => entry.length === 0)) return null;
+  const normalized: string[] = [];
+  for (const entry of entries) {
+    const [address, prefix, extra] = entry.split('/');
+    if (!address || extra !== undefined) return null;
+    const family = isIP(address);
+    if (family === 0) return null;
+    const maxPrefix = family === 4 ? 32 : 128;
+    const prefixLength = prefix === undefined ? maxPrefix : parseBoundedPositiveIntegerAllowZero(prefix, maxPrefix);
+    if (prefixLength === null) return null;
+    const cidr = `${address}/${prefixLength}`;
+    if (normalized.includes(cidr)) return null;
+    normalized.push(cidr);
+  }
+  return normalized;
+}
+
+function parseBoundedPositiveIntegerAllowZero(value: string, maximum: number): number | null {
+  if (!/^(0|[1-9][0-9]*)$/u.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed <= maximum ? parsed : null;
+}
+
 function validateOpenShellConfiguration(
   value: z.infer<typeof appEnvironmentSchema>,
   details: ErrorDetail[]
@@ -285,6 +365,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
   }
 
   const database = loadDatabaseConfig(environment);
+  const demoAbuseLimits = parseDemoAbuseLimits(parsed.data);
   const providerCreditConfiguration = parsed.data.NIM_CREDIT_PRICE_VERSION
     && parsed.data.NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS
     && parsed.data.NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS
@@ -321,6 +402,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     ...(parsed.data.ACCOUNT_WORKSPACES_IDENTITY ? { accountWorkspacesIdentity: parsed.data.ACCOUNT_WORKSPACES_IDENTITY } : {}),
     sessionSecret: parsed.data.SESSION_SECRET,
     sessionLifetimeMs: parsed.data.SESSION_TTL_HOURS * 60 * 60 * 1_000,
+    demoSessionLifetimeMs: parsed.data.DEMO_SESSION_TTL_HOURS * 60 * 60 * 1_000,
+    ...(demoAbuseLimits ? { demoAbuseLimits } : {}),
+    ...(parsed.data.DEMO_NETWORK_HASH_SECRET ? { demoNetworkHashSecret: parsed.data.DEMO_NETWORK_HASH_SECRET } : {}),
+    ...(parsed.data.TRUSTED_PROXY_CIDRS !== undefined ? { trustedProxyCidrs: parseTrustedProxyCidrs(parsed.data.TRUSTED_PROXY_CIDRS) ?? [] } : {}),
     ...(parsed.data.LOCAL_USER_PASSWORD ? { localUserPassword: parsed.data.LOCAL_USER_PASSWORD } : {}),
     ...(parsed.data.LOCAL_USER_PASSWORD_FILE ? { localUserPasswordFile: parsed.data.LOCAL_USER_PASSWORD_FILE } : {}),
     localUserDisplayName: parsed.data.LOCAL_USER_DISPLAY_NAME,

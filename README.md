@@ -136,6 +136,41 @@ projects continue to use their recorded relative roots there. New file-backed pr
 never select a host path in the browser and are allocated under the separate managed
 storage mount described below. Planning-only projects remain usable without that mount.
 
+### Private demo admission
+
+The passwordless demo endpoint is `POST /api/v1/demo/session`. It accepts an empty
+request body, an exact configured `Origin`, and a high-entropy `Idempotency-Key`.
+The key is stored as a one-way digest, is globally unique across network changes,
+and is not a session credential. A cookie-less replay receives only the persisted
+pending/ready status; it cannot recover or mint a session cookie. A valid demo cookie
+resumes the same account without extending its expiry, while a valid regular-account
+cookie is preserved on conflict.
+
+New anonymous admission remains disabled until all six `DEMO_GLOBAL_ADMISSION_MAX`,
+`DEMO_GLOBAL_ADMISSION_WINDOW_SECONDS`, `DEMO_NETWORK_ADMISSION_MAX`,
+`DEMO_NETWORK_ADMISSION_WINDOW_SECONDS`, `DEMO_RUN_START_MAX`, and
+`DEMO_RUN_START_WINDOW_SECONDS` values and `DEMO_NETWORK_HASH_SECRET` are configured
+together. Limits are bounded positive integers; this project does not choose
+production admission budgets. `DEMO_NETWORK_HASH_SECRET` must be a dedicated random
+secret of at least 32 bytes, kept private and separate from `SESSION_SECRET`. Rotating
+it while an old network window is still active temporarily blocks new admissions
+rather than resetting the existing counter. `DEMO_SESSION_TTL_HOURS` is optional,
+defaults to 24, and accepts only 1 through 24 hours.
+
+`TRUSTED_PROXY_CIDRS` is optional and must list the exact trusted proxy CIDRs. If it
+is unset, forwarded headers are ignored and visitors are grouped by the direct peer
+address. When configured, only validated CIDRs are passed to Express; the app does
+not parse `X-Forwarded-For` itself. Network limits identify a shared network bucket,
+not an individual person. Raw addresses are not persisted or included in request logs.
+
+A new demo account receives storage-ready status only after the server verifies its
+new database account is empty and initializes its storage accounting. This does not
+publish a showcase copy; that protected copy flow belongs to a later release task.
+Non-AI exploration does not require provider-spending configuration. AI remains
+subject to the shared credit pause, configured budgets, verified request bounds, and
+provider-call admission; demo admission itself never enables or spends on a provider
+request. Expired demo data cleanup is also a separate later task.
+
 Keep the credential and TLS files at the paths named in <code>.env</code>. The
 default template places these files under
 <code>%LOCALAPPDATA%\Personal-AI-Workspace\private</code>:

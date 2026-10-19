@@ -26,7 +26,61 @@ describe('loadConfig', () => {
     expect(config.nimModel).toBe(EXPECTED_NIM_MODEL);
     expect(config.agentRuntimeMode).toBe('direct');
     expect(config.sessionSecret).toBe('a'.repeat(32));
+    expect(config.demoSessionLifetimeMs).toBe(24 * 60 * 60 * 1_000);
+    expect(config.demoAbuseLimits).toBeUndefined();
+    expect(config.trustedProxyCidrs).toBeUndefined();
     expect(config.storageDiskWarningFreeBytes).toBeUndefined();
+  });
+
+  it('parses complete demo abuse settings and validated proxy CIDRs', () => {
+    const config = loadConfig({
+      ...validEnvironment,
+      DEMO_GLOBAL_ADMISSION_MAX: '30',
+      DEMO_GLOBAL_ADMISSION_WINDOW_SECONDS: '3600',
+      DEMO_NETWORK_ADMISSION_MAX: '3',
+      DEMO_NETWORK_ADMISSION_WINDOW_SECONDS: '900',
+      DEMO_RUN_START_MAX: '4',
+      DEMO_RUN_START_WINDOW_SECONDS: '3600',
+      DEMO_NETWORK_HASH_SECRET: 'd'.repeat(32),
+      DEMO_SESSION_TTL_HOURS: '12',
+      TRUSTED_PROXY_CIDRS: '10.0.0.0/8,2001:db8::/32'
+    });
+
+    expect(config.demoSessionLifetimeMs).toBe(12 * 60 * 60 * 1_000);
+    expect(config.demoAbuseLimits).toEqual({
+      globalAdmissionMax: 30,
+      globalAdmissionWindowSeconds: 3600,
+      networkAdmissionMax: 3,
+      networkAdmissionWindowSeconds: 900,
+      runStartMax: 4,
+      runStartWindowSeconds: 3600
+    });
+    expect(config.demoNetworkHashSecret).toBe('d'.repeat(32));
+    expect(config.trustedProxyCidrs).toEqual(['10.0.0.0/8', '2001:db8::/32']);
+  });
+
+  it('keeps new demo admission closed when abuse settings are partial or invalid', () => {
+    const complete = {
+      DEMO_GLOBAL_ADMISSION_MAX: '30',
+      DEMO_GLOBAL_ADMISSION_WINDOW_SECONDS: '3600',
+      DEMO_NETWORK_ADMISSION_MAX: '3',
+      DEMO_NETWORK_ADMISSION_WINDOW_SECONDS: '900',
+      DEMO_RUN_START_MAX: '4',
+      DEMO_RUN_START_WINDOW_SECONDS: '3600',
+      DEMO_NETWORK_HASH_SECRET: 'd'.repeat(32)
+    };
+    expect(loadConfig({ ...validEnvironment, ...complete, DEMO_NETWORK_HASH_SECRET: 'short' }).demoAbuseLimits).toBeUndefined();
+    expect(loadConfig({ ...validEnvironment, DEMO_GLOBAL_ADMISSION_MAX: '0' }).demoAbuseLimits).toBeUndefined();
+    const partial = { ...complete };
+    delete (partial as Partial<typeof partial>).DEMO_RUN_START_MAX;
+    expect(loadConfig({ ...validEnvironment, ...partial }).demoAbuseLimits).toBeUndefined();
+    expect(loadConfig({ ...validEnvironment, ...complete, DEMO_NETWORK_ADMISSION_WINDOW_SECONDS: '7200' }).demoAbuseLimits).toBeUndefined();
+  });
+
+  it('rejects invalid trusted proxy entries and refuses to treat a host list as CIDRs', () => {
+    for (const value of ['true', '1', 'proxy.internal', '10.0.0.0/33', '10.0.0.0/8,']) {
+      expect(() => loadConfig({ ...validEnvironment, TRUSTED_PROXY_CIDRS: value })).toThrow(ConfigurationError);
+    }
   });
 
   it('accepts only a positive decimal process-visible disk warning threshold', () => {

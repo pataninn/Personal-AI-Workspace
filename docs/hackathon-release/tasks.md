@@ -5,7 +5,7 @@
 **Last Updated:** 2026-10-19
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Tasks 1.1, 2.1, 2.2, 3.1, and 5.2 delivered; Task 3.2 storage-quota production integration in progress.
+**Status:** Execution active. Tasks 1.1, 2.1, 2.2, 3.1, 3.2, and 5.2 delivered; Task 3.3 demo admission and Task 4.1 task-scoped design in progress.
 
 ## Plan Summary
 
@@ -197,11 +197,11 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 3.2 — Enforce account storage limits on every persistent write
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** developer, tester
 **Depends on:** 2.2
 **Risk:** High: concurrent growth and data loss
-**Contract:** `.codex/docs/hackathon-release/task-3-2-storage-quotas/contract.md` (contract established; production integration and independent verification in progress)
+**Contract:** `.codex/docs/hackathon-release/task-3-2-storage-quotas/contract.md` (implemented and independently verified; developer-owned contract)
 
 **MCP Inputs & Required Evidence:**
 
@@ -212,7 +212,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-3-2-storage-quotas/artifacts/`
-- `Current status:` Independent tester PASS in qa-report.md with Evidence Index. Developer backend unit138suites825tests, typecheck and isolated PostgreSQL29suites105tests PASS; independent unit24suites167tests, typecheck and PostgreSQL6suites10tests PASS (generic rerun overlaps). No Critical/High findings. Known Compose baseline7/8 tracked separately; managed overlay check PASS. Required task-only local commit pending, so delivery status remains in progress.
+- `Current status:` Independent tester PASS in qa-report.md with Evidence Index. Developer backend unit138suites825tests, typecheck and isolated PostgreSQL29suites105tests PASS; independent unit24suites167tests, typecheck and PostgreSQL6suites10tests PASS (generic rerun overlaps). No Critical/High findings. Known Compose baseline7/8 tracked separately; managed overlay check PASS. Delivered local commit `b5d40315680b73afac3e04c1a52b8ceaba83a1bf` (`feat(storage): enforce account storage quotas`); only the six protected baseline files remain, nothing staged and no push.
 
 **Description:** Implement documented logical-byte accounting for files and DB content, recovery versions, and template copies; keep separate transient export/sandbox bounds.
 
@@ -235,11 +235,11 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 3.3 — Provision private one-click demo identities
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** developer, tester
 **Depends on:** 3.1, 3.2
 **Risk:** High: anonymous abuse and session isolation
-**Contract:** `.codex/docs/hackathon-release/task-3-3-demo-admission/contract.md` (planned; developer owns the contract gate)
+**Contract:** `.codex/docs/hackathon-release/task-3-3-demo-admission/contract.md` (implemented and independently verified; developer-owned contract)
 
 **MCP Inputs & Required Evidence:**
 
@@ -250,22 +250,22 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-3-3-demo-admission/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Independent tester PASS in qa-report.md with Evidence Index. Developer unit140suites838tests, integration31suites114tests and typecheck PASS; independent unit4/55, HTTP1/6, guarded PostgreSQL1/3 and typecheck PASS. No blocking findings. Local task-only commit pending; delivery status remains in progress.
 
 **Description:** Add demo session create/resume with fixed configurable 24-hour expiry and persistent admission/rate limits. A token reset must not reset an existing server ledger.
 
 **Subtasks:**
 
-- [ ] Resume valid demo sessions; protect signed-in regular accounts from replacement; establish secure opaque cookies.
-- [ ] Persist bounded network/session rate counters and trust only configured proxy forwarding.
-- [ ] Provision idempotently with recoverable pending/ready/failed states; exhausted global AI budget still permits bounded non-AI exploration.
+- [x] Resume valid demo sessions; protect signed-in regular accounts from replacement; establish secure opaque cookies.
+- [x] Persist bounded network/session rate counters and trust only configured proxy forwarding.
+- [x] Provision idempotently with recoverable pending/ready/failed states; exhausted global AI budget still permits bounded non-AI exploration.
 
 **Definition of Done:**
 
-- [ ] Repeated requests do not duplicate sessions/allowances; cookie clearing remains subject to network admission; spoofed forwarded IPs fail; shared-network behavior is documented honestly.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
-- [ ] Developer-owned contract implemented and verified before task closure.
+- [x] Repeated requests do not duplicate sessions/allowances; cookie clearing remains subject to network admission; spoofed forwarded IPs fail; shared-network behavior is documented honestly.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Developer-owned contract implemented and verified before task closure.
 
 **Upstream Outputs Needed:** Architecture sections 6, 7.1; completed dependency outputs.
 
@@ -328,7 +328,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-3-5-demo-expiry/artifacts/`
 - `Current status:` Pending; no implementation or live validation performed.
 
-**Description:** Use a durable PostgreSQL-backed cleanup worker with ownership manifests and retryable phases. Expiry denies access immediately, independently of deletion lag.
+**Description:** Use a durable PostgreSQL-backed cleanup worker with ownership manifests and retryable phases. Expiry denies access immediately, independently of deletion lag. Include expired pending and failed admission owners from Task3.3: key replay never resumes bootstrap or recovers a session; durable restartable cleanup is their recovery path.
 
 **Subtasks:**
 
@@ -389,7 +389,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 4.1 — Replace per-turn consent with workspace-scoped automatic execution
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 2.2, 3.1, 3.2
 **Risk:** Critical: policy bypass or unintended tool scope
@@ -404,7 +404,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-4-1-stored-tool-policy/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Task-scoped UI spec, architecture preflight, developer contract and source map complete and aligned. Application implementation is held until Task3.3 delivery because shared authentication/startup/run paths overlap; no Task4.1 code or runtime evidence yet.
 
 **Description:** Implement stored provider/context/tool policy and remove routine approval gates in both Home and workspace execution paths while retaining containment.
 
@@ -1081,12 +1081,12 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | 2.1 — Migrate local identity to regular, admin, and demo accounts | `[x]` | PASS; `d696550acddceac3a641584c1fe5f3fb52ad42bd` |
 | 2.2 — Enforce ownership across APIs, tools, storage, and streams | `[x]` | PASS; `6fb7278bc680a0df11e3f6e6cb8bd03a0090cb7c` |
 | 3.1 — Implement atomic credit reservations and runtime metering | `[x]` | PASS; `9b65d3c5b5906cb63033fed7bc2053e587d925b9` |
-| 3.2 — Enforce account storage limits on every persistent write | `[~]` | Independent QA PASS; task-only local commit pending |
-| 3.3 — Provision private one-click demo identities | `[ ]` | Pending |
+| 3.2 — Enforce account storage limits on every persistent write | `[x]` | PASS; `b5d40315680b73afac3e04c1a52b8ceaba83a1bf` |
+| 3.3 — Provision private one-click demo identities | `[~]` | Independent QA PASS; local task commit pending |
 | 3.4 — Publish a protected showcase and open editable demo copies | `[ ]` | Pending |
 | 3.5 — Expire and clean up demos safely | `[ ]` | Pending |
 | 3.6 — Build account, quota, and demo administration UI | `[ ]` | Pending |
-| 4.1 — Replace per-turn consent with workspace-scoped automatic execution | `[ ]` | Pending |
+| 4.1 — Replace per-turn consent with workspace-scoped automatic execution | `[~]` | Design/preflight/contract complete; source handoff held for3.3 commit isolation |
 | 4.2 — Execute Home task and workspace actions through canonical use cases | `[ ]` | Pending |
 | 4.3 — Unify task deletion and remove archive behavior | `[ ]` | Pending |
 | 5.1 — Move Home assistant into a floating Ask panel | `[ ]` | Pending |
@@ -1107,7 +1107,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Blocked Items and implementation-time inputs
 
-Tasks 1.1, 2.1, 2.2, 3.1, and 5.2 are delivered. Task 3.2 is active. All subagent work delegated after the baseline commit uses GPT-6 Luna with maximum reasoning per user instruction. Dependency ordering above applies.
+Tasks 1.1, 2.1, 2.2, 3.1, 3.2, and 5.2 are delivered. Tasks 3.3 and 4.1 are active at their declared workflow stages. All subagent work delegated after the baseline commit uses GPT-6 Luna with maximum reasoning per user instruction. Dependency ordering above applies.
 
 - Task 8.1/8.2 needs the real deployment host/domain and DNS/certificate access. Do not claim the local self-signed setup fixes public browser trust.
 - Credit enforcement requires actual provider pricing and a way to bound/meter all Hermes calls. Public AI access stays disabled if that cannot be established.

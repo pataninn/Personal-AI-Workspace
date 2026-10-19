@@ -94,6 +94,9 @@ import { TypeOrmStorageRootMappingRepository } from '@/infrastructure/database/r
 import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
 import { StorageQuotaFileMutation } from '@/infrastructure/workspace/storage-quota-file-mutation';
 import { GetStorageUsage } from '@/modules/storage-quotas/use-cases/get-storage-usage';
+import { TypeOrmDemoAdmissionRepository } from '@/infrastructure/database/repositories/typeorm-demo-admission-repository';
+import { TypeOrmDemoStorageBootstrap } from '@/infrastructure/database/typeorm-demo-storage-bootstrap';
+import { CreateDemoSessionUseCase } from '@/modules/demo/use-cases/create-demo-session';
 
 export interface Application {
   readonly app: Express;
@@ -140,6 +143,7 @@ export async function createApplication(
     const storageRootMappingRepository = new TypeOrmStorageRootMappingRepository(dataSource);
     const storageContentAccounting = new TypeOrmStorageContentAccounting(dataSource, storageQuotaRepository);
     const storageFileMutation = new StorageQuotaFileMutation(storageQuotaRepository);
+    const demoAdmissionRepository = new TypeOrmDemoAdmissionRepository(dataSource, config.demoAbuseLimits);
     const userRepository = new TypeOrmUserRepository(dataSource);
     const localUserPassword = config.localUserPassword ?? await readSecretFile(config.localUserPasswordFile);
     if (localUserPassword) {
@@ -253,7 +257,7 @@ export async function createApplication(
     const proposeSandboxCommand = new ProposeSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger);
     const collectProposedChangeSet = new CollectProposedChangeSetUseCase(aiRunRepository, projectRepository, workspaceMutationGateway, changeSetRepository);
     const decideProposedChangeSet = new DecideProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository, workspaceMutationGateway, chatContextRepository, principalAuthorization);
-    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, proposeSandboxCommand, projectRepository, collectProposedChangeSet, providerPermissionRepository, decideProposedChangeSet, principalAuthorization, stagingGateway);
+    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, demoAdmissionRepository, proposeSandboxCommand, projectRepository, collectProposedChangeSet, providerPermissionRepository, decideProposedChangeSet, principalAuthorization, stagingGateway);
     const decideEgress = new DecideEgressUseCase(aiRunRepository, projectRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot, projectFactRepository, providerPermissionRepository);
     const sendChatMessage = new SendChatMessageUseCase(projectChatContext, projectFactRepository, createAiRun, decideEgress);
     const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository, commandRepository, stagingGateway);
@@ -268,11 +272,28 @@ export async function createApplication(
       { sessionLifetimeMs: config.sessionLifetimeMs }
     );
     const getSession = new GetSessionUseCase(sessionRepository, tokenProvider, clock);
+    const createDemoSession = new CreateDemoSessionUseCase(
+      demoAdmissionRepository,
+      new TypeOrmDemoStorageBootstrap(dataSource, storageContentAccounting, storageQuotaRepository),
+      tokenProvider,
+      {
+        ...(config.demoAbuseLimits ? { limits: config.demoAbuseLimits } : {}),
+        ...(config.demoNetworkHashSecret ? { networkHashSecret: config.demoNetworkHashSecret } : {}),
+        lifetimeMs: config.demoSessionLifetimeMs
+      }
+    );
     const app = createApp({
         logger,
         readiness: new GetReadinessUseCase(readiness),
         appVersion: config.appVersion,
         staticDirectory: config.staticDirectory,
+        ...(config.trustedProxyCidrs ? { trustedProxyCidrs: config.trustedProxyCidrs } : {}),
+        demoAdmission: {
+          createSession: createDemoSession,
+          getSession,
+          appOrigin: config.appOrigin,
+          cookieSecure: config.protocol === 'https'
+        },
         auth: {
           login,
           getSession,

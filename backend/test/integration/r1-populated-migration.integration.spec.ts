@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createDataSource } from '@/infrastructure/database/data-source';
 import { TypeOrmSessionRepository, TypeOrmUserRepository } from '@/infrastructure/database/repositories/typeorm-auth-repositories';
 import { TypeOrmAiRunRepository } from '@/infrastructure/database/repositories/typeorm-ai-run-repository';
+import { TypeOrmDemoAdmissionRepository } from '@/infrastructure/database/repositories/typeorm-demo-admission-repository';
 import { TypeOrmConversationRepository } from '@/infrastructure/database/repositories/typeorm-conversation-repository';
 import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories/typeorm-project-repository';
 import { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
@@ -407,7 +408,14 @@ describeDatabase('R1 populated database migration regression', () => {
     const commandProposals = { execute: jest.fn().mockResolvedValue({ resource: { id: 'unused', status: 'pending_approval', safeMessage: 'Review command.' }, replayed: false }) };
     const principalAuthorization = new PrincipalAuthorization(users, { now: () => new Date() });
     const start = new StartAiRunUseCase(
-      expiryRuns, conversations, runtime, eventPublisher, commandProposals, new TypeOrmProjectRepository(dataSource),
+      expiryRuns, conversations, runtime, eventPublisher, new TypeOrmDemoAdmissionRepository(dataSource, {
+        globalAdmissionMax: 10,
+        globalAdmissionWindowSeconds: 3600,
+        networkAdmissionMax: 10,
+        networkAdmissionWindowSeconds: 900,
+        runStartMax: 10,
+        runStartWindowSeconds: 3600
+      }), commandProposals, new TypeOrmProjectRepository(dataSource),
       undefined, undefined, undefined, principalAuthorization
     );
 

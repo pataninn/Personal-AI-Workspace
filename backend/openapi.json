@@ -43,6 +43,9 @@
     },
     {
       "name": "Authentication"
+    },
+    {
+      "name": "Demo admission"
     }
   ],
   "paths": {
@@ -73,6 +76,34 @@
         "responses": {
           "200": { "description": "Current principal and CSRF value.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AuthSessionEnvelope" } } } },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/demo/session": {
+      "post": {
+        "tags": ["Demo admission"],
+        "summary": "Create or resume a private demo identity",
+        "operationId": "createOrResumeDemoSession",
+        "description": "Requires the exact configured Origin. A valid session cookie also requires X-CSRF-Token; a valid demo session resumes without a new cookie, and a regular session is preserved with a 409 response. Anonymous callers require a high-entropy Idempotency-Key. A cookie-less replay returns only pending/ready status and never receives a session credential.",
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/DemoAdmissionCsrfHeader" },
+          { "$ref": "#/components/parameters/DemoAdmissionIdempotencyHeader" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DemoAdmissionRequest" } } }
+        },
+        "responses": {
+          "200": { "description": "A valid demo session resumed without extending its expiry, or a cookie-less idempotency replay reports ready status.", "content": { "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/DemoSessionEnvelope" }, { "$ref": "#/components/schemas/DemoAdmissionStatusEnvelope" }] } } } },
+          "201": { "description": "A new demo identity, empty-account storage state, and opaque session were provisioned.", "headers": { "Set-Cookie": { "description": "The existing host-only session cookie, expiring with the demo account.", "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DemoSessionEnvelope" } } } },
+          "202": { "description": "A cookie-less idempotency replay reports that admission is still pending; no cookie is set.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DemoAdmissionStatusEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "409": { "description": "A valid regular-account session is active; its cookie and session remain unchanged.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "429": { "description": "Persistent global, network, or per-demo run-start admission limits were reached.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "503": { "description": "Required admission settings/storage are unavailable or bounded provisioning failed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
           "500": { "$ref": "#/components/responses/InternalError" }
         }
       }
@@ -4592,6 +4623,20 @@
           "minLength": 1
         }
       },
+      "DemoAdmissionCsrfHeader": {
+        "name": "X-CSRF-Token",
+        "in": "header",
+        "required": false,
+        "description": "Required only when a valid session cookie is presented; anonymous admission relies on exact Origin validation.",
+        "schema": { "type": "string", "minLength": 1 }
+      },
+      "DemoAdmissionIdempotencyHeader": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": false,
+        "description": "Required for anonymous admission; 32 cryptographically random bytes encoded as canonical unpadded base64url. It is not a session credential and cookie-less retries never receive a cookie.",
+        "schema": { "type": "string", "minLength": 43, "maxLength": 43, "pattern": "^[A-Za-z0-9_-]{43}$" }
+      },
       "IdempotencyHeader": {
         "name": "Idempotency-Key",
         "in": "header",
@@ -5598,6 +5643,46 @@
         "required": ["data", "error"],
         "properties": {
           "data": { "$ref": "#/components/schemas/AuthSessionData" },
+          "error": { "type": "null" }
+        },
+        "additionalProperties": false
+      },
+      "DemoAdmissionRequest": {
+        "type": "object",
+        "description": "No caller-selected identity, expiry, path, or credit fields are accepted.",
+        "additionalProperties": false
+      },
+      "DemoSessionData": {
+        "type": "object",
+        "required": ["state", "principal", "csrfToken", "expiresAt"],
+        "properties": {
+          "state": { "type": "string", "enum": ["ready"] },
+          "principal": { "$ref": "#/components/schemas/AccountPrincipal" },
+          "csrfToken": { "type": "string" },
+          "expiresAt": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      },
+      "DemoSessionEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/DemoSessionData" },
+          "error": { "type": "null" }
+        },
+        "additionalProperties": false
+      },
+      "DemoAdmissionStatusData": {
+        "type": "object",
+        "required": ["state"],
+        "properties": { "state": { "type": "string", "enum": ["pending", "ready"] } },
+        "additionalProperties": false
+      },
+      "DemoAdmissionStatusEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/DemoAdmissionStatusData" },
           "error": { "type": "null" }
         },
         "additionalProperties": false

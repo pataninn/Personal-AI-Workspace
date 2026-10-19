@@ -389,9 +389,11 @@ describe('AI run use cases', () => {
 
     expect(approved).toMatchObject({ status: 'ready', decision: 'approved', providerPermissionId: permission.id });
     await permissions.revoke({ ownerId: OWNER_ID, projectId: PROJECT_ID, permissionId: permission.id });
-    const start = new StartAiRunUseCase(repository, new ConversationFixture(), runtime, new InMemoryRunEventPublisher(), undefined, undefined, undefined, permissions);
+    const admission = { admitDemoRunStart: jest.fn(async (): Promise<void> => undefined) };
+    const start = new StartAiRunUseCase(repository, new ConversationFixture(), runtime, new InMemoryRunEventPublisher(), admission, undefined, undefined, undefined, permissions);
 
     await expect(start.execute({ ownerId: OWNER_ID, runId: created.resource.id, idempotencyKey: 'start-after-permission-revoke' })).rejects.toMatchObject({ code: 'PROVIDER_PERMISSION_REVOKED' });
+    expect(admission.admitDemoRunStart).not.toHaveBeenCalled();
     const reopened = await repository.findByIdForOwner(OWNER_ID, created.resource.id);
     expect(reopened).toMatchObject({ status: 'pending_approval', decision: 'pending' });
     expect(reopened).not.toHaveProperty('providerPermissionId');

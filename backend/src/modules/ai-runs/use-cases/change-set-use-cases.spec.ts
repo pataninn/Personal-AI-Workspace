@@ -266,6 +266,8 @@ class RunRepository implements IAiRunRepository {
   public async findByIdForOwner(ownerId: string, runId: string): Promise<AiRun | null> { return ownerId === OWNER_ID && runId === RUN_ID ? this.run : null; }
   public async recordDecision(): Promise<never> { throw new Error('unused'); }
   public async save(run: AiRun): Promise<void> { this.run = run; }
+  public async beginStart(): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> { throw new Error('unused'); }
+  public async abortStart(): Promise<boolean> { return false; }
 }
 
 class ProjectRepository implements IProjectRepository {

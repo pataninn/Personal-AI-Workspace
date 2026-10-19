@@ -99,7 +99,7 @@ function buildApp(): { readonly app: express.Express; readonly staging: FakeStag
   const facts: IProjectFactRepository = { findActiveByIds: jest.fn().mockResolvedValue([]), listActiveByProject: jest.fn(), findActiveById: jest.fn(), create: jest.fn(), update: jest.fn(), verify: jest.fn(), softDelete: jest.fn() };
   const createRun = new CreateAiRunUseCase(projects, conversations, workspace, repository, 'nvidia-hosted-nim', 'test-model', facts);
   const decide = new DecideEgressUseCase(repository, projects, conversations, workspace, staging, runtime, '/workspace', facts);
-  const start = new StartAiRunUseCase(repository, conversations, runtime, runEvents, undefined, projects);
+  const start = new StartAiRunUseCase(repository, conversations, runtime, runEvents, { admitDemoRunStart: async () => undefined }, undefined, projects);
   const app = createApp({
     logger: createLogger('silent'),
     readiness: new GetReadinessUseCase(readiness),
@@ -117,7 +117,7 @@ function buildApp(): { readonly app: express.Express; readonly staging: FakeStag
     aiRunChat: {
       getSession,
       getAiRun: new GetAiRunUseCase(repository, projects),
-      startAiRun: new StartAiRunUseCase(repository, conversations, runtime, runEvents, undefined, projects),
+      startAiRun: new StartAiRunUseCase(repository, conversations, runtime, runEvents, { admitDemoRunStart: async () => undefined }, undefined, projects),
       cancelAiRun: new CancelAiRunUseCase(repository, runtime, runEvents, projects),
       events: runEvents,
       principalAuthorization: {

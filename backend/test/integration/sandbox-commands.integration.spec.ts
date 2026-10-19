@@ -71,6 +71,8 @@ class ReadyRunFixture implements IAiRunRepository {
   }
   public async recordDecision(): Promise<never> { throw new Error('Not used by command routes.'); }
   public async save(): Promise<void> { return undefined; }
+  public async beginStart(): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> { throw new Error('Not used by command routes.'); }
+  public async abortStart(): Promise<boolean> { return false; }
 
   private makeRun(id: string, ownerId: string, projectId: string): AiRun {
     const now = new Date('2026-09-16T00:00:00.000Z');
