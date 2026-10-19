@@ -46,6 +46,9 @@
     },
     {
       "name": "Demo admission"
+    },
+    {
+      "name": "Showcase"
     }
   ],
   "paths": {
@@ -105,6 +108,154 @@
           "429": { "description": "Persistent global, network, or per-demo run-start admission limits were reached.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
           "503": { "description": "Required admission settings/storage are unavailable or bounded provisioning failed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
           "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/demo/availability": {
+      "get": {
+        "tags": ["Showcase"],
+        "summary": "Check whether a new private demo can be admitted",
+        "operationId": "getDemoAvailability",
+        "description": "Returns only a safe availability bit. A false result covers unpublished or unavailable bounded prerequisites; no operator content or storage details are disclosed.",
+        "responses": {
+          "200": { "description": "Availability result.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DemoAvailabilityEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/showcases/current": {
+      "get": {
+        "tags": ["Showcase"],
+        "summary": "Read the current immutable public showcase",
+        "operationId": "getCurrentShowcase",
+        "description": "Returns only the currently published sanitized snapshot. It is a separate read-only resource and never exposes an administrator source project or provider context.",
+        "responses": {
+          "200": { "description": "Current public snapshot.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CurrentShowcaseEnvelope" } } } },
+          "404": { "description": "No showcase is currently published.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/showcases/current/files/{fileId}": {
+      "get": {
+        "tags": ["Showcase"],
+        "summary": "Download a file from the current immutable showcase",
+        "operationId": "downloadCurrentShowcaseFile",
+        "description": "Only file IDs in the current snapshot resolve. Responses are attachment downloads with nosniff and a server-owned closed MIME type; HTML and SVG are not served inline.",
+        "parameters": [
+          { "name": "fileId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current file bytes; the response is always an attachment.",
+            "headers": {
+              "Content-Disposition": { "schema": { "type": "string" } },
+              "X-Content-Type-Options": { "schema": { "type": "string", "enum": ["nosniff"] } },
+              "Content-Length": { "schema": { "type": "integer", "minimum": 0 } }
+            },
+            "content": {
+              "application/octet-stream": { "schema": { "type": "string", "format": "binary" } },
+              "text/plain": { "schema": { "type": "string", "format": "binary" } },
+              "text/csv": { "schema": { "type": "string", "format": "binary" } },
+              "application/pdf": { "schema": { "type": "string", "format": "binary" } },
+              "image/png": { "schema": { "type": "string", "format": "binary" } },
+              "image/jpeg": { "schema": { "type": "string", "format": "binary" } },
+              "image/gif": { "schema": { "type": "string", "format": "binary" } },
+              "image/webp": { "schema": { "type": "string", "format": "binary" } }
+            }
+          },
+          "404": { "description": "The file is not part of the current showcase.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/admin/showcases/previews": {
+      "post": {
+        "tags": ["Showcase"],
+        "summary": "Build an exact admin-only sanitized showcase preview",
+        "operationId": "createShowcasePreview",
+        "description": "The administrator selects only active owned-project tasks, active facts, and regular files. File bytes are returned to this admin in a bounded preview so the reviewed bytes match what can be published.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShowcaseSelectionRequest" } } } },
+        "responses": {
+          "200": { "description": "Exact selected visitor projection and admin-only file bytes.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShowcasePreviewEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "The owned active project or a selected source is unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "413": { "description": "The selected snapshot exceeds configured finite bounds.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "description": "Required bounded settings or trusted source storage are unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
+        }
+      }
+    },
+    "/api/v1/admin/showcases/versions": {
+      "post": {
+        "tags": ["Showcase"],
+        "summary": "Publish an unchanged admin-previewed showcase version",
+        "operationId": "publishShowcaseVersion",
+        "description": "The server recomputes the exact preview digest and source revision before atomically inserting an immutable version and switching the current pointer. A same-key matching replay returns the original version; same-key different-input use conflicts. Existing demo admissions retain their original pinned version.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/ShowcaseIdempotencyHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShowcasePublishRequest" } } } },
+        "responses": {
+          "201": { "description": "A new immutable version was published.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShowcasePublishEnvelope" } } } },
+          "200": { "description": "A matching idempotent replay returned the original published version.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShowcasePublishEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "The owned active project or a selected source is unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "Preview became stale or the idempotency key was reused with different input.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "413": { "description": "The selected snapshot exceeds configured finite bounds.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "description": "Publication configuration or storage is unavailable; the pointer is unchanged.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
+        }
+      }
+    },
+    "/api/v1/demo/showcase-copy": {
+      "get": {
+        "tags": ["Showcase"],
+        "summary": "Read the current demo copy readiness state",
+        "operationId": "getDemoShowcaseCopyStatus",
+        "description": "Requires the current demo cookie. Returns no source/snapshot IDs, selected source data, paths, quota totals, or partial project content. The private projectId is null until the copy is fully ready; when ready it identifies only this authenticated owner's private project. Pending copies return 202.",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Ready or failed copy state.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DemoShowcaseCopyEnvelope" } } } },
+          "202": { "description": "Copy provisioning remains pending.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DemoShowcaseCopyEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/demo/showcase-copy/retries": {
+      "post": {
+        "tags": ["Showcase"],
+        "summary": "Retry a known-safe copy setup operation",
+        "operationId": "retryDemoShowcaseCopy",
+        "description": "Requires the current demo cookie, exact Origin, and CSRF token. Reuses the same admission, pinned version, target IDs, and durable operation manifest. Unknown storage outcomes are not retryable until reconciliation.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false } } } },
+        "responses": {
+          "200": { "description": "Copy is ready or this request reports a terminal safe state.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DemoShowcaseCopyEnvelope" } } } },
+          "202": { "description": "Copy remains pending.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DemoShowcaseCopyEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "409": { "description": "Copy is terminal, unpinned, over its attempt limit, or has an unknown side effect.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "description": "Copy storage/accounting is currently unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
         }
       }
     },
@@ -4609,6 +4760,13 @@
         "description": "Required for anonymous admission; 32 cryptographically random bytes encoded as canonical unpadded base64url. It is not a session credential and cookie-less retries never receive a cookie.",
         "schema": { "type": "string", "minLength": 43, "maxLength": 43, "pattern": "^[A-Za-z0-9_-]{43}$" }
       },
+      "ShowcaseIdempotencyHeader": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "Stable publish retry key scoped to the active administrator; matching replays return the original version and different-input reuse conflicts.",
+        "schema": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]{1,128}$" }
+      },
       "IdempotencyHeader": {
         "name": "Idempotency-Key",
         "in": "header",
@@ -5657,6 +5815,218 @@
           "data": { "$ref": "#/components/schemas/DemoAdmissionStatusData" },
           "error": { "type": "null" }
         },
+        "additionalProperties": false
+      },
+      "Sha256": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "ShowcaseSelection": {
+        "type": "object",
+        "required": ["taskIds", "factIds", "filePaths"],
+        "properties": {
+          "taskIds": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/Uuid" } },
+          "factIds": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/Uuid" } },
+          "filePaths": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 2048, "description": "Normalized project-relative path; never a host path or storage root." } }
+        },
+        "additionalProperties": false
+      },
+      "ShowcaseSelectionRequest": {
+        "type": "object",
+        "required": ["projectId", "selection"],
+        "properties": {
+          "projectId": { "$ref": "#/components/schemas/Uuid" },
+          "selection": { "$ref": "#/components/schemas/ShowcaseSelection" }
+        },
+        "additionalProperties": false
+      },
+      "ShowcasePublishRequest": {
+        "type": "object",
+        "required": ["projectId", "selection", "previewDigest", "sourceRevision"],
+        "properties": {
+          "projectId": { "$ref": "#/components/schemas/Uuid" },
+          "selection": { "$ref": "#/components/schemas/ShowcaseSelection" },
+          "previewDigest": { "$ref": "#/components/schemas/Sha256" },
+          "sourceRevision": { "$ref": "#/components/schemas/Sha256" }
+        },
+        "additionalProperties": false
+      },
+      "ShowcaseChecklistItem": {
+        "type": "object",
+        "required": ["title", "completed"],
+        "properties": {
+          "title": { "type": "string" },
+          "completed": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      },
+      "ShowcaseTask": {
+        "type": "object",
+        "required": ["title", "details", "status", "importance", "deadline", "checklist"],
+        "properties": {
+          "title": { "type": "string" },
+          "details": { "type": "string", "nullable": true },
+          "status": { "type": "string", "enum": ["todo", "in_progress", "blocked", "done", "archived"] },
+          "importance": { "type": "string", "enum": ["low", "medium", "high", "urgent"] },
+          "deadline": { "type": "string", "format": "date", "nullable": true },
+          "checklist": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseChecklistItem" } }
+        },
+        "additionalProperties": false
+      },
+      "ShowcaseFact": {
+        "type": "object",
+        "required": ["title", "content"],
+        "properties": {
+          "title": { "type": "string" },
+          "content": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "ShowcaseProject": {
+        "type": "object",
+        "required": ["name", "objective"],
+        "properties": {
+          "name": { "type": "string" },
+          "objective": { "type": "string", "nullable": true }
+        },
+        "additionalProperties": false
+      },
+      "PreviewFile": {
+        "type": "object",
+        "required": ["name", "mediaType", "byteLength", "sha256", "contentBase64"],
+        "properties": {
+          "name": { "type": "string" },
+          "mediaType": { "type": "string" },
+          "byteLength": { "type": "integer", "minimum": 0 },
+          "sha256": { "$ref": "#/components/schemas/Sha256" },
+          "contentBase64": { "type": "string", "format": "byte" }
+        },
+        "description": "Admin-only exact selected bytes. Generated public IDs are allocated at publish and are intentionally absent from preview.",
+        "additionalProperties": false
+      },
+      "ShowcasePreview": {
+        "type": "object",
+        "required": ["project", "tasks", "facts", "files", "previewDigest", "sourceRevision", "totals", "exclusions"],
+        "properties": {
+          "project": { "$ref": "#/components/schemas/ShowcaseProject" },
+          "tasks": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseTask" } },
+          "facts": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseFact" } },
+          "files": { "type": "array", "items": { "$ref": "#/components/schemas/PreviewFile" } },
+          "previewDigest": { "$ref": "#/components/schemas/Sha256" },
+          "sourceRevision": { "$ref": "#/components/schemas/Sha256" },
+          "totals": { "type": "object", "required": ["itemCount", "fileCount", "snapshotBytes"], "properties": {
+            "itemCount": { "type": "integer", "minimum": 0 },
+            "fileCount": { "type": "integer", "minimum": 0 },
+            "snapshotBytes": { "type": "integer", "minimum": 0 }
+          }, "additionalProperties": false },
+          "exclusions": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
+      },
+      "ShowcasePreviewEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": { "data": { "$ref": "#/components/schemas/ShowcasePreview" }, "error": { "type": "null" } },
+        "additionalProperties": false
+      },
+      "ShowcaseChecklistItemDto": {
+        "type": "object",
+        "required": ["id", "title", "completed"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "title": { "type": "string" },
+          "completed": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      },
+      "ShowcaseTaskDto": {
+        "type": "object",
+        "required": ["id", "title", "details", "status", "importance", "deadline", "checklist"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "title": { "type": "string" },
+          "details": { "type": "string", "nullable": true },
+          "status": { "type": "string", "enum": ["todo", "in_progress", "blocked", "done", "archived"] },
+          "importance": { "type": "string", "enum": ["low", "medium", "high", "urgent"] },
+          "deadline": { "type": "string", "format": "date", "nullable": true },
+          "checklist": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseChecklistItemDto" } }
+        },
+        "additionalProperties": false
+      },
+      "ShowcaseFactDto": {
+        "type": "object",
+        "required": ["id", "title", "content"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "title": { "type": "string" },
+          "content": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "ShowcaseFileDto": {
+        "type": "object",
+        "required": ["id", "name", "mediaType", "byteLength"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "name": { "type": "string" },
+          "mediaType": { "type": "string" },
+          "byteLength": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      },
+      "CurrentShowcase": {
+        "type": "object",
+        "required": ["version", "publishedAt", "project", "tasks", "facts", "files"],
+        "properties": {
+          "version": { "$ref": "#/components/schemas/Uuid" },
+          "publishedAt": { "type": "string", "format": "date-time" },
+          "project": { "$ref": "#/components/schemas/ShowcaseProject" },
+          "tasks": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseTaskDto" } },
+          "facts": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseFactDto" } },
+          "files": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseFileDto" } }
+        },
+        "additionalProperties": false
+      },
+      "CurrentShowcaseEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": { "data": { "$ref": "#/components/schemas/CurrentShowcase" }, "error": { "type": "null" } },
+        "additionalProperties": false
+      },
+      "ShowcasePublishResult": {
+        "type": "object",
+        "required": ["version", "publishedAt"],
+        "properties": { "version": { "$ref": "#/components/schemas/Uuid" }, "publishedAt": { "type": "string", "format": "date-time" } },
+        "additionalProperties": false
+      },
+      "ShowcasePublishEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": { "data": { "$ref": "#/components/schemas/ShowcasePublishResult" }, "error": { "type": "null" } },
+        "additionalProperties": false
+      },
+      "DemoAvailabilityEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": { "data": { "type": "object", "required": ["available"], "properties": { "available": { "type": "boolean" } }, "additionalProperties": false }, "error": { "type": "null" } },
+        "additionalProperties": false
+      },
+      "DemoShowcaseCopy": {
+        "type": "object",
+        "required": ["state", "projectId", "retryAllowed", "workspaceMode", "capabilities"],
+        "properties": {
+          "state": { "type": "string", "enum": ["pending", "ready", "failed"] },
+          "projectId": { "type": "string", "format": "uuid", "nullable": true, "description": "Owner-private target project ID. Null unless state is ready; never returned by public showcase endpoints." },
+          "retryAllowed": { "type": "boolean" },
+          "workspaceMode": { "type": "string", "enum": ["planning", "file_backed"], "nullable": true },
+          "capabilities": { "type": "object", "nullable": true, "required": ["planning", "fileAccess"], "properties": { "planning": { "type": "boolean", "enum": [true] }, "fileAccess": { "type": "boolean" } }, "additionalProperties": false }
+        },
+        "additionalProperties": false
+      },
+      "DemoShowcaseCopyEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": { "data": { "$ref": "#/components/schemas/DemoShowcaseCopy" }, "error": { "type": "null" } },
         "additionalProperties": false
       },
       "ErrorDetail": {

@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import type { DataSource, EntityManager } from 'typeorm';
 
 import type { DemoAbuseLimitValues, BeginDemoAdmissionResult, CompleteDemoAdmissionInput, CompletedDemoAdmission, DemoAdmissionStatus, IDemoAdmissionRepository, IDemoRunStartAdmission } from '@/modules/demo/domain/demo-admission-types';
-import { DemoAdmissionRateLimitedError, DemoAdmissionUnavailableError, DemoRunStartRateLimitedError } from '@/modules/demo/domain/demo-admission-errors';
+import { DemoAdmissionRateLimitedError, DemoAdmissionUnavailableError, DemoRunStartRateLimitedError, DemoShowcaseUnavailableError } from '@/modules/demo/domain/demo-admission-errors';
 
 interface AdmissionRow {
   readonly id: string;
@@ -86,11 +87,6 @@ export class TypeOrmDemoAdmissionRepository implements IDemoAdmissionRepository,
     return this.dataSource.transaction(async (manager) => {
       // A single global lock makes key lookup and admission counters linearizable across all app instances.
       await manager.query("SELECT pg_advisory_xact_lock(hashtextextended('demo-admission-global', 0))");
-      await manager.query('DELETE FROM "demo_admission_counters" WHERE "window_end" <= clock_timestamp()');
-      const globalCounter = await this.lockAdmissionCounter(manager, {
-        scopeKind: 'global_admission', scopeKey: 'global', networkKeyId: null,
-        windowSeconds: input.limits.globalAdmissionWindowSeconds, maximum: input.limits.globalAdmissionMax
-      });
       await manager.query("SELECT pg_advisory_xact_lock(hashtextextended('demo-admission-key:' || $1, 0))", [input.requestDigest]);
 
       const existing = rows<AdmissionRow>(await manager.query(
@@ -98,6 +94,22 @@ export class TypeOrmDemoAdmissionRepository implements IDemoAdmissionRepository,
         [input.requestDigest]
       ))[0];
       if (existing) return { kind: 'existing', status: { state: existing.status } } as const;
+
+      // A shared pointer lock makes this immutable version pin atomic with publication pruning.
+      const current = rows<{ readonly version_id: string }>(await manager.query(`
+        SELECT p."current_version_id" AS "version_id"
+        FROM "showcase_publication" p
+        JOIN "showcase_versions" v ON v."id" = p."current_version_id"
+        WHERE p."singleton_id" = true
+        FOR SHARE OF p
+      `))[0];
+      if (!current?.version_id) throw new DemoShowcaseUnavailableError();
+
+      await manager.query('DELETE FROM "demo_admission_counters" WHERE "window_end" <= clock_timestamp()');
+      const globalCounter = await this.lockAdmissionCounter(manager, {
+        scopeKind: 'global_admission', scopeKey: 'global', networkKeyId: null,
+        windowSeconds: input.limits.globalAdmissionWindowSeconds, maximum: input.limits.globalAdmissionMax
+      });
 
       const activeWindowMismatches = rows<{ readonly mismatched: boolean }>(await manager.query(`
         SELECT EXISTS (
@@ -164,6 +176,10 @@ export class TypeOrmDemoAdmissionRepository implements IDemoAdmissionRepository,
         RETURNING "id", "owner_id", "status", "expires_at"
       `, [input.requestDigest, users.id]))[0];
       if (!admission) throw new DemoAdmissionUnavailableError();
+      await manager.query(`
+        INSERT INTO "demo_showcase_copies" ("admission_id", "owner_id", "pinned_version_id", "target_project_id")
+        VALUES ($1, $2, $3, $4)
+      `, [admission.id, users.id, current.version_id, randomUUID()]);
       return {
         kind: 'created',
         admission: {

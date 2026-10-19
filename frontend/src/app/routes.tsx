@@ -14,9 +14,12 @@ import { AllTasksPage } from '@/pages/all-tasks';
 import { TaskDetailPage } from '@/pages/task-detail';
 import { LoginPage } from '@/pages/login';
 import { NotFoundPage } from '@/pages/not-found';
+import { ShowcasePage } from '@/pages/showcase';
+import { AdminShowcasePage } from '@/pages/admin-showcase';
 import { selectSessionErrorCode, selectSessionStatus } from '@/entities/user-session';
 import { useAppSelector } from '@/app/store/hooks';
 import { getSafeReturnTo, loginPath } from '@/shared/lib/navigation';
+import { DemoContentGate } from '@/widgets/demo-session-route';
 
 function RootRedirect(): React.JSX.Element {
   const status = useAppSelector(selectSessionStatus);
@@ -48,26 +51,33 @@ export const router = createBrowserRouter([
     element: <App />,
     children: [
       { index: true, element: <RootRedirect /> },
+      { path: 'showcase', element: <ShowcasePage /> },
       { path: 'login', element: <PublicOnlyRoute /> },
       {
         element: <ProtectedRoute />,
         children: [
           {
-            element: <AppShell />,
+            element: <DemoContentGate><Outlet /></DemoContentGate>,
             children: [
-              { path: 'dashboard', element: <DashboardPage /> },
-              { path: 'tasks', element: <AllTasksPage /> },
-              { path: 'tasks/:taskId', element: <TaskDetailPage /> },
-              { path: 'projects/:projectId', element: <ProjectWorkspacePage /> },
-              { path: 'projects/:projectId/memory', element: <ProjectMemoryPage /> },
-              { path: 'projects/:projectId/context', element: <ProjectContextPage /> },
-              { path: 'projects/:projectId/tasks', element: <ProjectTasksPage /> },
-              { path: 'projects/:projectId/activity', element: <ProjectActivityPage /> },
-              { path: 'projects/:projectId/file-history', element: <ProjectFileHistoryPage /> },
-              { path: 'projects/:projectId/planning-chat', element: <WorkspacePlanningChatPage /> },
-              { path: 'projects/:projectId/conversations', element: <ProjectWorkspacePage /> },
-              { path: 'projects/:projectId/conversations/:conversationId', element: <ProjectWorkspacePage /> },
-              { path: '*', element: <NotFoundPage /> }
+              {
+                element: <AppShell />,
+                children: [
+                  { path: 'dashboard', element: <DashboardPage /> },
+                  { path: 'tasks', element: <AllTasksPage /> },
+                  { path: 'tasks/:taskId', element: <TaskDetailPage /> },
+                  { path: 'projects/:projectId', element: <ProjectWorkspacePage /> },
+                  { path: 'projects/:projectId/memory', element: <ProjectMemoryPage /> },
+                  { path: 'projects/:projectId/context', element: <ProjectContextPage /> },
+                  { path: 'projects/:projectId/tasks', element: <ProjectTasksPage /> },
+                  { path: 'projects/:projectId/activity', element: <ProjectActivityPage /> },
+                  { path: 'projects/:projectId/file-history', element: <ProjectFileHistoryPage /> },
+                  { path: 'projects/:projectId/planning-chat', element: <WorkspacePlanningChatPage /> },
+                  { path: 'projects/:projectId/conversations', element: <ProjectWorkspacePage /> },
+                  { path: 'projects/:projectId/conversations/:conversationId', element: <ProjectWorkspacePage /> },
+                  { path: '*', element: <NotFoundPage /> }
+                ]
+              },
+              { path: 'admin/showcase', element: <AdminShowcasePage /> }
             ]
           }
         ]

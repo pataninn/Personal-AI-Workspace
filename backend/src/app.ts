@@ -37,6 +37,9 @@ import { StorageQuotaError } from '@/modules/storage-quotas/domain/storage-quota
 import { createDemoAdmissionRouter, type DemoAdmissionRouterDependencies } from '@/modules/demo/controllers/demo-admission-router';
 import { DemoAdmissionError } from '@/modules/demo/domain/demo-admission-errors';
 import { createAssistantExecutionPolicyRouter, type AssistantExecutionPolicyRouterDependencies } from '@/modules/assistant-policy/controllers/assistant-execution-policy-router';
+import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
+import { SESSION_COOKIE_NAME } from '@/modules/auth/controllers/request-auth';
+import { createShowcaseRouter, type ShowcaseRouterDependencies } from '@/modules/showcases/controllers/showcase-router';
 
 export interface CreateAppOptions {
   readonly logger: AppLogger;
@@ -58,7 +61,9 @@ export interface CreateAppOptions {
   readonly homeProposals?: HomeProposalRouterDependencies;
   readonly accountStorage?: AccountStorageRouterDependencies;
   readonly demoAdmission?: DemoAdmissionRouterDependencies;
+  readonly showcases?: ShowcaseRouterDependencies;
   readonly assistantExecutionPolicy?: AssistantExecutionPolicyRouterDependencies;
+  readonly demoCopyGate?: { readonly getSession: Pick<GetSessionUseCase, 'execute'>; readonly isReady: (ownerId: string) => Promise<boolean> };
   readonly trustedProxyCidrs?: readonly string[];
 }
 
@@ -196,6 +201,7 @@ export function createApp(options: CreateAppOptions): Express {
   }));
   app.use(express.json({ limit: '1mb' }));
   app.use(cookieParser());
+  if (options.demoCopyGate) app.use(createDemoCopyGate(options.demoCopyGate));
   app.use(createHealthRouter({
     getLiveness,
     getReadiness: options.readiness,
@@ -204,6 +210,7 @@ export function createApp(options: CreateAppOptions): Express {
   if (options.auth) {
     app.use('/api/v1/auth', createAuthRouter(options.auth));
   }
+  if (options.showcases) app.use('/api/v1', createShowcaseRouter(options.showcases));
   if (options.demoAdmission) {
     app.use('/api/v1/demo', createDemoAdmissionRouter(options.demoAdmission));
   }
@@ -261,4 +268,38 @@ export function createApp(options: CreateAppOptions): Express {
   app.use(notFoundHandler);
   app.use(errorHandler(options.logger));
   return app;
+}
+
+function createDemoCopyGate(dependencies: NonNullable<CreateAppOptions['demoCopyGate']>): RequestHandler {
+  const allowed = new Set([
+    'GET /api/v1/auth/session',
+    'POST /api/v1/auth/logout',
+    'POST /api/v1/demo/session',
+    'GET /api/v1/demo/showcase-copy',
+    'POST /api/v1/demo/showcase-copy/retries',
+    'GET /api/v1/demo/availability',
+    'GET /api/v1/showcases/current'
+  ]);
+  return async (request, _response, next): Promise<void> => {
+    if (!request.path.startsWith('/api/v1/')) { next(); return; }
+    const route = `${request.method.toUpperCase()} ${request.path}`;
+    if (allowed.has(route) || (request.method === 'GET' && /^\/api\/v1\/showcases\/current\/files\/[0-9a-f-]+$/iu.test(request.path))) {
+      next();
+      return;
+    }
+    const rawToken = request.cookies?.[SESSION_COOKIE_NAME];
+    if (typeof rawToken !== 'string') { next(); return; }
+    try {
+      const session = await dependencies.getSession.execute(rawToken);
+      if (session.principal.accountKind !== 'demo') { next(); return; }
+      if (!(await dependencies.isReady(session.principal.id))) {
+        next(new AppError('DEMO_COPY_NOT_READY', 409, 'The private demo workspace is still being prepared.'));
+        return;
+      }
+      next();
+    } catch (error: unknown) {
+      if (error instanceof UnauthenticatedError) { next(); return; }
+      next(new AppError('DEMO_COPY_UNAVAILABLE', 503, 'The private demo workspace is unavailable.'));
+    }
+  };
 }

@@ -19,6 +19,27 @@ const fileSystem = { ...defaultWorkspaceGatewayFileSystem, realpath: async (valu
 export class ProjectFileGateway implements IProjectFileGateway {
   public constructor(private readonly options: { readonly containerRoot: string; readonly workspaceBoundary: IWorkspaceBoundary }) {}
 
+  /** Creates only validated parent directories beneath the already-resolved trusted project root. */
+  public async ensureParentDirectories(scope: WorkspaceProjectScope, relativePath: string): Promise<void> {
+    const parsed = WorkspaceRelativePath.parse(relativePath).value;
+    const context = new WorkspaceOperationContext(undefined, 5000);
+    const paths = await resolveWorkspaceScope(this.options.workspaceBoundary, fileSystem, this.options.containerRoot.replaceAll('\\', '/'), scope, context);
+    const segments = path.posix.dirname(parsed).split('/').filter((segment) => segment !== '.');
+    let current = paths.canonicalProjectRoot;
+    for (const segment of segments) {
+      current = path.posix.join(current, segment);
+      try {
+        await fs.mkdir(current, { mode: 0o700 });
+      } catch (error: unknown) {
+        if (!hasCode(error, 'EEXIST')) throw error;
+      }
+      const stats = await fs.lstat(current);
+      if (!stats.isDirectory() || stats.isSymbolicLink()) throw new WorkspacePathForbiddenError();
+      const real = (await fs.realpath(current)).replaceAll('\\', '/');
+      if (real !== current || !isContained(paths.canonicalProjectRoot, real, true)) throw new WorkspacePathForbiddenError();
+    }
+  }
+
   public async download(scope: WorkspaceProjectScope, relativePath: string): Promise<{ readonly bytes: Buffer; readonly hash: string }> {
     return this.withTarget(scope, relativePath, async (target) => {
       const bytes = await this.read(target).catch(mapReadError);

@@ -7,6 +7,7 @@ import { useAppDispatch } from '@/app/store/hooks';
 import { ApiClientError } from '@/shared/api';
 import { getSafeReturnTo } from '@/shared/lib/navigation';
 import { Alert, Button, Card, Icon, Input, Label, Spinner } from '@/shared/ui';
+import { DemoEntryAction } from './DemoEntryAction';
 import { SignInArtwork } from './SignInArtwork';
 
 const IDENTIFIER_REQUIRED_MESSAGE = 'Enter your account identifier.';
@@ -148,6 +149,7 @@ export function SignInForm(): React.JSX.Element {
             {isSubmitting ? <><Spinner label="Signing in" /> Signing in…</> : <><span>Sign in</span><Icon name="arrow" size={18} /></>}
           </Button>
         </form>
+        <DemoEntryAction />
         <p className="privacy-note">{import.meta.env.MODE === 'preview' ? 'This browser preview uses temporary mock data on loopback HTTP.' : 'This is a local workspace. Your password is sent only to this app over its configured HTTPS origin.'}</p>
         <p className="sr-only" data-testid="login-status-message" aria-live="polite">{statusMessage}</p>
       </Card>

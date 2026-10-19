@@ -62,6 +62,12 @@ const appEnvironmentSchema = z.object({
   DEMO_RUN_START_MAX: z.string().optional(),
   DEMO_RUN_START_WINDOW_SECONDS: z.string().optional(),
   DEMO_NETWORK_HASH_SECRET: z.string().optional(),
+  SHOWCASE_MAX_SNAPSHOT_BYTES: z.string().optional(),
+  SHOWCASE_MAX_FILE_BYTES: z.string().optional(),
+  SHOWCASE_MAX_ITEMS: z.string().optional(),
+  SHOWCASE_MAX_FILES: z.string().optional(),
+  SHOWCASE_MAX_RETAINED_VERSIONS: z.string().optional(),
+  DEMO_SHOWCASE_COPY_MAX_ATTEMPTS: z.string().optional(),
   TRUSTED_PROXY_CIDRS: z.string().optional(),
   LOCAL_USER_PASSWORD: z.string().min(1).max(1024).optional(),
   LOCAL_USER_PASSWORD_FILE: z.string().min(1).optional(),
@@ -124,6 +130,7 @@ export interface AppConfig {
   readonly demoSessionLifetimeMs: number;
   readonly demoAbuseLimits?: DemoAbuseLimits;
   readonly demoNetworkHashSecret?: string;
+  readonly showcaseLimits?: ShowcaseLimits;
   readonly trustedProxyCidrs?: readonly string[];
   readonly localUserPassword?: string;
   readonly localUserPasswordFile?: string;
@@ -163,6 +170,15 @@ export interface DemoAbuseLimits {
   readonly networkAdmissionWindowSeconds: number;
   readonly runStartMax: number;
   readonly runStartWindowSeconds: number;
+}
+
+export interface ShowcaseLimits {
+  readonly maxSnapshotBytes: number;
+  readonly maxFileBytes: number;
+  readonly maxItems: number;
+  readonly maxFiles: number;
+  readonly maxRetainedVersions: number;
+  readonly maxCopyAttempts: number;
 }
 
 function configurationDetails(error: z.ZodError): readonly ErrorDetail[] {
@@ -284,6 +300,21 @@ function parseDemoAbuseLimits(value: z.infer<typeof appEnvironmentSchema>): Demo
   };
 }
 
+function parseShowcaseLimits(value: z.infer<typeof appEnvironmentSchema>): ShowcaseLimits | undefined {
+  const raw = [
+    value.SHOWCASE_MAX_SNAPSHOT_BYTES, value.SHOWCASE_MAX_FILE_BYTES, value.SHOWCASE_MAX_ITEMS,
+    value.SHOWCASE_MAX_FILES, value.SHOWCASE_MAX_RETAINED_VERSIONS, value.DEMO_SHOWCASE_COPY_MAX_ATTEMPTS
+  ];
+  if (raw.every((item) => item === undefined) || raw.some((item) => item === undefined)) return undefined;
+  const numbers = raw.map((item) => Number(item));
+  if (numbers.some((item) => !Number.isSafeInteger(item) || item < 1)) return undefined;
+  const [maxSnapshotBytes, maxFileBytes, maxItems, maxFiles, maxRetainedVersions, maxCopyAttempts] = numbers as [number, number, number, number, number, number];
+  if (maxFileBytes > maxSnapshotBytes || maxFiles > maxItems || maxSnapshotBytes > 64 * 1024 * 1024
+    || maxFileBytes > 8 * 1024 * 1024 || maxItems > 10_000 || maxFiles > 100
+    || maxRetainedVersions > 100 || maxCopyAttempts > 10) return undefined;
+  return { maxSnapshotBytes, maxFileBytes, maxItems, maxFiles, maxRetainedVersions, maxCopyAttempts };
+}
+
 function parseTrustedProxyCidrs(value: string | undefined): readonly string[] | null | undefined {
   if (value === undefined) return undefined;
   const entries = value.split(',').map((entry) => entry.trim());
@@ -366,6 +397,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
 
   const database = loadDatabaseConfig(environment);
   const demoAbuseLimits = parseDemoAbuseLimits(parsed.data);
+  const showcaseLimits = parseShowcaseLimits(parsed.data);
   const providerCreditConfiguration = parsed.data.NIM_CREDIT_PRICE_VERSION
     && parsed.data.NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS
     && parsed.data.NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS
@@ -405,6 +437,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     demoSessionLifetimeMs: parsed.data.DEMO_SESSION_TTL_HOURS * 60 * 60 * 1_000,
     ...(demoAbuseLimits ? { demoAbuseLimits } : {}),
     ...(parsed.data.DEMO_NETWORK_HASH_SECRET ? { demoNetworkHashSecret: parsed.data.DEMO_NETWORK_HASH_SECRET } : {}),
+    ...(showcaseLimits ? { showcaseLimits } : {}),
     ...(parsed.data.TRUSTED_PROXY_CIDRS !== undefined ? { trustedProxyCidrs: parseTrustedProxyCidrs(parsed.data.TRUSTED_PROXY_CIDRS) ?? [] } : {}),
     ...(parsed.data.LOCAL_USER_PASSWORD ? { localUserPassword: parsed.data.LOCAL_USER_PASSWORD } : {}),
     ...(parsed.data.LOCAL_USER_PASSWORD_FILE ? { localUserPasswordFile: parsed.data.LOCAL_USER_PASSWORD_FILE } : {}),

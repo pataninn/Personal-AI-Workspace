@@ -3,12 +3,14 @@ import { isIP } from 'node:net';
 
 import type { IOpaqueTokenProvider } from '@/modules/auth/repositories/security-providers';
 import type { DemoAbuseLimitValues, DemoAdmissionAttemptResult, IDemoAdmissionRepository, IDemoStorageBootstrap } from '@/modules/demo/domain/demo-admission-types';
-import { DemoAdmissionRateLimitedError, DemoAdmissionUnavailableError, DemoAdmissionValidationError, DemoProvisioningFailedError } from '@/modules/demo/domain/demo-admission-errors';
+import { DemoAdmissionRateLimitedError, DemoAdmissionUnavailableError, DemoAdmissionValidationError, DemoProvisioningFailedError, DemoShowcaseUnavailableError } from '@/modules/demo/domain/demo-admission-errors';
 
 export interface CreateDemoSessionConfiguration {
   readonly limits?: DemoAbuseLimitValues;
   readonly networkHashSecret?: string;
   readonly lifetimeMs: number;
+  readonly isShowcaseAvailable?: () => Promise<boolean>;
+  readonly provisionShowcaseCopy?: (admissionId: string, ownerId: string) => Promise<void>;
 }
 
 export class CreateDemoSessionUseCase {
@@ -28,6 +30,11 @@ export class CreateDemoSessionUseCase {
     const secret = this.configuration.networkHashSecret;
     if (!limits || !secret || Buffer.byteLength(secret, 'utf8') < 32 || !input.clientIp || isIP(input.clientIp) === 0) {
       throw new DemoAdmissionUnavailableError();
+    }
+    if (this.configuration.isShowcaseAvailable) {
+      let available = false;
+      try { available = await this.configuration.isShowcaseAvailable(); } catch { available = false; }
+      if (!available) throw new DemoShowcaseUnavailableError();
     }
     const network = deriveNetworkIdentity(secret, input.clientIp);
 
@@ -70,6 +77,8 @@ export class CreateDemoSessionUseCase {
         ownerId: begun.admission.ownerId,
         tokenHash: this.tokenProvider.digestToken(rawToken)
       });
+      const copyProvisioning = this.configuration.provisionShowcaseCopy?.(begun.admission.admissionId, begun.admission.ownerId);
+      if (copyProvisioning) void copyProvisioning.catch(() => undefined);
       return {
         kind: 'created',
         session: {

@@ -100,6 +100,23 @@ describe('CreateDemoSessionUseCase', () => {
     expect(repo.completeWithSession).toHaveBeenCalledWith({ admissionId: ADMISSION_ID, ownerId: OWNER_ID, tokenHash: 'digest:random-opaque-demo-token-with-32-byte-source' });
   });
 
+  it('returns the session while durable showcase-copy provisioning continues', async () => {
+    const repo = repository();
+    const bootstrap: IDemoStorageBootstrap = { initializeEmptyAccount: jest.fn(async () => undefined) };
+    const provider = tokenProvider();
+    const provisionShowcaseCopy = jest.fn(() => new Promise<void>(() => undefined));
+    const useCase = new CreateDemoSessionUseCase(repo, bootstrap, provider, {
+      limits, networkHashSecret: 'dedicated-demo-network-secret-32-bytes-min', lifetimeMs: 86_400_000,
+      isShowcaseAvailable: async () => true,
+      provisionShowcaseCopy
+    });
+
+    const result = await useCase.execute({ idempotencyKey: key, clientIp: '198.51.100.20' });
+
+    expect(result.kind).toBe('created');
+    expect(provisionShowcaseCopy).toHaveBeenCalledWith(ADMISSION_ID, OWNER_ID);
+  });
+
   it('bounds storage bootstrap attempts and never creates a session on provisioning failure', async () => {
     const repo = repository({ recordProvisioningAttempt: jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2).mockResolvedValueOnce(3) });
     const bootstrap: IDemoStorageBootstrap = { initializeEmptyAccount: jest.fn().mockRejectedValue(new Error('private file detail')) };

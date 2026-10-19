@@ -5,7 +5,7 @@
 **Last Updated:** 2026-10-19
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 4.1, and 5.2 delivered. Task3.4 protected showcase/private editable-copy and Task5.1 Home Ask-panel verification active; independent Task6.1 memory/context contract and implementation preparation active.
+**Status:** Execution active. Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 4.1, 5.1, and 5.2 delivered. Task3.4 protected showcase/private editable-copy independently passed QA and awaits its task commit; Task6.1 memory/context implementation and focused verification active.
 
 **Current execution boundary (user update):** Complete, independently verify, and commit every task through Task7.3, then stop for the user to review the application. Tasks8.1/8.2 deployment and subsequent release acceptance remain planned and must not begin before that review.
 
@@ -293,7 +293,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-3-4-showcase-and-demo-entry/artifacts/`
-- `Current status:` Developer backend typecheck and focused3suites14tests PASS; guarded PostgreSQL1suite4tests PASS with fresh base/zero-target postguard. Frontend focused14tests plus final affected4tests PASS, production typecheck/build PASS, static-fixture Playwright1/1 desktop/mobile PASS. Required one-click pending-to-ready automatic workspace entry is complete: final frontend17/17 tests, typecheck/build and rebuilt two-context fixture1/1 PASS. Combined developer Ready for QA:YES; Independent QA cycle1 FAIL on one Medium verification gap: add direct Express HTTP coverage proving pending-copy409 before a private handler, plus ready/regular/safe-exception behavior. Developer backend fix pending; existing PG/browser checks stay valid. Known credit/Usage integration assigned explicitly to Task3.6. No live provider/deployment claim.
+- `Current status:` Developer backend typecheck and focused3suites14tests PASS; guarded PostgreSQL1suite4tests PASS with fresh base/zero-target postguard. Frontend focused14tests plus final affected4tests PASS, production typecheck/build PASS, static-fixture Playwright1/1 desktop/mobile PASS. Required one-click pending-to-ready automatic workspace entry is complete: final frontend17/17 tests, typecheck/build and rebuilt two-context fixture1/1 PASS. Combined developer Ready for QA:YES; Independent QA cycle2 PASS: new direct Express HTTP suite3/3 proves pending-copy409 before private handler, ready/regular access and safe exceptions. Prior cycle1 verification gap resolved and history retained. Existing PG/browser checks remain valid. Required local commit pending; status remains in progress until it exists. Known credit/Usage integration assigned explicitly to Task3.6. No live provider/deployment claim.
 
 **Current handoff:** Task4.1 delivered at `4f9ad9bddf227f53b7c55db237cc4a9a8d716846`; root transferred Task3.4 application ownership to developer_showcase_luna. The concrete DTO/OpenAPI contract is finalized; backend/frontend implementation and focused verification are active. Existing UI/preflight inputs remain authoritative; functional delivery is prioritized over minor visual polish.
 
@@ -301,16 +301,16 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 **Subtasks:**
 
-- [ ] Snapshot only approved public files/tasks/facts/skills; omit private histories, identifiers, secrets, and audit data.
-- [ ] Clone with new owner/resource IDs and staged bounded file copying; recover interrupted provisioning without duplicate credits/copies.
-- [ ] Add Try demo, expiry/credit banner, View showcase, and backend denials for showcase edits/chat/skills/jobs/tool mutations.
+- [x] Snapshot only approved public files/tasks/facts/skills; omit private histories, identifiers, secrets, and audit data.
+- [x] Clone with new owner/resource IDs and staged bounded file copying; recover interrupted provisioning without duplicate credits/copies.
+- [x] Add Try demo, expiry/credit banner, View showcase, and backend denials for showcase edits/chat/skills/jobs/tool mutations.
 
 **Definition of Done:**
 
-- [ ] Two browser sessions have independent copies; protected showcase rejects direct API/tool mutation; existing demos do not change when the operator publishes a new version.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
-- [ ] Developer-owned contract implemented and verified before task closure.
+- [x] Two browser sessions have independent copies; protected showcase rejects direct API/tool mutation; existing demos do not change when the operator publishes a new version.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Developer-owned contract implemented and verified before task closure.
 
 **Upstream Outputs Needed:** Architecture sections 4.3, 5.3, 6; Task 1.1 ui-spec.md and relevant task contracts; completed dependency outputs.
 
@@ -514,7 +514,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 5.1 — Move Home assistant into a floating Ask panel
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 1.1, 4.1
 **Risk:** Medium: drafts, streaming, and focus
@@ -529,7 +529,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-5-1-assistant-launcher/artifacts/`
-- `Current status:` Developer Ready: persistent shell-mounted Home Ask with12-path exact manifest, self-review and dev-summary.md. Focused27/27 Vitest, frontend typecheck/build, and one synthetic desktop/mobile keyboard/history/draft/navigation journey PASS. Initial nested-menu focus bug fixed; minor mobile title wrapping accepted as Low debt. Canonical screenshots, browser JSON and honest first-failure note stored. Independent tester PASS in qa-report.md: rerun27/27 units and one active-run cancellation/status browser case1/1; reviewed developer final typecheck/build and desktop/mobile core journey. Two expected pre-auth401 resource messages explicitly recorded; no page errors/external calls. Internal-widget usage documentation exception and Low mobile title debt recorded. Required local commit pending; task status remains in progress until commit exists. No live provider claim.
+- `Current status:` Developer Ready: persistent shell-mounted Home Ask with12-path exact manifest, self-review and dev-summary.md. Focused27/27 Vitest, frontend typecheck/build, and one synthetic desktop/mobile keyboard/history/draft/navigation journey PASS. Initial nested-menu focus bug fixed; minor mobile title wrapping accepted as Low debt. Canonical screenshots, browser JSON and honest first-failure note stored. Independent tester PASS in qa-report.md: rerun27/27 units and one active-run cancellation/status browser case1/1; reviewed developer final typecheck/build and desktop/mobile core journey. Two expected pre-auth401 resource messages explicitly recorded; no page errors/external calls. Internal-widget usage documentation exception and Low mobile title debt recorded. Delivered commit `1d22db9fe9f3fb67ac05eddf199952dadf2a5fb3` on `feature/automatic-assistant-tools`; root verified exactly12manifest source paths and13reviewed docs/tracker paths, zero unexpected/missing paths, empty index, and original protected paths still unstaged. No push. No live provider claim.
 
 **Description:** Recompose existing home-chat/history features into a shell-mounted widget and remove the dominant Home chat block.
 
@@ -679,7 +679,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-6-1-memory-context/artifacts/`
-- `Current status:` Task-scoped UI specification complete at task-6-1-memory-context/ui-spec.md. Developer contract/source-map and surgical architecture-preflight.md complete. developer_memory_luna owns selected-fact/context UI/API and scoped Home memory reader/prompt implementation, including only the approved SubmitHomeTurnUseCase DI hunk in composition-root.ts. Global Home stays memory-free; selected facts for planning-only workspace conversations come from persisted owner/project scope. Focused backend tests/typecheck and guarded PostgreSQL project-facts verification authorized; no new runtime validation claimed yet.
+- `Current status:` Task-scoped UI specification complete at task-6-1-memory-context/ui-spec.md. Developer contract/source-map and surgical architecture-preflight.md complete. developer_memory_luna owns selected-fact/context UI/API and scoped Home memory reader/prompt implementation, including only the approved SubmitHomeTurnUseCase DI hunk in composition-root.ts. Global Home stays memory-free; selected facts for planning-only workspace conversations come from persisted owner/project scope. Focused backend26tests/typecheck and frontend15tests/typecheck PASS; one selected guarded PostgreSQL case PASS with fresh base/zero-target postguard in project-fact-storage-quota.integration.spec.ts. Synthetic planning-only Memory to fresh-context browser journey underway; no live provider claim.
 
 **Description:** Reuse project facts and context selection to expose remembered preferences, their source, and inclusion in future runs.
 
@@ -720,6 +720,8 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 - `Current status:` Pending; no implementation or live validation performed.
 
 **Description:** Add account/workspace skill definitions and versioned invocation while reusing bundled runtime skills and existing AI orchestration.
+
+**Carry-forward integration:** Task3.4 intentionally omitted skills while no persisted user-skill source existed. Resolve its approved-skill snapshot/clone allowlist against this schema and track the corresponding read-only/publishing UI under Task6.3; do not silently copy source owner IDs, policies, or runtime-only SKILL.md files.
 
 **Subtasks:**
 
@@ -1092,13 +1094,13 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | 3.1 — Implement atomic credit reservations and runtime metering | `[x]` | PASS; `9b65d3c5b5906cb63033fed7bc2053e587d925b9` |
 | 3.2 — Enforce account storage limits on every persistent write | `[x]` | PASS; `b5d40315680b73afac3e04c1a52b8ceaba83a1bf` |
 | 3.3 — Provision private one-click demo identities | `[x]` | PASS; `3f4adabbe22a8303406cea9e4441b3e987f605d3` |
-| 3.4 — Publish a protected showcase and open editable demo copies | `[~]` | QA cycle1 FAIL: direct HTTP readiness-gate regression missing; focused backend test fix next |
+| 3.4 — Publish a protected showcase and open editable demo copies | `[~]` | Independent QA cycle2 PASS; HTTP3/3, PG4/4, frontend17/browser1; commit pending |
 | 3.5 — Expire and clean up demos safely | `[ ]` | Pending |
 | 3.6 — Build account, quota, and demo administration UI | `[ ]` | Pending |
 | 4.1 — Replace per-turn consent with workspace-scoped automatic execution | `[x]` | PASS; `4f9ad9bddf227f53b7c55db237cc4a9a8d716846`; accepted Low viewport/test debt |
 | 4.2 — Execute Home task and workspace actions through canonical use cases | `[ ]` | Pending |
 | 4.3 — Unify task deletion and remove archive behavior | `[ ]` | Pending |
-| 5.1 — Move Home assistant into a floating Ask panel | `[~]` | Independent QA PASS;27units and active-run browser1/1; required commit pending |
+| 5.1 — Move Home assistant into a floating Ask panel | `[x]` | PASS; `1d22db9fe9f3fb67ac05eddf199952dadf2a5fb3` |
 | 5.2 — Replace Inbox emphasis with Add task and View all | `[x]` | PASS; `fdb200dc23eb83a1047f138ccdd8f7316f3855b1` |
 | 5.3 — Open task details editable with Save and dirty-exit protection | `[ ]` | Pending |
 | 5.4 — Audit spacing, responsiveness, and accessibility across release screens | `[ ]` | Pending |
@@ -1116,7 +1118,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Blocked Items and implementation-time inputs
 
-Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 4.1, and 5.2 are delivered. Task3.4 showcase/demo-copy and Task5.1 floating Ask panel verification are active; Task6.1 UI specification is complete and developer contract preparation is active. Current subagents use GPT-6 Luna with maximum reasoning. Existing work is preserved; model availability must be reported honestly. Dependency ordering above applies.
+Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 4.1, 5.1, and 5.2 are delivered. Task3.4 showcase/demo-copy has independent QA PASS and awaits its task commit; Task6.1 memory/context implementation and focused verification are active. Current subagents use GPT-6 Luna with maximum reasoning. Existing work is preserved; model availability must be reported honestly. Dependency ordering above applies.
 
 - Task 8.1/8.2 needs the real deployment host/domain and DNS/certificate access. Do not claim the local self-signed setup fixes public browser trust.
 - Credit enforcement requires actual provider pricing and a way to bound/meter all Hermes calls. Public AI access stays disabled if that cannot be established.

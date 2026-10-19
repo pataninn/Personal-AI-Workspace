@@ -7,4 +7,4 @@ export {
   sessionUnauthenticated,
   userSessionReducer
 } from '@/entities/user-session/model/slice';
-export { selectCsrfToken, selectPrincipal, selectSessionErrorCode, selectSessionStatus } from '@/entities/user-session/model/selectors';
+export { selectCsrfToken, selectExpiresAt, selectPrincipal, selectSessionErrorCode, selectSessionStatus } from '@/entities/user-session/model/selectors';

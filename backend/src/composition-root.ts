@@ -101,6 +101,9 @@ import { TypeOrmAssistantScopePolicyRepository } from '@/infrastructure/database
 import { GetAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/get-assistant-execution-policy';
 import { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
 import { RuntimeCapabilityAdapter } from '@/infrastructure/assistant-policy/runtime-capability-adapter';
+import { TypeOrmShowcaseRepository } from '@/infrastructure/database/repositories/typeorm-showcase-repository';
+import { TypeOrmDemoShowcaseCopyManager } from '@/infrastructure/database/repositories/typeorm-demo-showcase-copy-manager';
+import { BuildShowcasePreviewUseCase, PublishShowcaseUseCase } from '@/modules/showcases/use-cases/showcase-use-cases';
 
 export interface Application {
   readonly app: Express;
@@ -215,6 +218,18 @@ export async function createApplication(
         'Storage accounting remains unavailable for accounts whose retained content could not be verified.'
       );
     }
+    const projectFileAccess = new TypeOrmProjectFileAccess(dataSource, storageRootMappingRepository);
+    const projectFileGateway = new ProjectFileGateway({ containerRoot: config.workspaceRoot, workspaceBoundary });
+    const projectFileActions = new ProjectFileActions(projectFileAccess, projectFileGateway, new MarkItDownDocumentConverter(), storageFileMutation);
+    const showcaseRepository = new TypeOrmShowcaseRepository(dataSource);
+    const buildShowcasePreview = new BuildShowcasePreviewUseCase(projectRepository, projectTaskRepository, projectFactRepository, projectFileActions, config.showcaseLimits);
+    const publishShowcase = new PublishShowcaseUseCase(buildShowcasePreview, showcaseRepository, config.showcaseLimits);
+    const demoShowcaseCopy = new TypeOrmDemoShowcaseCopyManager(
+      dataSource, showcaseRepository, projectRepository, workspaceBoundary, projectFileAccess, projectFileGateway,
+      storageFileMutation, storageQuotaRepository, storageContentAccounting, config.showcaseLimits
+    );
+    const managedStorageReady = async (): Promise<boolean> => Boolean(config.accountWorkspacesIdentity)
+      && (await workspaceBoundary.getManagedSnapshot()).status === 'ready';
     const providerPermissionRepository = new TypeOrmProviderPermissionRepository(dataSource);
     const commandRepository = new TypeOrmSandboxCommandRepository(dataSource, storageContentAccounting);
     const changeSetRepository = new TypeOrmProposedChangeSetRepository(dataSource, storageContentAccounting);
@@ -294,7 +309,13 @@ export async function createApplication(
       {
         ...(config.demoAbuseLimits ? { limits: config.demoAbuseLimits } : {}),
         ...(config.demoNetworkHashSecret ? { networkHashSecret: config.demoNetworkHashSecret } : {}),
-        lifetimeMs: config.demoSessionLifetimeMs
+        lifetimeMs: config.demoSessionLifetimeMs,
+        isShowcaseAvailable: async () => {
+          if (!config.showcaseLimits) return false;
+          const current = await showcaseRepository.getCurrentSummary();
+          return Boolean(current) && (current?.fileCount === 0 || await managedStorageReady());
+        },
+        provisionShowcaseCopy: (admissionId, ownerId) => demoShowcaseCopy.provision(admissionId, ownerId)
       }
     );
     const app = createApp({
@@ -307,8 +328,22 @@ export async function createApplication(
           createSession: createDemoSession,
           getSession,
           appOrigin: config.appOrigin,
-          cookieSecure: config.protocol === 'https'
+          cookieSecure: config.protocol === 'https',
+          showcaseCopy: demoShowcaseCopy
         },
+        showcases: {
+          repository: showcaseRepository,
+          buildPreview: buildShowcasePreview,
+          publish: publishShowcase,
+          getSession,
+          appOrigin: config.appOrigin,
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https'),
+          ...(config.showcaseLimits ? { limits: config.showcaseLimits } : {}),
+          admissionConfigurationReady: () => Boolean(config.demoAbuseLimits && config.demoNetworkHashSecret
+            && Buffer.byteLength(config.demoNetworkHashSecret, 'utf8') >= 32),
+          managedStorageReady
+        },
+        demoCopyGate: { getSession, isReady: (ownerId) => demoShowcaseCopy.isReady(ownerId) },
         auth: {
           login,
           getSession,

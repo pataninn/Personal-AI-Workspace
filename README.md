@@ -164,12 +164,23 @@ not parse `X-Forwarded-For` itself. Network limits identify a shared network buc
 not an individual person. Raw addresses are not persisted or included in request logs.
 
 A new demo account receives storage-ready status only after the server verifies its
-new database account is empty and initializes its storage accounting. This does not
-publish a showcase copy; that protected copy flow belongs to a later release task.
+new database account is empty and initializes its storage accounting. A separate
+showcase configuration controls whether new demos can be admitted. Configure all six
+settings together: `SHOWCASE_MAX_SNAPSHOT_BYTES`, `SHOWCASE_MAX_FILE_BYTES`,
+`SHOWCASE_MAX_ITEMS`, `SHOWCASE_MAX_FILES`, `SHOWCASE_MAX_RETAINED_VERSIONS`, and
+`DEMO_SHOWCASE_COPY_MAX_ATTEMPTS`. Values must be finite positive integers;
+per-file bytes cannot exceed total snapshot bytes, and file count cannot exceed the
+item count. No defaults or production limits are supplied. Missing, partial, or
+invalid values keep new admissions unavailable. An administrator must select content
+in the private preview and publish it explicitly; the application starts unpublished
+and does not create sample content or publish automatically. `Try demo` creates a
+private copy only from a currently published version. Expired demo data cleanup is
+also a separate later task.
+
 Non-AI exploration does not require provider-spending configuration. AI remains
 subject to the shared credit pause, configured budgets, verified request bounds, and
 provider-call admission; demo admission itself never enables or spends on a provider
-request. Expired demo data cleanup is also a separate later task.
+request.
 
 Keep the credential and TLS files at the paths named in <code>.env</code>. The
 default template places these files under

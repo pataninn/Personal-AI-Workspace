@@ -8,6 +8,7 @@ import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
 import { clearSessionCookie as clearAuthSessionCookie } from '@/modules/auth/controllers/auth-router';
 import { SESSION_COOKIE_NAME, sameOrigin } from '@/modules/auth/controllers/request-auth';
 import type { DemoAdmissionAttemptResult } from '@/modules/demo/domain/demo-admission-types';
+import type { DemoShowcaseCopyDto, IDemoShowcaseCopyManager } from '@/modules/demo/domain/demo-showcase-copy-types';
 import { DemoAdmissionError, DemoAdmissionValidationError, DemoProvisioningFailedError } from '@/modules/demo/domain/demo-admission-errors';
 import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
@@ -19,6 +20,7 @@ export interface DemoAdmissionRouterDependencies {
   readonly getSession: Pick<GetSessionUseCase, 'execute'>;
   readonly appOrigin: string;
   readonly cookieSecure: boolean;
+  readonly showcaseCopy?: Pick<IDemoShowcaseCopyManager, 'getStatus' | 'retry'>;
 }
 
 function cookieOptions(secure: boolean, expiresAt?: Date, maxAge?: number): CookieOptions {
@@ -114,5 +116,33 @@ function mapDemoError(error: unknown): unknown {
 export function createDemoAdmissionRouter(dependencies: DemoAdmissionRouterDependencies): Router {
   const router = Router();
   router.post('/session', sameOrigin(dependencies.appOrigin), handler(dependencies));
+  if (dependencies.showcaseCopy) {
+    router.get('/showcase-copy', async (request, response, next): Promise<void> => {
+      try {
+        const token = request.cookies?.[SESSION_COOKIE_NAME];
+        const session = await dependencies.getSession.execute(token);
+        if (session.principal.accountKind !== 'demo') throw new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid demo session is required.');
+        const result = await dependencies.showcaseCopy!.getStatus(session.principal.id);
+        sendData(response, result, result.state === 'pending' ? 202 : 200);
+      } catch (error: unknown) {
+        if (error instanceof UnauthenticatedError) clearCookie(response, dependencies.cookieSecure);
+        next(mapDemoError(error));
+      }
+    });
+    router.post('/showcase-copy/retries', sameOrigin(dependencies.appOrigin), async (request, response, next): Promise<void> => {
+      try {
+        parseEmptyBody(request.body);
+        const token = request.cookies?.[SESSION_COOKIE_NAME];
+        const session = await dependencies.getSession.execute(token);
+        if (!csrfMatches(session.csrfToken, request.header('x-csrf-token'))) throw new AppError('CSRF_INVALID', 403, 'The request could not be verified.');
+        if (session.principal.accountKind !== 'demo') throw new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid demo session is required.');
+        const result: DemoShowcaseCopyDto = await dependencies.showcaseCopy!.retry(session.principal.id);
+        sendData(response, result, result.state === 'pending' ? 202 : 200);
+      } catch (error: unknown) {
+        if (error instanceof UnauthenticatedError) clearCookie(response, dependencies.cookieSecure);
+        next(mapDemoError(error));
+      }
+    });
+  }
   return router;
 }

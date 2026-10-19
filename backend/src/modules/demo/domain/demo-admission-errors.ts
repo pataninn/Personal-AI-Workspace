@@ -1,6 +1,6 @@
 export class DemoAdmissionError extends Error {
   public constructor(
-    public readonly code: 'DEMO_ADMISSION_UNAVAILABLE' | 'DEMO_ADMISSION_RATE_LIMITED' | 'DEMO_RUN_START_RATE_LIMITED' | 'DEMO_PROVISIONING_FAILED',
+    public readonly code: 'DEMO_ADMISSION_UNAVAILABLE' | 'DEMO_SHOWCASE_UNAVAILABLE' | 'DEMO_ADMISSION_RATE_LIMITED' | 'DEMO_RUN_START_RATE_LIMITED' | 'DEMO_PROVISIONING_FAILED',
     public readonly statusCode: 429 | 503,
     message: string
   ) {
@@ -12,6 +12,12 @@ export class DemoAdmissionError extends Error {
 export class DemoAdmissionUnavailableError extends DemoAdmissionError {
   public constructor() {
     super('DEMO_ADMISSION_UNAVAILABLE', 503, 'Demo access is temporarily unavailable.');
+  }
+}
+
+export class DemoShowcaseUnavailableError extends DemoAdmissionError {
+  public constructor() {
+    super('DEMO_SHOWCASE_UNAVAILABLE', 503, 'Demo access is temporarily unavailable.');
   }
 }
 

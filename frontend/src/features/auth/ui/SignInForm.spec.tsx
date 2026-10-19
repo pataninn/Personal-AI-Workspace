@@ -9,10 +9,22 @@ import { userSessionReducer } from '@/entities/user-session';
 import { ApiClientError } from '@/shared/api';
 import { SignInForm } from '@/features/auth/ui/SignInForm';
 
-const { signInMock } = vi.hoisted(() => ({ signInMock: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  signIn: vi.fn(),
+  getDemoAvailability: vi.fn(),
+  createDemoAdmissionKey: vi.fn(),
+  createDemoSession: vi.fn()
+}));
 
 vi.mock('@/features/auth/api/auth-api', () => ({
-  signIn: signInMock
+  signIn: mocks.signIn,
+  getCurrentSession: vi.fn()
+}));
+
+vi.mock('@/entities/demo', () => ({
+  getDemoAvailability: mocks.getDemoAvailability,
+  createDemoAdmissionKey: mocks.createDemoAdmissionKey,
+  createDemoSession: mocks.createDemoSession
 }));
 
 function LocationProbe(): React.JSX.Element {
@@ -34,7 +46,10 @@ function renderForm(initialEntry = '/login'): void {
 
 describe('SignInForm', () => {
   beforeEach(() => {
-    signInMock.mockReset();
+    mocks.signIn.mockReset();
+    mocks.getDemoAvailability.mockReset().mockResolvedValue({ available: false });
+    mocks.createDemoAdmissionKey.mockReset();
+    mocks.createDemoSession.mockReset();
   });
 
   it('focuses the first required field when submitted empty', async () => {
@@ -45,11 +60,11 @@ describe('SignInForm', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('Enter your account identifier.');
     expect(screen.getByLabelText('Account identifier')).toHaveFocus();
-    expect(signInMock).not.toHaveBeenCalled();
+    expect(mocks.signIn).not.toHaveBeenCalled();
   });
 
   it('shows a generic invalid-credential message without navigating', async () => {
-    signInMock.mockRejectedValue(new ApiClientError(401, 'INVALID_CREDENTIALS', 'server detail'));
+    mocks.signIn.mockRejectedValue(new ApiClientError(401, 'INVALID_CREDENTIALS', 'server detail'));
     const user = userEvent.setup();
     renderForm();
 
@@ -75,7 +90,7 @@ describe('SignInForm', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('Enter your password.');
     expect(screen.getByLabelText('Password')).toHaveFocus();
-    expect(signInMock).not.toHaveBeenCalled();
+    expect(mocks.signIn).not.toHaveBeenCalled();
   });
 
   it('rejects passwords over 1024 characters before making a request', async () => {
@@ -88,11 +103,11 @@ describe('SignInForm', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('Enter a password between 1 and 1024 characters.');
     expect(screen.getByLabelText('Password')).toHaveFocus();
-    expect(signInMock).not.toHaveBeenCalled();
+    expect(mocks.signIn).not.toHaveBeenCalled();
   });
 
   it('maps server validation errors to safe retry copy', async () => {
-    signInMock.mockRejectedValue(new ApiClientError(400, 'VALIDATION_ERROR', 'server detail'));
+    mocks.signIn.mockRejectedValue(new ApiClientError(400, 'VALIDATION_ERROR', 'server detail'));
     const user = userEvent.setup();
     renderForm();
 
@@ -106,7 +121,7 @@ describe('SignInForm', () => {
   });
 
   it('dispatches the non-secret session snapshot and navigates after success', async () => {
-    signInMock.mockResolvedValue({
+    mocks.signIn.mockResolvedValue({
       principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular', role: 'admin' },
       csrfToken: 'csrf-value',
       expiresAt: '2026-09-13T00:00:00.000Z'
@@ -122,6 +137,6 @@ describe('SignInForm', () => {
       'Signed in. Loading your workspace.'
     );
     expect(screen.getByTestId('location-probe')).toHaveTextContent('/dashboard');
-    expect(signInMock).toHaveBeenCalledWith(' OWNER ', 'correct-password');
+    expect(mocks.signIn).toHaveBeenCalledWith(' OWNER ', 'correct-password');
   });
 });
