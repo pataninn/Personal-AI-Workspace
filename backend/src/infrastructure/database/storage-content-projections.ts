@@ -11,6 +11,7 @@ export type StorageContentEntity =
   | 'project_tasks'
   | 'project_task_suggestions'
   | 'project_facts'
+  | 'skill_revisions'
   | 'ai_runs'
   | 'ai_run_change_sets'
   | 'sandbox_commands'
@@ -150,6 +151,7 @@ const COPIES: Readonly<Record<StorageContentEntity, readonly string[]>> = {
   project_tasks: ['title', 'details', 'subtasks', 'idempotency_snapshot'],
   project_task_suggestions: ['title', 'details', 'subtasks'],
   project_facts: ['title', 'content'],
+  skill_revisions: ['title', 'instructions', 'declared_tools'],
   ai_runs: ['request', 'manifest'],
   ai_run_change_sets: ['operations', 'backup_checkpoints', 'result'],
   sandbox_commands: ['command', 'args', 'summary', 'result'],
@@ -184,6 +186,12 @@ const PROJECTIONS: Readonly<Record<Exclude<StorageContentEntity, 'home_conversat
     FROM "project_facts" f WHERE f."owner_id" = $1 AND f."id" = ANY($2::uuid[])
     UNION ALL SELECT 'project_facts:' || f."id"::text, 'content', f."project_id"::text, octet_length(f."content")::text FROM "project_facts" f WHERE f."owner_id" = $1 AND f."id" = ANY($2::uuid[])
   `,
+  skill_revisions: () => `SELECT 'skill_revisions:' || r."id"::text AS "resource_key", 'title' AS "copy_key", s."workspace_id"::text AS "project_id", octet_length(r."title")::text AS "byte_count"
+    FROM "skill_revisions" r JOIN "skills" s ON s."owner_id" = r."owner_id" AND s."id" = r."skill_id" WHERE r."owner_id" = $1 AND r."id" = ANY($2::uuid[])
+    UNION ALL SELECT 'skill_revisions:' || r."id"::text, 'instructions', s."workspace_id"::text, octet_length(r."instructions")::text
+    FROM "skill_revisions" r JOIN "skills" s ON s."owner_id" = r."owner_id" AND s."id" = r."skill_id" WHERE r."owner_id" = $1 AND r."id" = ANY($2::uuid[])
+    UNION ALL SELECT 'skill_revisions:' || r."id"::text, 'declared_tools', s."workspace_id"::text, octet_length(r."declared_tools"::text)::text
+    FROM "skill_revisions" r JOIN "skills" s ON s."owner_id" = r."owner_id" AND s."id" = r."skill_id" WHERE r."owner_id" = $1 AND r."id" = ANY($2::uuid[])`,
   ai_runs: () => `SELECT 'ai_runs:' || r."id"::text AS "resource_key", 'request' AS "copy_key", r."project_id"::text AS "project_id", octet_length(r."request")::text AS "byte_count"
     FROM "ai_runs" r WHERE r."owner_id" = $1 AND r."id" = ANY($2::uuid[])
     UNION ALL SELECT 'ai_runs:' || r."id"::text, 'manifest', r."project_id"::text, octet_length(r."manifest"::text)::text FROM "ai_runs" r WHERE r."owner_id" = $1 AND r."id" = ANY($2::uuid[])`,

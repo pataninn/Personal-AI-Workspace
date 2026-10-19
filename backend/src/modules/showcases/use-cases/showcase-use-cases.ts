@@ -8,6 +8,7 @@ import type { IProjectFactRepository } from '@/modules/memory/repositories/proje
 import type { ProjectTask } from '@/modules/tasks/domain/project-task';
 import type { ProjectFact } from '@/modules/memory/domain/project-fact';
 import type { ProjectFileActions } from '@/modules/files/use-cases/project-file-actions';
+import type { ISkillRepository } from '@/modules/skills/repositories/skill-repository';
 import { WorkspaceRelativePath } from '@/modules/files/domain/workspace-path';
 import { AppError } from '@/shared/errors/app-error';
 import type {
@@ -18,6 +19,7 @@ import type {
   ShowcasePublishOutcome,
   ShowcasePreviewDto,
   ShowcaseSourceRequest,
+  ShowcaseSkillContent,
   ShowcaseTaskContent
 } from '@/modules/showcases/domain/showcase-types';
 
@@ -29,19 +31,25 @@ export class BuildShowcasePreviewUseCase {
     private readonly tasks: Pick<IProjectTaskRepository, 'listTasks'>,
     private readonly facts: Pick<IProjectFactRepository, 'findActiveByIds'>,
     private readonly files: SourceFileActions,
-    private readonly limits: ShowcaseLimits | undefined
+    private readonly limits: ShowcaseLimits | undefined,
+    private readonly skills?: Pick<ISkillRepository, 'findActiveEnabledForShowcase'>
   ) {}
 
   public async execute(adminId: string, request: ShowcaseSourceRequest): Promise<ShowcasePreviewDto> {
     const limits = this.requireLimits();
     const project = await this.projects.findByIdForOwner(adminId, request.projectId);
     if (!project || project.status !== 'active') throw notFound('PROJECT_NOT_FOUND');
-    const [taskSnapshot, selectedFacts] = await Promise.all([
+    const selectedSkillIds = request.selection.skillIds ?? [];
+    if (new Set(selectedSkillIds).size !== selectedSkillIds.length) throw validationError();
+    if (selectedSkillIds.length > 0 && !this.skills) throw unavailable();
+    const [taskSnapshot, selectedFacts, selectedSkills] = await Promise.all([
       this.tasks.listTasks(adminId, project.id, 'all'),
-      request.selection.factIds.length === 0 ? Promise.resolve([] as readonly ProjectFact[]) : this.facts.findActiveByIds(adminId, project.id, request.selection.factIds)
+      request.selection.factIds.length === 0 ? Promise.resolve([] as readonly ProjectFact[]) : this.facts.findActiveByIds(adminId, project.id, request.selection.factIds),
+      selectedSkillIds.length === 0 ? Promise.resolve([]) : this.skills!.findActiveEnabledForShowcase(adminId, project.id, selectedSkillIds)
     ]);
     const selectedTasks = selectAll(taskSnapshot.tasks, request.selection.taskIds);
     if (selectedFacts.length !== request.selection.factIds.length) throw notFound('SHOWCASE_SOURCE_NOT_FOUND');
+    if (selectedSkills.length !== selectedSkillIds.length) throw notFound('SHOWCASE_SOURCE_NOT_FOUND');
 
     const safePaths = request.selection.filePaths.map((value) => {
       try { return WorkspaceRelativePath.parse(value, { field: 'selection.filePaths' }).value; }
@@ -74,13 +82,20 @@ export class BuildShowcasePreviewUseCase {
     const orderedFacts = [...selectedFacts].sort((left, right) => compare(left.key, right.key) || compare(left.id, right.id));
     const taskContent = orderedTasks.map(toTaskContent);
     const factContent = orderedFacts.map((fact) => ({ title: fact.title, content: fact.content }));
-    const itemCount = taskContent.length + taskContent.reduce((sum, task) => sum + task.checklist.length, 0) + factContent.length + fileContents.length;
+    const orderedSkills = [...selectedSkills].sort((left, right) => compare(left.id, right.id));
+    const skillContent: ShowcaseSkillContent[] = orderedSkills.map((skill) => ({
+      title: skill.title,
+      instructions: skill.instructions,
+      declaredTools: [...skill.declaredTools].sort(compare)
+    }));
+    const itemCount = taskContent.length + taskContent.reduce((sum, task) => sum + task.checklist.length, 0) + factContent.length + skillContent.length + fileContents.length;
     if (itemCount > limits.maxItems) throw limitError();
 
     const visitorProjection = {
       project: { name: project.name, objective: project.objective },
       tasks: taskContent,
       facts: factContent,
+      skills: skillContent,
       files: fileContents.map(({ name, mediaType, byteLength, sha256 }) => ({ name, mediaType, byteLength, sha256 }))
     };
     const snapshotBytes = Buffer.byteLength(canonicalJson(visitorProjection), 'utf8') + fileContents.reduce((sum, file) => sum + file.byteLength, 0);
@@ -89,6 +104,7 @@ export class BuildShowcasePreviewUseCase {
       project: { id: project.id, version: project.version },
       tasks: orderedTasks.map((task) => ({ id: task.id, version: task.version })),
       facts: orderedFacts.map((fact) => ({ id: fact.id, version: fact.version })),
+      skills: orderedSkills.map((skill) => ({ id: skill.id, revisionId: skill.revisionId, version: skill.version })),
       files: fileContents.map(({ name, byteLength, sha256 }) => ({ name, byteLength, sha256 }))
     });
     const previewDigest = digest(visitorProjection);
@@ -98,7 +114,7 @@ export class BuildShowcasePreviewUseCase {
       previewDigest,
       sourceRevision,
       totals: { itemCount, fileCount: fileContents.length, snapshotBytes },
-      exclusions: ['Conversations, assistant runs, policies, and provider permissions are not included.']
+      exclusions: ['Source owner/resource IDs, policies, provider configuration, technical SKILL.md files, conversations, and assistant runs are not included.']
     };
   }
 
@@ -147,7 +163,8 @@ export class PublishShowcaseUseCase {
       checklist: task.checklist.map((item) => ({ ...item, id: this.createId() }))
     }));
     const currentFacts: CurrentShowcaseDto['facts'] = preview.facts.map((fact) => ({ ...fact, id: this.createId() }));
-    const projection = { project: preview.project, tasks: currentTasks, facts: currentFacts, files: files.map(({ id, name, mediaType, byteLength }) => ({ id, name, mediaType, byteLength })) };
+    const currentSkills: CurrentShowcaseDto['skills'] = preview.skills.map((skill) => ({ ...skill, id: this.createId() }));
+    const projection = { project: preview.project, tasks: currentTasks, facts: currentFacts, skills: currentSkills, files: files.map(({ id, name, mediaType, byteLength }) => ({ id, name, mediaType, byteLength })) };
     const contentDigest = digest(projection);
     const published = await this.repository.publish({
       adminId: input.adminId,
@@ -184,13 +201,15 @@ function normalizeSourceRequest(request: ShowcaseSourceRequest): ShowcaseSourceR
   });
   if (new Set(request.selection.taskIds).size !== request.selection.taskIds.length
     || new Set(request.selection.factIds).size !== request.selection.factIds.length
+    || new Set(request.selection.skillIds ?? []).size !== (request.selection.skillIds ?? []).length
     || new Set(normalizedPaths).size !== normalizedPaths.length) throw validationError();
   return {
     projectId: request.projectId,
     selection: {
       taskIds: [...request.selection.taskIds].sort(compare),
       factIds: [...request.selection.factIds].sort(compare),
-      filePaths: normalizedPaths.sort(compare)
+      filePaths: normalizedPaths.sort(compare),
+      skillIds: [...(request.selection.skillIds ?? [])].sort(compare)
     }
   };
 }

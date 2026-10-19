@@ -1,6 +1,7 @@
 import type { AssistantExecutionAuthorization } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
 import type { HomeConversation, HomeTurn } from '@/modules/home-assistant/domain/home-conversation-types';
 import type { IHomeConversationRepository } from '@/modules/home-assistant/repositories/home-conversation-repository';
+import type { SkillInvocation } from '@/modules/skills/domain/skill-invocation-types';
 import { HomePlanningToolRequestHandler } from '@/modules/home-assistant/use-cases/home-planning-tool-request-handler';
 import type { HomePlanningToolRequest } from '@/modules/home-assistant/repositories/home-planning-tool-request-handler';
 import { ProjectTaskVersionConflictError, ProjectTaskIdempotencyReusedError } from '@/modules/tasks/domain/project-task-errors';
@@ -22,15 +23,25 @@ const homeTurn: HomeTurn = {
   homePolicyRevision: '7', workspacePolicyRevision: null, createdAt: NOW, updatedAt: NOW
 };
 
-function setup(options: { readonly capabilities?: readonly AssistantExecutionAuthorization['effectiveCapabilities'][number][]; readonly scope?: HomeConversation['scope'] } = {}) {
+function setup(options: {
+  readonly capabilities?: readonly AssistantExecutionAuthorization['effectiveCapabilities'][number][];
+  readonly scope?: HomeConversation['scope'];
+  readonly skillInvocation?: SkillInvocation | null;
+  readonly boundInvocationSourceMissing?: boolean;
+  readonly missingSkillInvocationRepository?: boolean;
+} = {}) {
   const conversation = { ...homeConversation, scope: options.scope ?? homeConversation.scope };
   const project = { id: PROJECT, ownerId: OWNER, name: 'Roadmap', slug: 'roadmap', relativeRoot: null, storageKind: 'managed' as const, objective: null, status: 'active' as const, version: 1, createdAt: NOW, updatedAt: NOW };
   const assertActive = jest.fn(async () => undefined);
   const conversations = {
     findForOwner: jest.fn(async () => conversation),
-    findTurnForOwner: jest.fn(async () => options.scope?.kind === 'workspace'
-      ? { ...homeTurn, workspacePolicyRevision: '9' }
-      : homeTurn)
+    findTurnForOwner: jest.fn(async () => {
+      const skillInvocationId = options.skillInvocation?.id
+        ?? (options.boundInvocationSourceMissing ? '99999999-9999-4999-8999-999999999999' : undefined);
+      return options.scope?.kind === 'workspace'
+        ? { ...homeTurn, workspacePolicyRevision: '9', ...(skillInvocationId ? { skillInvocationId } : {}) }
+        : { ...homeTurn, ...(skillInvocationId ? { skillInvocationId } : {}) };
+    })
   };
   const assertHome = jest.fn(async (input: { readonly ownerId: string; readonly projectId?: string }) => ({
     policies: [], effectiveCapabilities: options.capabilities ?? ['home_task_read', 'home_task_write', 'home_workspace_read', 'home_workspace_write', 'home_action_undo'],
@@ -53,15 +64,26 @@ function setup(options: { readonly capabilities?: readonly AssistantExecutionAut
   };
   const undoReceipt = { id: 'receipt-1', ownerId: OWNER, actionKind: 'task.create', targetKind: 'task' as 'task' | 'workspace', targetId: TASK, outcome: { targetVersion: 1 }, undoStatus: 'available' };
   const undo = { getReceipt: jest.fn(async () => undoReceipt), undo: jest.fn(async () => ({ undoReceipt, replayed: false })) };
+  const skillInvocations = { findForTurn: jest.fn(async () => options.boundInvocationSourceMissing ? null : options.skillInvocation ?? null) };
   const handler = new HomePlanningToolRequestHandler({
     principalAuthorization: { assertActive }, executionPolicy: { assertHome } as never, provider: { profile: 'profile', model: 'model' },
     conversations: conversations as unknown as IHomeConversationRepository,
+    ...(!options.missingSkillInvocationRepository ? { skillInvocations } : {}),
     listTasks: listTasks as never, getTask: getTask as never, taskMutations: taskMutations as never,
     workspaces: workspaces as never, undo: undo as never
   });
-  return { handler, assertHome, listTasks, taskMutations, workspaces, undoReceipt, undo };
+  return { handler, assertHome, listTasks, taskMutations, workspaces, undoReceipt, undo, skillInvocations };
 }
 
+function makeSkillInvocation(overrides: Partial<SkillInvocation> = {}): SkillInvocation {
+  return {
+    id: '66666666-6666-4666-8666-666666666666', ownerId: OWNER, conversationId: CONVERSATION,
+    skillId: '77777777-7777-4777-8777-777777777777', skillRevisionId: '88888888-8888-4888-8888-888888888888',
+    skillVersion: 1, requestKeyDigest: 'a'.repeat(64), requestFingerprint: 'b'.repeat(64), contextRevisions: [],
+    declaredTools: ['home_task_read'], title: 'Read', instructions: 'Read tasks.', enabled: true, state: 'accepted',
+    turnId: TURN, createdAt: NOW, updatedAt: NOW, current: true, ...overrides
+  };
+}
 function request(name: string, args: Readonly<Record<string, unknown>>, scope: HomeConversation['scope'] = { kind: 'home' }): HomePlanningToolRequest {
   return { ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN, requestId: 'tool-request-1', name, args, scope };
 }
@@ -83,6 +105,44 @@ describe('HomePlanningToolRequestHandler', () => {
     const result = await handler.resolve(request('home_list_tasks', { limit: 1 }));
 
     expect(result).toBeNull();
+    expect(listTasks.execute).not.toHaveBeenCalled();
+  });
+
+  it('intersects declared skill capabilities with current policy before executing a Home tool', async () => {
+    const { handler, taskMutations, skillInvocations } = setup({ skillInvocation: makeSkillInvocation({ declaredTools: ['home_task_read'] }) });
+
+    const result = await handler.resolve(request('home_create_task', { title: 'Prepare review' }));
+
+    expect(result).toBeNull();
+    expect(skillInvocations.findForTurn).toHaveBeenCalledWith(OWNER, CONVERSATION, TURN);
+    expect(taskMutations.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks a tool when the invoked skill is disabled or is no longer at its invocation version', async () => {
+    const { handler, listTasks } = setup({ skillInvocation: makeSkillInvocation({ enabled: false, current: false }) });
+
+    const result = await handler.resolve(request('home_list_tasks', { limit: 1 }));
+
+    expect(result).toBeNull();
+    expect(listTasks.execute).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a skill-bound turn has no invocation lookup available', async () => {
+    const { handler, listTasks } = setup({ skillInvocation: makeSkillInvocation(), missingSkillInvocationRepository: true });
+
+    const result = await handler.resolve(request('home_list_tasks', { limit: 1 }));
+
+    expect(result).toBeNull();
+    expect(listTasks.execute).not.toHaveBeenCalled();
+  });
+
+  it('denies a surviving bound turn when its skill source cannot be resolved', async () => {
+    const { handler, listTasks, skillInvocations } = setup({ boundInvocationSourceMissing: true });
+
+    const result = await handler.resolve(request('home_list_tasks', { limit: 1 }));
+
+    expect(result).toBeNull();
+    expect(skillInvocations.findForTurn).toHaveBeenCalledWith(OWNER, CONVERSATION, TURN);
     expect(listTasks.execute).not.toHaveBeenCalled();
   });
 

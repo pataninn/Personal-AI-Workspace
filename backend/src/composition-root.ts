@@ -105,7 +105,10 @@ import { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-polic
 import { RuntimeCapabilityAdapter } from '@/infrastructure/assistant-policy/runtime-capability-adapter';
 import { TypeOrmShowcaseRepository } from '@/infrastructure/database/repositories/typeorm-showcase-repository';
 import { TypeOrmDemoShowcaseCopyManager } from '@/infrastructure/database/repositories/typeorm-demo-showcase-copy-manager';
+import { TypeOrmSkillRepository } from '@/infrastructure/database/repositories/typeorm-skill-repository';
+import { TypeOrmSkillInvocationRepository } from '@/infrastructure/database/repositories/typeorm-skill-invocation-repository';
 import { BuildShowcasePreviewUseCase, PublishShowcaseUseCase } from '@/modules/showcases/use-cases/showcase-use-cases';
+import { CreateSkillUseCase, DeleteSkillUseCase, GetSkillUseCase, InvokeSkillUseCase, ListSkillsUseCase, UpdateSkillUseCase } from '@/modules/skills';
 
 export interface Application {
   readonly app: Express;
@@ -156,6 +159,8 @@ export async function createApplication(
     const storageQuotaRepository = new TypeOrmStorageQuotaRepository(dataSource);
     const storageRootMappingRepository = new TypeOrmStorageRootMappingRepository(dataSource);
     const storageContentAccounting = new TypeOrmStorageContentAccounting(dataSource, storageQuotaRepository);
+    const skillRepository = new TypeOrmSkillRepository(dataSource, storageContentAccounting);
+    const skillInvocationRepository = new TypeOrmSkillInvocationRepository(dataSource);
     const storageFileMutation = new StorageQuotaFileMutation(storageQuotaRepository);
     const demoAdmissionRepository = new TypeOrmDemoAdmissionRepository(dataSource, config.demoAbuseLimits);
     const userRepository = new TypeOrmUserRepository(dataSource);
@@ -225,7 +230,7 @@ export async function createApplication(
     const projectFileGateway = new ProjectFileGateway({ containerRoot: config.workspaceRoot, workspaceBoundary });
     const projectFileActions = new ProjectFileActions(projectFileAccess, projectFileGateway, new MarkItDownDocumentConverter(), storageFileMutation);
     const showcaseRepository = new TypeOrmShowcaseRepository(dataSource);
-    const buildShowcasePreview = new BuildShowcasePreviewUseCase(projectRepository, projectTaskRepository, projectFactRepository, projectFileActions, config.showcaseLimits);
+    const buildShowcasePreview = new BuildShowcasePreviewUseCase(projectRepository, projectTaskRepository, projectFactRepository, projectFileActions, config.showcaseLimits, skillRepository);
     const publishShowcase = new PublishShowcaseUseCase(buildShowcasePreview, showcaseRepository, config.showcaseLimits);
     const demoShowcaseCopy = new TypeOrmDemoShowcaseCopyManager(
       dataSource, showcaseRepository, projectRepository, workspaceBoundary, projectFileAccess, projectFileGateway,
@@ -275,6 +280,7 @@ export async function createApplication(
       executionPolicy: assistantExecutionPolicy,
       provider: { profile: homePlanningProvider.profile, model: homePlanningProvider.model },
       conversations: homeConversationRepository,
+      skillInvocations: skillInvocationRepository,
       listTasks: new ListGlobalTasksUseCase(projectTaskRepository),
       getTask: new GetGlobalTaskUseCase(projectTaskRepository),
       taskMutations: taskMutationUseCases,
@@ -288,6 +294,14 @@ export async function createApplication(
     const runEvents = new InMemoryRunEventPublisher();
     const chatContextRepository = new TypeOrmProjectChatContextRepository(dataSource);
     const projectChatContext = new ProjectChatContextUseCases(projectRepository, chatContextRepository, projectFactRepository, workspaceGateway);
+    const submitHomeTurn = new SubmitHomeTurnUseCase(homeConversationRepository, {
+      mode: config.agentRuntimeMode,
+      provider: homePlanningProvider,
+      ...(homePlanningRuntime ? { runtime: homePlanningRuntime } : {})
+    }, { executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel }, {
+      readSelectedFacts: async (ownerId, projectId) => (await projectChatContext.getSelectedFacts(ownerId, projectId))
+        .map(({ id, version, title, content }) => ({ id, version, title, content }))
+    });
     const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel, projectFactRepository, assistantExecutionPolicy);
     const proposeSandboxCommand = new ProposeSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger, assistantExecutionPolicy);
     const decideSandboxCommand = new DecideSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger, assistantExecutionPolicy);
@@ -351,6 +365,17 @@ export async function createApplication(
             && Buffer.byteLength(config.demoNetworkHashSecret, 'utf8') >= 32),
           managedStorageReady
         },
+        skills: {
+          getSession,
+          listSkills: new ListSkillsUseCase(skillRepository),
+          getSkill: new GetSkillUseCase(skillRepository),
+          createSkill: new CreateSkillUseCase(projectRepository, skillRepository),
+          updateSkill: new UpdateSkillUseCase(projectRepository, skillRepository),
+          deleteSkill: new DeleteSkillUseCase(skillRepository),
+          invokeSkill: new InvokeSkillUseCase(skillRepository, skillInvocationRepository, homeConversationRepository, submitHomeTurn),
+          appOrigin: config.appOrigin,
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
         demoCopyGate: { getSession, isReady: (ownerId) => demoShowcaseCopy.isReady(ownerId) },
         auth: {
           login,
@@ -389,14 +414,7 @@ export async function createApplication(
           createConversation: new CreateHomeConversationUseCase(homeConversationRepository),
           getConversation: new GetHomeConversationUseCase(homeConversationRepository),
           listTurns: new ListHomeTurnsUseCase(homeConversationRepository),
-          submitTurn: new SubmitHomeTurnUseCase(homeConversationRepository, {
-            mode: config.agentRuntimeMode,
-            provider: homePlanningProvider,
-            ...(homePlanningRuntime ? { runtime: homePlanningRuntime } : {})
-          }, { executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel }, {
-            readSelectedFacts: async (ownerId, projectId) => (await projectChatContext.getSelectedFacts(ownerId, projectId))
-              .map(({ id, version, title, content }) => ({ id, version, title, content }))
-          }),
+          submitTurn: submitHomeTurn,
           decideConsent: new DecideHomeConsentUseCase(homeConversationRepository, homePlanningRuntime, homePlanningProvider, homeToolResultConsentGate),
           getTurn: new GetHomeTurnUseCase(homeConversationRepository, homePlanningRuntime, homeToolResultConsentGate, homePlanningToolHandler, { executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel }),
           cancelTurn: new CancelHomeTurnUseCase(homeConversationRepository, homePlanningRuntime),

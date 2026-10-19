@@ -287,7 +287,8 @@ function hasPolicyBinding(turn: HomeTurn, scope: HomeConversationScope): boolean
 
 function sameBinding(left: HomeTurn, right: HomeTurn): boolean {
   return left.homePolicyRevision === right.homePolicyRevision
-    && left.workspacePolicyRevision === right.workspacePolicyRevision;
+    && left.workspacePolicyRevision === right.workspacePolicyRevision
+    && (left.skillInvocationId ?? null) === (right.skillInvocationId ?? null);
 }
 
 function isRevision(value: string | null): value is string {

@@ -15,7 +15,8 @@ const sourceRequestSchema = z.object({
   selection: z.object({
     taskIds: z.array(uuid).max(1000),
     factIds: z.array(uuid).max(1000),
-    filePaths: z.array(z.string().min(1).max(2048)).max(100)
+    filePaths: z.array(z.string().min(1).max(2048)).max(100),
+    skillIds: z.array(uuid).max(100).default([])
   }).strict()
 }).strict();
 const publishRequestSchema = sourceRequestSchema.extend({

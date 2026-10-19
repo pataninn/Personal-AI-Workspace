@@ -3,9 +3,11 @@ import { createHash } from 'node:crypto';
 import type { Project } from '@/modules/projects/domain/project-types';
 import type { ProjectTask } from '@/modules/tasks/domain/project-task';
 import type { ProjectFact } from '@/modules/memory/domain/project-fact';
+import type { Skill } from '@/modules/skills/domain/skill-types';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { IProjectTaskRepository } from '@/modules/tasks/repositories/project-task-repository';
 import type { IProjectFactRepository } from '@/modules/memory/repositories/project-fact-repository';
+import type { ISkillRepository } from '@/modules/skills/repositories/skill-repository';
 import type { IShowcaseRepository, ShowcaseLimits } from '@/modules/showcases/domain/showcase-types';
 import { BuildShowcasePreviewUseCase, PublishShowcaseUseCase } from '@/modules/showcases/use-cases/showcase-use-cases';
 
@@ -13,6 +15,8 @@ const OWNER_ID = 'd3330000-0000-4000-8000-000000000001';
 const PROJECT_ID = 'd3330000-0000-4000-8000-000000000010';
 const TASK_ID = 'd3330000-0000-4000-8000-000000000020';
 const FACT_ID = 'd3330000-0000-4000-8000-000000000030';
+const SKILL_ID = 'd3330000-0000-4000-8000-000000000040';
+const SKILL_REVISION_ID = 'd3330000-0000-4000-8000-000000000041';
 const FILE_BYTES = Buffer.from('public notes\n', 'utf8');
 const FILE_HASH = createHash('sha256').update(FILE_BYTES).digest('hex');
 const limits: ShowcaseLimits = {
@@ -78,12 +82,26 @@ const fact: ProjectFact = {
   updatedAt: new Date('2026-10-02T00:00:00.000Z')
 };
 
-function buildPreview() {
+const skill: Skill = {
+  id: SKILL_ID,
+  revisionId: SKILL_REVISION_ID,
+  ownerId: OWNER_ID,
+  workspaceId: PROJECT_ID,
+  title: 'Plan my day',
+  instructions: 'Review selected tasks and summarize their order.',
+  declaredTools: ['home_task_read'],
+  enabled: true,
+  version: 3,
+  createdAt: new Date('2026-10-01T00:00:00.000Z'),
+  updatedAt: new Date('2026-10-02T00:00:00.000Z')
+};
+
+function buildPreview(skillLookup?: Pick<ISkillRepository, 'findActiveEnabledForShowcase'>) {
   const projects = { findByIdForOwner: jest.fn(async () => project) } as unknown as Pick<IProjectRepository, 'findByIdForOwner'>;
   const tasks = { listTasks: jest.fn(async () => ({ tasks: [task], orderVersion: 9 })) } as unknown as Pick<IProjectTaskRepository, 'listTasks'>;
   const facts = { findActiveByIds: jest.fn(async () => [fact]) } as unknown as Pick<IProjectFactRepository, 'findActiveByIds'>;
   const files = { download: jest.fn(async () => ({ bytes: FILE_BYTES, hash: FILE_HASH })) };
-  return new BuildShowcasePreviewUseCase(projects, tasks, facts, files, limits);
+  return new BuildShowcasePreviewUseCase(projects, tasks, facts, files, limits, skillLookup);
 }
 
 const selection = {
@@ -117,6 +135,7 @@ describe('showcase preview and publication', () => {
       checklist: [{ title: 'Review', completed: false }]
     });
     expect(preview.facts).toEqual([{ title: fact.title, content: fact.content }]);
+    expect(preview.skills).toEqual([]);
     expect(preview.files).toEqual([{
       name: 'notes/overview.txt', mediaType: 'text/plain', byteLength: FILE_BYTES.length,
       sha256: FILE_HASH, contentBase64: FILE_BYTES.toString('base64')
@@ -135,6 +154,59 @@ describe('showcase preview and publication', () => {
     });
     expect(reordered.previewDigest).toBe(preview.previewDigest);
     expect(reordered.sourceRevision).toBe(preview.sourceRevision);
+  });
+
+  it('publishes only the explicitly allowlisted enabled skill fields with generated public IDs', async () => {
+    const skillLookup = {
+      findActiveEnabledForShowcase: jest.fn(async () => [skill])
+    } as unknown as Pick<ISkillRepository, 'findActiveEnabledForShowcase'>;
+    const previewUseCase = buildPreview(skillLookup);
+    const request = {
+      ...selection,
+      selection: { ...selection.selection, skillIds: [SKILL_ID] }
+    };
+    const preview = await previewUseCase.execute(OWNER_ID, request);
+
+    expect(skillLookup.findActiveEnabledForShowcase).toHaveBeenCalledWith(OWNER_ID, PROJECT_ID, [SKILL_ID]);
+    expect(preview.skills).toEqual([{
+      title: skill.title,
+      instructions: skill.instructions,
+      declaredTools: ['home_task_read']
+    }]);
+    expect(JSON.stringify(preview)).not.toContain(SKILL_ID);
+    expect(JSON.stringify(preview)).not.toContain(SKILL_REVISION_ID);
+    expect(JSON.stringify(preview)).not.toContain(OWNER_ID);
+    expect(JSON.stringify(preview)).not.toContain(PROJECT_ID);
+    expect(preview.totals.itemCount).toBe(5);
+
+    const repository = {
+      findPublishedReplay: jest.fn(async () => null),
+      publish: jest.fn(async () => ({ version: 'd3330000-0000-4000-8000-000000000090', publishedAt: '2026-10-19T12:00:00.000Z', replayed: false }))
+    } as unknown as IShowcaseRepository;
+    const publish = new PublishShowcaseUseCase(previewUseCase, repository, limits, () => 'd3330000-0000-4000-8000-000000000099');
+    await publish.execute({
+      adminId: OWNER_ID,
+      request,
+      previewDigest: preview.previewDigest,
+      sourceRevision: preview.sourceRevision,
+      idempotencyKey: 'publish-skill-key-1'
+    });
+    expect(repository.publish).toHaveBeenCalledWith(expect.objectContaining({
+      snapshot: expect.objectContaining({ skills: [{
+        id: 'd3330000-0000-4000-8000-000000000099',
+        title: skill.title,
+        instructions: skill.instructions,
+        declaredTools: ['home_task_read']
+      }] })
+    }));
+  });
+
+  it('does not silently drop selected skills before skill-repository wiring is available', async () => {
+    const useCase = buildPreview();
+    await expect(useCase.execute(OWNER_ID, {
+      ...selection,
+      selection: { ...selection.selection, skillIds: [SKILL_ID] }
+    })).rejects.toMatchObject({ code: 'SHOWCASE_PUBLICATION_UNAVAILABLE', statusCode: 503 });
   });
 
   it('publishes only when the recomputed preview digest and source revision still match', async () => {

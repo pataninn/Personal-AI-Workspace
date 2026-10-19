@@ -10,6 +10,7 @@ export type {
   ShowcasePreviewRequest,
   ShowcasePreviewTask,
   ShowcasePublishResult,
+  ShowcaseSkill,
   ShowcaseSelection,
   ShowcaseTask,
   ShowcaseTaskImportance,

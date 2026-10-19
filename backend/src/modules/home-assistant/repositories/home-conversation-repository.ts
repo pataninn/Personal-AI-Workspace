@@ -52,6 +52,8 @@ export interface SubmitHomeTurnInput {
   readonly homePolicyRevision?: string | null;
   /** Current workspace policy binding for a workspace-scoped turn; null for Home scope. */
   readonly workspacePolicyRevision?: string | null;
+  /** Trusted server-only skill binding persisted with this turn. */
+  readonly skillInvocationId?: string | null;
   readonly initialDisclosure?: HomeConsentDisclosureDraft;
 }
 

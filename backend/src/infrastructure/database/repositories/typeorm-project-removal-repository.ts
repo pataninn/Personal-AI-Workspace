@@ -172,6 +172,7 @@ async function selectProjectContentIdentities(
     ['project_tasks', 'SELECT "id" FROM "project_tasks" WHERE "owner_id" = $1 AND "project_id" = $2'],
     ['project_task_suggestions', 'SELECT "id" FROM "project_task_suggestions" WHERE "owner_id" = $1 AND "project_id" = $2'],
     ['project_facts', 'SELECT "id" FROM "project_facts" WHERE "owner_id" = $1 AND "project_id" = $2'],
+    ['skill_revisions', 'SELECT r."id" FROM "skill_revisions" r JOIN "skills" s ON s."owner_id" = r."owner_id" AND s."id" = r."skill_id" WHERE s."owner_id" = $1 AND s."workspace_id" = $2'],
     ['ai_runs', 'SELECT "id" FROM "ai_runs" WHERE "owner_id" = $1 AND "project_id" = $2'],
     ['ai_run_change_sets', 'SELECT "id" FROM "ai_run_change_sets" WHERE "owner_id" = $1 AND "project_id" = $2'],
     ['sandbox_commands', 'SELECT "id" FROM "sandbox_commands" WHERE "owner_id" = $1 AND "project_id" = $2']

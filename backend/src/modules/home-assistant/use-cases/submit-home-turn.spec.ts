@@ -141,6 +141,32 @@ describe('SubmitHomeTurnUseCase', () => {
     expect(result.execution).toMatchObject({ state: 'unknown' });
   });
 
+  it('binds skill invocation identity before dispatch and leaves an unknown handoff terminal on replay', async () => {
+    const { useCase, runtime, conversations, submission } = setup({ startOutcome: 'unknown' });
+    const invocationId = '66666666-6666-4666-8666-666666666666';
+    Object.assign(submission, { turn: { ...submission.turn, skillInvocationId: invocationId } });
+    const states: string[] = [];
+    const skillInvocation = {
+      skillId: '77777777-7777-4777-8777-777777777777',
+      skillRevisionId: '88888888-8888-4888-8888-888888888888',
+      skillVersion: 1,
+      claim: jest.fn(async () => ({ id: invocationId })),
+      isCurrent: jest.fn(async () => true),
+      updateState: jest.fn(async (state: string) => { states.push(state); })
+    };
+
+    const first = await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, requestKey: 'request-1', message: 'Skill request', skillInvocation });
+    Object.assign(submission, { replayed: true });
+    const replay = await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, requestKey: 'request-1', message: 'Skill request', skillInvocation });
+
+    expect(conversations.submitTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({ skillInvocationId: invocationId }));
+    expect(conversations.submitTurn).toHaveBeenNthCalledWith(2, expect.objectContaining({ skillInvocationId: invocationId }));
+    expect(states).toEqual(['dispatching', 'unknown']);
+    expect(first.execution).toMatchObject({ state: 'unknown' });
+    expect(replay.replayed).toBe(true);
+    expect(runtime.start).toHaveBeenCalledTimes(1);
+  });
+
   it('returns an idempotent replay without restarting the persisted turn', async () => {
     const { useCase, runtime, conversations, projectMemory } = setup({ replayed: true, scope: { kind: 'workspace', workspaceId: PROJECT } });
 

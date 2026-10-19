@@ -106,7 +106,7 @@ describe('ShowcasePublisher', () => {
     expect(await screen.findByTestId('showcase-preview')).toBeInTheDocument();
     expect(mocks.previewShowcase).toHaveBeenCalledWith({
       projectId: PROJECT_ID,
-      selection: { taskIds: [TASK_ID], factIds: [], filePaths: [] }
+      selection: { taskIds: [TASK_ID], factIds: [], skillIds: [], filePaths: [] }
     }, 'csrf-admin');
   });
 });

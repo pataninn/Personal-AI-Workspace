@@ -1,7 +1,11 @@
+import type { SkillToolCapability } from '@/modules/skills/domain/skill-types';
+
 export interface ShowcaseSelection {
   readonly taskIds: readonly string[];
   readonly factIds: readonly string[];
   readonly filePaths: readonly string[];
+  /** Omitted by older clients; an empty selection publishes no skills. */
+  readonly skillIds?: readonly string[];
 }
 
 export interface ShowcaseSourceRequest {
@@ -28,6 +32,16 @@ export interface ShowcaseFactContent {
   readonly content: string;
 }
 
+export interface ShowcaseSkillContent {
+  readonly title: string;
+  readonly instructions: string;
+  readonly declaredTools: readonly SkillToolCapability[];
+}
+
+export interface CurrentShowcaseSkillDto extends ShowcaseSkillContent {
+  readonly id: string;
+}
+
 export interface ShowcaseFileContent {
   readonly name: string;
   readonly mediaType: string;
@@ -40,6 +54,7 @@ export interface ShowcasePreviewDto {
   readonly project: { readonly name: string; readonly objective: string | null };
   readonly tasks: readonly ShowcaseTaskContent[];
   readonly facts: readonly ShowcaseFactContent[];
+  readonly skills: readonly ShowcaseSkillContent[];
   readonly files: readonly (Omit<ShowcaseFileContent, 'bytes'> & { readonly contentBase64: string })[];
   readonly previewDigest: string;
   readonly sourceRevision: string;
@@ -63,6 +78,7 @@ export interface CurrentShowcaseDto {
     readonly checklist: readonly (ShowcaseChecklistItem & { readonly id: string })[];
   })[];
   readonly facts: readonly (ShowcaseFactContent & { readonly id: string })[];
+  readonly skills: readonly CurrentShowcaseSkillDto[];
   readonly files: readonly CurrentShowcaseFileDto[];
 }
 
@@ -114,6 +130,7 @@ export interface IShowcaseRepository {
       readonly project: CurrentShowcaseDto['project'];
       readonly tasks: CurrentShowcaseDto['tasks'];
       readonly facts: CurrentShowcaseDto['facts'];
+      readonly skills: CurrentShowcaseDto['skills'];
       readonly files: readonly (CurrentShowcaseFileDto & { readonly sha256: string; readonly bytes: Buffer })[];
     };
     readonly contentDigest: string;

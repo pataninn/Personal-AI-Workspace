@@ -32,10 +32,12 @@ const DATABASE_NAME = 'home_history_task_3_3_demo_test';
 const REGULAR_OWNER_ID = 'd3330000-0000-4000-8000-000000000101';
 const SHOWCASE_VERSION_ID = 'd3330000-0000-4000-8000-000000000201';
 const FILE_SHOWCASE_VERSION_ID = 'd3330000-0000-4000-8000-000000000202';
+const SKILL_SHOWCASE_VERSION_ID = 'd3330000-0000-4000-8000-000000000203';
 const SHOWCASE_TASK_ID = 'd3330000-0000-4000-8000-000000000301';
 const SHOWCASE_CHECKLIST_ID = 'd3330000-0000-4000-8000-000000000302';
 const SHOWCASE_FACT_ID = 'd3330000-0000-4000-8000-000000000303';
 const SHOWCASE_FILE_ID = 'd3330000-0000-4000-8000-000000000304';
+const SHOWCASE_SKILL_ID = 'd3330000-0000-4000-8000-000000000305';
 const SHOWCASE_FILE_BYTES = Buffer.alloc(4096, 0x61);
 const SHOWCASE_FILE_SHA256 = createHash('sha256').update(SHOWCASE_FILE_BYTES).digest('hex');
 const databaseUrl = process.env.HOME_CONVERSATION_TEST_DATABASE_URL;
@@ -178,6 +180,24 @@ async function seedShowcaseFixtures(dataSource: DataSource): Promise<void> {
     VALUES ($1, $2, 'docs/guide.txt', 'text/plain', $3, $4, $5)
     ON CONFLICT ("version_id", "file_id") DO NOTHING
   `, [FILE_SHOWCASE_VERSION_ID, SHOWCASE_FILE_ID, SHOWCASE_FILE_BYTES, SHOWCASE_FILE_SHA256, SHOWCASE_FILE_BYTES.length]);
+
+  const skill = {
+    id: SHOWCASE_SKILL_ID,
+    title: 'Daily review',
+    instructions: 'Summarize today’s open tasks and list the next action.',
+    declaredTools: ['home_task_read']
+  } as const;
+  await dataSource.query(`
+    INSERT INTO "showcase_versions" ("id", "project_display", "tasks", "facts", "skills", "content_digest", "snapshot_bytes", "item_count", "file_count")
+    VALUES ($1, $2::jsonb, '[]'::jsonb, '[]'::jsonb, $3::jsonb, $4, $5, 1, 0)
+    ON CONFLICT ("id") DO NOTHING
+  `, [
+    SKILL_SHOWCASE_VERSION_ID,
+    JSON.stringify({ name: 'Skill copy fixture', objective: null }),
+    JSON.stringify([skill]),
+    createHash('sha256').update('task-6-2-private-skill-copy-fixture').digest('hex'),
+    Buffer.byteLength(JSON.stringify(skill))
+  ]);
 }
 
 interface PgClient {
@@ -462,6 +482,7 @@ describeDatabase('Task 3.3 demo admission with PostgreSQL', () => {
         project: { name: 'Replacement fixture', objective: null },
         tasks: [],
         facts: [],
+        skills: [],
         files: []
       },
       contentDigest: createHash('sha256').update('task-3-4-replacement-fixture').digest('hex'),
@@ -611,6 +632,69 @@ describeDatabase('Task 3.3 demo admission with PostgreSQL', () => {
       workspace_mode: 'file_backed', file_access: true
     }]);
   }, 45_000);
+
+  it('clones only the pinned public skill into a new private, storage-accounted revision', async () => {
+    await requiredDataSource().query('UPDATE "showcase_publication" SET "current_version_id" = $1 WHERE "singleton_id" = true', [SKILL_SHOWCASE_VERSION_ID]);
+    await requiredDataSource().query(
+      'UPDATE "assistant_policy_provider_configuration" SET "provider_profile" = $1, "model" = $2 WHERE "singleton_id" = true',
+      ['fixture-trusted-profile', 'fixture-trusted-model']
+    );
+    const admitted = await demoUseCase.execute({ idempotencyKey: randomBytes(32).toString('base64url'), clientIp: '198.51.100.123' });
+    if (admitted.kind !== 'created') throw new Error('The approved skill fixture did not create its demo identity.');
+    const ownerId = admitted.session.principal.id;
+    const admissionRows: readonly { readonly id: string; readonly target_project_id: string }[] = await requiredDataSource().query(
+      'SELECT "admission_id" AS "id", "target_project_id" FROM "demo_showcase_copies" WHERE "owner_id" = $1', [ownerId]
+    );
+    const admission = admissionRows[0];
+    if (!admission) throw new Error('The pinned skill copy admission was not created.');
+
+    await showcaseCopyManager.provision(admission.id, ownerId);
+
+    await expect(showcaseCopyManager.getStatus(ownerId)).resolves.toMatchObject({
+      state: 'ready', projectId: admission.target_project_id, workspaceMode: 'planning',
+      capabilities: { planning: true, fileAccess: false }
+    });
+    const copied: readonly {
+      readonly id: string; readonly owner_id: string; readonly workspace_id: string; readonly current_version: number;
+      readonly title: string; readonly instructions: string; readonly enabled: boolean; readonly declared_tools: unknown;
+    }[] = await requiredDataSource().query(`
+      SELECT s."id", s."owner_id", s."workspace_id", s."current_version", r."title", r."instructions", r."enabled", r."declared_tools"
+      FROM "skills" s JOIN "skill_revisions" r ON r."owner_id"=s."owner_id" AND r."skill_id"=s."id" AND r."version"=s."current_version"
+      WHERE s."owner_id"=$1 AND s."workspace_id"=$2 AND s."deleted_at" IS NULL
+    `, [ownerId, admission.target_project_id]);
+    expect(copied).toHaveLength(1);
+    expect(copied[0]).toMatchObject({
+      owner_id: ownerId, workspace_id: admission.target_project_id, current_version: 1,
+      title: 'Daily review', instructions: 'Summarize today’s open tasks and list the next action.',
+      enabled: true, declared_tools: ['home_task_read']
+    });
+    expect(copied[0]?.id).not.toBe(SHOWCASE_SKILL_ID);
+
+    const references: readonly { readonly copy_key: string; readonly byte_count: string }[] = await requiredDataSource().query(`
+      SELECT "copy_key", "byte_count"::text AS "byte_count" FROM "storage_resource_references"
+      WHERE "owner_id"=$1 AND "resource_kind"='database_content' AND "project_id"=$2 AND "resource_key" LIKE 'skill_revisions:%'
+      ORDER BY "copy_key"
+    `, [ownerId, admission.target_project_id]);
+    expect(references).toEqual([
+      { copy_key: 'declared_tools', byte_count: String(Buffer.byteLength('["home_task_read"]')) },
+      { copy_key: 'instructions', byte_count: String(Buffer.byteLength('Summarize today’s open tasks and list the next action.')) },
+      { copy_key: 'title', byte_count: String(Buffer.byteLength('Daily review')) }
+    ]);
+    const usage = await quotaRepository.readUsage(ownerId);
+    expect(usage.state).toBe('ready');
+    const projectMetadataReferences: readonly { readonly resource_key: string; readonly copy_key: string; readonly byte_count: string }[] = await requiredDataSource().query(`
+      SELECT "resource_key", "copy_key", "byte_count"::text AS "byte_count" FROM "storage_resource_references"
+      WHERE "owner_id"=$1 AND "resource_kind"='database_content' AND "resource_key"=$2
+      ORDER BY "copy_key"
+    `, [ownerId, `projects:${admission.target_project_id}`]);
+    expect(projectMetadataReferences).toEqual([{
+      resource_key: `projects:${admission.target_project_id}`, copy_key: 'name', byte_count: String(Buffer.byteLength('Skill copy fixture'))
+    }]);
+    const projectMetadataBytes = projectMetadataReferences.reduce((total, reference) => total + BigInt(reference.byte_count), 0n);
+    const revisionBytes = references.reduce((total, reference) => total + BigInt(reference.byte_count), 0n);
+    expect(usage.usedBytes).toBe(projectMetadataBytes + revisionBytes);
+    expect(usage.reservedBytes).toBe(0n);
+  }, 30_000);
 
   it('serializes demo run-start caps by owner and leaves regular owners outside that counter', async () => {
     const ready = await demoUseCase.execute({ idempotencyKey: randomBytes(32).toString('base64url'), clientIp: '198.51.100.70' });

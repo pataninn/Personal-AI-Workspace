@@ -19,6 +19,8 @@ import type { IActionUndoUseCases } from '@/modules/home-assistant/use-cases/act
 import type { IPrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
 import type { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
 import type { AssistantToolCapability } from '@/modules/assistant-policy/domain/assistant-scope-policy';
+import { SKILL_TOOL_CAPABILITIES } from '@/modules/skills/domain/skill-types';
+import type { ISkillInvocationRepository } from '@/modules/skills/repositories/skill-invocation-repository';
 import { parseHomePlanningToolArgs, resolveDeadline, stableJson, type HomePlanningToolName } from '@/modules/home-assistant/use-cases/home-planning-command-validation';
 
 const MAX_TASK_LIST_BYTES = 64 * 1024;
@@ -35,6 +37,8 @@ export interface HomePlanningToolRequestHandlerDependencies {
   readonly executionPolicy: Pick<AssertAssistantExecutionPolicyUseCase, 'assertHome'>;
   readonly provider: { readonly profile: string; readonly model: string };
   readonly conversations: IHomeConversationRepository;
+  /** Optional for legacy compositions; a turn with a skill binding fails closed when this is absent. */
+  readonly skillInvocations?: Pick<ISkillInvocationRepository, 'findForTurn'>;
   readonly listTasks: ListGlobalTasksUseCase;
   readonly getTask: GetGlobalTaskUseCase;
   readonly taskMutations: ITaskMutationCommands;
@@ -64,6 +68,7 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
 
     const capability = capabilityForTool(input.name);
     if (!capability) return null;
+    if (!await this.skillInvocationAllows(input, turn, capability)) return null;
     if (!await this.policyAllows(input, turn, capability, conversation.scope.kind === 'workspace' ? conversation.scope.workspaceId : undefined)) return null;
 
     const operationKey = directOperationKey(input);
@@ -194,6 +199,19 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
     if (turn.status !== 'running') throw new HomeTurnNotActiveError();
     if (conversation.scope.kind === 'workspace') await this.assertWorkspace(input.ownerId, conversation.scope, conversation.scope.workspaceId);
     return { conversation, turn };
+  }
+
+  private async skillInvocationAllows(input: HomePlanningToolRequest, turn: HomeTurn, capability: AssistantToolCapability): Promise<boolean> {
+    if (!turn.skillInvocationId) return true;
+    const skillCapability = SKILL_TOOL_CAPABILITIES.find((candidate) => candidate === capability);
+    if (!skillCapability || !this.dependencies.skillInvocations) return false;
+    const invocation = await this.dependencies.skillInvocations.findForTurn(input.ownerId, input.conversationId, turn.id);
+    return invocation !== null
+      && invocation.id === turn.skillInvocationId
+      && invocation.current
+      && invocation.enabled
+      && (invocation.state === 'dispatching' || invocation.state === 'accepted')
+      && invocation.declaredTools.includes(skillCapability);
   }
 
   private async assertWorkspace(ownerId: string, scope: HomeConversationScope, workspaceId: string): Promise<Project> {

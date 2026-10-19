@@ -40,6 +40,7 @@ import { createAssistantExecutionPolicyRouter, type AssistantExecutionPolicyRout
 import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
 import { SESSION_COOKIE_NAME } from '@/modules/auth/controllers/request-auth';
 import { createShowcaseRouter, type ShowcaseRouterDependencies } from '@/modules/showcases/controllers/showcase-router';
+import { createSkillRouter, type SkillRouterDependencies } from '@/modules/skills';
 
 export interface CreateAppOptions {
   readonly logger: AppLogger;
@@ -62,6 +63,7 @@ export interface CreateAppOptions {
   readonly accountStorage?: AccountStorageRouterDependencies;
   readonly demoAdmission?: DemoAdmissionRouterDependencies;
   readonly showcases?: ShowcaseRouterDependencies;
+  readonly skills?: SkillRouterDependencies;
   readonly assistantExecutionPolicy?: AssistantExecutionPolicyRouterDependencies;
   readonly demoCopyGate?: { readonly getSession: Pick<GetSessionUseCase, 'execute'>; readonly isReady: (ownerId: string) => Promise<boolean> };
   readonly trustedProxyCidrs?: readonly string[];
@@ -211,6 +213,7 @@ export function createApp(options: CreateAppOptions): Express {
     app.use('/api/v1/auth', createAuthRouter(options.auth));
   }
   if (options.showcases) app.use('/api/v1', createShowcaseRouter(options.showcases));
+  if (options.skills) app.use('/api/v1/skills', createSkillRouter(options.skills));
   if (options.demoAdmission) {
     app.use('/api/v1/demo', createDemoAdmissionRouter(options.demoAdmission));
   }

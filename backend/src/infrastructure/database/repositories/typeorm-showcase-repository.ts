@@ -16,6 +16,7 @@ interface VersionRow {
   readonly project_display: CurrentShowcaseDto['project'];
   readonly tasks: CurrentShowcaseDto['tasks'];
   readonly facts: CurrentShowcaseDto['facts'];
+  readonly skills: CurrentShowcaseDto['skills'];
   readonly published_at: Date | string;
   readonly file_count?: number;
 }
@@ -66,6 +67,7 @@ export class TypeOrmShowcaseRepository implements IShowcaseRepository {
       project: parseJson(version.project_display),
       tasks: parseJson(version.tasks),
       facts: parseJson(version.facts),
+      skills: parseJson(version.skills),
       files: files.map((file) => ({ id: file.file_id, name: file.name, mediaType: file.media_type, byteLength: file.byte_length }))
     };
   }
@@ -95,7 +97,7 @@ export class TypeOrmShowcaseRepository implements IShowcaseRepository {
 
   public async getVersion(versionId: string): Promise<ShowcaseStoredVersion | null> {
     const version = rows<VersionRow>(await this.dataSource.query(`
-      SELECT "id", "project_display", "tasks", "facts", "published_at"
+      SELECT "id", "project_display", "tasks", "facts", "skills", "published_at"
       FROM "showcase_versions" WHERE "id" = $1 LIMIT 1
     `, [versionId]))[0];
     if (!version) return null;
@@ -113,6 +115,7 @@ export class TypeOrmShowcaseRepository implements IShowcaseRepository {
         project: parseJson(version.project_display),
         tasks: parseJson(version.tasks),
         facts: parseJson(version.facts),
+        skills: parseJson(version.skills),
         files: fileDtos
       },
       files: files.map((file) => ({
@@ -154,10 +157,10 @@ export class TypeOrmShowcaseRepository implements IShowcaseRepository {
 
       const versionId = this.createId();
       const inserted = rows<{ readonly published_at: Date | string }>(await manager.query(`
-        INSERT INTO "showcase_versions" ("id", "project_display", "tasks", "facts", "content_digest", "snapshot_bytes", "item_count", "file_count")
-        VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5, $6, $7, $8)
+        INSERT INTO "showcase_versions" ("id", "project_display", "tasks", "facts", "skills", "content_digest", "snapshot_bytes", "item_count", "file_count")
+        VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7, $8, $9)
         RETURNING "published_at"
-      `, [versionId, JSON.stringify(input.snapshot.project), JSON.stringify(input.snapshot.tasks), JSON.stringify(input.snapshot.facts),
+      `, [versionId, JSON.stringify(input.snapshot.project), JSON.stringify(input.snapshot.tasks), JSON.stringify(input.snapshot.facts), JSON.stringify(input.snapshot.skills),
         input.contentDigest, input.snapshotBytes, input.itemCount, input.snapshot.files.length]));
       const publishedAt = inserted[0]?.published_at;
       if (!publishedAt) throw new Error('The showcase version was not created.');
@@ -186,7 +189,7 @@ export class TypeOrmShowcaseRepository implements IShowcaseRepository {
 
   private async findCurrentVersion(): Promise<VersionRow | null> {
     const row = rows<VersionRow>(await this.dataSource.query(`
-      SELECT v."id", v."project_display", v."tasks", v."facts", v."published_at"
+      SELECT v."id", v."project_display", v."tasks", v."facts", v."skills", v."published_at"
       FROM "showcase_publication" p JOIN "showcase_versions" v ON v."id" = p."current_version_id"
       WHERE p."singleton_id" = true LIMIT 1
     `))[0];

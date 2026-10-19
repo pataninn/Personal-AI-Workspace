@@ -113,6 +113,28 @@ describe('TypeOrmStorageContentAccounting', () => {
     }]);
   });
 
+  it('accounts for each retained skill revision field under its workspace scope', async () => {
+    const query = jest.fn().mockResolvedValue([
+      { resource_key: 'skill_revisions:revision-id', copy_key: 'title', project_id: 'project-id', byte_count: '12' },
+      { resource_key: 'skill_revisions:revision-id', copy_key: 'instructions', project_id: 'project-id', byte_count: '30' },
+      { resource_key: 'skill_revisions:revision-id', copy_key: 'declared_tools', project_id: 'project-id', byte_count: '18' }
+    ]);
+    const transaction = { query } as unknown as StorageQuotaTransaction;
+
+    const references = await scanContentIdentities(transaction, OWNER_ID, [
+      { entity: 'skill_revisions', id: 'revision-id' }
+    ]);
+
+    expect(query.mock.calls[0]?.[0]).toContain('FROM "skill_revisions" r JOIN "skills" s');
+    expect(query.mock.calls[0]?.[0]).toContain('octet_length(r."instructions")');
+    expect(query.mock.calls[0]?.[1]).toEqual([OWNER_ID, ['revision-id']]);
+    expect(references.map(({ resourceKey, copyKey, bytes, projectId }) => [resourceKey, copyKey, bytes, projectId])).toEqual([
+      ['skill_revisions:revision-id', 'title', 12n, 'project-id'],
+      ['skill_revisions:revision-id', 'instructions', 30n, 'project-id'],
+      ['skill_revisions:revision-id', 'declared_tools', 18n, 'project-id']
+    ]);
+  });
+
   it('sends only new, changed, and deleted copies through the same transaction quota mutation', async () => {
     const priorReferences = [
       { resource_key: 'project_facts:fact-id', copy_key: 'content', project_id: 'project-id', byte_count: '4', root_key: null, relative_key: null, sha256: null },

@@ -1,4 +1,4 @@
-export type ShowcaseTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'archived';
+export type ShowcaseTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done';
 export type ShowcaseTaskImportance = 'low' | 'medium' | 'high' | 'urgent';
 
 export interface ShowcaseChecklistItem {
@@ -30,18 +30,27 @@ export interface ShowcaseFile {
   readonly byteLength: number;
 }
 
+export interface ShowcaseSkill {
+  readonly id: string;
+  readonly title: string;
+  readonly instructions: string;
+  readonly declaredTools: readonly string[];
+}
+
 export interface CurrentShowcase {
   readonly version: string;
   readonly publishedAt: string;
   readonly project: { readonly name: string; readonly objective: string | null };
   readonly tasks: readonly ShowcaseTask[];
   readonly facts: readonly ShowcaseFact[];
+  readonly skills: readonly ShowcaseSkill[];
   readonly files: readonly ShowcaseFile[];
 }
 
 export interface ShowcaseSelection {
   readonly taskIds: readonly string[];
   readonly factIds: readonly string[];
+  readonly skillIds: readonly string[];
   readonly filePaths: readonly string[];
 }
 

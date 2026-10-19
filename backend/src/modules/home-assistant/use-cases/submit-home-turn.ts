@@ -9,6 +9,7 @@ import type { HomePlanningProvider, IHomePlanningRuntime } from '@/modules/home-
 import type { IHomeProjectMemoryContextReader } from '@/modules/home-assistant/repositories/home-project-memory-context-reader';
 import { assertHomeIdempotencyKey, homeRequestFingerprint } from '@/modules/home-assistant/use-cases/home-conversation-command-helpers';
 import { redactEgressText } from '@/shared/egress/redaction';
+import type { SkillContextRevision, SkillInvocationState } from '@/modules/skills/domain/skill-invocation-types';
 
 const MAX_INITIAL_PROMPT_BYTES = HOME_PLANNING_CONTEXT_LIMITS.promptBytes;
 
@@ -29,6 +30,17 @@ export interface SubmitHomeTurnCommand {
   readonly conversationId: string;
   readonly requestKey: string;
   readonly message: string;
+  /** Trusted server-only binding created by the skills use case; never accepted from HTTP input. */
+  readonly skillInvocation?: TrustedSkillInvocationBinding;
+}
+
+export interface TrustedSkillInvocationBinding {
+  readonly skillId: string;
+  readonly skillRevisionId: string;
+  readonly skillVersion: number;
+  claim(contextRevisions: readonly SkillContextRevision[]): Promise<{ readonly id: string }>;
+  isCurrent(): Promise<boolean>;
+  updateState(state: SkillInvocationState): Promise<void>;
 }
 
 /** Saves one idempotent turn and starts it only after the current policy and runtime gates pass. */
@@ -54,14 +66,29 @@ export class SubmitHomeTurnUseCase {
     const runtime = runtimeConfiguration?.mode === 'hermes' ? runtimeConfiguration.runtime : undefined;
     const policy = this.policyConfiguration;
     if (!runtimeConfiguration || !runtime || !policy || runtimeConfiguration.mode !== 'hermes') {
-      return this.conversations.submitTurn({
+      if (!input.skillInvocation) {
+        return this.conversations.submitTurn({
+          ownerId: input.ownerId,
+          conversationId: input.conversationId,
+          requestKey: input.requestKey,
+          requestFingerprint: homeRequestFingerprint({ message: input.message }),
+          message: input.message,
+          initialStatus: 'unsupported'
+        });
+      }
+      const invocation = await input.skillInvocation.claim([]);
+      const submission = await this.conversations.submitTurn({
         ownerId: input.ownerId,
         conversationId: input.conversationId,
         requestKey: input.requestKey,
-        requestFingerprint: homeRequestFingerprint({ message: input.message }),
+        requestFingerprint: skillHomeRequestFingerprint(input.message, input.skillInvocation, []),
         message: input.message,
-        initialStatus: 'unsupported'
+        initialStatus: 'unsupported',
+        skillInvocationId: invocation.id
       });
+      if (submission.turn.skillInvocationId !== invocation.id) throw new HomeTurnNotFoundError();
+      await input.skillInvocation.updateState('denied');
+      return submission;
     }
     if (!await supportsPolicyExecution(runtime, policy)) throw new AssistantExecutionUnavailableError();
 
@@ -70,16 +97,31 @@ export class SubmitHomeTurnUseCase {
     const authorization = await assertConversationPolicy(policy, input.ownerId, conversation);
     const projectFactsPermitted = permitsProjectFacts(authorization, conversation);
     const revisions = requiredRevisions(conversation.scope, authorization);
+    let skillPreflightContext: HomePlanningContext | undefined;
+    let skillContextRevisions: readonly SkillContextRevision[] | undefined;
+    if (input.skillInvocation) {
+      if (!await input.skillInvocation.isCurrent()) throw new HomeConversationInputInvalidError('The skill is no longer enabled at this version.');
+      skillPreflightContext = await this.readSkillPlanningContext(input.ownerId, input.conversationId, input.message, conversation, projectFactsPermitted);
+      skillContextRevisions = skillContextRevisionsFor(skillPreflightContext);
+    }
+    const invocation = input.skillInvocation
+      ? await input.skillInvocation.claim(skillContextRevisions ?? [])
+      : undefined;
     const submission = await this.conversations.submitTurn({
       ownerId: input.ownerId,
       conversationId: input.conversationId,
       requestKey: input.requestKey,
-      requestFingerprint: homeRequestFingerprint({ message: input.message }),
+      requestFingerprint: input.skillInvocation
+        ? skillHomeRequestFingerprint(input.message, input.skillInvocation, skillContextRevisions ?? [])
+        : homeRequestFingerprint({ message: input.message }),
       message: input.message,
       initialStatus: 'running',
       homePolicyRevision: revisions.home,
-      workspacePolicyRevision: revisions.workspace
+      workspacePolicyRevision: revisions.workspace,
+      ...(invocation ? { skillInvocationId: invocation.id } : {})
     });
+
+    if (input.skillInvocation && submission.turn.skillInvocationId !== invocation?.id) throw new HomeTurnNotFoundError();
 
     if (submission.replayed) {
       return this.replayWithoutRestart(input.ownerId, input.conversationId, submission, runtime);
@@ -92,11 +134,16 @@ export class SubmitHomeTurnUseCase {
         ownerId: input.ownerId,
         conversationId: input.conversationId,
         beforeSequence: submission.message.sequence,
-        limit: 8,
+        limit: HOME_PLANNING_CONTEXT_LIMITS.priorMessages,
         transcriptOnly: true
       });
       if (!history) throw new HomeConversationNotFoundError();
-      priorMessages = history.messages;
+      priorMessages = history.messages.map((message) => ({
+        role: message.role,
+        content: message.content,
+        sourceId: message.id,
+        sourceRevision: message.sequence
+      }));
       const selectedProjectFacts = projectFactsPermitted
         ? await this.readSelectedProjectFacts(input.ownerId, conversation)
         : [];
@@ -105,8 +152,13 @@ export class SubmitHomeTurnUseCase {
         priorMessages,
         selectedProjectFacts
       });
+      if (input.skillInvocation && (!sameSkillContextRevisions(skillContextRevisions ?? [], skillContextRevisionsFor(planningContext))
+        || !skillPreflightContext
+        || !sameProjectMemorySnapshot(skillPreflightContext.selectedProjectFacts, planningContext.selectedProjectFacts))) {
+        return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE', input.skillInvocation);
+      }
     } catch {
-      return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE');
+      return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE', input.skillInvocation);
     }
 
     const beforeSend = await this.findCurrentTurn(input.ownerId, input.conversationId, submission.turn.id);
@@ -117,10 +169,10 @@ export class SubmitHomeTurnUseCase {
     try {
       const currentAuthorization = await assertConversationPolicy(policy, input.ownerId, conversation, revisions);
       if (projectFactsPermitted && !permitsProjectFacts(currentAuthorization, conversation)) {
-        return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'ASSISTANT_EXECUTION_UNAVAILABLE');
+        return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'ASSISTANT_EXECUTION_UNAVAILABLE', input.skillInvocation);
       }
     } catch {
-      return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'ASSISTANT_EXECUTION_UNAVAILABLE');
+      return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'ASSISTANT_EXECUTION_UNAVAILABLE', input.skillInvocation);
     }
 
     const authorizedTurn = await this.findCurrentTurn(input.ownerId, input.conversationId, submission.turn.id);
@@ -142,10 +194,17 @@ export class SubmitHomeTurnUseCase {
           selectedProjectFacts: latestSelectedProjectFacts
         });
         if (!sameProjectMemorySnapshot(planningContext.selectedProjectFacts, latestContext.selectedProjectFacts)) {
-          return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE');
+          return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE', input.skillInvocation);
         }
       } catch {
-        return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE');
+        return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE', input.skillInvocation);
+      }
+    }
+
+    if (input.skillInvocation) {
+      await input.skillInvocation.updateState('dispatching');
+      if (!await input.skillInvocation.isCurrent()) {
+        return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'SKILL_NOT_AVAILABLE', input.skillInvocation);
       }
     }
 
@@ -156,12 +215,14 @@ export class SubmitHomeTurnUseCase {
       outcome = 'unknown';
     }
     if (outcome === 'unavailable') {
-      return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'PLANNING_RUNTIME_UNAVAILABLE');
+      return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'PLANNING_RUNTIME_UNAVAILABLE', input.skillInvocation);
     }
     if (outcome === 'unknown') {
+      if (input.skillInvocation) await input.skillInvocation.updateState('unknown');
       const turn = await this.updateStatus(input.ownerId, input.conversationId, submission.turn.id, 'unknown');
       return resultWithTurn(submission, turn, { state: 'unknown', code: 'PLANNING_RUNTIME_OUTCOME_UNKNOWN' });
     }
+    if (input.skillInvocation) await input.skillInvocation.updateState('accepted');
 
     const afterSend = await this.findCurrentTurn(input.ownerId, input.conversationId, submission.turn.id);
     if (!afterSend) throw new HomeTurnNotFoundError();
@@ -198,7 +259,38 @@ export class SubmitHomeTurnUseCase {
     return this.projectMemory.readSelectedFacts(ownerId, conversation.scope.workspaceId);
   }
 
-  private async finishKnownNoSend(ownerId: string, conversationId: string, submission: HomeTurnSubmission, code: string): Promise<HomeTurnSubmission> {
+  private async readSkillPlanningContext(
+    ownerId: string,
+    conversationId: string,
+    currentMessage: string,
+    conversation: HomeConversation,
+    projectFactsPermitted: boolean
+  ): Promise<HomePlanningContext> {
+    const history = await this.conversations.listMessagesForOwner({
+      ownerId,
+      conversationId,
+      limit: HOME_PLANNING_CONTEXT_LIMITS.priorMessages,
+      transcriptOnly: true
+    });
+    if (!history) throw new HomeConversationNotFoundError();
+    const priorMessages: readonly HomePlanningContextMessage[] = history.messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      sourceId: message.id,
+      sourceRevision: message.sequence
+    }));
+    const selectedProjectFacts = projectFactsPermitted ? await this.readSelectedProjectFacts(ownerId, conversation) : [];
+    return buildHomePlanningContext({ currentMessage, priorMessages, selectedProjectFacts });
+  }
+
+  private async finishKnownNoSend(
+    ownerId: string,
+    conversationId: string,
+    submission: HomeTurnSubmission,
+    code: string,
+    skillInvocation?: TrustedSkillInvocationBinding
+  ): Promise<HomeTurnSubmission> {
+    if (skillInvocation) await skillInvocation.updateState('denied');
     const current = await this.findCurrentTurn(ownerId, conversationId, submission.turn.id);
     if (!current) throw new HomeTurnNotFoundError();
     if (current.status === 'cancel_requested') {
@@ -217,6 +309,40 @@ export class SubmitHomeTurnUseCase {
     if (!turn) throw new HomeTurnNotFoundError();
     return turn;
   }
+}
+
+function skillContextRevisionsFor(context: HomePlanningContext): readonly SkillContextRevision[] {
+  const expectedHistoryCount = context.itemCount - 1 - context.selectedProjectFacts.length;
+  if (context.historyMessageRevisions.length !== expectedHistoryCount) {
+    throw new HomeConversationInputInvalidError('A skill context source could not be bound to a persisted revision.');
+  }
+  return [
+    ...context.historyMessageRevisions.map(({ id, revision }) => ({ kind: 'home_message' as const, id, revision })),
+    ...context.selectedProjectFacts.map(({ id, version }) => ({ kind: 'project_fact' as const, id, revision: version }))
+  ];
+}
+
+function sameSkillContextRevisions(first: readonly SkillContextRevision[], second: readonly SkillContextRevision[]): boolean {
+  return first.length === second.length && first.every((revision, index) => {
+    const current = second[index];
+    return current !== undefined && revision.kind === current.kind && revision.id === current.id && revision.revision === current.revision;
+  });
+}
+
+function skillHomeRequestFingerprint(
+  message: string,
+  binding: TrustedSkillInvocationBinding,
+  contextRevisions: readonly SkillContextRevision[]
+): string {
+  return homeRequestFingerprint({
+    message,
+    skillInvocation: {
+      skillId: binding.skillId,
+      skillRevisionId: binding.skillRevisionId,
+      skillVersion: binding.skillVersion,
+      contextRevisions
+    }
+  });
 }
 
 function permitsProjectFacts(authorization: AssistantExecutionAuthorization, conversation: HomeConversation): boolean {

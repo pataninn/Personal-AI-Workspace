@@ -10,6 +10,7 @@ import type {
   ShowcasePreviewFile,
   ShowcasePreviewTask,
   ShowcasePublishResult,
+  ShowcaseSkill,
   ShowcaseTask
 } from '@/entities/showcase/model/types';
 
@@ -94,12 +95,14 @@ async function fetchPublicJson(path: string): Promise<unknown> {
 function normalizeCurrentShowcase(value: unknown): CurrentShowcase {
   const record = asRecord(value);
   const project = asRecord(record?.project);
+  const skills = record?.skills;
   return {
     version: readUuid(record?.version),
     publishedAt: readTimestamp(record?.publishedAt),
     project: normalizeProject(project),
     tasks: readArray(record?.tasks, normalizeShowcaseTask),
     facts: readArray(record?.facts, normalizeShowcaseFact),
+    skills: skills === undefined ? [] : readArray(skills, normalizeShowcaseSkill),
     files: readArray(record?.files, normalizeShowcaseFile)
   };
 }
@@ -136,7 +139,7 @@ function normalizeProject(value: Record<string, unknown> | null): CurrentShowcas
 
 function normalizeShowcaseTask(value: unknown): ShowcaseTask {
   const record = asRecord(value);
-  const status = readEnum(record?.status, ['todo', 'in_progress', 'blocked', 'done', 'archived'] as const);
+  const status = readEnum(record?.status, ['todo', 'in_progress', 'blocked', 'done'] as const);
   const importance = readEnum(record?.importance, ['low', 'medium', 'high', 'urgent'] as const);
   return {
     id: readUuid(record?.id),
@@ -158,6 +161,16 @@ function normalizeShowcaseFact(value: unknown): ShowcaseFact {
   return { id: readUuid(record?.id), title: readString(record?.title), content: readString(record?.content) };
 }
 
+function normalizeShowcaseSkill(value: unknown): ShowcaseSkill {
+  const record = asRecord(value);
+  return {
+    id: readUuid(record?.id),
+    title: readString(record?.title),
+    instructions: readString(record?.instructions),
+    declaredTools: readArray(record?.declaredTools, readString)
+  };
+}
+
 function normalizeShowcaseFile(value: unknown): ShowcaseFile {
   const record = asRecord(value);
   return {
@@ -173,7 +186,7 @@ function normalizePreviewTask(value: unknown): ShowcasePreviewTask {
   return {
     title: readString(record?.title),
     details: readNullableString(record?.details),
-    status: readEnum(record?.status, ['todo', 'in_progress', 'blocked', 'done', 'archived'] as const),
+    status: readEnum(record?.status, ['todo', 'in_progress', 'blocked', 'done'] as const),
     importance: readEnum(record?.importance, ['low', 'medium', 'high', 'urgent'] as const),
     deadline: readNullableDate(record?.deadline),
     checklist: readArray(record?.checklist, (entry) => {

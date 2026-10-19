@@ -26,7 +26,7 @@ interface SourceItems {
 
 type LoadState = 'idle' | 'loading' | 'loaded' | 'error';
 
-const EMPTY_SELECTION: ShowcaseSelection = { taskIds: [], factIds: [], filePaths: [] };
+const EMPTY_SELECTION: ShowcaseSelection = { taskIds: [], factIds: [], skillIds: [], filePaths: [] };
 
 export function ShowcasePublisher(): React.JSX.Element {
   const csrfToken = useAppSelector(selectCsrfToken);

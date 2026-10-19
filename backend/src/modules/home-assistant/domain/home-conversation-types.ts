@@ -33,6 +33,8 @@ export interface HomeTurn {
   readonly homePolicyRevision: string | null;
   /** Stored workspace-policy revision for workspace-scoped Home turns; null for Home or legacy turns. */
   readonly workspacePolicyRevision: string | null;
+  /** Trusted server-created skill binding; null for ordinary Home turns. */
+  readonly skillInvocationId?: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }

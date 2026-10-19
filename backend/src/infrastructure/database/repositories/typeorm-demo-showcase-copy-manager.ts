@@ -23,6 +23,7 @@ interface CopyIdMap {
   readonly tasks: Readonly<Record<string, string>>;
   readonly checklists: Readonly<Record<string, string>>;
   readonly facts: Readonly<Record<string, string>>;
+  readonly skills: Readonly<Record<string, string>>;
 }
 interface CopyRow {
   readonly admission_id: string;
@@ -49,16 +50,23 @@ function rows<T>(value: unknown): readonly T[] {
 
 function parseJson<T>(value: T | string): T { return typeof value === 'string' ? JSON.parse(value) as T : value; }
 
-function emptyIdMap(snapshot: CurrentShowcaseDto): CopyIdMap {
-  const tasks: Record<string, string> = {};
-  const checklists: Record<string, string> = {};
-  const facts: Record<string, string> = {};
-  for (const task of snapshot.tasks) {
-    tasks[task.id] = randomUUID();
-    for (const item of task.checklist) checklists[item.id] = randomUUID();
-  }
-  for (const fact of snapshot.facts) facts[fact.id] = randomUUID();
-  return { tasks, checklists, facts };
+function completeIdMap(snapshot: CurrentShowcaseDto, stored: Partial<CopyIdMap>): CopyIdMap {
+  const makeIds = (sourceIds: readonly string[], previous: Readonly<Record<string, string>> | undefined): Record<string, string> => {
+    const result: Record<string, string> = {};
+    for (const sourceId of sourceIds) {
+      const existing = previous?.[sourceId];
+      if (existing === undefined) result[sourceId] = randomUUID();
+      else if (isUuid(existing)) result[sourceId] = existing;
+      else throw storageUnavailable();
+    }
+    return result;
+  };
+  return {
+    tasks: makeIds(snapshot.tasks.map(({ id }) => id), stored.tasks),
+    checklists: makeIds(snapshot.tasks.flatMap(({ checklist }) => checklist.map(({ id }) => id)), stored.checklists),
+    facts: makeIds(snapshot.facts.map(({ id }) => id), stored.facts),
+    skills: makeIds(snapshot.skills.map(({ id }) => id), stored.skills)
+  };
 }
 
 function asMap(row: CopyRow): CopyIdMap { return parseJson(row.id_map); }
@@ -233,9 +241,7 @@ export class TypeOrmDemoShowcaseCopyManager implements IDemoShowcaseCopyManager 
         return null;
       }
       const claimToken = randomUUID();
-      const idMap = parseJson(row.id_map);
-      const persistedMap = Object.keys(idMap.tasks ?? {}).length + Object.keys(idMap.facts ?? {}).length > 0
-        || version.snapshot.tasks.length + version.snapshot.facts.length === 0 ? idMap : emptyIdMap(version.snapshot);
+      const persistedMap = completeIdMap(version.snapshot, parseJson(row.id_map));
       const phase: CopyPhase = row.phase === 'queued' && version.files.length > 0 ? 'root_pending'
         : row.phase === 'root_pending' && rootReceipt === 'verified' ? 'root_created' : row.phase;
       const updated = rows<CopyRow>(await manager.query(`
@@ -294,6 +300,18 @@ export class TypeOrmDemoShowcaseCopyManager implements IDemoShowcaseCopyManager 
             VALUES ($1,$2,$3,$4,$5,$6,'user',1,NULL)
           `, [targetId, ownerId, projectId, `showcase-${targetId}`, fact.title, fact.content]);
         }
+        for (const skill of snapshot.skills) {
+          const targetId = idMap.skills[skill.id];
+          if (!isUuid(targetId)) throw storageUnavailable();
+          await manager.query(`
+            INSERT INTO "skills" ("id", "owner_id", "workspace_id")
+            VALUES ($1, $2, $3)
+          `, [targetId, ownerId, projectId]);
+          await manager.query(`
+            INSERT INTO "skill_revisions" ("owner_id", "skill_id", "version", "title", "instructions", "enabled", "declared_tools")
+            VALUES ($1, $2, 1, $3, $4, true, $5::jsonb)
+          `, [ownerId, targetId, skill.title, skill.instructions, JSON.stringify(skill.declaredTools)]);
+        }
         const references = await this.contentAccounting.scanDatabaseContent(manager, ownerId);
         return { result: undefined, references: references.map((reference) => ({ reference, nextBytes: reference.bytes, nextSha256: null })) };
       });
@@ -346,7 +364,9 @@ export class TypeOrmDemoShowcaseCopyManager implements IDemoShowcaseCopyManager 
       const orderState = rows<{ readonly project_id: string }>(await manager.query('SELECT "project_id" FROM "project_task_order_states" WHERE "owner_id"=$1 AND "project_id"=$2 LIMIT 1', [ownerId, projectId]));
       const taskCount = rows<{ readonly count: string | number }>(await manager.query('SELECT count(*) AS "count" FROM "project_tasks" WHERE "owner_id"=$1 AND "project_id"=$2', [ownerId, projectId]));
       const factCount = rows<{ readonly count: string | number }>(await manager.query('SELECT count(*) AS "count" FROM "project_facts" WHERE "owner_id"=$1 AND "project_id"=$2', [ownerId, projectId]));
-      if (!policy[0] || !orderState[0] || Number(taskCount[0]?.count) !== snapshot.tasks.length || Number(factCount[0]?.count) !== snapshot.facts.length) throw storageUnavailable();
+      const skillCount = rows<{ readonly count: string | number }>(await manager.query('SELECT count(*) AS "count" FROM "skills" WHERE "owner_id"=$1 AND "workspace_id"=$2 AND "deleted_at" IS NULL', [ownerId, projectId]));
+      if (!policy[0] || !orderState[0] || Number(taskCount[0]?.count) !== snapshot.tasks.length
+        || Number(factCount[0]?.count) !== snapshot.facts.length || Number(skillCount[0]?.count) !== snapshot.skills.length) throw storageUnavailable();
       if (files.length > 0 && (!project.relative_root || project.storage_kind !== 'managed' || project.relative_root !== `projects/${projectId}`)) throw storageUnavailable();
       for (const file of files) {
         const ref = rows<{ readonly byte_count: string; readonly sha256: string | null }>(await manager.query(`

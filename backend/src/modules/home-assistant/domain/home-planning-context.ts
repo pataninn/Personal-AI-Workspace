@@ -14,12 +14,18 @@ export const HOME_PLANNING_CONTEXT_LIMITS = {
 export interface HomePlanningContextMessage {
   readonly role: HomeMessageRole;
   readonly content: string;
+  /** Present only for persisted transcript rows; kept out of the prompt. */
+  readonly sourceId?: string;
+  /** Immutable message sequence used as the source revision. */
+  readonly sourceRevision?: number;
 }
 
 export interface HomePlanningContext {
   readonly prompt: string;
   readonly categories: readonly HomeConsentCategory[];
   readonly itemCount: number;
+  /** IDs and immutable sequence revisions for transcript rows actually rendered. */
+  readonly historyMessageRevisions: readonly { readonly id: string; readonly revision: number }[];
   /** Redacted current selected facts bound to this one prompt, including source versions for send-boundary recheck. */
   readonly selectedProjectFacts: readonly HomePlanningProjectFactSnapshot[];
 }
@@ -55,6 +61,9 @@ export function buildHomePlanningContext(input: {
     prompt,
     categories: history.length > 0 ? ['current_message', 'bounded_home_history'] : ['current_message'],
     itemCount: history.length + 1 + selectedProjectFacts.length,
+    historyMessageRevisions: history.flatMap((message) => message.sourceId && Number.isSafeInteger(message.sourceRevision) && Number(message.sourceRevision) > 0
+      ? [{ id: message.sourceId, revision: Number(message.sourceRevision) }]
+      : []),
     selectedProjectFacts
   };
 }
@@ -97,7 +106,12 @@ function isTranscriptRole(message: HomePlanningContextMessage): boolean {
 }
 
 function redactMessage(message: HomePlanningContextMessage): HomePlanningContextMessage {
-  return { role: message.role, content: redactEgressText(message.content) };
+  return {
+    role: message.role,
+    content: redactEgressText(message.content),
+    ...(message.sourceId ? { sourceId: message.sourceId } : {}),
+    ...(message.sourceRevision === undefined ? {} : { sourceRevision: message.sourceRevision })
+  };
 }
 
 function renderMessage(message: HomePlanningContextMessage): string {

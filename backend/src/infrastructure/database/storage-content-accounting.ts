@@ -52,6 +52,12 @@ const CANONICAL_CONTENT_SQL = `
     FROM "project_facts" f WHERE f."owner_id" = $1
   UNION ALL SELECT 'project_facts:' || f."id"::text, 'content', f."project_id"::text, octet_length(f."content")::text
     FROM "project_facts" f WHERE f."owner_id" = $1
+  UNION ALL SELECT 'skill_revisions:' || r."id"::text, 'title', s."workspace_id"::text, octet_length(r."title")::text
+    FROM "skill_revisions" r JOIN "skills" s ON s."owner_id" = r."owner_id" AND s."id" = r."skill_id" WHERE r."owner_id" = $1
+  UNION ALL SELECT 'skill_revisions:' || r."id"::text, 'instructions', s."workspace_id"::text, octet_length(r."instructions")::text
+    FROM "skill_revisions" r JOIN "skills" s ON s."owner_id" = r."owner_id" AND s."id" = r."skill_id" WHERE r."owner_id" = $1
+  UNION ALL SELECT 'skill_revisions:' || r."id"::text, 'declared_tools', s."workspace_id"::text, octet_length(r."declared_tools"::text)::text
+    FROM "skill_revisions" r JOIN "skills" s ON s."owner_id" = r."owner_id" AND s."id" = r."skill_id" WHERE r."owner_id" = $1
   UNION ALL SELECT 'ai_runs:' || r."id"::text, 'request', r."project_id"::text, octet_length(r."request")::text
     FROM "ai_runs" r WHERE r."owner_id" = $1
   UNION ALL SELECT 'ai_runs:' || r."id"::text, 'manifest', r."project_id"::text, octet_length(r."manifest"::text)::text

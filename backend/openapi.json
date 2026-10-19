@@ -49,6 +49,9 @@
     },
     {
       "name": "Showcase"
+    },
+    {
+      "name": "Skill definitions"
     }
   ],
   "paths": {
@@ -256,6 +259,132 @@
           "409": { "description": "Copy is terminal, unpinned, over its attempt limit, or has an unknown side effect.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
           "500": { "$ref": "#/components/responses/InternalError" },
           "503": { "description": "Copy storage/accounting is currently unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
+        }
+      }
+    },
+    "/api/v1/skills/templates": {
+      "get": {
+        "tags": ["Skill definitions"],
+        "summary": "List the supported starter skill templates",
+        "operationId": "listSkillTemplates",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Fixed starter templates with closed Home capability declarations.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SkillTemplatesEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/skills": {
+      "get": {
+        "tags": ["Skill definitions"],
+        "summary": "List the caller's active skills",
+        "operationId": "listSkills",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "name": "workspaceId", "in": "query", "schema": { "$ref": "#/components/schemas/Uuid" } }],
+        "responses": {
+          "200": { "description": "Active caller-owned skills, optionally restricted to one workspace.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SkillListEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "post": {
+        "tags": ["Skill definitions"],
+        "summary": "Create a versioned skill or copy a fixed starter template",
+        "operationId": "createSkill",
+        "description": "Owner identity comes only from the authenticated session. Instructions are stored as user data, and declared tools are restricted to the server's closed Home capability list.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/SkillIdempotencyHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SkillCreateRequest" } } } },
+        "responses": {
+          "201": { "description": "New private skill; matching idempotent replays return the same skill.", "headers": { "Location": { "$ref": "#/components/headers/Location" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SkillEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "The selected workspace is unavailable or this matching skill creation was later soft-deleted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "The idempotency key was reused with different input.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
+        }
+      }
+    },
+    "/api/v1/skills/{skillId}": {
+      "parameters": [{ "$ref": "#/components/parameters/SkillIdPath" }],
+      "get": {
+        "tags": ["Skill definitions"],
+        "summary": "Read one caller-owned active skill",
+        "operationId": "getSkill",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Current immutable skill revision.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SkillEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "description": "The skill is unavailable to this caller.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "patch": {
+        "tags": ["Skill definitions"],
+        "summary": "Edit or enable or disable a skill by expected version",
+        "operationId": "updateSkill",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/OriginHeader" }, { "$ref": "#/components/parameters/CsrfHeader" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SkillUpdateRequest" } } } },
+        "responses": {
+          "200": { "description": "Updated current skill revision.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SkillEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "The skill or selected workspace is unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "The skill version is stale.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
+        }
+      },
+      "delete": {
+        "tags": ["Skill definitions"],
+        "summary": "Soft delete a skill by expected version",
+        "operationId": "deleteSkill",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/OriginHeader" }, { "$ref": "#/components/parameters/CsrfHeader" }, { "$ref": "#/components/parameters/SkillIfMatchHeader" }],
+        "responses": {
+          "204": { "description": "The skill is no longer available for invocation." },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "The skill is unavailable to this caller.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "The skill version is stale.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "428": { "description": "If-Match is required.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/skills/{skillId}/invocations": {
+      "parameters": [{ "$ref": "#/components/parameters/SkillIdPath" }],
+      "post": {
+        "tags": ["Skill definitions"],
+        "summary": "Start an idempotent skill invocation in an existing Home conversation",
+        "operationId": "invokeSkill",
+        "description": "The invocation snapshots the immutable skill revision and permitted context source IDs/revisions, then uses the existing Home turn, provider, policy, quota, and runtime path. A bound replay returns the current turn and never starts the runtime twice.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/SkillIdempotencyHeader" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SkillInvocationRequest" } } } },
+        "responses": {
+          "200": { "description": "The existing Home turn is starting, running, terminal, or an identical idempotent replay.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SkillInvocationEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "The skill, conversation, or workspace is unavailable to this principal.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "The skill version is stale or the Idempotency-Key was already used for different input.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" },
+          "500": { "$ref": "#/components/responses/InternalError" }
         }
       }
     },
@@ -4767,6 +4896,26 @@
         "description": "Stable publish retry key scoped to the active administrator; matching replays return the original version and different-input reuse conflicts.",
         "schema": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]{1,128}$" }
       },
+      "SkillIdempotencyHeader": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "Stable retry key scoped to the authenticated owner; different-input reuse conflicts.",
+        "schema": { "type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9._~-]{8,128}$" }
+      },
+      "SkillIdPath": {
+        "name": "skillId",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/Uuid" }
+      },
+      "SkillIfMatchHeader": {
+        "name": "If-Match",
+        "in": "header",
+        "required": true,
+        "description": "Current positive skill version as a quoted integer, for example \"3\".",
+        "schema": { "type": "string", "pattern": "^\"[1-9][0-9]*\"$" }
+      },
       "IdempotencyHeader": {
         "name": "Idempotency-Key",
         "in": "header",
@@ -5827,7 +5976,8 @@
         "properties": {
           "taskIds": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/Uuid" } },
           "factIds": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/Uuid" } },
-          "filePaths": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 2048, "description": "Normalized project-relative path; never a host path or storage root." } }
+          "filePaths": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 2048, "description": "Normalized project-relative path; never a host path or storage root." } },
+          "skillIds": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "$ref": "#/components/schemas/Uuid" }, "description": "Optional explicit allowlist of enabled account-wide or source-project skills; omitted means no skills." }
         },
         "additionalProperties": false
       },
@@ -5882,6 +6032,17 @@
         },
         "additionalProperties": false
       },
+      "ShowcaseSkill": {
+        "type": "object",
+        "required": ["title", "instructions", "declaredTools"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "instructions": { "type": "string", "minLength": 1, "maxLength": 16000 },
+          "declaredTools": { "type": "array", "uniqueItems": true, "items": { "type": "string", "enum": ["home_task_read", "home_task_write", "home_workspace_read", "home_workspace_write", "home_action_undo"] } }
+        },
+        "description": "Reviewed fields from an explicitly selected enabled skill; source IDs, owner scope, policy, provider, and runtime files are omitted.",
+        "additionalProperties": false
+      },
       "ShowcaseProject": {
         "type": "object",
         "required": ["name", "objective"],
@@ -5906,11 +6067,12 @@
       },
       "ShowcasePreview": {
         "type": "object",
-        "required": ["project", "tasks", "facts", "files", "previewDigest", "sourceRevision", "totals", "exclusions"],
+        "required": ["project", "tasks", "facts", "skills", "files", "previewDigest", "sourceRevision", "totals", "exclusions"],
         "properties": {
           "project": { "$ref": "#/components/schemas/ShowcaseProject" },
           "tasks": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseTask" } },
           "facts": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseFact" } },
+          "skills": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseSkill" } },
           "files": { "type": "array", "items": { "$ref": "#/components/schemas/PreviewFile" } },
           "previewDigest": { "$ref": "#/components/schemas/Sha256" },
           "sourceRevision": { "$ref": "#/components/schemas/Sha256" },
@@ -5963,6 +6125,18 @@
         },
         "additionalProperties": false
       },
+      "ShowcaseSkillDto": {
+        "type": "object",
+        "required": ["id", "title", "instructions", "declaredTools"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "instructions": { "type": "string", "minLength": 1, "maxLength": 16000 },
+          "declaredTools": { "type": "array", "uniqueItems": true, "items": { "type": "string", "enum": ["home_task_read", "home_task_write", "home_workspace_read", "home_workspace_write", "home_action_undo"] } }
+        },
+        "description": "Public generated skill ID and reviewed fields; no source owner or runtime identity.",
+        "additionalProperties": false
+      },
       "ShowcaseFileDto": {
         "type": "object",
         "required": ["id", "name", "mediaType", "byteLength"],
@@ -5976,13 +6150,14 @@
       },
       "CurrentShowcase": {
         "type": "object",
-        "required": ["version", "publishedAt", "project", "tasks", "facts", "files"],
+        "required": ["version", "publishedAt", "project", "tasks", "facts", "skills", "files"],
         "properties": {
           "version": { "$ref": "#/components/schemas/Uuid" },
           "publishedAt": { "type": "string", "format": "date-time" },
           "project": { "$ref": "#/components/schemas/ShowcaseProject" },
           "tasks": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseTaskDto" } },
           "facts": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseFactDto" } },
+          "skills": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseSkillDto" } },
           "files": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseFileDto" } }
         },
         "additionalProperties": false
