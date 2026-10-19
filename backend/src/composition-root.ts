@@ -87,7 +87,7 @@ import { ListWorkspaceFilesUseCase, ReadWorkspaceTextUseCase, SearchWorkspaceTex
 import { StartupChecksError } from '@/shared/errors/app-error';
 import { createLogger, type AppLogger } from '@/shared/logging/logger';
 import { CreateProjectFactUseCase, DeleteProjectFactUseCase, ListProjectFactsUseCase, ReviewProjectFactUseCase, UpdateProjectFactUseCase } from '@/modules/memory';
-import { CountInboxTasksUseCase, CreateProjectTaskUseCase, DeleteProjectTaskUseCase, GetGlobalTaskUseCase, ListGlobalTasksUseCase, ListProjectTaskSuggestionsUseCase, ListProjectTasksUseCase, ReorderProjectTaskUseCase, ResolveProjectTaskSuggestionUseCase, TaskMutationUseCases, UpdateProjectTaskUseCase } from '@/modules/tasks';
+import { CountInboxTasksUseCase, CreateProjectTaskUseCase, GetGlobalTaskUseCase, ListGlobalTasksUseCase, ListProjectTaskSuggestionsUseCase, ListProjectTasksUseCase, ReorderProjectTaskUseCase, ResolveProjectTaskSuggestionUseCase, TaskMutationUseCases, UpdateProjectTaskUseCase } from '@/modules/tasks';
 import { GetAiRunActivityUseCase, ListAiRunActivityUseCase } from '@/modules/ai-runs/use-cases/activity-use-cases';
 import { ListProjectFileHistoryUseCase } from '@/modules/ai-runs/use-cases/file-history-use-cases';
 import { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
@@ -500,7 +500,6 @@ export async function createApplication(
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },
         projectTasks: {
-          deleteTask: new DeleteProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases),
           getSession,
           listTasks: new ListProjectTasksUseCase(projectRepository, projectTaskRepository),
           createTask: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases),

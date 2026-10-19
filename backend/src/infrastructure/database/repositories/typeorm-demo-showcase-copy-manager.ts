@@ -285,12 +285,11 @@ export class TypeOrmDemoShowcaseCopyManager implements IDemoShowcaseCopyManager 
             return { id, title: item.title, completed: item.completed };
           });
           await manager.query(`
-            INSERT INTO "project_tasks" ("id", "owner_id", "project_id", "title", "details", "status", "position", "version", "source_kind", "source_suggestion_id", "idempotency_key", "request_fingerprint", "idempotency_snapshot", "completed_at", "archived_at", "importance", "deadline", "subtasks")
+            INSERT INTO "project_tasks" ("id", "owner_id", "project_id", "title", "details", "status", "position", "version", "source_kind", "source_suggestion_id", "idempotency_key", "request_fingerprint", "idempotency_snapshot", "completed_at", "importance", "deadline", "subtasks")
             VALUES ($1,$2,$3,$4,$5,$6,$7,1,'user',NULL,NULL,NULL,NULL,
               CASE WHEN $11::boolean THEN clock_timestamp() ELSE NULL END,
-              CASE WHEN $12::boolean THEN clock_timestamp() ELSE NULL END,
               $8,$9::date,$10::jsonb)
-          `, [targetId, ownerId, projectId, task.title, task.details, task.status, position, task.importance, task.deadline, JSON.stringify(subtasks), task.status === 'done', task.status === 'archived']);
+          `, [targetId, ownerId, projectId, task.title, task.details, task.status, position, task.importance, task.deadline, JSON.stringify(subtasks), task.status === 'done']);
         }
         for (const fact of snapshot.facts) {
           const targetId = idMap.facts[fact.id];

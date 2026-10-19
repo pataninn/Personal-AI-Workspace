@@ -15,9 +15,6 @@ function normalizedFilters(filters: GlobalTaskQueryFilters): GlobalTaskQueryFilt
   if (filters.inboxOnly && filters.workspaceId) {
     throw new ProjectTaskValidationError([{ field: 'workspaceId', message: 'Choose either Inbox or one workspace.' }]);
   }
-  if (filters.status === 'archived' && !filters.includeArchived) {
-    throw new ProjectTaskValidationError([{ field: 'status', message: 'Set includeArchived to true to query archived tasks.' }]);
-  }
   if (!Number.isSafeInteger(filters.limit) || filters.limit < 1 || filters.limit > 100) {
     throw new ProjectTaskValidationError([{ field: 'limit', message: 'Use a page size from 1 through 100.' }]);
   }

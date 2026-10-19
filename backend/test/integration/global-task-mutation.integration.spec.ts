@@ -35,8 +35,7 @@ function item(projectId: string | null, version = 2): GlobalTaskQueryItem {
       source: { kind: 'user', label: 'Added by you', suggestionId: null, runId: null, conversationId: null, acceptedAt: null },
       createdAt: now,
       updatedAt: now,
-      completedAt: null,
-      archivedAt: null
+      completedAt: null
     },
     collection: projectId ? 'workspace' : 'inbox',
     workspace: projectId ? { id: projectId, name: 'Quarterly', status: 'active' } : null
@@ -86,7 +85,18 @@ function fixture() {
     create: jest.fn().mockResolvedValue(commandResult('task.create', null)),
     update: jest.fn().mockResolvedValue(commandResult('task.update', null)),
     move: jest.fn().mockResolvedValue(commandResult('task.move', WORKSPACE)),
-    archive: jest.fn().mockResolvedValue(commandResult('task.archive', null))
+    delete: jest.fn().mockResolvedValue({
+      taskId: TASK,
+      orderVersion: 3,
+      replayed: false,
+      receipt: {
+        ...commandResult('task.delete', null).receipt,
+        actionKind: 'task.delete',
+        postVersion: null,
+        outcome: { targetId: TASK, targetVersion: null, sourceOrderVersion: 3 },
+        undoStatus: 'not_reversible'
+      }
+    })
   } as unknown as ITaskMutationCommands;
   const readiness = new InMemoryReadinessState();
   readiness.markReady();
@@ -108,7 +118,7 @@ function fixture() {
 }
 
 describe('global task mutation API', () => {
-  it('routes create, patch, move, and archive through owner-derived commands and returns stable links and receipts', async () => {
+  it('routes create, patch, move, and canonical deletion through owner-derived commands and returns stable receipts', async () => {
     const { app, mutations } = fixture();
 
     const created = await request(app)
@@ -136,13 +146,22 @@ describe('global task mutation API', () => {
       .expect(200);
     expect(mutations.move).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER, taskId: TASK, workspaceId: WORKSPACE, expectedVersion: 2, expectedSourceOrderVersion: 4, expectedDestinationOrderVersion: 8 }));
 
-    const archived = await request(app)
-      .post(`/api/v1/tasks/${TASK}/archive`)
-      .set({ ...HEADERS, 'Idempotency-Key': 'archive-once', 'If-Match': '"2"' })
-      .send({ expectedOrderVersion: 9 })
+    const deleted = await request(app)
+      .delete(`/api/v1/tasks/${TASK}`)
+      .set({ ...HEADERS, 'Idempotency-Key': 'delete-once', 'If-Match': '"2"' })
       .expect(200);
-    expect(archived.body.data.receipt.actionKind).toBe('task.archive');
-    expect(mutations.archive).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER, taskId: TASK, expectedVersion: 2, expectedOrderVersion: 9 }));
+    expect(deleted.headers.etag).toBe('"3"');
+    expect(deleted.body.data).toMatchObject({
+      taskId: TASK, orderVersion: 3,
+      receipt: {
+        actionKind: 'task.delete', undoStatus: 'not_reversible',
+        outcome: { targetId: TASK, targetVersion: null, sourceOrderVersion: 3 }
+      },
+      replayed: false
+    });
+    expect(deleted.body.data.item).toBeUndefined();
+    expect(mutations.delete).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER, taskId: TASK, expectedVersion: 2, operationKey: 'delete-once' }));
+    await request(app).post(`/api/v1/tasks/${TASK}/archive`).set({ ...HEADERS, 'Idempotency-Key': 'archive-once', 'If-Match': '"2"' }).expect(404);
   });
 
   it('rejects missing mutation guards and caller-supplied owner data before the command boundary', async () => {

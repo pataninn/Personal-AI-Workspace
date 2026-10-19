@@ -238,43 +238,16 @@ describe('TypeOrmProjectRepository', () => {
 });
 
 describe('TypeOrmProjectRepository workspace undo participant', () => {
-  const TASK_A = '33333333-3333-4333-8333-333333333333';
-  const TASK_B = '44444444-4444-4444-8444-444444444444';
-  const CREATE_A = '55555555-5555-4555-8555-555555555555';
-  const CREATE_B = '66666666-6666-4666-8666-666666666666';
-  const UNDO_A = '77777777-7777-4777-8777-777777777777';
-  const UNDO_B = '88888888-8888-4888-8888-888888888888';
   const original: ActionLedgerRecord = {
     id: '99999999-9999-4999-8999-999999999999', ownerId: OWNER_ID, operationKey: 'workspace-create', requestFingerprint: 'fp',
     actorKind: 'manual', turnId: null, targetKind: 'workspace', targetId: PROJECT_ID, actionKind: 'workspace.create', expectedVersion: null,
     preVersion: null, postVersion: 2, reversibleFields: {}, outcome: { targetId: PROJECT_ID, targetVersion: 2 },
     undoStatus: 'available', undoOfActionId: null, undoActionId: null, createdAt: CREATED_AT
   };
-  const rowForChild = (input: {
-    readonly id: string;
-    readonly taskId: string;
-    readonly compensationId: string;
-    readonly creationOrderVersion: number;
-    readonly position: number;
-  }) => ({
-    id: input.id, action_kind: 'task.create', target_kind: 'task', target_id: input.taskId,
-    undo_status: 'undone', undo_action_id: input.compensationId, creation_order_version: input.creationOrderVersion,
-    compensation_id: input.compensationId, compensation_kind: 'undo', compensation_undo_status: 'not_reversible',
-    compensation_undo_of: input.id, compensation_target_kind: 'task', compensation_target_id: input.taskId,
-    compensation_target_version: 2, compensation_post_version: 2,
-    task_owner_id: OWNER_ID, task_project_id: PROJECT_ID, task_status: 'archived', task_version: 2, task_position: input.position,
-    created_event_count: 1, created_position: String(input.position), archive_event_count: 1, other_event_count: 0
-  });
-
-  it('archives an unchanged empty workspace after two child creates were compensated newest-first', async () => {
+  it('archives an unchanged empty workspace after child task creation was undone by deleting its task and events', async () => {
     const archived = { ...projectRow('archived'), relative_root: null, relative_root_key: null, version: 3 };
-    const children = [
-      rowForChild({ id: CREATE_B, taskId: TASK_B, compensationId: UNDO_B, creationOrderVersion: 3, position: 1 }),
-      rowForChild({ id: CREATE_A, taskId: TASK_A, compensationId: UNDO_A, creationOrderVersion: 2, position: 0 })
-    ];
     const query = jest.fn().mockImplementation(async (sql: string) => {
       if (sql.includes('FROM "projects"') && sql.includes('FOR UPDATE')) return [{ ...projectRow('active'), relative_root: null, relative_root_key: null, version: 2 }];
-      if (sql.includes('FROM unnest($2::uuid[])')) return children;
       if (sql.includes('AS "has_content"')) return [{ has_content: false }];
       if (sql.startsWith('UPDATE "projects"')) return [archived];
       return [];
@@ -282,11 +255,21 @@ describe('TypeOrmProjectRepository workspace undo participant', () => {
     const { repository } = fixture(query);
 
     const result = await repository.undoWorkspaceInTransaction({ query } as unknown as QueryRunner, {
-      ownerId: OWNER_ID, original, completedTaskCreateActionIds: [CREATE_B, CREATE_A]
+      ownerId: OWNER_ID, original, completedTaskCreateActionIds: []
     });
 
     expect(result).toMatchObject({ preVersion: 2, postVersion: 3, outcome: { targetId: PROJECT_ID, targetVersion: 3 } });
-    expect(query.mock.calls.find(([sql]: [string]) => sql.includes('FROM unnest($2::uuid[])'))?.[1]).toEqual([OWNER_ID, [CREATE_B, CREATE_A], PROJECT_ID]);
+    const emptyGuard = query.mock.calls.find(([sql]: [string]) => sql.includes('AS "has_content"'));
+    expect(emptyGuard?.[1]).toEqual([OWNER_ID, PROJECT_ID]);
+    expect(emptyGuard?.[0]).toContain('FROM "project_tasks"');
+    expect(emptyGuard?.[0]).toContain('FROM "project_task_events"');
+    expect(emptyGuard?.[0]).toContain('FROM "project_task_suggestions"');
+    expect(emptyGuard?.[0]).toContain('FROM "project_facts"');
+    expect(emptyGuard?.[0]).toContain('FROM "conversations"');
+    expect(emptyGuard?.[0]).toContain('FROM "home_conversations"');
+    expect(emptyGuard?.[0]).toContain('FROM "project_chat_context"');
+    expect(emptyGuard?.[0]).toContain('FROM "ai_runs"');
+    expect(query.mock.calls.some(([sql]: [string]) => sql.includes('FROM unnest($2::uuid[])'))).toBe(false);
     expect(query.mock.calls.some(([sql]: [string]) => sql.startsWith('UPDATE "projects"'))).toBe(true);
   });
 
@@ -298,26 +281,24 @@ describe('TypeOrmProjectRepository workspace undo participant', () => {
     const { repository } = fixture(query);
 
     await expect(repository.undoWorkspaceInTransaction({ query } as unknown as QueryRunner, {
-      ownerId: OWNER_ID, original, completedTaskCreateActionIds: [CREATE_B, CREATE_A]
+      ownerId: OWNER_ID, original, completedTaskCreateActionIds: []
     })).rejects.toMatchObject({ reason: 'changed' });
     expect(query.mock.calls.some(([sql]: [string]) => sql.includes('FROM unnest($2::uuid[])'))).toBe(false);
     expect(query.mock.calls.some(([sql]: [string]) => sql.startsWith('UPDATE "projects"'))).toBe(false);
   });
 
-  it('refuses to treat an unrelated or edited child receipt as workspace creation history', async () => {
-    const child = { ...rowForChild({ id: CREATE_A, taskId: TASK_A, compensationId: UNDO_A, creationOrderVersion: 2, position: 0 }),
-      other_event_count: 1 };
+  it('blocks workspace undo while any project content remains', async () => {
     const query = jest.fn().mockImplementation(async (sql: string) => {
       if (sql.includes('FROM "projects"') && sql.includes('FOR UPDATE')) return [{ ...projectRow('active'), relative_root: null, relative_root_key: null, version: 2 }];
-      if (sql.includes('FROM unnest($2::uuid[])')) return [child];
+      if (sql.includes('AS "has_content"')) return [{ has_content: true }];
       return [];
     });
     const { repository } = fixture(query);
 
     await expect(repository.undoWorkspaceInTransaction({ query } as unknown as QueryRunner, {
-      ownerId: OWNER_ID, original, completedTaskCreateActionIds: [CREATE_A]
+      ownerId: OWNER_ID, original, completedTaskCreateActionIds: []
     })).rejects.toMatchObject({ reason: 'workspace_not_empty' });
-    expect(query.mock.calls.some(([sql]: [string]) => sql.includes('AS "has_content"'))).toBe(false);
+    expect(query.mock.calls.some(([sql]: [string]) => sql.includes('AS "has_content"'))).toBe(true);
     expect(query.mock.calls.some(([sql]: [string]) => sql.startsWith('UPDATE "projects"'))).toBe(false);
   });
 

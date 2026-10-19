@@ -11,7 +11,6 @@ import type { IProjectTaskRepository } from '@/modules/tasks/repositories/projec
 import type { ITaskMutationCommands } from '@/modules/tasks/use-cases/task-mutation-use-cases';
 import {
   CreateProjectTaskUseCase,
-  DeleteProjectTaskUseCase,
   ListProjectTaskSuggestionsUseCase,
   ListProjectTasksUseCase,
   ReorderProjectTaskUseCase,
@@ -43,8 +42,7 @@ function canonicalTask(projectId: string | null = PROJECT_ID) {
     source: { kind: 'user' as const, label: 'Added by you', suggestionId: null, runId: null, conversationId: null, acceptedAt: null },
     createdAt: now,
     updatedAt: now,
-    completedAt: null,
-    archivedAt: null
+    completedAt: null
   };
 }
 
@@ -67,7 +65,6 @@ function dependencies(projectStatus: 'active' | 'archived' | null = 'active') {
     listTasks: jest.fn().mockResolvedValue({ tasks: [], orderVersion: 1 }),
     createTask: jest.fn().mockResolvedValue({}),
     updateTask: jest.fn().mockResolvedValue({}),
-    deleteTask: jest.fn().mockResolvedValue({ orderVersion: 2 }),
     reorderTask: jest.fn().mockResolvedValue({ tasks: [], orderVersion: 1 }),
     listSuggestions: jest.fn().mockResolvedValue([]),
     resolveSuggestion: jest.fn().mockResolvedValue({})
@@ -258,40 +255,16 @@ describe('project task use cases', () => {
     });
   });
 
-  describe('DeleteProjectTaskUseCase', () => {
-    it('preserves owner/project/task scope and expected version on deletion', async () => {
-      const deps = dependencies();
-      const useCase = new DeleteProjectTaskUseCase(deps.projectRepository, deps.taskRepositoryContract);
-      const input = { ownerId: OWNER_ID, projectId: PROJECT_ID, taskId: TASK_ID, expectedVersion: 4 };
-      await expect(useCase.execute(input)).resolves.toEqual({ orderVersion: 2 });
-      expect(deps.taskRepository.deleteTask).toHaveBeenCalledWith(input);
-    });
-
-    it('archives through the shared command and keeps the existing order-version response', async () => {
-      const deps = dependencies(null);
-      deps.taskRepository.listTasks.mockResolvedValue({ tasks: [], orderVersion: 5 });
-      const mutations = { archive: jest.fn().mockResolvedValue(mutationResult()) } as unknown as ITaskMutationCommands;
-      const useCase = new DeleteProjectTaskUseCase(deps.projectRepository, deps.taskRepositoryContract, mutations);
-
-      await expect(useCase.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, taskId: TASK_ID, expectedVersion: 1 }))
-        .resolves.toEqual({ orderVersion: 5 });
-
-      expect(mutations.archive).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER_ID, expectedProjectId: PROJECT_ID, taskId: TASK_ID, expectedVersion: 1 }));
-      expect(deps.findByIdForOwner).not.toHaveBeenCalled();
-      expect(deps.taskRepository.deleteTask).not.toHaveBeenCalled();
-    });
-  });
-
   describe('project read-only boundary', () => {
-    it('should allow task and suggestion reads in an archived project', async () => {
+    it('should allow task and suggestion reads in an archived workspace without task archive filters', async () => {
       const deps = dependencies('archived');
       const listTasks = new ListProjectTasksUseCase(deps.projectRepository, deps.taskRepositoryContract);
       const listSuggestions = new ListProjectTaskSuggestionsUseCase(deps.projectRepository, deps.taskRepositoryContract);
 
-      await listTasks.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, filter: 'archived' });
+      await listTasks.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, filter: 'all' });
       await listSuggestions.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, status: 'pending' });
 
-      expect(deps.taskRepository.listTasks).toHaveBeenCalledWith(OWNER_ID, PROJECT_ID, 'archived');
+      expect(deps.taskRepository.listTasks).toHaveBeenCalledWith(OWNER_ID, PROJECT_ID, 'all');
       expect(deps.taskRepository.listSuggestions).toHaveBeenCalledWith(OWNER_ID, PROJECT_ID, { status: 'pending' });
     });
 

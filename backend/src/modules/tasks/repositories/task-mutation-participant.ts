@@ -26,7 +26,7 @@ export interface UpdateTaskMutationInput {
   readonly importance?: ProjectTaskImportance;
   readonly deadline?: string | null;
   readonly subtasks?: ProjectTask['subtasks'];
-  readonly status?: Exclude<ProjectTaskStatus, 'archived'>;
+  readonly status?: ProjectTaskStatus;
   readonly actorKind: ActionLedgerActorKind;
 }
 
@@ -40,13 +40,12 @@ export interface MoveTaskMutationInput {
   readonly actorKind: ActionLedgerActorKind;
 }
 
-export interface ArchiveTaskMutationInput {
+export interface DeleteTaskMutationInput {
   readonly ownerId: string;
   readonly taskId: string;
   readonly expectedVersion: number;
   /** Restricts compatibility adapters to the project named by their route. */
-  readonly expectedProjectId?: string;
-  readonly expectedOrderVersion?: number;
+  readonly expectedProjectId?: string | null;
   readonly actorKind: ActionLedgerActorKind;
 }
 
@@ -59,7 +58,7 @@ export interface ITaskMutationParticipant<TTransaction> {
   createInTransaction(transaction: TTransaction, input: CreateTaskMutationInput): Promise<AppliedTaskMutation>;
   updateInTransaction(transaction: TTransaction, input: UpdateTaskMutationInput): Promise<AppliedTaskMutation>;
   moveInTransaction(transaction: TTransaction, input: MoveTaskMutationInput): Promise<AppliedTaskMutation>;
-  archiveInTransaction(transaction: TTransaction, input: ArchiveTaskMutationInput): Promise<AppliedTaskMutation>;
+  deleteInTransaction(transaction: TTransaction, input: DeleteTaskMutationInput): Promise<ActionLedgerMutationResult>;
 }
 
 /** Narrow reversal participant; the ledger still owns transaction and receipt persistence. */

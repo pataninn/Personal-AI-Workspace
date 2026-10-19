@@ -21,7 +21,7 @@ export interface ShowcaseChecklistItem {
 export interface ShowcaseTaskContent {
   readonly title: string;
   readonly details: string | null;
-  readonly status: 'todo' | 'in_progress' | 'blocked' | 'done' | 'archived';
+  readonly status: 'todo' | 'in_progress' | 'blocked' | 'done';
   readonly importance: 'low' | 'medium' | 'high' | 'urgent';
   readonly deadline: string | null;
   readonly checklist: readonly ShowcaseChecklistItem[];

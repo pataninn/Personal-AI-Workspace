@@ -7,7 +7,7 @@ import { ProjectTaskItem } from '@/features/project-tasks/ui/ProjectTaskItem';
 
 const task: ProjectTask = { id: 'task', projectId: 'project', title: 'Review guide', details: 'Read carefully.', status: 'todo', importance: 'high', deadline: null,
   subtasks: [{ id: 'child', title: 'Check steps', completed: false }], position: 0, version: 1,
-  source: { kind: 'user', label: 'Added by you', suggestionId: null, runId: null, conversationId: null, acceptedAt: null }, createdAt: '2026-10-01', updatedAt: '2026-10-01', completedAt: null, archivedAt: null };
+  source: { kind: 'user', label: 'Added by you', suggestionId: null, runId: null, conversationId: null, acceptedAt: null }, createdAt: '2026-10-01', updatedAt: '2026-10-01', completedAt: null };
 
 describe('ProjectTaskItem', () => {
   it('expands details inline and forwards checklist and complete actions with the current task', async () => {

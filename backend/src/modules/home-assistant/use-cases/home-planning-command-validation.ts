@@ -20,12 +20,11 @@ const WORKSPACE_REF = z.object({ workspaceRef: z.number().int().min(1).max(20) }
 const WORKSPACE_TARGET = z.union([UUID, z.null(), WORKSPACE_REF]);
 
 const listTasks = z.object({
-  workspaceId: UUID.optional(), inboxOnly: z.boolean().optional(), status: z.enum(['todo', 'in_progress', 'blocked', 'done', 'archived']).optional(),
+  workspaceId: UUID.optional(), inboxOnly: z.boolean().optional(), status: z.enum(['todo', 'in_progress', 'blocked', 'done']).optional(),
   importance: IMPORTANCE.optional(), deadlineFrom: DATE.optional(), deadlineTo: DATE.optional(), q: z.string().trim().max(200).optional(),
   includeArchived: z.boolean().optional(), limit: z.number().int().min(1).max(20).optional(), cursor: z.string().max(1024).optional()
 }).strict().superRefine((value, context) => {
   if (value.workspaceId && value.inboxOnly) context.addIssue({ code: z.ZodIssueCode.custom, path: ['workspaceId'], message: 'Choose either Inbox or one workspace.' });
-  if (value.status === 'archived' && value.includeArchived !== true) context.addIssue({ code: z.ZodIssueCode.custom, path: ['includeArchived'], message: 'Set includeArchived to true to query archived tasks.' });
   if (value.deadlineFrom && value.deadlineTo && value.deadlineFrom > value.deadlineTo) context.addIssue({ code: z.ZodIssueCode.custom, path: ['deadlineFrom'], message: 'The start date must not be later than the end date.' });
   if (value.deadlineFrom && !isCalendarDate(value.deadlineFrom)) context.addIssue({ code: z.ZodIssueCode.custom, path: ['deadlineFrom'], message: 'Choose a valid calendar date.' });
   if (value.deadlineTo && !isCalendarDate(value.deadlineTo)) context.addIssue({ code: z.ZodIssueCode.custom, path: ['deadlineTo'], message: 'Choose a valid calendar date.' });
@@ -46,7 +45,7 @@ const updateTask = z.object({
   if (value.status === undefined && !hasPatch) context.addIssue({ code: z.ZodIssueCode.custom, path: ['request'], message: 'Provide a status change or a non-empty patch.' });
 });
 const moveTask = z.object({ taskId: UUID, expectedVersion: VERSION, workspaceId: UUID.nullable(), expectedSourceOrderVersion: VERSION.optional(), expectedDestinationOrderVersion: VERSION.optional() }).strict();
-const archiveTask = z.object({ taskId: UUID, expectedVersion: VERSION, expectedOrderVersion: VERSION.optional() }).strict();
+const deleteTask = z.object({ taskId: UUID, expectedVersion: VERSION }).strict();
 const searchWorkspaces = z.object({ query: z.string().trim().min(2).max(120), limit: z.number().int().min(1).max(20).optional() }).strict();
 const reuseWorkspace = z.object({ workspaceId: UUID }).strict();
 const createWorkspace = z.object({ name: z.string().min(1).max(120), objective: z.string().max(2000).nullable().optional() }).strict();
@@ -64,10 +63,9 @@ const proposalTaskUpdate = z.object({
   deadline: DEADLINE.nullable().optional(), subtasks: z.array(SUBTASK_PATCH).max(50).optional()
 }).strict();
 const proposalTaskMove = z.object({ action: z.literal('task.move'), taskId: UUID, expectedVersion: VERSION, workspaceId: WORKSPACE_TARGET }).strict();
-const proposalTaskArchive = z.object({ action: z.literal('task.archive'), taskId: UUID, expectedVersion: VERSION }).strict();
 const proposalWorkspaceCreate = z.object({ action: z.literal('workspace.create'), name: z.string().min(1).max(120), objective: z.string().max(2000).nullable().optional() }).strict();
 const proposalWorkspaceUpdate = z.object({ action: z.literal('workspace.update_objective'), workspaceId: UUID, expectedVersion: VERSION, objective: z.string().max(2000).nullable() }).strict();
-const proposeBulk = z.object({ items: z.array(z.discriminatedUnion('action', [proposalTaskCreate, proposalTaskUpdate, proposalTaskMove, proposalTaskArchive, proposalWorkspaceCreate, proposalWorkspaceUpdate])).min(2).max(20) }).strict().superRefine((value, context) => {
+const proposeBulk = z.object({ items: z.array(z.discriminatedUnion('action', [proposalTaskCreate, proposalTaskUpdate, proposalTaskMove, proposalWorkspaceCreate, proposalWorkspaceUpdate])).min(2).max(20) }).strict().superRefine((value, context) => {
   for (const [index, item] of value.items.entries()) {
     if (item.action !== 'task.update') continue;
     const hasPatch = item.title !== undefined || item.details !== undefined || item.importance !== undefined || item.deadline !== undefined || item.subtasks !== undefined;
@@ -82,7 +80,7 @@ const schemas = {
   home_create_task: createTask,
   home_update_task: updateTask,
   home_move_task: moveTask,
-  home_archive_task: archiveTask,
+  home_delete_task: deleteTask,
   home_search_workspaces: searchWorkspaces,
   home_reuse_workspace: reuseWorkspace,
   home_create_workspace: createWorkspace,

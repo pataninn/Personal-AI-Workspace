@@ -141,7 +141,7 @@ export class UpdateProjectTaskUseCase {
       throw new ProjectTaskStatusConflictError();
     }
     if (input.status !== undefined) {
-      if (!isProjectTaskStatus(input.status) || input.status === 'archived') {
+      if (!isProjectTaskStatus(input.status)) {
         throw new ProjectTaskStatusConflictError();
       }
       if (this.mutations) {
@@ -213,33 +213,6 @@ export class ReorderProjectTaskUseCase {
   public async execute(input: { readonly ownerId: string; readonly projectId: string; readonly taskId: string; readonly direction: 'up' | 'down'; readonly expectedOrderVersion: number }) {
     await findProject(this.projectRepository, input.ownerId, input.projectId, true);
     return this.taskRepository.reorderTask(input);
-  }
-}
-
-/** Permanently removes an owned task with optimistic concurrency. */
-export class DeleteProjectTaskUseCase {
-  public constructor(
-    private readonly projectRepository: IProjectRepository,
-    private readonly taskRepository: IProjectTaskRepository,
-    private readonly mutations?: ITaskMutationCommands
-  ) {}
-
-  public async execute(input: { readonly ownerId: string; readonly projectId: string; readonly taskId: string; readonly expectedVersion: number; readonly operationKey?: string; readonly actorKind?: ActionLedgerActorKind }): Promise<{ readonly orderVersion: number }> {
-    if (this.mutations) {
-      const operationKey = input.operationKey === undefined ? undefined : projectTaskOperationKey('archive', input.projectId, validateIdempotencyKey(input.operationKey));
-      await this.mutations.archive({
-        ownerId: input.ownerId,
-        expectedProjectId: input.projectId,
-        taskId: input.taskId,
-        expectedVersion: input.expectedVersion,
-        ...(operationKey === undefined ? {} : { operationKey }),
-        actorKind: input.actorKind ?? 'manual'
-      });
-      const snapshot = await this.taskRepository.listTasks(input.ownerId, input.projectId, 'all');
-      return { orderVersion: snapshot.orderVersion };
-    }
-    await findProject(this.projectRepository, input.ownerId, input.projectId, true);
-    return this.taskRepository.deleteTask(input);
   }
 }
 

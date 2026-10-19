@@ -4,8 +4,7 @@ const TASK_STATUS_LABELS: Readonly<Record<ProjectTaskStatus, string>> = {
   todo: 'To do',
   in_progress: 'In progress',
   blocked: 'Blocked',
-  done: 'Done',
-  archived: 'Archived'
+  done: 'Done'
 };
 
 interface ProjectTaskStatusLabelProps {

@@ -35,7 +35,7 @@ export const HOME_PLANNING_TOOL_NAMES = [
   'home_create_task',
   'home_update_task',
   'home_move_task',
-  'home_archive_task',
+  'home_delete_task',
   'home_search_workspaces',
   'home_reuse_workspace',
   'home_create_workspace',

@@ -44,8 +44,7 @@ function row(status: ProjectTaskStatus, subtasks: readonly ProjectTaskSubtask[],
     importance: 'medium', deadline: null, subtasks, status, version, position: 0, source_kind: 'user', source_suggestion_id: null,
     source_run_id: null, source_conversation_id: null, source_accepted_at: null,
     created_at: '2026-10-05T00:00:00Z', updated_at: '2026-10-05T00:00:00Z', completed_at: status === 'done' ? '2026-10-05T00:00:00Z' : null,
-    completed_at_exact: status === 'done' ? '2026-10-05T00:00:00.000000Z' : null,
-    archived_at: null, archived_at_exact: null };
+    completed_at_exact: status === 'done' ? '2026-10-05T00:00:00.000000Z' : null };
 }
 
 const INPUT = { ownerId: OWNER, projectId: PROJECT, taskId: TASK, expectedVersion: 1 };
@@ -367,7 +366,7 @@ describe('task action undo participants', () => {
     expect(legacyQuery.mock.calls.some(([sql]: [string]) => sql.startsWith('UPDATE "project_tasks"'))).toBe(false);
   });
 
-  it('undoes a created child after later sibling creation and compensation when its recorded position is unchanged', async () => {
+  it('physically deletes an undone task create when its recorded position is unchanged', async () => {
     const original: ActionLedgerRecord = {
       id: '88888888-8888-4888-8888-888888888888', ownerId: OWNER, operationKey: 'task-create', requestFingerprint: 'fp',
       actorKind: 'manual', turnId: null, targetKind: 'task', targetId: TASK, actionKind: 'task.create', expectedVersion: null,
@@ -382,7 +381,7 @@ describe('task action undo participants', () => {
       if (sql.startsWith('INSERT INTO "project_task_order_states"')) return [];
       if (sql.includes('FROM "project_task_order_states"')) return [{ version: 4 }];
       if (sql.includes('created_position')) return [{ project_id: PROJECT, created_position: '0', created_count: 1 }];
-      if (sql.startsWith('UPDATE "project_tasks" SET "status" = \'archived\'')) return [{ version: 2 }];
+      if (sql.startsWith('DELETE FROM "project_tasks"')) return [{ id: TASK }];
       if (sql.includes('max(t."position")')) return [{ max_position: 1 }];
       if (sql.includes('count(*) AS "count"')) return [{ count: 1 }];
       if (sql.startsWith('UPDATE "project_task_order_states"')) return [{ version: 6 }];
@@ -392,8 +391,10 @@ describe('task action undo participants', () => {
 
     const result = await repository.undoTaskInTransaction({ query } as unknown as QueryRunner, { ownerId: OWNER, original });
 
-    expect(result).toMatchObject({ preVersion: 1, postVersion: 2, outcome: { targetId: TASK, targetVersion: 2, sourceOrderVersion: 6 } });
+    expect(result).toMatchObject({ preVersion: 1, postVersion: null, outcome: { targetId: TASK, targetVersion: null, sourceOrderVersion: 6 }, undoStatus: 'not_reversible' });
     expect(query.mock.calls.some(([sql]: [string]) => sql.includes('destinationOrderVersion'))).toBe(false);
+    expect(query.mock.calls.some(([sql]: [string]) => sql.startsWith('DELETE FROM "project_tasks"'))).toBe(true);
+    expect(query.mock.calls.some(([sql]: [string]) => sql.includes("SET \"status\" = 'archived'"))).toBe(false);
 
     const movedPosition = { ...current, position: 1 };
     const changedQuery = jest.fn().mockImplementation(async (sql: string) => {
@@ -465,7 +466,7 @@ describe('task action undo participants', () => {
     expect(result).toMatchObject({ preVersion: 2, postVersion: 3, outcome: { targetId: TASK, targetVersion: 3, sourceOrderVersion: 9, destinationOrderVersion: 6 } });
   });
 
-  it('restores an archived task status and archive timestamp at a new version', async () => {
+  it('refuses to undo historical task archive receipts after archive actions are retired', async () => {
     const original: ActionLedgerRecord = {
       id: '88888888-8888-4888-8888-888888888888', ownerId: OWNER, operationKey: 'task-archive', requestFingerprint: 'fp',
       actorKind: 'manual', turnId: null, targetKind: 'task', targetId: TASK, actionKind: 'task.archive', expectedVersion: 1,
@@ -477,23 +478,11 @@ describe('task action undo participants', () => {
       outcome: { targetId: TASK, targetVersion: 2, sourceOrderVersion: 8 }, undoStatus: 'available', undoOfActionId: null,
       undoActionId: null, createdAt: '2026-10-15T12:00:01.000Z'
     };
-    const current = { ...row('archived', [], 2), archived_at: '2026-10-15T12:00:00.123Z', archived_at_exact: '2026-10-15T12:00:00.123456Z' };
-    const query = jest.fn().mockImplementation(async (sql: string) => {
-      if (sql.includes('FROM "project_tasks" t')) return [current];
-      if (sql.includes('FROM "projects"')) return [{ status: 'active' }];
-      if (sql.includes('FROM "project_task_order_states"')) return [{ version: 8 }];
-      if (sql.includes('count(*) AS "count"')) return [{ count: 2 }];
-      if (sql.includes('max(t."position")')) return [{ max_position: 1 }];
-      if (sql.startsWith('UPDATE "project_tasks" SET "status" = $1')) return [{ version: 3 }];
-      if (sql.startsWith('UPDATE "project_task_order_states"')) return [{ version: 9 }];
-      return [];
-    });
+    const query = jest.fn();
     const { repository } = fixture('todo', []);
 
-    const result = await repository.undoTaskInTransaction({ query } as unknown as QueryRunner, { ownerId: OWNER, original });
-
-    const restore = query.mock.calls.find(([sql]: [string]) => sql.startsWith('UPDATE "project_tasks" SET "status" = $1'));
-    expect(restore?.[1]).toEqual(['todo', null, OWNER, TASK, 2]);
-    expect(result).toMatchObject({ preVersion: 2, postVersion: 3, outcome: { targetId: TASK, targetVersion: 3, sourceOrderVersion: 9 } });
+    await expect(repository.undoTaskInTransaction({ query } as unknown as QueryRunner, { ownerId: OWNER, original }))
+      .rejects.toBeInstanceOf(ActionLedgerTargetStateConflictError);
+    expect(query).not.toHaveBeenCalled();
   });
 });

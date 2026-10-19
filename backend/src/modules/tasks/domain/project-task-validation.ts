@@ -7,13 +7,12 @@ const TASK_TITLE_MAX_CODE_POINTS = 120;
 const TASK_DETAILS_MAX_BYTES = 4096;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/gu;
 const DETAILS_CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu;
-const TASK_STATUSES = new Set<ProjectTaskStatus>(['todo', 'in_progress', 'blocked', 'done', 'archived']);
+const TASK_STATUSES = new Set<ProjectTaskStatus>(['todo', 'in_progress', 'blocked', 'done']);
 const ALLOWED_TRANSITIONS: Readonly<Record<ProjectTaskStatus, ReadonlySet<ProjectTaskStatus>>> = {
   todo: new Set(['in_progress', 'done']),
   in_progress: new Set(['blocked', 'done']),
   blocked: new Set(['in_progress', 'done']),
-  done: new Set(['todo']),
-  archived: new Set()
+  done: new Set(['todo'])
 };
 
 export interface NormalizedTaskText {

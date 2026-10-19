@@ -1,0 +1,122 @@
+# Exact Source Manifest â€” Task 4.3
+
+Baseline: `ddc2a355f6f3886048433cea7a6a28de08891261` on `feature/automatic-assistant-tools`.
+Commit subject: `feat(tasks): unify deletion and remove archive behavior`.
+
+## Verified inventory
+
+- 75 application source/test paths: 50 backend, 24 frontend, and 1 Hermes bridge schema.
+- 10 documentation paths: nine Task 4.3 contract/source/review/evidence files plus the global release tracker snapshot.
+- Shared files below are included only for the Task 4.3 hunk described here; adjacent work is excluded.
+
+## Backend (50 paths)
+
+- `backend/openapi.json`
+- `backend/src/composition-root.ts`
+- `backend/src/infrastructure/database/data-source.ts`
+- `backend/src/infrastructure/database/migrations/1710000036000-canonical-task-delete.ts`
+- `backend/src/infrastructure/database/repositories/action-ledger-persistence-mappers.ts`
+- `backend/src/infrastructure/database/repositories/typeorm-action-ledger-repository.ts`
+- `backend/src/infrastructure/database/repositories/typeorm-demo-showcase-copy-manager.ts`
+- `backend/src/infrastructure/database/repositories/typeorm-global-task-query.spec.ts`
+- `backend/src/infrastructure/database/repositories/typeorm-project-repository.spec.ts`
+- `backend/src/infrastructure/database/repositories/typeorm-project-repository.ts`
+- `backend/src/infrastructure/database/repositories/typeorm-project-task-repository.spec.ts`
+- `backend/src/infrastructure/database/repositories/typeorm-project-task-repository.ts`
+- `backend/src/infrastructure/database/repositories/typeorm-task-mutation-participant.spec.ts`
+- `backend/src/infrastructure/hermes/hermes-home-planning-runtime.spec.ts`
+- `backend/src/infrastructure/hermes/hermes-home-planning-runtime.ts`
+- `backend/src/modules/action-ledger/domain/action-ledger-types.ts`
+- `backend/src/modules/action-ledger/repositories/action-ledger-undo-repository.ts`
+- `backend/src/modules/home-assistant/controllers/action-undo-router.ts`
+- `backend/src/modules/home-assistant/domain/home-change-proposal-types.ts`
+- `backend/src/modules/home-assistant/use-cases/action-undo-use-cases.spec.ts`
+- `backend/src/modules/home-assistant/use-cases/action-undo-use-cases.ts`
+- `backend/src/modules/home-assistant/use-cases/home-change-proposal-use-cases.ts`
+- `backend/src/modules/home-assistant/use-cases/home-planning-command-validation.spec.ts`
+- `backend/src/modules/home-assistant/use-cases/home-planning-command-validation.ts`
+- `backend/src/modules/home-assistant/use-cases/home-planning-tool-request-handler.spec.ts`
+- `backend/src/modules/home-assistant/use-cases/home-planning-tool-request-handler.ts`
+- `backend/src/modules/showcases/domain/showcase-types.ts`
+- `backend/src/modules/showcases/use-cases/showcase-use-cases.spec.ts`
+- `backend/src/modules/tasks/controllers/global-task-router.ts`
+- `backend/src/modules/tasks/controllers/project-task-router.ts`
+- `backend/src/modules/tasks/domain/project-task-errors.ts`
+- `backend/src/modules/tasks/domain/project-task-validation.spec.ts`
+- `backend/src/modules/tasks/domain/project-task-validation.ts`
+- `backend/src/modules/tasks/domain/project-task.ts`
+- `backend/src/modules/tasks/index.ts`
+- `backend/src/modules/tasks/repositories/project-task-repository.ts`
+- `backend/src/modules/tasks/repositories/task-mutation-participant.ts`
+- `backend/src/modules/tasks/use-cases/global-task-query-use-cases.ts`
+- `backend/src/modules/tasks/use-cases/project-task-use-cases.spec.ts`
+- `backend/src/modules/tasks/use-cases/project-task-use-cases.ts`
+- `backend/src/modules/tasks/use-cases/task-mutation-use-cases.spec.ts`
+- `backend/src/modules/tasks/use-cases/task-mutation-use-cases.ts`
+- `backend/src/openapi/global-task-openapi.spec.ts`
+- `backend/src/openapi/storage-quota-openapi.spec.ts`
+- `backend/test/integration/canonical-task-delete-migration.integration.spec.ts`
+- `backend/test/integration/global-task-mutation.integration.spec.ts`
+- `backend/test/integration/global-task-query.integration.spec.ts`
+- `backend/test/integration/home-planning-command-parity.integration.spec.ts`
+- `backend/test/integration/ownership-boundaries-http.integration.spec.ts`
+- `backend/test/integration/project-task-redesign.integration.spec.ts`
+
+Shared-path hunk boundaries:
+
+- `backend/src/composition-root.ts`: remove only the legacy project-task delete use-case import and `projectTasks.deleteTask` dependency; exclude admin portal/demo settings wiring.
+- `backend/src/infrastructure/database/data-source.ts`: add only migration 0036 after migration 0035; exclude migration 0037.
+- `backend/src/infrastructure/database/repositories/typeorm-demo-showcase-copy-manager.ts`: remove only the legacy task `archived_at` column/status parameter; preserve skill cloning.
+- `backend/openapi.json`: canonical task DELETE/Home delete, task archive removal, task archived status/filter removal, and proposal/schema updates only. Keep all 6.2 skill schemas and unrelated file-operation definitions out.
+- `backend/src/modules/home-assistant/use-cases/home-planning-tool-request-handler.ts` and `.spec.ts`: include only task delete/undo replay branches/tests; preserve the committed 6.2 current-skill, invocation and capability gates.
+
+## Frontend (24 paths)
+
+- `frontend/src/entities/home-conversation/api/home-proposal-api.ts`
+- `frontend/src/entities/project-task/api/global-task-api.spec.ts`
+- `frontend/src/entities/project-task/api/global-task-api.ts`
+- `frontend/src/entities/project-task/api/project-task-api.spec.ts`
+- `frontend/src/entities/project-task/api/project-task-api.ts`
+- `frontend/src/entities/project-task/index.ts`
+- `frontend/src/entities/project-task/model/task-priority.spec.ts`
+- `frontend/src/entities/project-task/model/types.ts`
+- `frontend/src/entities/project-task/ui/ProjectTaskStatusLabel.tsx`
+- `frontend/src/features/global-task-query/ui/GlobalTaskFilters.tsx`
+- `frontend/src/features/global-task-query/ui/GlobalTaskList.tsx`
+- `frontend/src/features/home-chat/ui/HomePlanningRecords.tsx`
+- `frontend/src/features/project-tasks/index.ts`
+- `frontend/src/features/project-tasks/model/use-project-task-actions.ts`
+- `frontend/src/features/project-tasks/ui/ProjectTaskItem.spec.tsx`
+- `frontend/src/features/project-tasks/ui/TaskEditorDialog.spec.tsx`
+- `frontend/src/features/showcase-publishing/ui/ShowcasePublisher.spec.tsx`
+- `frontend/src/features/showcase-publishing/ui/ShowcasePublisher.tsx`
+- `frontend/src/features/task-actions/model/create-task-patch.spec.ts`
+- `frontend/src/pages/all-tasks/AllTasksPage.spec.tsx`
+- `frontend/src/pages/all-tasks/AllTasksPage.tsx`
+- `frontend/src/pages/project-tasks/ProjectTasksPage.spec.tsx`
+- `frontend/src/pages/task-detail/TaskDetailPage.spec.tsx`
+- `frontend/src/pages/task-detail/TaskDetailPage.tsx`
+
+## Hermes bridge (1 path)
+
+- `deploy/hermes-bridge/runtime/home_tool_schemas.py`
+
+## Documentation (10 paths)
+
+- `docs/hackathon-release/task-4-3-task-delete-migration/contract.md`
+- `docs/hackathon-release/task-4-3-task-delete-migration/source-map.md`
+- `docs/hackathon-release/task-4-3-task-delete-migration/source-hunk-manifest.md`
+- `docs/hackathon-release/task-4-3-task-delete-migration/dev-summary.md`
+- `docs/hackathon-release/task-4-3-task-delete-migration/qa-report.md`
+- `docs/hackathon-release/task-4-3-task-delete-migration/exact-source-manifest.txt`
+- `docs/hackathon-release/task-4-3-task-delete-migration/artifacts/verification-receipt.md`
+- `docs/hackathon-release/task-4-3-task-delete-migration/artifacts/code-review.md`
+- `docs/hackathon-release/task-4-3-task-delete-migration/artifacts/qa-independent-checks.md`
+- `docs/hackathon-release/tasks.md` (canonical global release tracker snapshot).
+
+## Explicit exclusions
+
+- Task 3.6 admin/Usage sources, adapters, tests, UI, migration 0037, composition/app/OpenAPI/account/bootstrap hunks, and demo settings/accounting changes. The `r1-populated-migration.integration.spec.ts` `bootstrapSettings` fixture refactor is 3.6-only and excluded.
+- Task 3.5 expiry/credit accounting; Task 6.2 source work already delivered at HEAD and any remaining skill-only OpenAPI schema hunks.
+- Original AI-run/direct-chat work, generated `frontend/tsconfig.node.tsbuildinfo`, `ponytail-review.md`, app `.codex` scratch, and older Task 5.1 documentation aliases.
+- No staged or committed path/hunk falls outside this inventory.

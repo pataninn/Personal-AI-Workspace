@@ -23,7 +23,7 @@ import type { Project } from '@/modules/projects/domain/project-types';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const OPERATION_KEY_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/u;
-const SUPPORTED_TASK_ACTIONS = new Set(['task.create', 'task.update', 'task.move', 'task.archive']);
+const SUPPORTED_TASK_ACTIONS = new Set(['task.create', 'task.update', 'task.move']);
 const ACTION_UNDO_CONFLICT_REASONS = new Set<ActionUndoConflictReason>([
   'changed', 'not_reversible', 'already_undone', 'unsupported_action', 'target_missing',
   'archived_workspace', 'workspace_not_empty', 'folder_attached', 'missing_reversal_data'
@@ -48,6 +48,7 @@ export interface ActionUndoCommandResult {
 }
 
 export interface IActionUndoUseCases {
+  findUndoReplay(input: UndoActionInput): Promise<ActionLedgerRecord | null>;
   undo(input: UndoActionInput): Promise<ActionUndoCommandResult>;
   getReceipt(input: { readonly ownerId: string; readonly actionId: string }): Promise<ActionLedgerRecord>;
 }
@@ -68,6 +69,25 @@ export class ActionUndoUseCases<TTransaction> implements IActionUndoUseCases {
     return record;
   }
 
+  /** Returns an exact owner/key/fingerprint match without reading or changing the target. */
+  public async findUndoReplay(input: UndoActionInput): Promise<ActionLedgerRecord | null> {
+    const operationKeyInput = this.validateIdentity(input);
+    const childIds = this.validateCompletedChildren(input.completedTaskCreateActionIds ?? []);
+    const original = await this.ledger.findActionByIdForOwner(input.ownerId, input.actionId);
+    if (!original) throw new ActionUndoNotFoundError();
+    if (childIds.length > 0 && (original.targetKind !== 'workspace' || original.actionKind !== 'workspace.create')) {
+      throw new ActionUndoValidationError('Child task receipts are valid only when undoing a planning workspace create.');
+    }
+    const execution = this.undoExecution(input, original, operationKeyInput, childIds);
+    const replay = await this.ledger.findForOwner(input.ownerId, execution.operationKey);
+    if (!replay || replay.ownerId !== execution.ownerId || replay.operationKey !== execution.operationKey
+      || replay.requestFingerprint !== execution.requestFingerprint || replay.actorKind !== execution.actorKind
+      || replay.turnId !== execution.turnId || replay.targetKind !== execution.targetKind || replay.targetId !== execution.targetId
+      || replay.actionKind !== 'undo' || replay.expectedVersion !== execution.expectedVersion
+      || replay.undoOfActionId !== original.id) return null;
+    return replay;
+  }
+
   public async undo(input: UndoActionInput): Promise<ActionUndoCommandResult> {
     const operationKeyInput = this.validateIdentity(input);
     const childIds = this.validateCompletedChildren(input.completedTaskCreateActionIds ?? []);
@@ -78,26 +98,7 @@ export class ActionUndoUseCases<TTransaction> implements IActionUndoUseCases {
       throw new ActionUndoValidationError('Child task receipts are valid only when undoing a planning workspace create.');
     }
 
-    const operationKey = `undo:${digest([input.actionId, operationKeyInput])}`;
-    const requestFingerprint = digest({
-      ownerId: input.ownerId,
-      actionId: original.id,
-      completedTaskCreateActionIds: childIds,
-      actorKind: input.actorKind ?? 'manual',
-      turnId: input.turnId ?? null
-    });
-    const execution: ActionLedgerExecutionInput = {
-      ownerId: input.ownerId,
-      operationKey,
-      requestFingerprint,
-      actorKind: input.actorKind ?? 'manual',
-      turnId: input.turnId ?? null,
-      targetKind: original.targetKind,
-      targetId: original.targetId,
-      actionKind: 'undo',
-      expectedVersion: original.postVersion,
-      undoOfActionId: original.id
-    };
+    const execution = this.undoExecution(input, original, operationKeyInput, childIds);
 
     let persisted: PersistedActionLedgerRecord;
     try {
@@ -149,6 +150,27 @@ export class ActionUndoUseCases<TTransaction> implements IActionUndoUseCases {
       throw new ActionUndoValidationError('A valid Idempotency-Key header is required.');
     }
     return input.operationKey.trim();
+  }
+
+  private undoExecution(
+    input: UndoActionInput,
+    original: ActionLedgerRecord,
+    operationKeyInput: string,
+    childIds: readonly string[]
+  ): ActionLedgerExecutionInput {
+    const actorKind = input.actorKind ?? 'manual';
+    return {
+      ownerId: input.ownerId,
+      operationKey: `undo:${digest([input.actionId, operationKeyInput])}`,
+      requestFingerprint: digest({ ownerId: input.ownerId, actionId: original.id, completedTaskCreateActionIds: childIds, actorKind, turnId: input.turnId ?? null }),
+      actorKind,
+      turnId: input.turnId ?? null,
+      targetKind: original.targetKind,
+      targetId: original.targetId,
+      actionKind: 'undo',
+      expectedVersion: original.postVersion,
+      undoOfActionId: original.id
+    };
   }
 
   private validateCompletedChildren(values: readonly unknown[]): readonly string[] {

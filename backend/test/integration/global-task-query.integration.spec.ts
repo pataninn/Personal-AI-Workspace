@@ -40,8 +40,7 @@ function taskItem(projectId: string | null): GlobalTaskQueryItem {
       source: { kind: 'user', label: 'Added by you', suggestionId: null, runId: null, conversationId: null, acceptedAt: null },
       createdAt: now,
       updatedAt: now,
-      completedAt: null,
-      archivedAt: null
+      completedAt: null
     },
     collection: projectId ? 'workspace' : 'inbox',
     workspace: projectId ? { id: projectId, name: 'Quarterly', status: 'active' } : null

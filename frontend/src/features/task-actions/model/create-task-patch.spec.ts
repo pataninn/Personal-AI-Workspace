@@ -7,7 +7,7 @@ const task: ProjectTask = {
   id: 'task-1', projectId: null, title: 'Review plan', details: 'Original detail', importance: 'medium', deadline: '2026-10-20',
   subtasks: [{ id: 'sub-1', title: 'Check dates', completed: false }], status: 'todo', position: 0, version: 2,
   source: { kind: 'user', label: 'Added by you', suggestionId: null, runId: null, conversationId: null, acceptedAt: null },
-  createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:00:00.000Z', completedAt: null, archivedAt: null
+  createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:00:00.000Z', completedAt: null
 };
 
 describe('createTaskPatch', () => {

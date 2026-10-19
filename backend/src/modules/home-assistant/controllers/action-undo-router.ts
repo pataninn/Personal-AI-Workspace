@@ -73,7 +73,6 @@ function serializeTaskItem(item: GlobalTaskQueryItem): Record<string, unknown> {
       createdAt: task.createdAt.toISOString(),
       updatedAt: task.updatedAt.toISOString(),
       completedAt: task.completedAt?.toISOString() ?? null,
-      archivedAt: task.archivedAt?.toISOString() ?? null,
       source: { ...task.source, acceptedAt: task.source.acceptedAt?.toISOString() ?? null }
     },
     collection: item.collection,

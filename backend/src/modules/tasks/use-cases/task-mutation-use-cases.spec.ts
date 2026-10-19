@@ -11,8 +11,8 @@ import type { ProjectTask } from '@/modules/tasks/domain/project-task';
 import type { IGlobalTaskQueryRepository } from '@/modules/tasks/repositories/global-task-query-repository';
 import type {
   AppliedTaskMutation,
-  ArchiveTaskMutationInput,
   CreateTaskMutationInput,
+  DeleteTaskMutationInput,
   ITaskMutationParticipant,
   MoveTaskMutationInput,
   UpdateTaskMutationInput
@@ -39,7 +39,6 @@ function makeTask(projectId: string | null, version = 1, changes: Partial<Projec
     createdAt: NOW,
     updatedAt: NOW,
     completedAt: null,
-    archivedAt: null,
     ...changes
   };
 }
@@ -81,8 +80,8 @@ class FakeLedger implements IActionLedgerRepository<string> {
     return persisted;
   }
 
-  public async findForOwner(): Promise<ActionLedgerRecord | null> {
-    return null;
+  public async findForOwner(ownerId: string, operationKey: string): Promise<ActionLedgerRecord | null> {
+    return this.rows.get(`${ownerId}:${operationKey}`)?.record ?? null;
   }
 }
 
@@ -126,7 +125,16 @@ class FakeParticipant implements ITaskMutationParticipant<string> {
     };
   });
   public readonly moveInTransaction = jest.fn(async (_transaction: string, input: MoveTaskMutationInput): Promise<AppliedTaskMutation> => this.mutationFor(input.taskId, input.destinationProjectId, input.expectedVersion + 1));
-  public readonly archiveInTransaction = jest.fn(async (_transaction: string, input: ArchiveTaskMutationInput): Promise<AppliedTaskMutation> => this.mutationFor(input.taskId, null, input.expectedVersion + 1));
+  public readonly deleteInTransaction = jest.fn(async (_transaction: string, input: DeleteTaskMutationInput): Promise<ActionLedgerMutationResult> => {
+    this.currentTask = null;
+    return {
+      preVersion: input.expectedVersion,
+      postVersion: null,
+      reversibleFields: {},
+      outcome: { targetId: input.taskId, targetVersion: null, sourceOrderVersion: 4 },
+      undoStatus: 'not_reversible'
+    };
+  });
   public currentTask: ProjectTask | null = null;
 
   private mutationFor(taskId: string, projectId: string | null, version: number): AppliedTaskMutation {
@@ -215,4 +223,46 @@ describe('TaskMutationUseCases', () => {
     expect(ledger.calls).toHaveLength(0);
     expect(participant.updateInTransaction).not.toHaveBeenCalled();
   });
+
+  it.each([null, '33333333-3333-4333-8333-333333333333'] as const)(
+    'deletes an unassigned or workspace task once and replays its minimal receipt after the row is gone (%s)',
+    async (projectId) => {
+      const { useCases, ledger, participant } = fixture();
+      participant.currentTask = makeTask(projectId, 3);
+
+      const first = await useCases.delete({
+        ownerId: OWNER,
+        taskId: TASK,
+        expectedVersion: 3,
+        ...(projectId === null ? {} : { expectedProjectId: projectId }),
+        operationKey: 'delete-task-once'
+      });
+      const replay = await useCases.delete({
+        ownerId: OWNER,
+        taskId: TASK,
+        expectedVersion: 3,
+        operationKey: 'delete-task-once'
+      });
+      const receiptReplay = await useCases.findDeleteReplay({
+        ownerId: OWNER,
+        taskId: TASK,
+        expectedVersion: 3,
+        operationKey: 'delete-task-once'
+      });
+      const changedRequest = await useCases.findDeleteReplay({
+        ownerId: OWNER,
+        taskId: TASK,
+        expectedVersion: 2,
+        operationKey: 'delete-task-once'
+      });
+
+      expect(first).toMatchObject({ taskId: TASK, orderVersion: 4, replayed: false, receipt: { actionKind: 'task.delete', undoStatus: 'not_reversible', outcome: { targetVersion: null, sourceOrderVersion: 4 } } });
+      expect(replay).toMatchObject({ taskId: TASK, orderVersion: 4, replayed: true, receipt: { actionKind: 'task.delete' } });
+      expect(receiptReplay).toMatchObject({ taskId: TASK, orderVersion: 4, replayed: true, receipt: { actionKind: 'task.delete' } });
+      expect(changedRequest).toBeNull();
+      expect(participant.deleteInTransaction).toHaveBeenCalledTimes(1);
+      expect(participant.currentTask).toBeNull();
+      expect(ledger.calls[0]).toMatchObject({ targetKind: 'task', targetId: TASK, expectedVersion: 3, actionKind: 'task.delete' });
+    }
+  );
 });

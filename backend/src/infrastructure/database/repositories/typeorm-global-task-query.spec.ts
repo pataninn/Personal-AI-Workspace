@@ -30,7 +30,6 @@ function taskRow(id: string, projectId: string | null, cursorCreatedAt = CREATED
     created_at: CREATED_AT,
     updated_at: CREATED_AT,
     completed_at: null,
-    archived_at: null,
     workspace_id: projectId,
     workspace_name: projectId ? 'Workspace' : null,
     workspace_status: projectId ? 'active' : null,
@@ -119,11 +118,9 @@ describe('TypeOrmProjectTaskRepository global queries', () => {
     expect(values).toEqual([OWNER, WORKSPACE_TASK, false]);
   });
 
-  it('returns archived task and workspace history only for an explicit owner-scoped read', async () => {
+  it('returns active task history in an archived workspace only for an explicit owner-scoped read', async () => {
     const archivedRow = {
       ...taskRow(WORKSPACE_TASK, WORKSPACE),
-      status: 'archived' as const,
-      archived_at: CREATED_AT,
       workspace_status: 'archived' as const
     };
     const { repository, query } = createRepository([archivedRow]);
@@ -131,7 +128,7 @@ describe('TypeOrmProjectTaskRepository global queries', () => {
     const item = await repository.getGlobalTask({ ownerId: OWNER, taskId: WORKSPACE_TASK, includeArchived: true });
 
     expect(item).toMatchObject({
-      task: { id: WORKSPACE_TASK, status: 'archived', archivedAt: new Date(CREATED_AT) },
+      task: { id: WORKSPACE_TASK, status: 'todo' },
       workspace: { id: WORKSPACE, status: 'archived' }
     });
     const [sql, values] = query.mock.calls[0] as [string, unknown[]];

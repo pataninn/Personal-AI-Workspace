@@ -69,7 +69,6 @@ export interface IProjectTaskRepository {
   listTasks(ownerId: string, projectId: string, filter: ProjectTaskFilter): Promise<ProjectTaskListSnapshot>;
   createTask(input: CreateProjectTaskRecord): Promise<CreateProjectTaskResult>;
   updateTask(input: UpdateProjectTaskRecord): Promise<{ readonly task: ProjectTask; readonly orderVersion: number }>;
-  deleteTask(input: { readonly ownerId: string; readonly projectId: string; readonly taskId: string; readonly expectedVersion: number }): Promise<{ readonly orderVersion: number }>;
   reorderTask(input: ReorderProjectTaskRecord): Promise<ProjectTaskListSnapshot>;
   listSuggestions(ownerId: string, projectId: string, filter: { readonly status: 'all' | 'pending'; readonly conversationId?: string }): Promise<readonly ProjectTaskSuggestion[]>;
   resolveSuggestion(input: ResolveProjectTaskSuggestionRecord): Promise<ResolveProjectTaskSuggestionResult>;

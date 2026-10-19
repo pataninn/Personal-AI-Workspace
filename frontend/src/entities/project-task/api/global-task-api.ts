@@ -1,4 +1,4 @@
-import { ApiClientError, getJson, patchJson, postJson } from '@/shared/api';
+import { ApiClientError, getJson, patchJson, postJson, requestJson } from '@/shared/api';
 import { normalizeProjectTask } from '@/entities/project-task/api/project-task-api';
 import type { GlobalTaskItem, GlobalTaskQuery, GlobalTaskQueryPage, GlobalTaskWorkspace, InboxTaskCount, ProjectTaskDraft } from '@/entities/project-task/model/types';
 
@@ -16,7 +16,7 @@ export interface GlobalTaskCreateDraft extends ProjectTaskDraft {
 }
 
 export type GlobalTaskPatch = Partial<ProjectTaskDraft>;
-export type TaskMutationKind = 'task.update' | 'task.move' | 'task.archive';
+export type TaskMutationKind = 'task.update' | 'task.move';
 export type TaskUndoStatus = 'available' | 'not_reversible' | 'undone';
 
 export interface TaskActionReceiptMetadata {
@@ -34,6 +34,13 @@ export interface TaskActionReceiptMetadata {
 export interface GlobalTaskMutationResult {
   readonly item: GlobalTaskItem;
   readonly receipt: { readonly id: string; readonly actionKind: TaskMutationKind; readonly undoStatus: Exclude<TaskUndoStatus, 'undone'> };
+  readonly replayed: boolean;
+}
+
+export interface GlobalTaskDeleteResult {
+  readonly taskId: string;
+  readonly orderVersion: number;
+  readonly receipt: { readonly id: string; readonly actionKind: 'task.delete'; readonly undoStatus: 'not_reversible' };
   readonly replayed: boolean;
 }
 
@@ -105,9 +112,25 @@ export async function moveGlobalTask(taskId: string, workspaceId: string | null,
   return normalizeMutationResult(response, 'task.move');
 }
 
-export async function archiveGlobalTask(taskId: string, expectedVersion: number, csrfToken: string, idempotencyKey: string): Promise<GlobalTaskMutationResult> {
-  const response = asRecord(await postJson<unknown>(`${TASKS_PATH}/${encodeURIComponent(taskId)}/archive`, {}, mutationHeaders(expectedVersion, csrfToken, idempotencyKey)));
-  return normalizeMutationResult(response, 'task.archive');
+export async function deleteGlobalTask(taskId: string, expectedVersion: number, csrfToken: string, idempotencyKey: string): Promise<GlobalTaskDeleteResult> {
+  const response = asRecord(await requestJson<unknown>(`${TASKS_PATH}/${encodeURIComponent(taskId)}`, {
+    method: 'DELETE',
+    headers: mutationHeaders(expectedVersion, csrfToken, idempotencyKey)
+  }));
+  const receipt = asRecord(response?.receipt);
+  const outcome = asRecord(receipt?.outcome);
+  const orderVersion = response?.orderVersion;
+  if (response?.taskId !== taskId || !readPositiveInteger(orderVersion) || typeof response.replayed !== 'boolean'
+    || !receipt || receipt.actionKind !== 'task.delete' || receipt.undoStatus !== 'not_reversible' || !isUuid(receipt.id)
+    || outcome?.targetId !== taskId || outcome.targetVersion !== null || outcome.sourceOrderVersion !== orderVersion) {
+    throw invalidResponse();
+  }
+  return {
+    taskId,
+    orderVersion,
+    receipt: { id: receipt.id, actionKind: 'task.delete', undoStatus: 'not_reversible' },
+    replayed: response.replayed
+  };
 }
 
 export async function getTaskActionReceipt(actionId: string): Promise<TaskActionReceiptMetadata> {

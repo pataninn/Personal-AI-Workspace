@@ -21,7 +21,6 @@ export type { ITaskMutationParticipant } from '@/modules/tasks/repositories/task
 export type { IProjectTaskSuggestionQuery } from '@/modules/tasks/repositories/task-suggestion-query';
 export {
   CreateProjectTaskUseCase,
-  DeleteProjectTaskUseCase,
   ListProjectTaskSuggestionsUseCase,
   ListProjectTasksUseCase,
   ReorderProjectTaskUseCase,
@@ -30,4 +29,4 @@ export {
 } from '@/modules/tasks/use-cases/project-task-use-cases';
 export { CountInboxTasksUseCase, GetGlobalTaskUseCase, ListGlobalTasksUseCase } from '@/modules/tasks/use-cases/global-task-query-use-cases';
 export { TaskMutationUseCases, projectTaskOperationKey, derivedProjectTaskOperationIdentity } from '@/modules/tasks/use-cases/task-mutation-use-cases';
-export type { ITaskMutationCommands, TaskMutationCommandResult, TaskMutationCreateInput, TaskMutationUpdateInput, TaskMutationMoveInput, TaskMutationArchiveInput, TaskPatchInput } from '@/modules/tasks/use-cases/task-mutation-use-cases';
+export type { ITaskMutationCommands, TaskMutationCommandResult, TaskMutationDeleteCommandResult, TaskMutationCreateInput, TaskMutationUpdateInput, TaskMutationMoveInput, TaskMutationDeleteInput, TaskPatchInput } from '@/modules/tasks/use-cases/task-mutation-use-cases';

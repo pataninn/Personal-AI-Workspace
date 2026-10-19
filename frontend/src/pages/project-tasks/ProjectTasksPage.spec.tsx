@@ -19,7 +19,7 @@ vi.mock('@/entities/project-task/api/project-task-api', async (importOriginal) =
 
 const project = { id: 'project', name: 'Website', slug: 'website', workspaceMode: 'file_backed' as const, capabilities: { planning: true as const, fileAccess: true }, status: 'active' as const, version: 1, createdAt: '2026-10-05', updatedAt: '2026-10-05' };
 const targetedTask: ProjectTask = { id: 'target', projectId: project.id, title: 'Review guide', details: 'The task selected from Home.', status: 'done', importance: 'medium', deadline: null, subtasks: [], position: 0, version: 1,
-  source: { kind: 'user', label: 'Added by you', suggestionId: null, runId: null, conversationId: null, acceptedAt: null }, createdAt: '2026-10-01', updatedAt: '2026-10-01', completedAt: '2026-10-01', archivedAt: null };
+  source: { kind: 'user', label: 'Added by you', suggestionId: null, runId: null, conversationId: null, acceptedAt: null }, createdAt: '2026-10-01', updatedAt: '2026-10-01', completedAt: '2026-10-01' };
 
 describe('ProjectTasksPage Home task deep link', () => {
   beforeEach(() => {

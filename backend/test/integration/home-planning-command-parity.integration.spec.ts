@@ -25,7 +25,7 @@ import { HomeChangeProposalUseCases } from '@/modules/home-assistant/use-cases/h
 import { HomePlanningToolRequestHandler } from '@/modules/home-assistant/use-cases/home-planning-tool-request-handler';
 import type { HomePlanningToolResolution } from '@/modules/home-assistant/repositories/home-planning-tool-request-handler';
 import { ProjectNotFoundError } from '@/modules/projects/domain/project-errors';
-import { ProjectTaskArchivedError, ProjectTaskArchivedProjectError, ProjectTaskIdempotencyReusedError, ProjectTaskOrderConflictError } from '@/modules/tasks/domain/project-task-errors';
+import { ProjectTaskArchivedProjectError, ProjectTaskNotFoundError } from '@/modules/tasks/domain/project-task-errors';
 import { WorkspacePlanningUseCases } from '@/modules/projects/use-cases/workspace-planning-use-cases';
 import { GetGlobalTaskUseCase, ListGlobalTasksUseCase } from '@/modules/tasks/use-cases/global-task-query-use-cases';
 import { TaskMutationUseCases } from '@/modules/tasks/use-cases/task-mutation-use-cases';
@@ -152,42 +152,34 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
     expect(moved.receipt.actionKind).toBe('task.move');
     expect(immediateData(await resolveCommand(moveRequest))).toMatchObject({ replayed: true, receipt: { id: moved.receipt.id } });
 
-    const inboxOrderRows: readonly { version: number | string }[] = await dataSource.query(
-      'SELECT "version" FROM "project_task_order_states" WHERE "owner_id" = $1 AND "project_id" IS NULL', [OWNER_ID]
-    );
-    const inboxOrderVersion = Number(inboxOrderRows[0]?.version);
-    expect(inboxOrderVersion).toBeGreaterThan(1);
-    await expect(resolveCommand({
-      turn: ownerTurn, name: 'home_archive_task', requestId: 'file-task-archive-stale-order',
-      args: { taskId: created.receipt.targetId, expectedVersion: 3, expectedOrderVersion: inboxOrderVersion - 1 }
-    })).rejects.toBeInstanceOf(ProjectTaskOrderConflictError);
+    const staleDelete = await resolveCommand({
+      turn: ownerTurn, name: 'home_delete_task', requestId: 'file-task-delete-stale-version',
+      args: { taskId: created.receipt.targetId, expectedVersion: 2 }
+    });
+    expect(staleDelete).toMatchObject({ kind: 'immediate', result: { outcome: 'conflict', code: 'VERSION_CONFLICT' } });
 
-    const archiveRequest = {
-      turn: ownerTurn, name: 'home_archive_task', requestId: 'file-task-archive',
-      args: { taskId: created.receipt.targetId, expectedVersion: 3, expectedOrderVersion: inboxOrderVersion }
+    const deleteRequest = {
+      turn: ownerTurn, name: 'home_delete_task', requestId: 'file-task-delete',
+      args: { taskId: created.receipt.targetId, expectedVersion: 3 }
     } as const;
-    const archived = immediateData(await resolveCommand(archiveRequest));
-    expect(archived.receipt.actionKind).toBe('task.archive');
-    const archivedReplay = immediateData(await resolveCommand(archiveRequest));
-    expect(archivedReplay).toMatchObject({ replayed: true, receipt: { id: archived.receipt.id, targetId: created.receipt.targetId } });
-    await expect(resolveCommand({ ...archiveRequest, args: { ...archiveRequest.args, expectedOrderVersion: inboxOrderVersion + 1 } }))
-      .rejects.toBeInstanceOf(ProjectTaskIdempotencyReusedError);
-    const inboxOrderAfterArchive: readonly { version: number | string }[] = await dataSource.query(
+    const [deleteAttemptA, deleteAttemptB] = await Promise.all([
+      resolveCommand(deleteRequest),
+      resolveCommand(deleteRequest)
+    ]);
+    const firstDeleteResult = immediateData(deleteAttemptA);
+    const secondDeleteResult = immediateData(deleteAttemptB);
+    expect([firstDeleteResult.replayed, secondDeleteResult.replayed].sort()).toEqual([false, true]);
+    const deleted = firstDeleteResult.replayed ? secondDeleteResult : firstDeleteResult;
+    const deletedReplay = firstDeleteResult.replayed ? firstDeleteResult : secondDeleteResult;
+    expect(deleted.receipt).toMatchObject({ actionKind: 'task.delete', targetKind: 'task', undoStatus: 'not_reversible' });
+    expect(deletedReplay).toMatchObject({ replayed: true, receipt: { id: deleted.receipt.id, targetId: created.receipt.targetId } });
+    await expect(resolveCommand({
+      ...deleteRequest, requestId: 'file-task-delete-new-key', args: { taskId: created.receipt.targetId, expectedVersion: 3 }
+    })).rejects.toBeInstanceOf(ProjectTaskNotFoundError);
+    const inboxOrderAfterDelete: readonly { version: number | string }[] = await dataSource.query(
       'SELECT "version" FROM "project_task_order_states" WHERE "owner_id" = $1 AND "project_id" IS NULL', [OWNER_ID]
     );
-    const currentInboxOrderVersion = Number(inboxOrderAfterArchive[0]?.version);
-    expect(currentInboxOrderVersion).toBe(inboxOrderVersion + 1);
-    await expect(resolveCommand({
-      ...archiveRequest, requestId: 'file-task-archive-different-operation',
-      args: { ...archiveRequest.args, expectedOrderVersion: currentInboxOrderVersion }
-    }))
-      .rejects.toBeInstanceOf(ProjectTaskArchivedError);
-    const undoArchiveRequest = {
-      turn: ownerTurn, name: 'home_undo_action', requestId: 'file-task-undo-archive', args: { actionId: archived.receipt.id }
-    } as const;
-    const undoneArchive = immediateData(await resolveCommand(undoArchiveRequest));
-    expect(undoneArchive.receipt.actionKind).toBe('undo');
-    expect(immediateData(await resolveCommand(undoArchiveRequest))).toMatchObject({ replayed: true, receipt: { id: undoneArchive.receipt.id } });
+    expect(Number(inboxOrderAfterDelete[0]?.version)).toBeGreaterThan(1);
 
     const rootless = immediateData(await resolveCommand({
       turn: ownerTurn, name: 'home_create_workspace', requestId: 'rootless-workspace-create',
@@ -216,14 +208,11 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
       args: { title: 'Must not cross owner boundary', workspaceId: dotWorkspaceId }
     })).rejects.toBeInstanceOf(ProjectNotFoundError);
 
-    const persistedTasks: readonly { id: string; owner_id: string; project_id: string | null; status: string; archived_at: string | null; details: string | null }[] = await dataSource.query(
-      `SELECT "id", "owner_id", "project_id", "status", "archived_at", "details" FROM "project_tasks" WHERE "id" = ANY($1::uuid[])`,
+    const persistedTasks: readonly { id: string; owner_id: string; project_id: string | null; status: string; details: string | null }[] = await dataSource.query(
+      `SELECT "id", "owner_id", "project_id", "status", "details" FROM "project_tasks" WHERE "id" = ANY($1::uuid[])`,
       [[created.receipt.targetId, dotTask.receipt.targetId]]
     );
-    expect(persistedTasks).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: created.receipt.targetId, owner_id: OWNER_ID, project_id: null, status: 'todo', archived_at: null, details: 'Updated synthetic detail.' }),
-      expect.objectContaining({ id: dotTask.receipt.targetId, owner_id: OTHER_OWNER_ID, project_id: dotWorkspaceId })
-    ]));
+    expect(persistedTasks).toEqual([expect.objectContaining({ id: dotTask.receipt.targetId, owner_id: OTHER_OWNER_ID, project_id: dotWorkspaceId })]);
 
     const workspaceRows: readonly { id: string; owner_id: string; relative_root: string | null; relative_root_key: string | null; objective: string | null }[] = await dataSource.query(
       `SELECT "id", "owner_id", "relative_root", "relative_root_key", "objective" FROM "projects" WHERE "id" = $1`, [rootlessWorkspaceId]
@@ -234,15 +223,15 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
       `SELECT "action_kind", "actor_kind", "turn_id", "target_id" FROM "action_ledger_records" WHERE "owner_id" = $1 AND "turn_id" = $2`,
       [OWNER_ID, ownerTurn.turnId]
     );
-    expect(receipts).toHaveLength(8);
+    expect(receipts).toHaveLength(7);
     expect(receipts.every((row) => row.actor_kind === 'assistant' && row.turn_id === ownerTurn.turnId)).toBe(true);
-    expect(new Set(receipts.map((row) => row.action_kind))).toEqual(new Set(['task.create', 'task.update', 'task.move', 'task.archive', 'undo', 'workspace.create', 'workspace.update']));
+    expect(new Set(receipts.map((row) => row.action_kind))).toEqual(new Set(['task.create', 'task.update', 'task.move', 'task.delete', 'undo', 'workspace.create', 'workspace.update']));
 
     const eventPage = await conversations.listEventsForOwner({ ownerId: OWNER_ID, conversationId: ownerTurn.conversationId, afterSequence: 0, limit: 50 });
     const actionEvents = eventPage?.events.filter((event) => event.type === 'action.receipt') ?? [];
-    expect(actionEvents).toHaveLength(8);
+    expect(actionEvents).toHaveLength(7);
     expect(actionEvents.filter((event) => event.entityId === created.receipt.id)).toHaveLength(1);
-    expect(actionEvents.filter((event) => event.entityId === archived.receipt.id)).toHaveLength(1);
+    expect(actionEvents.filter((event) => event.entityId === deleted.receipt.id)).toHaveLength(1);
     expect(actionEvents.every((event) => event.turnId === ownerTurn.turnId)).toBe(true);
     expect(JSON.stringify(actionEvents)).not.toContain('synthetic detail');
 
@@ -297,6 +286,43 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
     expect(Number(receiptRows[0]?.count)).toBe(0);
     expect(eventPage?.events.map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
     expect(eventPage?.events.some((event) => event.type === 'action.receipt')).toBe(false);
+  });
+
+  it('allows workspace-create undo after child task-create undo physically removes the task without resurrection', async () => {
+    const turn = await createActiveHomeTurn(OWNER_ID, 'workspace-undo-after-task-delete');
+    const workspace = immediateData(await resolveCommand({
+      turn, name: 'home_create_workspace', requestId: 'workspace-undo-child-workspace-create',
+      args: { name: 'Undo after child removal' }
+    }));
+    const task = immediateData(await resolveCommand({
+      turn, name: 'home_create_task', requestId: 'workspace-undo-child-task-create',
+      args: { title: 'Child task to undo', workspaceId: workspace.receipt.targetId }
+    }));
+
+    const taskUndoRequest = {
+      turn, name: 'home_undo_action', requestId: 'workspace-undo-child-task', args: { actionId: task.receipt.id }
+    } as const;
+    const taskUndo = immediateData(await resolveCommand(taskUndoRequest));
+    expect(taskUndo.receipt.actionKind).toBe('undo');
+    const taskRowsAfterUndo: readonly { count: string }[] = await dataSource.query(
+      'SELECT COUNT(*)::text AS "count" FROM "project_tasks" WHERE "owner_id" = $1 AND "id" = $2', [OWNER_ID, task.receipt.targetId]
+    );
+    expect(Number(taskRowsAfterUndo[0]?.count)).toBe(0);
+    expect(immediateData(await resolveCommand(taskUndoRequest))).toMatchObject({ replayed: true, receipt: { id: taskUndo.receipt.id } });
+
+    const workspaceUndoRequest = {
+      turn, name: 'home_undo_action', requestId: 'workspace-undo-parent', args: { actionId: workspace.receipt.id }
+    } as const;
+    const workspaceUndo = immediateData(await resolveCommand(workspaceUndoRequest));
+    expect(workspaceUndo.receipt.actionKind).toBe('undo');
+    const workspaceRows: readonly { status: string }[] = await dataSource.query(
+      'SELECT "status" FROM "projects" WHERE "owner_id" = $1 AND "id" = $2', [OWNER_ID, workspace.receipt.targetId]
+    );
+    expect(workspaceRows[0]?.status).toBe('archived');
+    const taskRowsAfterWorkspaceUndo: readonly { count: string }[] = await dataSource.query(
+      'SELECT COUNT(*)::text AS "count" FROM "project_tasks" WHERE "owner_id" = $1 AND "id" = $2', [OWNER_ID, task.receipt.targetId]
+    );
+    expect(Number(taskRowsAfterWorkspaceUndo[0]?.count)).toBe(0);
   });
 
   it('defaults direct task creation to the persisted workspace and blocks bulk proposals without side effects', async () => {
@@ -370,37 +396,34 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
     expect(direct.receipt.targetKind).toBe('task');
   });
 
-  it('replays an existing archive receipt after workspace archival but rejects a fresh write', async () => {
-    const turn = await createActiveHomeTurn(OWNER_ID, 'archive-replay-archived-workspace');
+  it('replays an existing delete receipt after workspace archival but rejects a fresh delete', async () => {
+    const turn = await createActiveHomeTurn(OWNER_ID, 'delete-replay-archived-workspace');
     const workspace = immediateData(await resolveCommand({
-      turn, name: 'home_create_workspace', requestId: 'archive-replay-workspace-create',
-      args: { name: 'Archive replay workspace', objective: 'Isolated test fixture.' }
+      turn, name: 'home_create_workspace', requestId: 'delete-replay-workspace-create',
+      args: { name: 'Delete replay workspace', objective: 'Isolated test fixture.' }
     }));
     const workspaceId = workspace.receipt.targetId;
-    const alreadyArchivedTarget = immediateData(await resolveCommand({
-      turn, name: 'home_create_task', requestId: 'archive-replay-target-create',
-      args: { title: 'Archive replay target', workspaceId }
+    const alreadyDeletedTarget = immediateData(await resolveCommand({
+      turn, name: 'home_create_task', requestId: 'delete-replay-target-create',
+      args: { title: 'Delete replay target', workspaceId }
     }));
     const freshTarget = immediateData(await resolveCommand({
-      turn, name: 'home_create_task', requestId: 'archive-replay-fresh-target-create',
-      args: { title: 'Fresh archive target', workspaceId }
+      turn, name: 'home_create_task', requestId: 'delete-replay-fresh-target-create',
+      args: { title: 'Fresh delete target', workspaceId }
     }));
-    const orderRows: readonly { version: number | string }[] = await dataSource.query(
-      'SELECT "version" FROM "project_task_order_states" WHERE "owner_id" = $1 AND "project_id" = $2', [OWNER_ID, workspaceId]
-    );
-    const orderVersion = Number(orderRows[0]?.version);
-    const archiveRequest = {
-      turn, name: 'home_archive_task', requestId: 'archive-replay-target-archive',
-      args: { taskId: alreadyArchivedTarget.receipt.targetId, expectedVersion: 1, expectedOrderVersion: orderVersion }
+    const deleteRequest = {
+      turn, name: 'home_delete_task', requestId: 'delete-replay-target-delete',
+      args: { taskId: alreadyDeletedTarget.receipt.targetId, expectedVersion: 1 }
     } as const;
-    const archivedReceipt = immediateData(await resolveCommand(archiveRequest));
+    const deletedReceipt = immediateData(await resolveCommand(deleteRequest));
+    expect(deletedReceipt.receipt.actionKind).toBe('task.delete');
     await dataSource.query('UPDATE "projects" SET "status" = \'archived\' WHERE "owner_id" = $1 AND "id" = $2', [OWNER_ID, workspaceId]);
 
-    const replayed = immediateData(await resolveCommand(archiveRequest));
-    expect(replayed).toMatchObject({ replayed: true, receipt: { id: archivedReceipt.receipt.id } });
+    const replayed = immediateData(await resolveCommand(deleteRequest));
+    expect(replayed).toMatchObject({ replayed: true, receipt: { id: deletedReceipt.receipt.id } });
     await expect(resolveCommand({
-      turn, name: 'home_archive_task', requestId: 'archive-replay-fresh-target-archive',
-      args: { taskId: freshTarget.receipt.targetId, expectedVersion: 1, expectedOrderVersion: orderVersion }
+      turn, name: 'home_delete_task', requestId: 'delete-replay-fresh-target-delete',
+      args: { taskId: freshTarget.receipt.targetId, expectedVersion: 1 }
     })).rejects.toBeInstanceOf(ProjectTaskArchivedProjectError);
 
     const receipts: readonly { action_kind: string; target_id: string }[] = await dataSource.query(
@@ -408,10 +431,14 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
       [OWNER_ID, turn.turnId]
     );
     expect(receipts).toHaveLength(4);
-    expect(receipts.filter((record) => record.action_kind === 'task.archive' && record.target_id === alreadyArchivedTarget.receipt.targetId)).toHaveLength(1);
+    expect(receipts.filter((record) => record.action_kind === 'task.delete' && record.target_id === alreadyDeletedTarget.receipt.targetId)).toHaveLength(1);
     const events = await conversations.listEventsForOwner({ ownerId: OWNER_ID, conversationId: turn.conversationId, afterSequence: 0, limit: 20 });
     expect(events?.events.filter((event) => event.type === 'action.receipt')).toHaveLength(4);
-    expect(events?.events.filter((event) => event.entityId === archivedReceipt.receipt.id)).toHaveLength(1);
+    expect(events?.events.filter((event) => event.entityId === deletedReceipt.receipt.id)).toHaveLength(1);
+    const deletedRows: readonly { count: string }[] = await dataSource.query(
+      'SELECT COUNT(*)::text AS "count" FROM "project_tasks" WHERE "owner_id" = $1 AND "id" = $2', [OWNER_ID, alreadyDeletedTarget.receipt.targetId]
+    );
+    expect(Number(deletedRows[0]?.count)).toBe(0);
     const freshRows: readonly { status: string }[] = await dataSource.query(
       'SELECT "status" FROM "project_tasks" WHERE "owner_id" = $1 AND "id" = $2', [OWNER_ID, freshTarget.receipt.targetId]
     );

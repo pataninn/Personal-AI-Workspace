@@ -14,12 +14,12 @@ import { TaskDetailPage } from '@/pages/task-detail/TaskDetailPage';
 
 const mocks = vi.hoisted(() => ({
   getGlobalTask: vi.fn(), getInboxTaskCount: vi.fn(), getTaskActionReceipt: vi.fn(), updateGlobalTask: vi.fn(), moveGlobalTask: vi.fn(),
-  archiveGlobalTask: vi.fn(), undoTaskAction: vi.fn(), listProjects: vi.fn()
+  deleteGlobalTask: vi.fn(), undoTaskAction: vi.fn(), listProjects: vi.fn()
 }));
 vi.mock('@/entities/project-task/api/global-task-api', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/entities/project-task/api/global-task-api')>(),
   getGlobalTask: mocks.getGlobalTask, getInboxTaskCount: mocks.getInboxTaskCount, getTaskActionReceipt: mocks.getTaskActionReceipt,
-  updateGlobalTask: mocks.updateGlobalTask, moveGlobalTask: mocks.moveGlobalTask, archiveGlobalTask: mocks.archiveGlobalTask, undoTaskAction: mocks.undoTaskAction
+  updateGlobalTask: mocks.updateGlobalTask, moveGlobalTask: mocks.moveGlobalTask, deleteGlobalTask: mocks.deleteGlobalTask, undoTaskAction: mocks.undoTaskAction
 }));
 vi.mock('@/entities/project/api/project-api', async (importOriginal) => ({ ...await importOriginal<typeof import('@/entities/project/api/project-api')>(), listProjects: mocks.listProjects }));
 
@@ -35,7 +35,7 @@ const inboxItem: GlobalTaskItem = {
   task: { id: TASK_ID, projectId: null, title: 'Send the proposal', details: 'Review the draft.', importance: 'medium', deadline: null,
     subtasks: [{ id: '66666666-6666-4666-8666-666666666666', title: 'Check dates', completed: false }], status: 'todo', position: 0, version: 1,
     source: { kind: 'user', label: 'Added by you', suggestionId: null, runId: null, conversationId: null, acceptedAt: null },
-    createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:00:00.000Z', completedAt: null, archivedAt: null },
+    createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:00:00.000Z', completedAt: null },
   collection: 'inbox', workspace: null
 };
 const savedReceipt = { id: ACTION_ID, actionKind: 'task.update', actorKind: 'manual', turnId: null, targetKind: 'task', targetId: TASK_ID, postVersion: 2, undoStatus: 'available', undoActionId: null } as const;
@@ -51,7 +51,7 @@ function renderTaskDetail(entry = `/tasks/${TASK_ID}`): void {
   render(<Provider store={store}><MemoryRouter initialEntries={[entry]}><Routes><Route path="/tasks/:taskId" element={<TaskDetailPage />} /></Routes><LocationProbe /></MemoryRouter></Provider>);
 }
 
-function mutationResult(item: GlobalTaskItem, actionKind: 'task.update' | 'task.move' | 'task.archive', undoStatus: 'available' | 'not_reversible' = 'available') {
+function mutationResult(item: GlobalTaskItem, actionKind: 'task.update' | 'task.move', undoStatus: 'available' | 'not_reversible' = 'available') {
   return { item, receipt: { id: ACTION_ID, actionKind, undoStatus }, replayed: false };
 }
 
@@ -72,7 +72,7 @@ describe('TaskDetailPage', () => {
     expect(screen.getByText('Inbox', { selector: 'dd' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Move' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Archive' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
     expect(mocks.getGlobalTask).toHaveBeenCalledWith(TASK_ID, false);
   });
 
@@ -153,19 +153,27 @@ describe('TaskDetailPage', () => {
     expect(mocks.moveGlobalTask.mock.calls[1]?.[4]).toBe(firstCall?.[4]);
   });
 
-  it('retries an uncertain archive with the same idempotency key and persists historical detail', async () => {
+  it('confirms deletion and retries an uncertain outcome with the same idempotency key', async () => {
     const user = userEvent.setup();
-    const archived = { ...inboxItem, task: { ...inboxItem.task, status: 'archived', version: 2, archivedAt: '2026-10-16T01:00:00.000Z' } } as const;
-    mocks.archiveGlobalTask.mockRejectedValueOnce(new Error('Connection dropped')).mockResolvedValueOnce(mutationResult(archived, 'task.archive'));
-    mocks.getGlobalTask.mockResolvedValueOnce(inboxItem).mockResolvedValue(archived);
+    mocks.deleteGlobalTask.mockRejectedValueOnce(new Error('Connection dropped')).mockResolvedValueOnce({
+      taskId: TASK_ID, orderVersion: 2, receipt: { id: ACTION_ID, actionKind: 'task.delete', undoStatus: 'not_reversible' }, replayed: true
+    });
     renderTaskDetail();
     await screen.findByRole('heading', { name: 'Send the proposal' });
-    await user.click(screen.getByRole('button', { name: 'Archive' }));
-    expect(await screen.findByTestId('task-archive-error')).toBeVisible();
-    await user.click(screen.getByRole('button', { name: 'Retry archive' }));
-    expect(await screen.findByTestId('task-detail-archived')).toBeVisible();
-    expect(screen.getByTestId('location')).toHaveTextContent(`/tasks/${TASK_ID}?includeArchived=true`);
-    expect(mocks.archiveGlobalTask.mock.calls[1]?.[3]).toBe(mocks.archiveGlobalTask.mock.calls[0]?.[3]);
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(screen.getByTestId('task-delete-confirmation')).toHaveTextContent('permanently deleted');
+    await user.click(screen.getByTestId('task-delete-confirmation-cancel'));
+    expect(mocks.deleteGlobalTask).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await user.click(screen.getByTestId('task-delete-confirmation-confirm'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('delete outcome is uncertain');
+    const firstKey = mocks.deleteGlobalTask.mock.calls[0]?.[3];
+    await user.click(screen.getByRole('button', { name: 'Retry delete' }));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/tasks'));
+    expect(mocks.deleteGlobalTask).toHaveBeenCalledTimes(2);
+    expect(mocks.deleteGlobalTask.mock.calls[0]).toEqual([TASK_ID, 1, 'csrf-token', firstKey]);
+    expect(mocks.deleteGlobalTask.mock.calls[1]?.[3]).toBe(firstKey);
   });
 
   it('reloads a receipt only when its server-confirmed target matches this task', async () => {
@@ -178,21 +186,14 @@ describe('TaskDetailPage', () => {
     expect(globalThis.sessionStorage.getItem(`personal-ai:task-action-receipt:owner-1:${TASK_ID}`)).toBeNull();
   });
 
-  it('keeps archive undo available after a reload and removes historical mode after success', async () => {
-    const user = userEvent.setup();
-    const archived = { ...inboxItem, task: { ...inboxItem.task, status: 'archived', version: 2, archivedAt: '2026-10-16T01:00:00.000Z' } } as const;
-    const active = { ...inboxItem, task: { ...inboxItem.task, version: 3 } };
+  it('shows a historical archive receipt as non-reversible after reload', async () => {
     globalThis.sessionStorage.setItem(`personal-ai:task-action-receipt:owner-1:${TASK_ID}`, ACTION_ID);
-    mocks.getGlobalTask.mockImplementation((_id, includeArchived) => Promise.resolve(includeArchived ? archived : active));
-    mocks.getTaskActionReceipt.mockResolvedValueOnce({ ...savedReceipt, actionKind: 'task.archive', undoStatus: 'available', postVersion: 2 })
-      .mockResolvedValue({ ...savedReceipt, actionKind: 'task.archive', undoStatus: 'undone', postVersion: 2 });
-    mocks.undoTaskAction.mockResolvedValue({ originalAction: { ...savedReceipt, actionKind: 'task.archive', undoStatus: 'undone', postVersion: 2 }, undoReceipt: { ...savedReceipt, actionKind: 'undo', undoStatus: 'not_reversible' }, target: { kind: 'task', item: active }, replayed: false });
-    renderTaskDetail(`/tasks/${TASK_ID}?includeArchived=true`);
+    mocks.getTaskActionReceipt.mockResolvedValue({ ...savedReceipt, actionKind: 'task.archive', undoStatus: 'not_reversible', postVersion: 2 });
+    renderTaskDetail();
     await screen.findByTestId('task-action-receipt');
-    await user.click(screen.getByTestId('task-undo'));
 
-    expect(await screen.findByTestId('task-undo-complete')).toBeVisible();
-    expect(screen.getByTestId('location')).toHaveTextContent(`/tasks/${TASK_ID}`);
-    expect(mocks.undoTaskAction).toHaveBeenCalledWith(ACTION_ID, 'csrf-token', expect.any(String));
+    expect(screen.getByTestId('task-action-receipt')).toHaveTextContent('cannot be undone');
+    expect(screen.queryByTestId('task-undo')).not.toBeInTheDocument();
+    expect(mocks.undoTaskAction).not.toHaveBeenCalled();
   });
 });

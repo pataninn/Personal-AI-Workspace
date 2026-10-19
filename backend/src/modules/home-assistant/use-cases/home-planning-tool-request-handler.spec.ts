@@ -54,7 +54,9 @@ function setup(options: {
   })) };
   const taskMutations = {
     create: jest.fn(async () => ({ receipt: { id: 'receipt-1', actionKind: 'task.create', targetKind: 'task', targetId: TASK, outcome: { targetVersion: 1 }, undoStatus: 'available' }, replayed: false })),
-    update: jest.fn(async () => ({ receipt: { id: 'receipt-3', actionKind: 'task.update', targetKind: 'task', targetId: TASK, outcome: { targetVersion: 2 }, undoStatus: 'available' }, replayed: false }))
+    update: jest.fn(async () => ({ receipt: { id: 'receipt-3', actionKind: 'task.update', targetKind: 'task', targetId: TASK, outcome: { targetVersion: 2 }, undoStatus: 'available' }, replayed: false })),
+    findDeleteReplay: jest.fn(async () => null as unknown),
+    delete: jest.fn(async () => ({ receipt: { id: 'receipt-delete', actionKind: 'task.delete', targetKind: 'task', targetId: TASK, outcome: { sourceOrderVersion: 2 }, undoStatus: 'not_reversible' }, replayed: false }))
   };
   const workspaces = {
     reuse: jest.fn(async () => project),
@@ -63,7 +65,11 @@ function setup(options: {
     updateObjective: jest.fn(async () => ({ receipt: { id: 'receipt-4', actionKind: 'workspace.update', targetKind: 'workspace', targetId: PROJECT, outcome: { targetVersion: 2 }, undoStatus: 'available' }, replayed: false }))
   };
   const undoReceipt = { id: 'receipt-1', ownerId: OWNER, actionKind: 'task.create', targetKind: 'task' as 'task' | 'workspace', targetId: TASK, outcome: { targetVersion: 1 }, undoStatus: 'available' };
-  const undo = { getReceipt: jest.fn(async () => undoReceipt), undo: jest.fn(async () => ({ undoReceipt, replayed: false })) };
+  const undo = {
+    findUndoReplay: jest.fn(async () => null as unknown),
+    getReceipt: jest.fn(async () => undoReceipt),
+    undo: jest.fn(async () => ({ undoReceipt, replayed: false }))
+  };
   const skillInvocations = { findForTurn: jest.fn(async () => options.boundInvocationSourceMissing ? null : options.skillInvocation ?? null) };
   const handler = new HomePlanningToolRequestHandler({
     principalAuthorization: { assertActive }, executionPolicy: { assertHome } as never, provider: { profile: 'profile', model: 'model' },
@@ -72,7 +78,7 @@ function setup(options: {
     listTasks: listTasks as never, getTask: getTask as never, taskMutations: taskMutations as never,
     workspaces: workspaces as never, undo: undo as never
   });
-  return { handler, assertHome, listTasks, taskMutations, workspaces, undoReceipt, undo, skillInvocations };
+  return { handler, assertActive, assertHome, listTasks, getTask, taskMutations, workspaces, undoReceipt, undo, skillInvocations };
 }
 
 function makeSkillInvocation(overrides: Partial<SkillInvocation> = {}): SkillInvocation {
@@ -84,6 +90,7 @@ function makeSkillInvocation(overrides: Partial<SkillInvocation> = {}): SkillInv
     turnId: TURN, createdAt: NOW, updatedAt: NOW, current: true, ...overrides
   };
 }
+
 function request(name: string, args: Readonly<Record<string, unknown>>, scope: HomeConversation['scope'] = { kind: 'home' }): HomePlanningToolRequest {
   return { ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN, requestId: 'tool-request-1', name, args, scope };
 }
@@ -169,6 +176,28 @@ describe('HomePlanningToolRequestHandler', () => {
     expect(result).toMatchObject({ kind: 'immediate', result: { outcome: 'shared' } });
   });
 
+  it('returns an exact undo receipt after current gates without reading or mutating the task', async () => {
+    const { handler, assertActive, assertHome, getTask, undoReceipt, undo, skillInvocations } = setup({
+      skillInvocation: makeSkillInvocation({ declaredTools: ['home_action_undo'] })
+    });
+    const replayReceipt = { ...undoReceipt, id: 'receipt-undo', actionKind: 'undo', undoStatus: 'not_reversible' };
+    undo.findUndoReplay.mockResolvedValueOnce(replayReceipt as never);
+
+    const result = await handler.resolve(request('home_undo_action', { actionId: '66666666-6666-4666-8666-666666666666' }));
+
+    expect(result).toMatchObject({ kind: 'immediate', result: { outcome: 'shared', data: { receipt: { id: 'receipt-undo' }, replayed: true } } });
+    expect(assertActive).toHaveBeenCalledTimes(2);
+    expect(assertHome).toHaveBeenCalledTimes(1);
+    expect(skillInvocations.findForTurn).toHaveBeenCalledWith(OWNER, CONVERSATION, TURN);
+    expect(undo.findUndoReplay).toHaveBeenCalledWith(expect.objectContaining({
+      ownerId: OWNER, actionId: '66666666-6666-4666-8666-666666666666',
+      operationKey: expect.stringMatching(/^home-tool:[0-9a-f]{64}$/u), actorKind: 'assistant', turnId: TURN
+    }));
+    expect(undo.getReceipt).not.toHaveBeenCalled();
+    expect(getTask.execute).not.toHaveBeenCalled();
+    expect(undo.undo).not.toHaveBeenCalled();
+  });
+
   it('checks mutation capability again immediately before the canonical task command', async () => {
     const { handler, taskMutations, assertHome } = setup({ capabilities: ['home_task_write'] });
 
@@ -177,6 +206,22 @@ describe('HomePlanningToolRequestHandler', () => {
     expect(assertHome).toHaveBeenCalledTimes(2);
     expect(taskMutations.create).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER, projectId: null, actorKind: 'assistant', turnId: TURN }));
     expect(result).toMatchObject({ kind: 'immediate', result: { outcome: 'shared' } });
+  });
+
+  it('returns an exact delete receipt after current gates without reading or mutating the deleted task', async () => {
+    const { handler, assertActive, assertHome, getTask, taskMutations, skillInvocations } = setup({ skillInvocation: makeSkillInvocation({ declaredTools: ['home_task_write'] }) });
+    const receipt = { id: 'receipt-delete', actionKind: 'task.delete', targetKind: 'task', targetId: TASK, outcome: { sourceOrderVersion: 2 }, undoStatus: 'not_reversible' };
+    taskMutations.findDeleteReplay.mockResolvedValueOnce({ taskId: TASK, orderVersion: 2, receipt, replayed: true } as never);
+
+    const result = await handler.resolve(request('home_delete_task', { taskId: TASK, expectedVersion: 3 }));
+
+    expect(result).toMatchObject({ kind: 'immediate', result: { outcome: 'shared', data: { receipt: { id: receipt.id }, replayed: true } } });
+    expect(assertActive).toHaveBeenCalledTimes(2);
+    expect(assertHome).toHaveBeenCalledTimes(1);
+    expect(skillInvocations.findForTurn).toHaveBeenCalledWith(OWNER, CONVERSATION, TURN);
+    expect(taskMutations.findDeleteReplay).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER, taskId: TASK, expectedVersion: 3, actorKind: 'assistant', turnId: TURN }));
+    expect(getTask.execute).not.toHaveBeenCalled();
+    expect(taskMutations.delete).not.toHaveBeenCalled();
   });
 
   it('returns a bounded non-applied conflict for exact canonical expected-version errors only', async () => {

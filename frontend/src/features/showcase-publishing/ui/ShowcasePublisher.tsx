@@ -95,7 +95,7 @@ export function ShowcasePublisher(): React.JSX.Element {
     void Promise.all([listProjectTasks(project.id), listProjectFacts(project.id), filesPromise])
       .then(([taskList, facts, files]) => {
         if (active) {
-          setSource({ tasks: taskList.tasks.filter((task) => task.status !== 'archived'), facts, files: files.files, filesTruncated: files.filesTruncated });
+          setSource({ tasks: taskList.tasks, facts, files: files.files, filesTruncated: files.filesTruncated });
           setSourceState('loaded');
         }
       })

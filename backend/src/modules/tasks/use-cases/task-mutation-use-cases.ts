@@ -69,12 +69,11 @@ export interface TaskMutationMoveInput {
   readonly eventContext?: unknown;
 }
 
-export interface TaskMutationArchiveInput {
+export interface TaskMutationDeleteInput {
   readonly ownerId: string;
   readonly taskId: string;
   readonly expectedVersion: number;
-  readonly expectedProjectId?: string;
-  readonly expectedOrderVersion?: number;
+  readonly expectedProjectId?: string | null;
   readonly operationKey?: string;
   readonly actorKind?: ActionLedgerActorKind;
   readonly turnId?: string | null;
@@ -87,15 +86,23 @@ export interface TaskMutationCommandResult {
   readonly replayed: boolean;
 }
 
+export interface TaskMutationDeleteCommandResult {
+  readonly taskId: string;
+  readonly orderVersion: number;
+  readonly receipt: ActionLedgerRecord;
+  readonly replayed: boolean;
+}
+
 export interface ITaskMutationCommands {
   create(input: TaskMutationCreateInput): Promise<TaskMutationCommandResult>;
   update(input: TaskMutationUpdateInput): Promise<TaskMutationCommandResult>;
   move(input: TaskMutationMoveInput): Promise<TaskMutationCommandResult>;
-  archive(input: TaskMutationArchiveInput): Promise<TaskMutationCommandResult>;
+  findDeleteReplay(input: TaskMutationDeleteInput): Promise<TaskMutationDeleteCommandResult | null>;
+  delete(input: TaskMutationDeleteInput): Promise<TaskMutationDeleteCommandResult>;
 }
 
 interface NormalizedPatch {
-  readonly status?: Exclude<ProjectTaskStatus, 'archived'>;
+  readonly status?: ProjectTaskStatus;
   readonly title?: string;
   readonly details?: string | null;
   readonly importance?: ProjectTaskImportance;
@@ -116,7 +123,7 @@ function operationKey(value: string | undefined, fingerprint: string): string {
 }
 
 /** Preserves the old project create key scope under the ledger's owner-wide key constraint. */
-export function projectTaskOperationKey(action: 'create' | 'update' | 'archive', projectId: string, requestIdentity: string): string {
+export function projectTaskOperationKey(action: 'create' | 'update' | 'delete', projectId: string, requestIdentity: string): string {
   const identity = requestIdentity.trim();
   if (!identity || identity.length > 200) {
     throw new ProjectTaskIdempotencyKeyError();
@@ -140,14 +147,14 @@ function normalizePatch(input: TaskPatchInput): { readonly patch: NormalizedPatc
     throw new ProjectTaskStatusConflictError();
   }
   if (hasStatus) {
-    if (!isProjectTaskStatus(input.status) || input.status === 'archived') {
+    if (!isProjectTaskStatus(input.status)) {
       throw new ProjectTaskStatusConflictError();
     }
     return { patch: { status: input.status }, request: { status: input.status } };
   }
 
   const patch: {
-    status?: Exclude<ProjectTaskStatus, 'archived'>;
+    status?: ProjectTaskStatus;
     title?: string;
     details?: string | null;
     importance?: ProjectTaskImportance;
@@ -230,8 +237,8 @@ function commandFingerprint(input: {
 
 /** Canonical assistant-action fingerprint shared with Home's sealed proposal recorder. */
 export function taskMutationFingerprint(
-  action: 'task.create' | 'task.update' | 'task.move' | 'task.archive',
-  input: TaskMutationCreateInput | TaskMutationUpdateInput | TaskMutationMoveInput | TaskMutationArchiveInput
+  action: 'task.create' | 'task.update' | 'task.move' | 'task.delete',
+  input: TaskMutationCreateInput | TaskMutationUpdateInput | TaskMutationMoveInput | TaskMutationDeleteInput
 ): string {
   const actorKind = input.actorKind ?? 'manual';
   if (action === 'task.create') {
@@ -261,10 +268,10 @@ export function taskMutationFingerprint(
       }
     });
   }
-  const archive = input as TaskMutationArchiveInput;
+  const deletion = input as TaskMutationDeleteInput;
   return commandFingerprint({
-    ownerId: archive.ownerId, actionKind: action, actorKind, targetId: archive.taskId, expectedVersion: archive.expectedVersion,
-    request: { expectedProjectId: archive.expectedProjectId ?? null, expectedOrderVersion: archive.expectedOrderVersion ?? null }
+    ownerId: deletion.ownerId, actionKind: action, actorKind, targetId: deletion.taskId, expectedVersion: deletion.expectedVersion,
+    request: {}
   });
 }
 
@@ -408,9 +415,9 @@ export class TaskMutationUseCases<TTransaction> implements ITaskMutationCommands
     return this.result(input.ownerId, persisted);
   }
 
-  public async archive(input: TaskMutationArchiveInput): Promise<TaskMutationCommandResult> {
+  public async delete(input: TaskMutationDeleteInput): Promise<TaskMutationDeleteCommandResult> {
     const actorKind = input.actorKind ?? 'manual';
-    const requestFingerprint = taskMutationFingerprint('task.archive', input);
+    const requestFingerprint = taskMutationFingerprint('task.delete', input);
     const command = executionInput({
       ownerId: input.ownerId,
       operationKey: operationKey(input.operationKey, requestFingerprint),
@@ -418,23 +425,45 @@ export class TaskMutationUseCases<TTransaction> implements ITaskMutationCommands
       actorKind,
       ...(input.turnId === undefined ? {} : { turnId: input.turnId }),
       targetId: input.taskId,
-      actionKind: 'task.archive',
+      actionKind: 'task.delete',
       expectedVersion: input.expectedVersion
     });
     let persisted: PersistedActionLedgerRecord;
     try {
-      persisted = await this.ledger.executeAtomically(command, async (transaction) => mutationResult(await this.participant.archiveInTransaction(transaction, {
+      persisted = await this.ledger.executeAtomically(command, async (transaction) => this.participant.deleteInTransaction(transaction, {
         ownerId: input.ownerId,
         taskId: input.taskId,
         expectedVersion: input.expectedVersion,
-        ...(input.expectedProjectId ? { expectedProjectId: input.expectedProjectId } : {}),
-        ...(input.expectedOrderVersion === undefined ? {} : { expectedOrderVersion: input.expectedOrderVersion }),
+        ...(input.expectedProjectId === undefined ? {} : { expectedProjectId: input.expectedProjectId }),
         actorKind
-      })), input.eventContext);
+      }), input.eventContext);
     } catch (error: unknown) {
       ledgerError(error);
     }
-    return this.result(input.ownerId, persisted);
+    const orderVersion = persisted.record.outcome.sourceOrderVersion;
+    if (orderVersion === undefined || orderVersion === null) {
+      throw new Error('The deleted task receipt is missing its collection order version.');
+    }
+    return { taskId: input.taskId, orderVersion, receipt: persisted.record, replayed: persisted.replayed };
+  }
+
+  /** Returns an exact prior delete receipt before callers need to read a now-removed task. */
+  public async findDeleteReplay(input: TaskMutationDeleteInput): Promise<TaskMutationDeleteCommandResult | null> {
+    const actorKind = input.actorKind ?? 'manual';
+    const requestFingerprint = taskMutationFingerprint('task.delete', input);
+    const operationKeyValue = operationKey(input.operationKey, requestFingerprint);
+    const record = await this.ledger.findForOwner(input.ownerId, operationKeyValue);
+    if (!record || record.ownerId !== input.ownerId || record.operationKey !== operationKeyValue
+      || record.requestFingerprint !== requestFingerprint || record.actorKind !== actorKind
+      || record.turnId !== (actorKind === 'manual' ? null : input.turnId ?? null)
+      || record.targetKind !== 'task' || record.targetId !== input.taskId || record.actionKind !== 'task.delete'
+      || record.expectedVersion !== input.expectedVersion || record.undoOfActionId !== null
+      || record.outcome.targetId !== input.taskId) return null;
+    const orderVersion = record.outcome.sourceOrderVersion;
+    if (typeof orderVersion !== 'number' || !Number.isSafeInteger(orderVersion) || orderVersion <= 0) {
+      throw new Error('The deleted task receipt is missing its collection order version.');
+    }
+    return { taskId: input.taskId, orderVersion, receipt: record, replayed: true };
   }
 
   private async result(ownerId: string, persisted: PersistedActionLedgerRecord): Promise<TaskMutationCommandResult> {

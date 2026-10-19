@@ -23,6 +23,14 @@ describe('Home planning command validation', () => {
       .toThrow(HomeConversationInputInvalidError);
   });
 
+  it('accepts canonical task deletion and rejects the removed archive tool', () => {
+    const taskId = '4a107777-7777-4777-8777-777777777777';
+    expect(parseHomePlanningToolArgs(request('home_delete_task', { taskId, expectedVersion: 3 })))
+      .toEqual({ taskId, expectedVersion: 3 });
+    expect(() => parseHomePlanningToolArgs(request('home_archive_task', { taskId, expectedVersion: 3 })))
+      .toThrow(HomeConversationInputInvalidError);
+  });
+
   it('validates real calendar dates before passing them to canonical task commands', () => {
     expect(() => resolveDeadline({ kind: 'date', value: '2026-02-30' }, undefined))
       .toThrow(HomeConversationInputInvalidError);

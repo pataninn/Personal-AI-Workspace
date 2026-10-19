@@ -9,6 +9,7 @@ import type { HomePlanningToolRequest, HomePlanningToolResultCandidate, HomePlan
 import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
 import type { GlobalTaskQueryItem } from '@/modules/tasks/domain/global-task-query';
 import type { GlobalTaskQueryFilters } from '@/modules/tasks/domain/global-task-query';
+import { GlobalTaskNotFoundError } from '@/modules/tasks/domain/global-task-query-errors';
 import { ProjectTaskVersionConflictError } from '@/modules/tasks/domain/project-task-errors';
 import type { GetGlobalTaskUseCase, ListGlobalTasksUseCase } from '@/modules/tasks/use-cases/global-task-query-use-cases';
 import type { ITaskMutationCommands } from '@/modules/tasks/use-cases/task-mutation-use-cases';
@@ -140,15 +141,26 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
         if (outcome.kind === 'conflict') return versionConflictResolution();
         return immediate(outcome.value.receipt, outcome.value.replayed);
       }
-      case 'home_archive_task': {
+      case 'home_delete_task': {
         const taskId = args.taskId as string;
-        // An archived task is still needed to re-enter the canonical ledger for an identical retry.
-        const current = await this.scopedTask(input.ownerId, input.scope, taskId, true);
-        if (!await this.policyAllows(input, turn, capability, current.task.projectId ?? undefined)) return null;
-        const outcome = await runExpectedVersionMutation(() => this.dependencies.taskMutations.archive({
+        const replay = await this.dependencies.taskMutations.findDeleteReplay({
           ownerId: input.ownerId, taskId, expectedVersion: args.expectedVersion as number,
-          ...(current.task.projectId ? { expectedProjectId: current.task.projectId } : {}),
-          ...(args.expectedOrderVersion === undefined ? {} : { expectedOrderVersion: args.expectedOrderVersion as number }),
+          ...(input.scope.kind === 'workspace' ? { expectedProjectId: input.scope.workspaceId } : {}),
+          operationKey, actorKind: 'assistant', turnId: turn.id
+        });
+        if (replay) return immediate(replay.receipt, true);
+        let current: GlobalTaskQueryItem | null = null;
+        try {
+          current = await this.scopedTask(input.ownerId, input.scope, taskId, false);
+        } catch (error: unknown) {
+          if (!(error instanceof GlobalTaskNotFoundError)) throw error;
+          if (input.scope.kind === 'workspace') await this.assertWorkspace(input.ownerId, input.scope, input.scope.workspaceId);
+        }
+        const authorizationProjectId = current?.task.projectId ?? (input.scope.kind === 'workspace' ? input.scope.workspaceId : undefined);
+        if (!await this.policyAllows(input, turn, capability, authorizationProjectId)) return null;
+        const outcome = await runExpectedVersionMutation(() => this.dependencies.taskMutations.delete({
+          ownerId: input.ownerId, taskId, expectedVersion: args.expectedVersion as number,
+          ...(current ? { expectedProjectId: current.task.projectId } : input.scope.kind === 'workspace' ? { expectedProjectId: input.scope.workspaceId } : {}),
           operationKey, actorKind: 'assistant', turnId: turn.id
         }));
         if (outcome.kind === 'conflict') return versionConflictResolution();
@@ -176,6 +188,10 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
       }
       case 'home_undo_action': {
         const actionId = args.actionId as string;
+        const replay = await this.dependencies.undo.findUndoReplay({
+          ownerId: input.ownerId, actionId, operationKey, actorKind: 'assistant', turnId: turn.id
+        });
+        if (replay) return immediate(replay, true);
         const original = await this.dependencies.undo.getReceipt({ ownerId: input.ownerId, actionId });
         const targetProjectId = await this.assertUndoScope(input.ownerId, input.scope, original);
         if (!await this.policyAllows(input, turn, capability, targetProjectId ?? undefined)) return null;
@@ -381,7 +397,7 @@ function capabilityForTool(name: string): AssistantToolCapability | null {
     case 'home_create_task':
     case 'home_update_task':
     case 'home_move_task':
-    case 'home_archive_task': return 'home_task_write';
+    case 'home_delete_task': return 'home_task_write';
     case 'home_search_workspaces':
     case 'home_reuse_workspace': return 'home_workspace_read';
     case 'home_create_workspace':

@@ -78,33 +78,6 @@ function workspaceUndoResult(projectId: string, preVersion: number, postVersion:
   };
 }
 
-interface CompletedChildReceiptRow {
-  readonly id: string | null;
-  readonly action_kind: string | null;
-  readonly target_kind: string | null;
-  readonly target_id: string | null;
-  readonly undo_status: string | null;
-  readonly undo_action_id: string | null;
-  readonly creation_order_version: string | number | null;
-  readonly compensation_id: string | null;
-  readonly compensation_kind: string | null;
-  readonly compensation_undo_status: string | null;
-  readonly compensation_undo_of: string | null;
-  readonly compensation_target_kind: string | null;
-  readonly compensation_target_id: string | null;
-  readonly compensation_target_version: string | number | null;
-  readonly compensation_post_version: string | number | null;
-  readonly task_owner_id: string | null;
-  readonly task_project_id: string | null;
-  readonly task_status: string | null;
-  readonly task_version: string | number | null;
-  readonly task_position: string | number | null;
-  readonly created_event_count: string | number;
-  readonly created_position: string | null;
-  readonly archive_event_count: string | number;
-  readonly other_event_count: string | number;
-}
-
 interface WorkspaceEmptyRow {
   readonly has_content: boolean;
 }
@@ -303,7 +276,7 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
     if (original.actionKind !== 'workspace.create') throw new ActionLedgerTargetStateConflictError('unsupported_action');
     if (Object.keys(original.reversibleFields).length > 0) throw new ActionLedgerTargetStateConflictError('unsupported_action');
     if (current.relativeRoot !== null) throw new ActionLedgerTargetStateConflictError('folder_attached');
-    await this.assertWorkspaceEmptyExceptUndoneChildren(transaction, ownerId, current.id, completedTaskCreateActionIds);
+    await this.assertWorkspaceEmpty(transaction, ownerId, current.id);
     const archivedRows = asRows<ProjectRow>(await transaction.query(
       `UPDATE "projects" SET "status" = 'archived', "version" = "version" + 1, "updated_at" = now()
        WHERE "owner_id" = $1 AND "id" = $2 AND "status" = 'active' AND "version" = $3 AND "relative_root" IS NULL
@@ -315,25 +288,19 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
     return workspaceUndoResult(current.id, current.version, archived.version);
   }
 
-  private async assertWorkspaceEmptyExceptUndoneChildren(
+  private async assertWorkspaceEmpty(
     transaction: QueryRunner,
     ownerId: string,
-    projectId: string,
-    childActionIds: readonly string[]
+    projectId: string
   ): Promise<void> {
-    const children = await this.verifyCompletedTaskChildren(transaction, ownerId, projectId, childActionIds);
-    const taskIds = children.map((child) => child.targetId);
     const rows: readonly WorkspaceEmptyRow[] = await transaction.query(`
       SELECT (
         EXISTS (
           SELECT 1 FROM "project_tasks" t
-          WHERE t."owner_id" = $1 AND t."project_id" = $2 AND NOT (t."id" = ANY($3::uuid[]))
+          WHERE t."owner_id" = $1 AND t."project_id" = $2
         ) OR EXISTS (
           SELECT 1 FROM "project_task_events" e
           WHERE e."owner_id" = $1 AND e."project_id" = $2
-            AND (e."task_id" IS NULL OR NOT (e."task_id" = ANY($3::uuid[]))
-              OR e."event_type" NOT IN ('task.created', 'task.status_changed')
-              OR (e."event_type" = 'task.status_changed' AND e."details"->>'to' <> 'archived'))
         ) OR EXISTS (
           SELECT 1 FROM "project_task_suggestions" s WHERE s."owner_id" = $1 AND s."project_id" = $2
         ) OR EXISTS (
@@ -347,61 +314,8 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
         ) OR EXISTS (
           SELECT 1 FROM "ai_runs" r WHERE r."owner_id" = $1 AND r."project_id" = $2
         )
-      ) AS "has_content"`, [ownerId, projectId, taskIds]);
+      ) AS "has_content"`, [ownerId, projectId]);
     if (rows[0]?.has_content) throw new ActionLedgerTargetStateConflictError('workspace_not_empty');
-  }
-
-  private async verifyCompletedTaskChildren(
-    transaction: QueryRunner,
-    ownerId: string,
-    projectId: string,
-    actionIds: readonly string[]
-  ): Promise<readonly { readonly id: string; readonly targetId: string; readonly orderVersion: number }[]> {
-    if (actionIds.length === 0) return [];
-    const rows: readonly CompletedChildReceiptRow[] = await transaction.query(`
-      SELECT c."id", c."action_kind", c."target_kind", c."target_id", c."undo_status", c."undo_action_id",
-        (c."outcome"->>'destinationOrderVersion')::integer AS "creation_order_version",
-        u."id" AS "compensation_id", u."action_kind" AS "compensation_kind", u."undo_status" AS "compensation_undo_status", u."undo_of_action_id" AS "compensation_undo_of",
-        u."target_kind" AS "compensation_target_kind", u."target_id" AS "compensation_target_id",
-        (u."outcome"->>'targetVersion')::integer AS "compensation_target_version",
-        u."post_version" AS "compensation_post_version",
-        t."owner_id" AS "task_owner_id", t."project_id" AS "task_project_id", t."status" AS "task_status", t."version" AS "task_version", t."position" AS "task_position",
-        count(e."id") FILTER (WHERE e."event_type" = 'task.created') AS "created_event_count",
-        max(e."details"->>'position') FILTER (WHERE e."event_type" = 'task.created') AS "created_position",
-        count(e."id") FILTER (WHERE e."event_type" = 'task.status_changed' AND e."details"->>'to' = 'archived') AS "archive_event_count",
-        count(e."id") FILTER (WHERE e."event_type" NOT IN ('task.created', 'task.status_changed')
-          OR (e."event_type" = 'task.status_changed' AND e."details"->>'to' <> 'archived')) AS "other_event_count"
-      FROM unnest($2::uuid[]) WITH ORDINALITY AS requested("id", "ordinal")
-      LEFT JOIN "action_ledger_records" c ON c."owner_id" = $1 AND c."id" = requested."id"
-      LEFT JOIN "action_ledger_records" u ON u."owner_id" = c."owner_id" AND u."id" = c."undo_action_id"
-      LEFT JOIN "project_tasks" t ON t."owner_id" = $1 AND t."id" = c."target_id"
-      LEFT JOIN "project_task_events" e ON e."owner_id" = $1 AND e."project_id" = $3 AND e."task_id" = t."id"
-      GROUP BY c."id", c."action_kind", c."target_kind", c."target_id", c."undo_status", c."undo_action_id", c."outcome",
-        u."id", u."action_kind", u."undo_status", u."undo_of_action_id", u."target_kind", u."target_id", u."post_version", u."outcome",
-        t."owner_id", t."project_id", t."status", t."version", t."position", requested."ordinal"
-      ORDER BY requested."ordinal"`, [ownerId, actionIds, projectId]);
-    if (rows.length !== actionIds.length) throw new ActionLedgerTargetStateConflictError('workspace_not_empty');
-
-    const children = rows.map((row) => {
-      const orderVersion = Number(row.creation_order_version);
-      const currentVersion = Number(row.task_version);
-      if (!row.id || row.action_kind !== 'task.create' || row.target_kind !== 'task' || !row.target_id
-        || row.undo_status !== 'undone' || !row.undo_action_id
-        || row.compensation_id !== row.undo_action_id || row.compensation_kind !== 'undo' || row.compensation_undo_status !== 'not_reversible' || row.compensation_undo_of !== row.id
-        || row.compensation_target_kind !== 'task' || row.compensation_target_id !== row.target_id
-        || row.task_owner_id !== ownerId || row.task_project_id !== projectId || row.task_status !== 'archived'
-        || !Number.isSafeInteger(orderVersion) || orderVersion <= 0 || !Number.isSafeInteger(currentVersion)
-        || Number(row.compensation_target_version) !== currentVersion || Number(row.compensation_post_version) !== currentVersion || Number(row.created_event_count) !== 1
-        || row.created_position === null || !/^\d+$/u.test(row.created_position) || Number(row.created_position) !== Number(row.task_position)
-        || Number(row.archive_event_count) !== 1 || Number(row.other_event_count) !== 0) {
-        throw new ActionLedgerTargetStateConflictError('workspace_not_empty');
-      }
-      return { id: row.id, targetId: row.target_id, orderVersion };
-    });
-    for (let index = 1; index < children.length; index += 1) {
-      if (children[index - 1]!.orderVersion <= children[index]!.orderVersion) throw new ActionLedgerTargetStateConflictError('workspace_not_empty');
-    }
-    return children;
   }
 
   public async create(input: CreateProjectRecord): Promise<Project> {

@@ -110,7 +110,6 @@ function proposalActionLabel(command: HomeProposalCommand): string {
     case 'task.create': return `Create task: ${command.title}`;
     case 'task.update': return `Update task${command.title ? `: ${command.title}` : ''}`;
     case 'task.move': return 'Move task';
-    case 'task.archive': return 'Archive task';
     case 'workspace.create': return `Create workspace: ${command.name}`;
     case 'workspace.update_objective': return 'Update workspace objective';
   }
@@ -121,7 +120,6 @@ function proposalCommandSummary(command: HomeProposalCommand): string {
     case 'task.create': return command.title;
     case 'task.update': return command.title ?? 'Task update';
     case 'task.move': return 'Task destination changed';
-    case 'task.archive': return 'Task archive';
     case 'workspace.create': return command.objective ? `Objective: ${command.objective}` : 'New planning workspace';
     case 'workspace.update_objective': return command.objective ?? 'Workspace objective cleared';
   }

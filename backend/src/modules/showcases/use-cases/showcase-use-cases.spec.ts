@@ -63,8 +63,7 @@ const task: ProjectTask = {
   },
   createdAt: new Date('2026-10-01T00:00:00.000Z'),
   updatedAt: new Date('2026-10-02T00:00:00.000Z'),
-  completedAt: null,
-  archivedAt: null
+  completedAt: null
 };
 
 const fact: ProjectFact = {

@@ -2,7 +2,7 @@ import type { HomeConversationScope } from '@/modules/home-assistant/domain/home
 
 export type HomeProposalState = 'review_required' | 'accepted' | 'executing' | 'partial' | 'completed' | 'cancelled' | 'unknown';
 export type HomeProposalItemState = 'ready' | 'executing' | 'saved' | 'failed' | 'conflicted' | 'blocked' | 'cancelled' | 'unknown';
-export type HomeProposalAction = 'task.create' | 'task.update' | 'task.move' | 'task.archive' | 'workspace.create' | 'workspace.update_objective';
+export type HomeProposalAction = 'task.create' | 'task.update' | 'task.move' | 'workspace.create' | 'workspace.update_objective';
 
 export interface HomeProposalDeadlineResolution {
   readonly timeZone: string;
@@ -13,7 +13,6 @@ export type HomeProposalCommand =
   | { readonly action: 'task.create'; readonly taskId: string; readonly title: string; readonly details: string | null; readonly workspaceId: string | null; readonly importance: string; readonly deadline: string | null; readonly subtasks: readonly { readonly id?: string; readonly title: string; readonly completed?: boolean }[]; readonly expectedOrderVersion?: number }
   | { readonly action: 'task.update'; readonly taskId: string; readonly expectedVersion: number; readonly title?: string; readonly details?: string | null; readonly status?: string; readonly importance?: string; readonly deadline?: string | null; readonly subtasks?: readonly { readonly id: string; readonly title: string; readonly completed: boolean }[] }
   | { readonly action: 'task.move'; readonly taskId: string; readonly expectedVersion: number; readonly workspaceId: string | null }
-  | { readonly action: 'task.archive'; readonly taskId: string; readonly expectedVersion: number }
   | { readonly action: 'workspace.create'; readonly workspaceId: string; readonly name: string; readonly objective: string | null }
   | { readonly action: 'workspace.update_objective'; readonly workspaceId: string; readonly expectedVersion: number; readonly objective: string | null };
 

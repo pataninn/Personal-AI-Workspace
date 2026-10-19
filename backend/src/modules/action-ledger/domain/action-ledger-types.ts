@@ -13,6 +13,7 @@ export type ActionLedgerActionKind =
   | 'task.move'
   | 'task.reorder'
   | 'task.archive'
+  | 'task.delete'
   | 'task.restore'
   | 'workspace.create'
   | 'workspace.update'

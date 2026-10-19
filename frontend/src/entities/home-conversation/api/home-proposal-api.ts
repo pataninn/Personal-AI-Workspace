@@ -6,14 +6,13 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 
 export type HomeProposalState = 'review_required' | 'accepted' | 'executing' | 'partial' | 'completed' | 'cancelled' | 'unknown';
 export type HomeProposalItemState = 'ready' | 'executing' | 'saved' | 'failed' | 'conflicted' | 'blocked' | 'cancelled' | 'unknown';
-export type HomeProposalAction = 'task.create' | 'task.update' | 'task.move' | 'task.archive' | 'workspace.create' | 'workspace.update_objective';
+export type HomeProposalAction = 'task.create' | 'task.update' | 'task.move' | 'workspace.create' | 'workspace.update_objective';
 export type HomeProposalImportance = 'low' | 'medium' | 'high' | 'urgent';
 
 export type HomeProposalCommand =
   | { readonly action: 'task.create'; readonly taskId: string; readonly title: string; readonly details: string | null; readonly workspaceId: string | null; readonly importance: HomeProposalImportance; readonly deadline: string | null; readonly subtasks: readonly { readonly id?: string; readonly title: string; readonly completed?: boolean }[]; readonly expectedOrderVersion?: number }
   | { readonly action: 'task.update'; readonly taskId: string; readonly expectedVersion: number; readonly title?: string; readonly details?: string | null; readonly status?: string; readonly importance?: HomeProposalImportance; readonly deadline?: string | null; readonly subtasks?: readonly { readonly id: string; readonly title: string; readonly completed: boolean }[] }
   | { readonly action: 'task.move'; readonly taskId: string; readonly expectedVersion: number; readonly workspaceId: string | null }
-  | { readonly action: 'task.archive'; readonly taskId: string; readonly expectedVersion: number }
   | { readonly action: 'workspace.create'; readonly workspaceId: string; readonly name: string; readonly objective: string | null }
   | { readonly action: 'workspace.update_objective'; readonly workspaceId: string; readonly expectedVersion: number; readonly objective: string | null };
 
@@ -220,10 +219,6 @@ function normalizeCommand(value: unknown): HomeProposalCommand {
     if (!isUuid(command.taskId) || !isPositiveInteger(command.expectedVersion) || !nullableUuidGuard(command.workspaceId)) throw invalidResponse();
     return { action: 'task.move', taskId: command.taskId, expectedVersion: command.expectedVersion, workspaceId: command.workspaceId as string | null };
   }
-  if (command.action === 'task.archive') {
-    if (!isUuid(command.taskId) || !isPositiveInteger(command.expectedVersion)) throw invalidResponse();
-    return { action: 'task.archive', taskId: command.taskId, expectedVersion: command.expectedVersion };
-  }
   if (command.action === 'workspace.create') {
     if (!isUuid(command.workspaceId) || typeof command.name !== 'string' || !nullableStringGuard(command.objective)) throw invalidResponse();
     return { action: 'workspace.create', workspaceId: command.workspaceId, name: command.name, objective: command.objective as string | null };
@@ -312,7 +307,7 @@ function isProposalItemState(value: unknown): value is HomeProposalItemState {
 }
 
 function isProposalAction(value: unknown): value is HomeProposalAction {
-  return ['task.create', 'task.update', 'task.move', 'task.archive', 'workspace.create', 'workspace.update_objective'].includes(String(value));
+  return ['task.create', 'task.update', 'task.move', 'workspace.create', 'workspace.update_objective'].includes(String(value));
 }
 
 function isImportance(value: unknown): value is HomeProposalImportance {

@@ -1,6 +1,6 @@
-export type ProjectTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'archived';
+export type ProjectTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done';
 
-export type ProjectTaskFilter = 'all' | 'open' | 'completed' | 'archived';
+export type ProjectTaskFilter = 'all' | 'open' | 'completed';
 
 export type ProjectTaskImportance = 'low' | 'medium' | 'high' | 'urgent';
 
@@ -51,7 +51,6 @@ export interface ProjectTask {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly completedAt: string | null;
-  readonly archivedAt: string | null;
 }
 
 export type GlobalTaskCollection = 'inbox' | 'workspace';

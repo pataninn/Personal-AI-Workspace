@@ -1,6 +1,6 @@
-export const PROJECT_TASK_STATUSES = ['todo', 'in_progress', 'blocked', 'done', 'archived'] as const;
+export const PROJECT_TASK_STATUSES = ['todo', 'in_progress', 'blocked', 'done'] as const;
 export type ProjectTaskStatus = typeof PROJECT_TASK_STATUSES[number];
-export type ProjectTaskFilter = 'all' | 'open' | 'completed' | 'archived';
+export type ProjectTaskFilter = 'all' | 'open' | 'completed';
 export type ProjectTaskSuggestionStatus = 'pending' | 'accepted' | 'dismissed';
 export const PROJECT_TASK_IMPORTANCES = ['low', 'medium', 'high', 'urgent'] as const;
 export type ProjectTaskImportance = typeof PROJECT_TASK_IMPORTANCES[number];
@@ -39,7 +39,6 @@ export interface ProjectTask {
   readonly createdAt: Date;
   readonly updatedAt: Date;
   readonly completedAt: Date | null;
-  readonly archivedAt: Date | null;
 }
 
 export interface ProjectTaskSuggestion {

@@ -35,6 +35,10 @@ class FakeUndoLedger implements IActionLedgerUndoRepository<string> {
     return ownerId === OWNER && this.original?.id === actionId ? this.original : null;
   }
 
+  public async findForOwner(ownerId: string, operationKey: string): Promise<ActionLedgerRecord | null> {
+    return ownerId === OWNER ? this.operations.get(operationKey)?.record ?? null : null;
+  }
+
   public async executeAtomically(
     input: ActionLedgerExecutionInput,
     mutate: (transaction: string) => Promise<ActionLedgerMutationResult>
@@ -90,9 +94,11 @@ describe('ActionUndoUseCases', () => {
     const input = { ownerId: OWNER, actionId: ACTION, operationKey: 'undo-task-1' };
 
     const first = await useCase.undo(input);
+    const receiptReplay = await useCase.findUndoReplay(input);
     const retry = await useCase.undo(input);
 
     expect(first.replayed).toBe(false);
+    expect(receiptReplay).toMatchObject({ actionKind: 'undo', targetId: TASK, undoOfActionId: ACTION });
     expect(retry.replayed).toBe(true);
     expect(retry.undoReceipt.id).toBe(UNDO);
     expect(taskParticipant.undoTaskInTransaction).toHaveBeenCalledTimes(1);

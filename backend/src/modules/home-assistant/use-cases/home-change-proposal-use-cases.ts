@@ -237,11 +237,6 @@ export class HomeChangeProposalUseCases implements HomeProposalDraftCreator {
         assertExpectedVersion(current.task.version, row.expectedVersion as number);
         const destination = await this.resolveWorkspaceId(ownerId, scope, row.workspaceId, index, workspaceIds, true);
         command = { action: 'task.move', taskId, expectedVersion: row.expectedVersion as number, workspaceId: destination };
-      } else if (row.action === 'task.archive') {
-        const taskId = row.taskId as string;
-        const current = await this.scopedTask(ownerId, scope, taskId);
-        assertExpectedVersion(current.task.version, row.expectedVersion as number);
-        command = { action: 'task.archive', taskId, expectedVersion: row.expectedVersion as number };
       } else if (row.action === 'workspace.update_objective') {
         const workspaceId = row.workspaceId as string;
         const project = await this.scopedWorkspace(ownerId, scope, workspaceId);
@@ -299,7 +294,7 @@ export class HomeChangeProposalUseCases implements HomeProposalDraftCreator {
       if (scope.kind !== 'home') throw new HomePlanningScopeConflictError();
       return command;
     }
-    if (command.action === 'task.update' || command.action === 'task.move' || command.action === 'task.archive') {
+    if (command.action === 'task.update' || command.action === 'task.move') {
       const current = await this.scopedTask(ownerId, scope, command.taskId);
       assertExpectedVersion(current.task.version, command.expectedVersion);
       if (command.action === 'task.move' && command.workspaceId && !priorCreatedWorkspaceIds.has(command.workspaceId)) await this.scopedWorkspace(ownerId, scope, command.workspaceId);
@@ -324,11 +319,6 @@ export class HomeChangeProposalUseCases implements HomeProposalDraftCreator {
     if (command.action === 'task.move') {
       const request = { ownerId, taskId: command.taskId, expectedVersion: command.expectedVersion, workspaceId: command.workspaceId, operationKey, actorKind: 'assistant' as const, turnId };
       return { operationKey, requestFingerprint: taskMutationFingerprint('task.move', request) };
-    }
-    if (command.action === 'task.archive') {
-      const current = await this.scopedTask(ownerId, scope, command.taskId);
-      const request = { ownerId, taskId: command.taskId, expectedVersion: command.expectedVersion, ...(current.task.projectId ? { expectedProjectId: current.task.projectId } : {}), operationKey, actorKind: 'assistant' as const, turnId };
-      return { operationKey, requestFingerprint: taskMutationFingerprint('task.archive', request) };
     }
     if (command.action === 'workspace.create') {
       const request = { ownerId, projectId: command.workspaceId, operationKey, name: command.name, objective: command.objective, actorKind: 'assistant' as const, turnId };
@@ -421,9 +411,6 @@ export class HomeChangeProposalUseCases implements HomeProposalDraftCreator {
       await this.taskMutations.update({ ownerId, taskId: command.taskId, expectedVersion: command.expectedVersion, ...(current.task.projectId ? { expectedProjectId: current.task.projectId } : {}), operationKey, actorKind: 'assistant', turnId, eventContext: context, ...(command.title === undefined ? {} : { title: command.title }), ...(command.details === undefined ? {} : { details: command.details }), ...(command.status === undefined ? {} : { status: command.status }), ...(command.importance === undefined ? {} : { importance: command.importance }), ...(command.deadline === undefined ? {} : { deadline: command.deadline }), ...(command.subtasks === undefined ? {} : { subtasks: command.subtasks }) });
     } else if (command.action === 'task.move') {
       await this.taskMutations.move({ ownerId, taskId: command.taskId, expectedVersion: command.expectedVersion, workspaceId: command.workspaceId, operationKey, actorKind: 'assistant', turnId, eventContext: context });
-    } else if (command.action === 'task.archive') {
-      const current = await this.scopedTask(ownerId, { kind: 'home' }, command.taskId);
-      await this.taskMutations.archive({ ownerId, taskId: command.taskId, expectedVersion: command.expectedVersion, ...(current.task.projectId ? { expectedProjectId: current.task.projectId } : {}), operationKey, actorKind: 'assistant', turnId, eventContext: context });
     } else if (command.action === 'workspace.create') {
       await this.workspaces.createPlanning({ ownerId, projectId: command.workspaceId, operationKey, name: command.name, objective: command.objective, actorKind: 'assistant', turnId, eventContext: context });
     } else {
@@ -471,11 +458,6 @@ export class HomeChangeProposalUseCases implements HomeProposalDraftCreator {
       assertExpectedVersion(currentTask.task.version, candidate.expectedVersion);
       const workspaceId = await this.resolveWorkspaceId(proposal.ownerId, proposal.scope, candidate.workspaceId, currentPosition(proposal, current), proposal.items.map((entry) => entry.command.action === 'workspace.create' ? entry.targetId : ''), true);
       return { command: { ...candidate, workspaceId }, deadlineResolution: null };
-    }
-    if (candidate.action === 'task.archive') {
-      const currentTask = await this.scopedTask(proposal.ownerId, proposal.scope, candidate.taskId);
-      assertExpectedVersion(currentTask.task.version, candidate.expectedVersion);
-      return { command: candidate, deadlineResolution: null };
     }
     if (candidate.action === 'workspace.create') {
       const identity = normalizeProjectName(candidate.name);
@@ -532,7 +514,7 @@ function targetIdentity(command: HomeProposalCommand): { readonly targetKind: 't
   if (command.action === 'task.create') {
     return { targetKind: 'task', targetId: command.taskId, expectedVersion: null };
   }
-  if (command.action === 'task.update' || command.action === 'task.move' || command.action === 'task.archive') {
+  if (command.action === 'task.update' || command.action === 'task.move') {
     return { targetKind: 'task', targetId: command.taskId, expectedVersion: command.expectedVersion };
   }
   if (command.action === 'workspace.create') return { targetKind: 'workspace', targetId: command.workspaceId, expectedVersion: null };
@@ -554,7 +536,6 @@ function editableFields(action: HomeProposalCommand['action']): ReadonlySet<stri
     case 'task.create': return new Set(['title', 'details', 'workspaceId', 'importance', 'deadline', 'subtasks', 'expectedOrderVersion']);
     case 'task.update': return new Set(['taskId', 'expectedVersion', 'title', 'details', 'status', 'importance', 'deadline', 'subtasks']);
     case 'task.move': return new Set(['taskId', 'expectedVersion', 'workspaceId']);
-    case 'task.archive': return new Set(['taskId', 'expectedVersion']);
     case 'workspace.create': return new Set(['name', 'objective']);
     case 'workspace.update_objective': return new Set(['workspaceId', 'expectedVersion', 'objective']);
   }

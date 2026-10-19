@@ -10,7 +10,6 @@ import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
 import {
   CreateProjectTaskUseCase,
-  DeleteProjectTaskUseCase,
   ListProjectTaskSuggestionsUseCase,
   ListProjectTasksUseCase,
   ReorderProjectTaskUseCase,
@@ -31,7 +30,7 @@ const reorderTaskSchema = z.object({ taskId: z.string(), direction: z.enum(['up'
 const acceptSuggestionSchema = z.object({ status: z.literal('accepted'), title: z.string().optional(), details: z.string().nullable().optional(), ...planningFields }).strict();
 const dismissSuggestionSchema = z.object({ status: z.literal('dismissed') }).strict();
 const resolveSuggestionSchema = z.union([acceptSuggestionSchema, dismissSuggestionSchema]);
-const taskFilterSchema = z.enum(['all', 'open', 'completed', 'archived']);
+const taskFilterSchema = z.enum(['all', 'open', 'completed']);
 const suggestionFilterSchema = z.enum(['all', 'pending']);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
@@ -40,7 +39,6 @@ export interface ProjectTaskRouterDependencies {
   readonly listTasks: ListProjectTasksUseCase;
   readonly createTask: CreateProjectTaskUseCase;
   readonly updateTask: UpdateProjectTaskUseCase;
-  readonly deleteTask: DeleteProjectTaskUseCase;
   readonly reorderTask: ReorderProjectTaskUseCase;
   readonly listSuggestions: ListProjectTaskSuggestionsUseCase;
   readonly resolveSuggestion: ResolveProjectTaskSuggestionUseCase;
@@ -79,10 +77,10 @@ function parseIfMatch(value: string | undefined): number {
   return version;
 }
 
-function parseFilter(value: unknown): 'all' | 'open' | 'completed' | 'archived' {
+function parseFilter(value: unknown): 'all' | 'open' | 'completed' {
   const parsed = taskFilterSchema.safeParse(value ?? 'all');
   if (!parsed.success) {
-    throw new AppError('VALIDATION_ERROR', 400, 'The project task filter is invalid.', [{ field: 'status', message: 'Use all, open, completed, or archived.' }]);
+    throw new AppError('VALIDATION_ERROR', 400, 'The project task filter is invalid.', [{ field: 'status', message: 'Use all, open, or completed.' }]);
   }
   return parsed.data;
 }
@@ -111,7 +109,6 @@ function serializeTask(task: ProjectTask): Record<string, unknown> {
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
     completedAt: task.completedAt?.toISOString() ?? null,
-    archivedAt: task.archivedAt?.toISOString() ?? null,
     source: { ...task.source, acceptedAt: task.source.acceptedAt?.toISOString() ?? null }
   };
 }
@@ -200,23 +197,6 @@ function reorderTaskHandler(dependencies: ProjectTaskRouterDependencies): Reques
   };
 }
 
-function deleteTaskHandler(dependencies: ProjectTaskRouterDependencies): RequestHandler {
-  return async (request, response, next): Promise<void> => {
-    try {
-      const operationKey = request.header('idempotency-key');
-      const result = await dependencies.deleteTask.execute({
-        ownerId: ownerId(request), projectId: parseId(routeParam(request.params.projectId)),
-        taskId: parseId(routeParam(request.params.taskId)), expectedVersion: parseIfMatch(request.header('if-match')),
-        ...(operationKey === undefined ? {} : { operationKey })
-      });
-      response.setHeader('ETag', `"${result.orderVersion}"`);
-      sendData(response, result);
-    } catch (error: unknown) {
-      next(error);
-    }
-  };
-}
-
 function listSuggestionsHandler(dependencies: ProjectTaskRouterDependencies): RequestHandler {
   return async (request, response, next): Promise<void> => {
     try {
@@ -260,7 +240,6 @@ export function createProjectTaskRouter(dependencies: ProjectTaskRouterDependenc
   router.get('/tasks', authenticate, listTasksHandler(dependencies));
   router.post('/tasks', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, createTaskHandler(dependencies));
   router.patch('/tasks/:taskId', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, updateTaskHandler(dependencies));
-  router.delete('/tasks/:taskId', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, deleteTaskHandler(dependencies));
   router.patch('/task-order', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, reorderTaskHandler(dependencies));
   router.get('/task-suggestions', authenticate, listSuggestionsHandler(dependencies));
   router.patch('/task-suggestions/:suggestionId', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, resolveSuggestionHandler(dependencies));

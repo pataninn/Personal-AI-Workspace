@@ -36,9 +36,6 @@ const listQuerySchema = z.object({
   if (value.deadlineFrom && value.deadlineTo && value.deadlineFrom > value.deadlineTo) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['deadlineFrom'], message: 'The start date must not be later than the end date.' });
   }
-  if (value.status === 'archived' && value.includeArchived !== true) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['includeArchived'], message: 'Set includeArchived to true to query archived tasks.' });
-  }
 });
 
 const detailQuerySchema = z.object({ includeArchived: booleanQuery.optional() }).strict();
@@ -73,7 +70,6 @@ const moveMutationSchema = z.object({
   expectedSourceOrderVersion: positiveVersion.optional(),
   expectedDestinationOrderVersion: positiveVersion.optional()
 }).strict();
-const archiveMutationSchema = z.object({ expectedOrderVersion: positiveVersion.optional() }).strict();
 
 export interface GlobalTaskRouterDependencies {
   readonly getSession: GetSessionUseCase;
@@ -160,7 +156,6 @@ function serializeItem(item: GlobalTaskQueryItem): Record<string, unknown> {
       createdAt: item.task.createdAt.toISOString(),
       updatedAt: item.task.updatedAt.toISOString(),
       completedAt: item.task.completedAt?.toISOString() ?? null,
-      archivedAt: item.task.archivedAt?.toISOString() ?? null,
       source: { ...item.task.source, acceptedAt: item.task.source.acceptedAt?.toISOString() ?? null }
     }
   };
@@ -278,19 +273,17 @@ function moveTaskMutationHandler(commands: ITaskMutationCommands): RequestHandle
   };
 }
 
-function archiveTaskMutationHandler(commands: ITaskMutationCommands): RequestHandler {
+function deleteTaskMutationHandler(commands: ITaskMutationCommands): RequestHandler {
   return async (request, response, next): Promise<void> => {
     try {
-      const body = parseMutationBody(archiveMutationSchema, request.body ?? {});
-      const result = await commands.archive({
+      const result = await commands.delete({
         ownerId: ownerId(request),
         taskId: taskId(request.params.taskId),
         expectedVersion: parseIfMatch(request.header('if-match')),
-        operationKey: requiredIdempotencyKey(request.header('idempotency-key')),
-        ...(body.expectedOrderVersion === undefined ? {} : { expectedOrderVersion: body.expectedOrderVersion })
+        operationKey: requiredIdempotencyKey(request.header('idempotency-key'))
       });
-      response.setHeader('ETag', `"${result.item.task.version}"`);
-      sendData(response, { item: serializeItem(result.item), receipt: serializeReceipt(result.receipt), replayed: result.replayed });
+      response.setHeader('ETag', `"${result.orderVersion}"`);
+      sendData(response, { taskId: result.taskId, orderVersion: result.orderVersion, receipt: serializeReceipt(result.receipt), replayed: result.replayed });
     } catch (error: unknown) {
       next(error);
     }
@@ -308,7 +301,7 @@ export function createGlobalTaskRouter(dependencies: GlobalTaskRouterDependencie
     router.post('/tasks', authenticate, writeOrigin, requireCsrf, createTaskMutationHandler(dependencies.mutations));
     router.patch('/tasks/:taskId', authenticate, writeOrigin, requireCsrf, updateTaskMutationHandler(dependencies.mutations));
     router.post('/tasks/:taskId/move', authenticate, writeOrigin, requireCsrf, moveTaskMutationHandler(dependencies.mutations));
-    router.post('/tasks/:taskId/archive', authenticate, writeOrigin, requireCsrf, archiveTaskMutationHandler(dependencies.mutations));
+    router.delete('/tasks/:taskId', authenticate, writeOrigin, requireCsrf, deleteTaskMutationHandler(dependencies.mutations));
   }
   return router;
 }

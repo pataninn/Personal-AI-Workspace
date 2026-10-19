@@ -97,6 +97,8 @@ describe('HermesHomePlanningRuntime', () => {
 
   it('defaults to deny-all, bounds registration to the fixed twelve names, and rejects unregistered events', async () => {
     expect(HOME_PLANNING_TOOL_NAMES).toHaveLength(12);
+    expect(HOME_PLANNING_TOOL_NAMES).toContain('home_delete_task');
+    expect(HOME_PLANNING_TOOL_NAMES as readonly string[]).not.toContain('home_archive_task');
     expect(() => new HermesHomePlanningRuntime(
       {} as HermesBridgeClient,
       provider,

@@ -34,7 +34,7 @@ import { StartAiRunUseCase } from '@/modules/ai-runs/use-cases/start-ai-run-use-
 import type { ProjectTask, ProjectTaskFilter } from '@/modules/tasks/domain/project-task';
 import { ProjectTaskNotFoundError, ProjectTaskVersionConflictError } from '@/modules/tasks/domain/project-task-errors';
 import type { CreateProjectTaskRecord, IProjectTaskRepository, UpdateProjectTaskRecord } from '@/modules/tasks/repositories/project-task-repository';
-import { CreateProjectTaskUseCase, DeleteProjectTaskUseCase, ListProjectTaskSuggestionsUseCase, ListProjectTasksUseCase, ReorderProjectTaskUseCase, ResolveProjectTaskSuggestionUseCase, UpdateProjectTaskUseCase } from '@/modules/tasks/use-cases/project-task-use-cases';
+import { CreateProjectTaskUseCase, ListProjectTaskSuggestionsUseCase, ListProjectTasksUseCase, ReorderProjectTaskUseCase, ResolveProjectTaskSuggestionUseCase, UpdateProjectTaskUseCase } from '@/modules/tasks/use-cases/project-task-use-cases';
 import { GetReadinessUseCase } from '@/modules/health';
 import { createLogger } from '@/shared/logging/logger';
 
@@ -198,7 +198,6 @@ class TestProjectTaskRepository implements IProjectTaskRepository {
     return { task: updated, orderVersion: 1 };
   }
 
-  public async deleteTask(): Promise<{ readonly orderVersion: number }> { throw new ProjectTaskNotFoundError(); }
   public async reorderTask(): Promise<never> { throw new ProjectTaskNotFoundError(); }
   public async listSuggestions(): Promise<readonly []> { return []; }
   public async resolveSuggestion(): Promise<never> { throw new ProjectTaskNotFoundError(); }
@@ -282,7 +281,6 @@ beforeAll(async () => {
       listTasks: new ListProjectTasksUseCase(projects, taskRepository),
       createTask: new CreateProjectTaskUseCase(projects, taskRepository),
       updateTask: new UpdateProjectTaskUseCase(projects, taskRepository),
-      deleteTask: new DeleteProjectTaskUseCase(projects, taskRepository),
       reorderTask: new ReorderProjectTaskUseCase(projects, taskRepository),
       listSuggestions: new ListProjectTaskSuggestionsUseCase(projects, taskRepository),
       resolveSuggestion: new ResolveProjectTaskSuggestionUseCase(projects, taskRepository),
@@ -444,15 +442,15 @@ function makeTask(id: string, projectId: string, title: string): ProjectTask {
     id, projectId, title, details: title.includes(FOREIGN_TASK_MARKER) ? FOREIGN_TASK_MARKER : null,
     status: 'todo', importance: 'medium', deadline: null, subtasks: [], position: 1, version: 1,
     source: { kind: 'user', label: 'Added by you', suggestionId: null, runId: null, conversationId: null, acceptedAt: null },
-    createdAt: NOW, updatedAt: NOW, completedAt: null, archivedAt: null
+    createdAt: NOW, updatedAt: NOW, completedAt: null
   };
 }
 
 function matchesFilter(task: ProjectTask, filter: ProjectTaskFilter): boolean {
   if (filter === 'all') return true;
-  if (filter === 'open') return task.status !== 'done' && task.status !== 'archived';
+  if (filter === 'open') return task.status !== 'done';
   if (filter === 'completed') return task.status === 'done';
-  return task.status === 'archived';
+  return false;
 }
 
 function cookie(token: string): { Cookie: string } { return { Cookie: `__Host-pa_session=${token}` }; }

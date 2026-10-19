@@ -35,7 +35,7 @@ export function toActionLedgerRecord(row: ActionLedgerRow): ActionLedgerRecord {
   const actorKind = parseEnum(row.actor_kind, ['manual', 'assistant'] as const);
   const targetKind = parseEnum(row.target_kind, ['task', 'workspace'] as const);
   const actionKind = parseEnum(row.action_kind, [
-    'task.create', 'task.update', 'task.move', 'task.reorder', 'task.archive', 'task.restore',
+    'task.create', 'task.update', 'task.move', 'task.reorder', 'task.archive', 'task.delete', 'task.restore',
     'workspace.create', 'workspace.update', 'workspace.archive', 'workspace.restore', 'undo'
   ] as const);
   const undoStatus = parseEnum(row.undo_status, ['not_reversible', 'available', 'undone'] as const);

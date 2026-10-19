@@ -62,12 +62,6 @@ export class ProjectTaskStatusConflictError extends ProjectTaskDomainError {
   }
 }
 
-export class ProjectTaskArchivedError extends ProjectTaskDomainError {
-  public constructor() {
-    super('PROJECT_TASK_ARCHIVED', 409, 'This task is archived and cannot be changed.');
-  }
-}
-
 export class ProjectTaskOrderConflictError extends ProjectTaskDomainError {
   public constructor() {
     super('PROJECT_TASK_ORDER_CONFLICT', 409, 'The project task order changed. Reload the latest order and try again.');

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiClientError } from '@/shared/api';
-import { archiveGlobalTask, createGlobalTask, createInboxTask, getGlobalTask, getInboxTaskCount, getTaskActionReceipt, listGlobalTasks, moveGlobalTask, undoTaskAction, updateGlobalTask } from '@/entities/project-task/api/global-task-api';
+import { createGlobalTask, createInboxTask, deleteGlobalTask, getGlobalTask, getInboxTaskCount, getTaskActionReceipt, listGlobalTasks, moveGlobalTask, undoTaskAction, updateGlobalTask } from '@/entities/project-task/api/global-task-api';
 
 const WORKSPACE_ID = '11111111-1111-4111-8111-111111111111';
 const TASK_ID = '22222222-2222-4222-8222-222222222222';
@@ -11,7 +11,7 @@ const task = {
   id: TASK_ID, projectId: null, title: 'Send the proposal', details: null, importance: 'medium', deadline: null, subtasks: [],
   status: 'todo', position: 0, version: 1,
   source: { kind: 'user', label: 'Added by you', suggestionId: null, runId: null, conversationId: null, acceptedAt: null },
-  createdAt: '2026-10-16T08:00:00.000Z', updatedAt: '2026-10-16T08:00:00.000Z', completedAt: null, archivedAt: null
+  createdAt: '2026-10-16T08:00:00.000Z', updatedAt: '2026-10-16T08:00:00.000Z', completedAt: null
 } as const;
 const inboxItem = { task, collection: 'inbox', workspace: null } as const;
 const workspaceItem = { task: { ...task, projectId: WORKSPACE_ID }, collection: 'workspace', workspace: { id: WORKSPACE_ID, name: 'Website', status: 'active' } } as const;
@@ -85,7 +85,7 @@ describe('global task API', () => {
     expect(new Headers(request?.headers).get('X-CSRF-Token')).toBe('csrf');
   });
 
-  it('moves to Inbox or a rootless workspace and archives with the same guarded request shape', async () => {
+  it('moves to Inbox or a rootless workspace through the guarded route', async () => {
     fetchMock.mockResolvedValueOnce(envelope({ item: inboxItem, receipt: { id: ACTION_ID, actionKind: 'task.move', undoStatus: 'available', outcome: {} }, replayed: true }));
     await expect(moveGlobalTask(TASK_ID, null, 4, 'csrf', 'move-key')).resolves.toMatchObject({ receipt: { actionKind: 'task.move' }, replayed: true });
     const [movePath, moveRequest] = fetchMock.mock.calls[0] ?? [];
@@ -93,16 +93,42 @@ describe('global task API', () => {
     expect(JSON.parse(String(moveRequest?.body))).toEqual({ workspaceId: null });
     expect(new Headers(moveRequest?.headers).get('If-Match')).toBe('"4"');
 
-    fetchMock.mockResolvedValueOnce(envelope({ item: inboxItem, receipt: { id: ACTION_ID, actionKind: 'task.archive', undoStatus: 'available', outcome: {} }, replayed: false }));
-    await archiveGlobalTask(TASK_ID, 4, 'csrf', 'archive-key');
-    const [archivePath, archiveRequest] = fetchMock.mock.calls[1] ?? [];
-    expect(archivePath).toBe(`/api/v1/tasks/${TASK_ID}/archive`);
-    expect(JSON.parse(String(archiveRequest?.body))).toEqual({});
-    expect(new Headers(archiveRequest?.headers).get('Idempotency-Key')).toBe('archive-key');
+  });
+
+  it('deletes Inbox or workspace tasks through the canonical versioned route with a minimal receipt', async () => {
+    fetchMock.mockResolvedValueOnce(envelope({
+      taskId: TASK_ID,
+      orderVersion: 5,
+      receipt: { id: ACTION_ID, actionKind: 'task.delete', undoStatus: 'not_reversible', outcome: { targetId: TASK_ID, targetVersion: null, sourceOrderVersion: 5 } },
+      replayed: true
+    }));
+    await expect(deleteGlobalTask(TASK_ID, 4, 'csrf-token', 'delete-key')).resolves.toEqual({
+      taskId: TASK_ID,
+      orderVersion: 5,
+      receipt: { id: ACTION_ID, actionKind: 'task.delete', undoStatus: 'not_reversible' },
+      replayed: true
+    });
+    const [path, request] = fetchMock.mock.calls[0] ?? [];
+    expect(path).toBe(`/api/v1/tasks/${TASK_ID}`);
+    expect(request?.method).toBe('DELETE');
+    expect(request?.body).toBeUndefined();
+    expect(new Headers(request?.headers).get('If-Match')).toBe('"4"');
+    expect(new Headers(request?.headers).get('Idempotency-Key')).toBe('delete-key');
+    expect(new Headers(request?.headers).get('X-CSRF-Token')).toBe('csrf-token');
+  });
+
+  it('rejects deletion responses that do not identify the deleted task and order version', async () => {
+    fetchMock.mockResolvedValueOnce(envelope({
+      taskId: TASK_ID,
+      orderVersion: 5,
+      receipt: { id: ACTION_ID, actionKind: 'task.delete', undoStatus: 'not_reversible', outcome: { targetId: TASK_ID, targetVersion: 2, sourceOrderVersion: 5 } },
+      replayed: false
+    }));
+    await expect(deleteGlobalTask(TASK_ID, 4, 'csrf-token', 'delete-key')).rejects.toBeInstanceOf(ApiClientError);
   });
 
   it('verifies safe receipt metadata on reload and submits an idempotent undo', async () => {
-    const safeReceipt = { id: ACTION_ID, actionKind: 'task.archive', actorKind: 'assistant', turnId: TURN_ID, targetKind: 'task', targetId: TASK_ID, postVersion: 5, undoStatus: 'available', undoActionId: null } as const;
+    const safeReceipt = { id: ACTION_ID, actionKind: 'task.update', actorKind: 'assistant', turnId: TURN_ID, targetKind: 'task', targetId: TASK_ID, postVersion: 5, undoStatus: 'available', undoActionId: null } as const;
     fetchMock.mockResolvedValueOnce(envelope(safeReceipt));
     await expect(getTaskActionReceipt(ACTION_ID)).resolves.toEqual(safeReceipt);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(`/api/v1/actions/${ACTION_ID}`);
@@ -125,6 +151,10 @@ describe('global task API', () => {
     await expect(getTaskActionReceipt(ACTION_ID)).rejects.toBeInstanceOf(ApiClientError);
     fetchMock.mockResolvedValueOnce(envelope({ ...safeReceipt, turnId: null }));
     await expect(getTaskActionReceipt(ACTION_ID)).rejects.toBeInstanceOf(ApiClientError);
+
+    const historicalArchiveReceipt = { ...safeReceipt, actionKind: 'task.archive', postVersion: null, undoStatus: 'not_reversible' } as const;
+    fetchMock.mockResolvedValueOnce(envelope(historicalArchiveReceipt));
+    await expect(getTaskActionReceipt(ACTION_ID)).resolves.toEqual(historicalArchiveReceipt);
   });
 
   it('accepts workspace and unavailable undo targets without exposing folder metadata as a task', async () => {

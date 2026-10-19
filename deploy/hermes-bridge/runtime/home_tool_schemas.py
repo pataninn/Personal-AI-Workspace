@@ -31,7 +31,7 @@ DETAILS = {'anyOf': [_string(maximum=4096), {'type': 'null'}]}
 OBJECTIVE = {'anyOf': [_string(maximum=2000), {'type': 'null'}]}
 IMPORTANCE = {'type': 'string', 'enum': ['low', 'medium', 'high', 'urgent']}
 TASK_STATUS = {'type': 'string', 'enum': ['todo', 'in_progress', 'blocked', 'done']}
-QUERY_STATUS = {'type': 'string', 'enum': ['todo', 'in_progress', 'blocked', 'done', 'archived']}
+QUERY_STATUS = {'type': 'string', 'enum': ['todo', 'in_progress', 'blocked', 'done']}
 
 DEADLINE_INPUT = {
     'anyOf': [
@@ -123,18 +123,6 @@ def _bulk_task_move_schema():
     )
 
 
-def _bulk_task_archive_schema():
-    return _object(
-        {
-            'action': {'type': 'string', 'enum': ['task.archive']},
-            'taskId': UUID,
-            'expectedVersion': VERSION,
-            'expectedOrderVersion': VERSION,
-        },
-        ['action', 'taskId', 'expectedVersion'],
-    )
-
-
 def _bulk_workspace_create_schema():
     return _object(
         {
@@ -161,7 +149,7 @@ def _bulk_workspace_update_schema():
 HOME_TOOL_DEFINITIONS = (
     {
         'name': 'home_list_tasks',
-        'description': 'List bounded task metadata visible in the current Home conversation scope. Use this before a task update, move, or archive when the exact target is unclear. Never infer that a listed task should be changed.',
+        'description': 'List bounded task metadata visible in the current Home conversation scope. Use this before a task update, move, or delete when the exact target is unclear. Never infer that a listed task should be changed.',
         'parameters': _object({
             'workspaceId': UUID,
             'inboxOnly': {'type': 'boolean'},
@@ -210,8 +198,8 @@ HOME_TOOL_DEFINITIONS = (
         }, ['taskId', 'expectedVersion', 'workspaceId']),
     },
     {
-        'name': 'home_archive_task',
-        'description': 'Archive exactly one task only when explicitly requested. This is reversible soft-state; use the exact task ID and version.',
+        'name': 'home_delete_task',
+        'description': 'Permanently delete exactly one task only when the user explicitly asks to delete it. Use the exact task ID and current version.',
         'parameters': _object({
             'taskId': UUID,
             'expectedVersion': VERSION,
@@ -263,7 +251,6 @@ HOME_TOOL_DEFINITIONS = (
                         _bulk_create_task_schema(),
                         _update_task_schema('task.update'),
                         _bulk_task_move_schema(),
-                        _bulk_task_archive_schema(),
                         _bulk_workspace_create_schema(),
                         _bulk_workspace_update_schema(),
                     ]

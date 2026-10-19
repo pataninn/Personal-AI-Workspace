@@ -1,4 +1,4 @@
-import { ApiClientError, getJson, patchJson, postJson, requestJson } from '@/shared/api';
+import { ApiClientError, getJson, patchJson, postJson } from '@/shared/api';
 import { readTaskImportance, readTaskDeadline, readTaskSubtasks, readSuggestedSubtasks } from '@/entities/project-task/api/task-metadata';
 import type {
   ProjectTask,
@@ -62,13 +62,6 @@ export async function reorderProjectTask(
   return normalizeProjectTaskList(response, projectId);
 }
 
-export async function deleteProjectTask(projectId: string, taskId: string, expectedVersion: number, csrfToken: string): Promise<number> {
-  const response = await requestJson<unknown>(`${projectTasksPath(projectId)}/${encodeURIComponent(taskId)}`, {
-    method: 'DELETE', headers: versionHeaders(expectedVersion, csrfToken)
-  });
-  return readPositiveInteger(asRecord(response)?.orderVersion);
-}
-
 export async function listProjectTaskSuggestions(projectId: string, status: 'all' | 'pending' = 'pending'): Promise<readonly ProjectTaskSuggestion[]> {
   const response = await getJson<unknown>(`${PROJECTS_PATH}/${encodeURIComponent(projectId)}/task-suggestions?status=${status}`);
   const suggestions = asRecord(response)?.taskSuggestions;
@@ -127,8 +120,7 @@ export function normalizeProjectTask(value: unknown, expectedProjectId?: string)
     source: normalizeTaskSource(record?.source),
     createdAt: readNonEmptyString(record?.createdAt),
     updatedAt: readNonEmptyString(record?.updatedAt),
-    completedAt: readNullableString(record?.completedAt),
-    archivedAt: readNullableString(record?.archivedAt)
+    completedAt: readNullableString(record?.completedAt)
   };
   if (expectedProjectId && task.projectId !== expectedProjectId) {
     throw invalidResponse();
@@ -223,7 +215,7 @@ function normalizeTaskSource(value: unknown): ProjectTask['source'] {
 }
 
 function readTaskStatus(value: unknown): ProjectTaskStatus {
-  if (value === 'todo' || value === 'in_progress' || value === 'blocked' || value === 'done' || value === 'archived') {
+  if (value === 'todo' || value === 'in_progress' || value === 'blocked' || value === 'done') {
     return value;
   }
   throw invalidResponse();

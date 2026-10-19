@@ -75,7 +75,6 @@ describe('ShowcasePublisher', () => {
       createdAt: '2026-10-19T00:00:00.000Z',
       updatedAt: '2026-10-19T00:00:00.000Z',
       completedAt: null,
-      archivedAt: null
     }], orderVersion: 1 });
     mocks.listProjectFacts.mockResolvedValue([]);
     mocks.getCurrentShowcase.mockRejectedValue(new ApiClientError(404, 'SHOWCASE_NOT_PUBLISHED', 'not published'));

@@ -1,11 +1,11 @@
-# tasks.md — Personal AI Workspace hackathon release
+# tasks.md â€” Personal AI Workspace hackathon release
 
 **Goal:** Deliver all requested UX, automatic tools, task editing/deletion, HTTPS, private demo and account controls, plus visible memory, reusable skills, data export, and always-on briefings.
 **Created:** 2026-10-19
 **Last Updated:** 2026-10-19
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 4.2, 5.1, 5.2, and 6.1 delivered. Task3.5 demo cleanup is delivered at `57a477f060e3c4a2ffb11fd01f3d6d4a983c4db1`; Task4.3 canonical deletion and Task6.2 persisted skills are in progress; Task4.2 direct Home actions are delivered at `00e40200ad40ddda73605295b151f42e90466690`; Task6.1 memory/context is delivered at `633cbeecd934ddd0e1042441158f91ca5e98435e`.
+**Status:** Execution active. Fourteen tasks delivered:1.1,2.1,2.2,3.1,3.2,3.3,3.4,3.5,4.1,4.2,5.1,5.2,6.1,6.2. Latest HEAD `ddc2a355f6f3886048433cea7a6a28de08891261`. Task4.3 independent QA PASS; local commit pending. Task3.6 QA cycle1 FAIL (High campaign-ID rotation); targeted repair/regression active. Task7.1 durable scheduler implementation active after contract/architecture gate.
 
 **Current execution boundary (user update):** Complete, independently verify, and commit every task through Task7.3, then stop for the user to review the application. Tasks8.1/8.2 deployment and subsequent release acceptance remain planned and must not begin before that review.
 
@@ -45,7 +45,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Epic 1. Design and implementation baseline
 
-### Task 1.1 — Confirm baseline and define screen states
+### Task 1.1 â€” Confirm baseline and define screen states
 
 **Status:** `[x]`
 **Agents:** designer-ui-ux, developer, tester
@@ -78,13 +78,13 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 - [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
 - [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
 
-**Upstream Outputs Needed:** Architecture sections 1–4; Task 1.1 ui-spec.md and relevant task contracts; completed dependency outputs (none required to start).
+**Upstream Outputs Needed:** Architecture sections 1â€“4; Task 1.1 ui-spec.md and relevant task contracts; completed dependency outputs (none required to start).
 
 ---
 
 ## Epic 2. Accounts and workspace boundaries
 
-### Task 2.1 — Migrate local identity to regular, admin, and demo accounts
+### Task 2.1 â€” Migrate local identity to regular, admin, and demo accounts
 
 **Status:** `[x]`
 **Agents:** developer, tester
@@ -122,7 +122,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 2.2 — Enforce ownership across APIs, tools, storage, and streams
+### Task 2.2 â€” Enforce ownership across APIs, tools, storage, and streams
 
 **Status:** `[x]`
 **Agents:** developer, tester
@@ -162,7 +162,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Epic 3. Usage, demo lifecycle, and administration
 
-### Task 3.1 — Implement atomic credit reservations and runtime metering
+### Task 3.1 â€” Implement atomic credit reservations and runtime metering
 
 **Status:** `[x]`
 **Agents:** developer, tester
@@ -200,7 +200,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 3.2 — Enforce account storage limits on every persistent write
+### Task 3.2 â€” Enforce account storage limits on every persistent write
 
 **Status:** `[x]`
 **Agents:** developer, tester
@@ -238,7 +238,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 3.3 — Provision private one-click demo identities
+### Task 3.3 â€” Provision private one-click demo identities
 
 **Status:** `[x]`
 **Agents:** developer, tester
@@ -276,7 +276,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 3.4 — Publish a protected showcase and open editable demo copies
+### Task 3.4 â€” Publish a protected showcase and open editable demo copies
 
 **Status:** `[x]`
 **Agents:** designer-ui-ux, developer, tester
@@ -316,7 +316,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 3.5 — Expire and clean up demos safely
+### Task 3.5 â€” Expire and clean up demos safely
 
 **Status:** `[x]`
 **Agents:** developer, tester
@@ -354,7 +354,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 3.6 — Build account, quota, and demo administration UI
+### Task 3.6 â€” Build account, quota, and demo administration UI
 
 **Status:** `[~]`
 **Agents:** designer-ui-ux, developer, tester
@@ -371,7 +371,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-3-6-admin-portal/artifacts/`
-- `Current status:` Task-scoped UI specification complete; developer contract and artifacts/source-map.md draft complete. Narrow architecture check covers extending existing credit_runtime_policy for persisted demo defaults/TTL/admission fields and authoritative transaction reads, preserving issued expiry/counters. Architecture decision complete and canonical contract reconciled; admin/usage modules, settings0037 and frontend implementation active. No guardedPG/browser evidence yet. Real owner Usage and demo known/exhausted/paused/unknown AI states remain required.
+- `Current status:` Developer Ready for QA: backend5focused unit suites19tests, guarded real0037 PG1suite/1test, backend types, frontend5files43tests/types, Vite production build and Playwright route-stub smoke1test PASS. Initial SQL nullable-bigint issue and pause-precedence assertion repaired; failed attempts and guard timing retained. Browser proof is mock-only; no live API/provider/deployment claim. Canonical dev-summary and artifacts/validation.md record evidence; Independent QA cycle1 FAIL (High): changing/clearing configured campaign ID switches the usage ledger and violates stable-campaign budget semantics. Developer targeted repair/regression is active; initial configuration must stay distinct from rotation. Scoped local commit remains pending.
 
 **Description:** Provide protected admin account management and usage views backed by admin-only APIs. Include configurable demo budgets and publishing controls.
 
@@ -396,7 +396,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Epic 4. Automatic execution and canonical task mutations
 
-### Task 4.1 — Replace per-turn consent with workspace-scoped automatic execution
+### Task 4.1 â€” Replace per-turn consent with workspace-scoped automatic execution
 
 **Status:** `[x]`
 **Agents:** designer-ui-ux, developer, tester
@@ -434,7 +434,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 4.2 — Execute Home task and workspace actions through canonical use cases
+### Task 4.2 â€” Execute Home task and workspace actions through canonical use cases
 
 **Status:** `[x]`
 **Agents:** developer, tester
@@ -472,7 +472,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 4.3 — Unify task deletion and remove archive behavior
+### Task 4.3 â€” Unify task deletion and remove archive behavior
 
 **Status:** `[~]`
 **Agents:** developer, tester
@@ -489,7 +489,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-4-3-task-delete-migration/artifacts/`
-- `Current status:` Developer contract/source map complete after delivered4.2; implementation is active across canonical deletion, archive callers and migration0036. Backend typecheck and8focused non-DB suites83tests PASS; task-owned global task OpenAPI spec passes after restoring collateral collection/filter definitions. One storage-quota OpenAPI baseline check remains failing for7unchanged Home/AI-run response references, explicitly logged as existing drift. Guarded canonical migration PostgreSQL test passes (1/1, clean guards); frontend deletion tests40/40 and both TS projects pass. Exact undo replay wiring is complete; focused mutation/action/handler units24/24, backend types and guarded Home parity5/5 pass with clean fresh postguard. Developer handoff complete; independent tester QA is active. Reuse existing Task1.1 and prepared Task5.3 delete-confirmation design; additive migration0036 reserved after skills0035. Preserve archived content and rollback mapping, canonical deletion/replay/undo safety. No runtime proof claimed yet.
+- `Current status:` Developer contract/source map complete after delivered4.2; implementation is active across canonical deletion, archive callers and migration0036. Backend typecheck and8focused non-DB suites83tests PASS; task-owned global task OpenAPI spec passes after restoring collateral collection/filter definitions. One storage-quota OpenAPI baseline check remains failing for7unchanged Home/AI-run response references, explicitly logged as existing drift. Guarded canonical migration PostgreSQL test passes (1/1, clean guards); frontend deletion tests40/40 and both TS projects pass. Exact undo replay wiring is complete; focused mutation/action/handler units24/24, backend types and guarded Home parity5/5 pass with clean fresh postguard. Independent tester QA PASS; additional exact ownership-boundaries PG2/2 with clean guards closes the old traceability gap. Required local task commit pending. Reuse existing Task1.1 and prepared Task5.3 delete-confirmation design; additive migration0036 reserved after skills0035. Preserve archived content and rollback mapping, canonical deletion/replay/undo safety. No runtime proof claimed yet.
 
 **Description:** Unify assigned/unassigned task deletion and remove archive across public schemas, tool commands, filters, and domain transitions.
 
@@ -512,7 +512,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Epic 5. Workspace-first UI and task editing
 
-### Task 5.1 — Move Home assistant into a floating Ask panel
+### Task 5.1 â€” Move Home assistant into a floating Ask panel
 
 **Status:** `[x]`
 **Agents:** designer-ui-ux, developer, tester
@@ -549,7 +549,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 5.2 — Replace Inbox emphasis with Add task and View all
+### Task 5.2 â€” Replace Inbox emphasis with Add task and View all
 
 **Status:** `[x]`
 **Agents:** designer-ui-ux, developer, tester
@@ -586,7 +586,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 5.3 — Open task details editable with Save and dirty-exit protection
+### Task 5.3 â€” Open task details editable with Save and dirty-exit protection
 
 **Status:** `[ ]`
 **Agents:** designer-ui-ux, developer, tester
@@ -623,7 +623,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 5.4 — Audit spacing, responsiveness, and accessibility across release screens
+### Task 5.4 â€” Audit spacing, responsiveness, and accessibility across release screens
 
 **Status:** `[ ]`
 **Agents:** designer-ui-ux, developer, tester
@@ -662,7 +662,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Epic 6. Memory, reusable skills, and data control
 
-### Task 6.1 — Make memory and selected context visibly control future runs
+### Task 6.1 â€” Make memory and selected context visibly control future runs
 
 **Status:** `[x]`
 **Agents:** designer-ui-ux, developer, tester
@@ -700,9 +700,9 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 6.2 — Persist editable user skills with bounded invocation
+### Task 6.2 â€” Persist editable user skills with bounded invocation
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** developer, tester
 **Depends on:** 4.1, 6.1
 **Risk:** High: prompt-driven privilege escalation
@@ -717,7 +717,9 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-6-2-skill-definitions/artifacts/`
-- `Current status:` Developer-owned contract/source map complete; CRUD/templates/schema/accounting implemented with8focused Jest tests and an earlier backend typecheck PASS. Home turn binding, invocation endpoint and per-tool ceiling checks are implemented; router dependency test fixed and missing-source binding/replay regressions added:4skills suites12tests plus3repository/Home suites21tests PASS. Focused skill/Home/showcase/OpenAPI checks passed across13suites61tests, then additional revision-quota/create-tombstone regressions passed6suites21tests (overlapping runs). Current backend typecheck PASS reported after shared compatibility updates. Additive migration0035 reserved. Narrow architecture preflight complete: immutable invocation claim, trusted Home turn binding before startup, replay without duplicate start and declared-tool/current-policy intersection. Invocation implementation proceeds after coordinated shared-source handoff. Architect-approved FK correction now preserves the invocation marker after workspace deletion and denies missing-source tools/replay. Sanitized public-skill projection and fresh private skill/revision copy,0035registry and composition binding are implemented. First guardedPG skills run had2assertion failures: quota expectation omitted existing project metadata (assertion fixed) and marker-retention expectation contradicted delivered0027 workspace-conversation cascade. Separate-process postguard passed with zero target DBs. Narrow architecture correction preserves actual workspace purge semantics; no new history retention feature or delivered-FK change. Final guarded reruns PASS: new skills suite2/2 and exact filtered clone1passed/4intentional skips, all fresh postguards clean. Independent tester PASS: all16selected backend suites have passing runs after the one stale SQL expectation was repaired;2Vitest tests and backend/bothfrontend typechecks PASS. GuardedPG evidence reviewed, security/capability/quota/projection checks pass; accepted Low Unicode title-length edge case logged. Required task commit pending. Demo cleanup0034 and direct-action runtime/result files have separate owners. No runtime evidence claimed yet.
+- `Current status:` Delivered at `ddc2a355f6f3886048433cea7a6a28de08891261` after independent QA PASS. All16selected Jest suites have passing evidence after a stale SQL expectation repair;2Vitest compatibility tests, backend and both frontend typechecks PASS. Guarded PostgreSQL skill suite2/2 and filtered pinned clone1PASS/4intentional skips, fresh guards clean; failed attempts remain in verification receipt. Isolated staged backend/frontend checks PASS. Root verified exact65paths, correct branch, empty index and preserved unrelated work. Existing0027 workspace purge semantics retained; surviving bound turns deny missing sources. Accepted Low UTF16 title-length friction logged. Visible editor/picker/public cards remain Task6.3; no live provider claim.
+
+**Delivered commit:** `ddc2a355f6f3886048433cea7a6a28de08891261` (QA PASS; root verified exact65paths/branch/emptyindex/protectedwork; isolated backend and both frontend typechecks PASS).
 
 **Description:** Add account/workspace skill definitions and versioned invocation while reusing bundled runtime skills and existing AI orchestration.
 
@@ -740,7 +742,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 6.3 — Expose editable skills and a working Plan my day flow
+### Task 6.3 â€” Expose editable skills and a working Plan my day flow
 
 **Status:** `[ ]`
 **Agents:** designer-ui-ux, developer, tester
@@ -778,7 +780,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 6.4 — Add bounded portable workspace export and usage settings
+### Task 6.4 â€” Add bounded portable workspace export and usage settings
 
 **Status:** `[ ]`
 **Agents:** designer-ui-ux, developer, tester
@@ -818,9 +820,9 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Epic 7. Always-on schedules and daily briefings
 
-### Task 7.1 — Implement durable daily schedules and job claiming
+### Task 7.1 â€” Implement durable daily schedules and job claiming
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** developer, tester
 **Depends on:** 3.1, 3.5, 6.2
 **Risk:** High: duplicate work, timezones, and restart behavior
@@ -835,7 +837,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-7-1-durable-scheduler/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Developer contract/source-map gate starting after delivered3.1/3.5/6.2; focused durable backend implementation next. No scheduler runtime proof claimed yet.
 
 **Description:** Add PostgreSQL schedule/occurrence/lease persistence and independent worker execution using the shared runtime authorization path.
 
@@ -856,7 +858,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 7.2 — Produce and persist useful daily briefings
+### Task 7.2 â€” Produce and persist useful daily briefings
 
 **Status:** `[ ]`
 **Agents:** developer, tester
@@ -894,7 +896,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 7.3 — Add schedule controls, Run now, and run history
+### Task 7.3 â€” Add schedule controls, Run now, and run history
 
 **Status:** `[ ]`
 **Agents:** designer-ui-ux, developer, tester
@@ -934,7 +936,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Epic 8. Deployment and runtime verification
 
-### Task 8.1 — Prepare persistent host, proxy, worker, and migration deployment
+### Task 8.1 â€” Prepare persistent host, proxy, worker, and migration deployment
 
 **Status:** `[ ]`
 **Agents:** developer, tester
@@ -971,7 +973,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 8.2 — Verify trusted HTTPS and real NVIDIA inference on public topology
+### Task 8.2 â€” Verify trusted HTTPS and real NVIDIA inference on public topology
 
 **Status:** `[ ]`
 **Agents:** developer, tester
@@ -1010,7 +1012,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Epic 9. Integrated acceptance and handoff
 
-### Task 9.1 — Validate security, concurrency, restart, and complete user journeys
+### Task 9.1 â€” Validate security, concurrency, restart, and complete user journeys
 
 **Status:** `[ ]`
 **Agents:** tester, developer (fixes)
@@ -1047,7 +1049,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 9.2 — Package showcase, operator runbook, and judge walkthrough
+### Task 9.2 â€” Package showcase, operator runbook, and judge walkthrough
 
 **Status:** `[ ]`
 **Agents:** developer, tester
@@ -1080,7 +1082,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 - [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
 - [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
 
-**Upstream Outputs Needed:** Architecture sections 1, 12–14; completed dependency outputs.
+**Upstream Outputs Needed:** Architecture sections 1, 12â€“14; completed dependency outputs.
 
 ---
 
@@ -1088,37 +1090,37 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 | Task | Status | QA verdict |
 | --- | --- | --- |
-| 1.1 — Confirm baseline and define screen states | `[x]` | PASS; `721f0f26011147437f9d24c4749431169b309ad1` |
-| 2.1 — Migrate local identity to regular, admin, and demo accounts | `[x]` | PASS; `d696550acddceac3a641584c1fe5f3fb52ad42bd` |
-| 2.2 — Enforce ownership across APIs, tools, storage, and streams | `[x]` | PASS; `6fb7278bc680a0df11e3f6e6cb8bd03a0090cb7c` |
-| 3.1 — Implement atomic credit reservations and runtime metering | `[x]` | PASS; `9b65d3c5b5906cb63033fed7bc2053e587d925b9` |
-| 3.2 — Enforce account storage limits on every persistent write | `[x]` | PASS; `b5d40315680b73afac3e04c1a52b8ceaba83a1bf` |
-| 3.3 — Provision private one-click demo identities | `[x]` | PASS; `3f4adabbe22a8303406cea9e4441b3e987f605d3` |
-| 3.4 — Publish a protected showcase and open editable demo copies | `[x]` | PASS; `ae188ba9d39264ff4b981dc745b7a1daafd70c20` |
-| 3.5 — Expire and clean up demos safely | `[x]` | PASS; `57a477f060e3c4a2ffb11fd01f3d6d4a983c4db1`; isolated types PASS |
-| 3.6 — Build account, quota, and demo administration UI | `[~]` | UI/contract/preflight complete; admin and owner Usage implementation active |
-| 4.1 — Replace per-turn consent with workspace-scoped automatic execution | `[x]` | PASS; `4f9ad9bddf227f53b7c55db237cc4a9a8d716846`; accepted Low viewport/test debt |
-| 4.2 — Execute Home task and workspace actions through canonical use cases | `[x]` | PASS; `00e40200ad40ddda73605295b151f42e90466690`; Low live-status refinement logged |
-| 4.3 — Unify task deletion and remove archive behavior | `[~]` | Migration1/1 and Home parity5/5 PG PASS; independent QA active |
-| 5.1 — Move Home assistant into a floating Ask panel | `[x]` | PASS; `1d22db9fe9f3fb67ac05eddf199952dadf2a5fb3` |
-| 5.2 — Replace Inbox emphasis with Add task and View all | `[x]` | PASS; `fdb200dc23eb83a1047f138ccdd8f7316f3855b1` |
-| 5.3 — Open task details editable with Save and dirty-exit protection | `[ ]` | Pending |
-| 5.4 — Audit spacing, responsiveness, and accessibility across release screens | `[ ]` | Pending |
-| 6.1 — Make memory and selected context visibly control future runs | `[x]` | PASS; `633cbeecd934ddd0e1042441158f91ca5e98435e`; accepted Low selector debt |
-| 6.2 — Persist editable user skills with bounded invocation | `[~]` | Independent QA PASS; local task commit pending; Low title-length debt |
-| 6.3 — Expose editable skills and a working Plan my day flow | `[ ]` | Pending |
-| 6.4 — Add bounded portable workspace export and usage settings | `[ ]` | Pending |
-| 7.1 — Implement durable daily schedules and job claiming | `[ ]` | Pending |
-| 7.2 — Produce and persist useful daily briefings | `[ ]` | Pending |
-| 7.3 — Add schedule controls, Run now, and run history | `[ ]` | Pending |
-| 8.1 — Prepare persistent host, proxy, worker, and migration deployment | `[ ]` | Pending |
-| 8.2 — Verify trusted HTTPS and real NVIDIA inference on public topology | `[ ]` | Pending |
-| 9.1 — Validate security, concurrency, restart, and complete user journeys | `[ ]` | Pending |
-| 9.2 — Package showcase, operator runbook, and judge walkthrough | `[ ]` | Pending |
+| 1.1 â€” Confirm baseline and define screen states | `[x]` | PASS; `721f0f26011147437f9d24c4749431169b309ad1` |
+| 2.1 â€” Migrate local identity to regular, admin, and demo accounts | `[x]` | PASS; `d696550acddceac3a641584c1fe5f3fb52ad42bd` |
+| 2.2 â€” Enforce ownership across APIs, tools, storage, and streams | `[x]` | PASS; `6fb7278bc680a0df11e3f6e6cb8bd03a0090cb7c` |
+| 3.1 â€” Implement atomic credit reservations and runtime metering | `[x]` | PASS; `9b65d3c5b5906cb63033fed7bc2053e587d925b9` |
+| 3.2 â€” Enforce account storage limits on every persistent write | `[x]` | PASS; `b5d40315680b73afac3e04c1a52b8ceaba83a1bf` |
+| 3.3 â€” Provision private one-click demo identities | `[x]` | PASS; `3f4adabbe22a8303406cea9e4441b3e987f605d3` |
+| 3.4 â€” Publish a protected showcase and open editable demo copies | `[x]` | PASS; `ae188ba9d39264ff4b981dc745b7a1daafd70c20` |
+| 3.5 â€” Expire and clean up demos safely | `[x]` | PASS; `57a477f060e3c4a2ffb11fd01f3d6d4a983c4db1`; isolated types PASS |
+| 3.6 â€” Build account, quota, and demo administration UI | `[~]` | QA cycle1 FAIL High campaign-ID rotation; targeted repair active |
+| 4.1 â€” Replace per-turn consent with workspace-scoped automatic execution | `[x]` | PASS; `4f9ad9bddf227f53b7c55db237cc4a9a8d716846`; accepted Low viewport/test debt |
+| 4.2 â€” Execute Home task and workspace actions through canonical use cases | `[x]` | PASS; `00e40200ad40ddda73605295b151f42e90466690`; Low live-status refinement logged |
+| 4.3 â€” Unify task deletion and remove archive behavior | `[~]` | Independent QA PASS; migration/parity/ownership PG proof; local commit pending |
+| 5.1 â€” Move Home assistant into a floating Ask panel | `[x]` | PASS; `1d22db9fe9f3fb67ac05eddf199952dadf2a5fb3` |
+| 5.2 â€” Replace Inbox emphasis with Add task and View all | `[x]` | PASS; `fdb200dc23eb83a1047f138ccdd8f7316f3855b1` |
+| 5.3 â€” Open task details editable with Save and dirty-exit protection | `[ ]` | Pending |
+| 5.4 â€” Audit spacing, responsiveness, and accessibility across release screens | `[ ]` | Pending |
+| 6.1 â€” Make memory and selected context visibly control future runs | `[x]` | PASS; `633cbeecd934ddd0e1042441158f91ca5e98435e`; accepted Low selector debt |
+| 6.2 â€” Persist editable user skills with bounded invocation | `[x]` | PASS; `ddc2a355f6f3886048433cea7a6a28de08891261`; Low title-length debt |
+| 6.3 â€” Expose editable skills and a working Plan my day flow | `[ ]` | Pending |
+| 6.4 â€” Add bounded portable workspace export and usage settings | `[ ]` | Pending |
+| 7.1 â€” Implement durable daily schedules and job claiming | `[~]` | Developer contract gate and durable backend implementation starting |
+| 7.2 â€” Produce and persist useful daily briefings | `[ ]` | Pending |
+| 7.3 â€” Add schedule controls, Run now, and run history | `[ ]` | Pending |
+| 8.1 â€” Prepare persistent host, proxy, worker, and migration deployment | `[ ]` | Pending |
+| 8.2 â€” Verify trusted HTTPS and real NVIDIA inference on public topology | `[ ]` | Pending |
+| 9.1 â€” Validate security, concurrency, restart, and complete user journeys | `[ ]` | Pending |
+| 9.2 â€” Package showcase, operator runbook, and judge walkthrough | `[ ]` | Pending |
 
 ## Blocked Items and implementation-time inputs
 
-Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 4.2, 5.1, 5.2, and 6.1 are delivered. Task3.5 demo cleanup is delivered at `57a477f060e3c4a2ffb11fd01f3d6d4a983c4db1`; Task4.3 canonical deletion and Task6.2 persisted skills are in progress; Task4.2 direct Home actions are delivered at `00e40200ad40ddda73605295b151f42e90466690`; Task6.1 memory/context is delivered at `633cbeecd934ddd0e1042441158f91ca5e98435e`. Current subagents use GPT-6 Luna with maximum reasoning. Existing work is preserved; model availability must be reported honestly. Dependency ordering above applies.
+Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 4.2, 5.1, 5.2, and 6.1 are delivered. Task3.5 demo cleanup is delivered at `57a477f060e3c4a2ffb11fd01f3d6d4a983c4db1`; Task6.2 skills is delivered at `ddc2a355f6f3886048433cea7a6a28de08891261`; Task4.3 deletion has independent QA PASS and its scoped local commit is pending; Task3.6 administration is in independent QA; Task4.2 direct Home actions are delivered at `00e40200ad40ddda73605295b151f42e90466690`; Task6.1 memory/context is delivered at `633cbeecd934ddd0e1042441158f91ca5e98435e`. Current subagents use GPT-6 Luna with maximum reasoning. Existing work is preserved; model availability must be reported honestly. Dependency ordering above applies.
 
 - Task 8.1/8.2 needs the real deployment host/domain and DNS/certificate access. Do not claim the local self-signed setup fixes public browser trust.
 - Credit enforcement requires actual provider pricing and a way to bound/meter all Hermes calls. Public AI access stays disabled if that cannot be established.
@@ -1129,7 +1131,7 @@ Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 4.2, 5.1, 5.2, and 6.1 are de
 
 ## Tech Debt Log
 
-- Task4.3 accepted Low: `backend/openapi.json` project-task filter prose still mentions `archived`; schema and runtime accept only all/open/completed. Remove the stale description during later documentation refinement. No live archive path is enabled; independent QA is still in progress.
+- Task4.3 accepted Low: `backend/openapi.json` project-task filter prose still mentions `archived`; schema and runtime accept only all/open/completed. Remove the stale description during later documentation refinement. No live archive path is enabled; independent QA PASS.
 
 Accepted observations and follow-up work. The user priority update permits explicitly recorded Low visual/test debt; functional and security release gates remain required:
 

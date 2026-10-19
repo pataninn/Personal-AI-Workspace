@@ -215,6 +215,13 @@ function actionContentScope(
         { entity: 'action_ledger_records', id: result.record.id },
         ...(proposalItemId ? [{ entity: 'home_change_proposal_items' as const, id: proposalItemId }] : [])
       ];
+      if (input.actionKind === 'task.delete') {
+        const receiptRows = await transaction.query(
+          'SELECT "id" FROM "action_ledger_records" WHERE "owner_id" = $1 AND "target_kind" = \'task\' AND "target_id" = $2',
+          [input.ownerId, input.targetId]
+        ) as readonly { id: string }[];
+        identities.push(...receiptRows.map(({ id }) => ({ entity: 'action_ledger_records' as const, id })));
+      }
       if (input.turnId !== null && conversationId) {
         const eventRows = await transaction.query(
           'SELECT "last_event_sequence" FROM "home_conversations" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1',

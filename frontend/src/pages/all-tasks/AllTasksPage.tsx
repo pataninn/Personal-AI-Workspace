@@ -60,11 +60,11 @@ export function AllTasksPage(): React.JSX.Element {
 function readFilterDraft(params: URLSearchParams): GlobalTaskFilterDraft {
   const workspaceId = params.get('workspaceId');
   const requestedStatus = params.get('status');
-  const validStatuses = ['todo', 'in_progress', 'blocked', 'done', 'archived'];
+  const validStatuses = ['todo', 'in_progress', 'blocked', 'done'];
   const requestedImportance = params.get('importance');
   const validImportance = ['low', 'medium', 'high', 'urgent'];
   const status = validStatuses.includes(requestedStatus ?? '') ? requestedStatus as GlobalTaskFilterDraft['status'] : 'all';
-  const includeArchived = params.get('includeArchived') === 'true' || status === 'archived';
+  const includeArchived = params.get('includeArchived') === 'true';
   return {
     collection: params.get('inboxOnly') === 'true' ? 'inbox' : workspaceId ? `workspace:${workspaceId}` : 'all',
     status,

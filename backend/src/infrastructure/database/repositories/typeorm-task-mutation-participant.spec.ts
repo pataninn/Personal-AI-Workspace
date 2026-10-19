@@ -10,7 +10,7 @@ import {
   ProjectTaskVersionConflictError
 } from '@/modules/tasks/domain/project-task-errors';
 import type { ProjectTaskStatus } from '@/modules/tasks/domain/project-task';
-import type { CreateTaskMutationInput, MoveTaskMutationInput, UpdateTaskMutationInput } from '@/modules/tasks/repositories/task-mutation-participant';
+import type { CreateTaskMutationInput, DeleteTaskMutationInput, MoveTaskMutationInput, UpdateTaskMutationInput } from '@/modules/tasks/repositories/task-mutation-participant';
 
 const OWNER = '11111111-1111-4111-8111-111111111111';
 const OTHER_OWNER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -50,7 +50,6 @@ interface FakeTaskRow {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
-  archived_at: string | null;
 }
 
 function createFixture(options: ParticipantFixtureOptions = {}) {
@@ -75,7 +74,6 @@ function createFixture(options: ParticipantFixtureOptions = {}) {
     created_at: '2026-10-15T09:00:00.000Z',
     updated_at: '2026-10-15T09:00:00.000Z',
     completed_at: null as string | null,
-    archived_at: null as string | null
   };
   currentTask = { ...currentTask, ...options.initialTask };
   const projectLocks: string[] = [];
@@ -140,7 +138,6 @@ function createFixture(options: ParticipantFixtureOptions = {}) {
         created_at: '2026-10-16T09:00:00.000Z',
         updated_at: '2026-10-16T09:00:00.000Z',
         completed_at: null,
-        archived_at: null
       };
       return [{ id: currentTask.id }];
     }
@@ -151,9 +148,12 @@ function createFixture(options: ParticipantFixtureOptions = {}) {
       currentTask = { ...currentTask, project_id: parameters[0] as string | null, position: Number(parameters[1]), version: currentTask.version + 1 };
       return [{ id: TASK }];
     }
-    if (sql.startsWith('UPDATE "project_tasks" SET "status"')) {
+    if (sql.startsWith('UPDATE "action_ledger_records" SET "reversible_fields"')) {
       writes.push({ sql, parameters });
-      currentTask = { ...currentTask, status: 'archived', archived_at: '2026-10-16T10:00:00.000Z', version: currentTask.version + 1 };
+      return [];
+    }
+    if (sql.startsWith('DELETE FROM "project_tasks"')) {
+      writes.push({ sql, parameters });
       return [{ id: TASK }];
     }
     if (sql.startsWith('UPDATE "project_tasks" SET "version" = "version" + 1')) {
@@ -285,24 +285,25 @@ describe('task action-ledger transaction participant', () => {
     expect(stale.writes.some(({ sql }) => sql.startsWith('UPDATE "project_tasks" SET "project_id"'))).toBe(false);
   });
 
-  it('archives without deleting the task row and advances the source order version', async () => {
+  it('deletes owner-owned tasks, advances collection order, and relies on task foreign keys to clear task-scoped rows', async () => {
     const fixture = createFixture();
 
-    const applied = await fixture.repository.archiveInTransaction(fixture.runner, {
+    const input: DeleteTaskMutationInput = {
       ownerId: OWNER,
       taskId: TASK,
       expectedVersion: 1,
       expectedProjectId: SOURCE,
-      expectedOrderVersion: 4,
       actorKind: 'manual'
-    });
+    };
+    const applied = await fixture.repository.deleteInTransaction(fixture.runner, input);
 
-    expect(applied.task).toMatchObject({ id: TASK, status: 'archived', version: 2, archivedAt: expect.any(Date) });
-    expect(applied.outcome).toMatchObject({ targetId: TASK, targetVersion: 2, sourceOrderVersion: 5 });
-    expect(fixture.writes.some(({ sql }) => sql.startsWith('DELETE FROM "project_tasks"'))).toBe(false);
-    expect(fixture.writes.some(({ sql }) => sql.startsWith('UPDATE "project_tasks" SET "status"'))).toBe(true);
-    expect(fixture.task.source_suggestion_id).toBe(SUGGESTION);
-    expect(fixture.task.subtasks).toHaveLength(1);
+    expect(applied).toMatchObject({ preVersion: 1, postVersion: null, outcome: { targetId: TASK, targetVersion: null, sourceOrderVersion: 5 }, undoStatus: 'not_reversible', reversibleFields: {} });
+    expect(fixture.writes.find(({ sql }) => sql.startsWith('DELETE FROM "project_tasks"'))).toMatchObject({
+      sql: expect.stringContaining('WHERE "owner_id" = $1 AND "id" = $2 AND "version" = $3'),
+      parameters: [OWNER, TASK, 1]
+    });
+    expect(fixture.writes.some(({ sql }) => sql.includes('UPDATE "action_ledger_records" SET "reversible_fields"'))).toBe(true);
+    expect(fixture.writes.some(({ sql }) => sql.startsWith('INSERT INTO "project_task_events"'))).toBe(false);
   });
 
   it('keeps undo available for a maximum-shape valid task edit above the old 8 KiB receipt limit', async () => {

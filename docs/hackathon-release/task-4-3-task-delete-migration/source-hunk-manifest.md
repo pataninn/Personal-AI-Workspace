@@ -1,0 +1,26 @@
+# Task 4.3 source and hunk manifest
+
+This manifest records exact Task 4.3 ownership for the local commit. Shared files are staged by hunk; see `exact-source-manifest.txt` for the complete reconciled inventory and exclusions.
+
+## Backend
+
+- Task/domain/routes: `backend/src/modules/tasks/controllers/global-task-router.ts`, `project-task-router.ts`, `domain/project-task.ts`, `project-task-errors.ts`, `project-task-validation.ts`, `project-task-validation.spec.ts`, `index.ts`, `repositories/project-task-repository.ts`, `repositories/task-mutation-participant.ts`, `use-cases/global-task-query-use-cases.ts`, `project-task-use-cases.ts`, `project-task-use-cases.spec.ts`, `task-mutation-use-cases.ts`, `task-mutation-use-cases.spec.ts`.
+- Persistence/ledger: `backend/src/infrastructure/database/repositories/typeorm-project-task-repository.ts`, `typeorm-project-task-repository.spec.ts`, `typeorm-task-mutation-participant.spec.ts`, `typeorm-global-task-query.spec.ts`, `typeorm-project-repository.ts`, `typeorm-project-repository.spec.ts`, `action-ledger-persistence-mappers.ts`, `typeorm-action-ledger-repository.ts`; `backend/src/modules/action-ledger/domain/action-ledger-types.ts`, `repositories/action-ledger-undo-repository.ts`.
+- Home: `backend/src/modules/home-assistant/controllers/action-undo-router.ts`, `domain/home-change-proposal-types.ts`, `use-cases/action-undo-use-cases.ts`, `action-undo-use-cases.spec.ts`, `home-change-proposal-use-cases.ts`, `home-planning-command-validation.ts`, `home-planning-command-validation.spec.ts`, `home-planning-tool-request-handler.ts`, `home-planning-tool-request-handler.spec.ts`. In the shared handler/spec, include only Task 4.3 delete/undo branches and tests; keep Task 6.2 skill binding, capability/current-skill gate, declarations, and tests intact. Replay occurs after current principal, skill invocation/capability, and Home policy checks and before task/target lookup.
+- Migration/shared boundaries: `backend/src/infrastructure/database/migrations/1710000036000-canonical-task-delete.ts`, `backend/test/integration/canonical-task-delete-migration.integration.spec.ts`; `backend/src/composition-root.ts` only the task archive mutation import/dependency removal; `backend/src/infrastructure/database/data-source.ts` only the 0036 entry after 0035; `typeorm-demo-showcase-copy-manager.ts` only the project-task insert column/status compatibility for removal of `archived_at`; `backend/src/infrastructure/hermes/hermes-home-planning-runtime.ts` and `.spec.ts` replace the task archive tool name with canonical delete.
+- Contract/bridge: `backend/openapi.json`, `backend/src/openapi/global-task-openapi.spec.ts`, `backend/src/openapi/storage-quota-openapi.spec.ts`, `deploy/hermes-bridge/runtime/home_tool_schemas.py`. Preserve skill and admin/usage OpenAPI hunks.
+- Integration: `backend/test/integration/global-task-mutation.integration.spec.ts`, `global-task-query.integration.spec.ts`, `home-planning-command-parity.integration.spec.ts`, `ownership-boundaries-http.integration.spec.ts`, `project-task-redesign.integration.spec.ts`.
+- Showcase archive-only hunks: `backend/src/modules/showcases/domain/showcase-types.ts` status union and `use-cases/showcase-use-cases.spec.ts` task fixture. Preserve all skill fields/tests.
+
+## Frontend
+
+- Task API/types: `frontend/src/entities/project-task/model/types.ts`, `api/global-task-api.ts`, `api/global-task-api.spec.ts`, `api/project-task-api.ts`, `api/project-task-api.spec.ts`, `index.ts`, `ui/ProjectTaskStatusLabel.tsx`, `model/task-priority.spec.ts`.
+- Lists/actions: `frontend/src/features/global-task-query/ui/GlobalTaskFilters.tsx`, `GlobalTaskList.tsx`, `frontend/src/pages/all-tasks/AllTasksPage.tsx`/`.spec.tsx`, `frontend/src/features/project-tasks/index.ts`, `model/use-project-task-actions.ts`, `ui/ProjectTaskItem.spec.tsx`, `ui/TaskEditorDialog.spec.tsx`, `frontend/src/pages/project-tasks/ProjectTasksPage.spec.tsx`.
+- Detail/Home: `frontend/src/pages/task-detail/TaskDetailPage.tsx`/`.spec.tsx`, `frontend/src/features/home-chat/ui/HomePlanningRecords.tsx`, `frontend/src/entities/home-conversation/api/home-proposal-api.ts`, `frontend/src/features/task-actions/model/create-task-patch.spec.ts`.
+- Showcase status-only hunks: `frontend/src/features/showcase-publishing/ui/ShowcasePublisher.tsx`/`.spec.tsx`. Preserve skill selection/projection code.
+
+## Exclusions
+
+- Do not include Task 6.2 skill definitions/binding/schemas/repos/clone logic or migration 0035; Task 3.5 expiry/credit accounting; or Task 3.6 admin/usage code and migration 0037. The `r1-populated-migration.integration.spec.ts` `bootstrapSettings` fixture refactor is 3.6-only and excluded.
+- Preserve original protected AI-run work (four original tracked AI-run files, untracked direct-chat spec, `ponytail-review.md`, generated `frontend/tsconfig.node.tsbuildinfo`, app scratch, older 5.1 aliases). These are not Task 4.3.
+- Outer task docs: `contract.md`, `source-map.md`, this manifest, `dev-summary.md`, and `artifacts/verification-receipt.md`/`code-review.md`.

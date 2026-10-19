@@ -8,7 +8,7 @@ const task = {
   id: 'task-1', projectId: null, title: 'Original title', details: 'Original detail', importance: 'medium', deadline: null, subtasks: [],
   status: 'todo', position: 0, version: 1,
   source: { kind: 'user', label: 'Added by you', suggestionId: null, runId: null, conversationId: null, acceptedAt: null },
-  createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:00:00.000Z', completedAt: null, archivedAt: null
+  createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:00:00.000Z', completedAt: null
 } as const;
 
 describe('TaskEditorDialog', () => {

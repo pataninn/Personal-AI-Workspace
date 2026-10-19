@@ -7,7 +7,6 @@ import type { ActionLedgerMutationResult, ActionLedgerRecord, ActionLedgerRevers
 import { ActionLedgerTargetStateConflictError } from '@/modules/action-ledger/domain/action-ledger-errors';
 import type { GlobalTaskQueryCursorPosition, GlobalTaskQueryFilters, GlobalTaskQueryItem } from '@/modules/tasks/domain/global-task-query';
 import {
-  ProjectTaskArchivedError,
   ProjectTaskArchivedProjectError,
   ProjectTaskIdempotencyReusedError,
   ProjectTaskMoveConflictError,
@@ -41,7 +40,7 @@ import type {
 import type { IGlobalTaskQueryRepository, GlobalTaskQueryRepositoryPage } from '@/modules/tasks/repositories/global-task-query-repository';
 import type {
   AppliedTaskMutation,
-  ArchiveTaskMutationInput,
+  DeleteTaskMutationInput,
   CreateTaskMutationInput,
   ITaskMutationParticipant,
   ITaskUndoParticipant,
@@ -70,8 +69,6 @@ interface TaskRow {
   readonly updated_at: Date | string;
   readonly completed_at: Date | string | null;
   readonly completed_at_exact?: string | null;
-  readonly archived_at: Date | string | null;
-  readonly archived_at_exact?: string | null;
   readonly idempotency_snapshot?: unknown;
 }
 
@@ -117,9 +114,8 @@ interface PositionRow {
 
 const TASK_COLUMNS = `t."id", t."owner_id", t."project_id", t."title", t."details", t."importance", t."deadline"::text AS "deadline", t."subtasks", t."status", t."position", t."version", t."source_kind", t."source_suggestion_id",
   t."source_run_id", t."source_conversation_id", t."source_accepted_at",
-  t."created_at", t."updated_at", t."completed_at", t."archived_at",
-  to_char(t."completed_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "completed_at_exact",
-  to_char(t."archived_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "archived_at_exact"`;
+  t."created_at", t."updated_at", t."completed_at",
+  to_char(t."completed_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "completed_at_exact"`;
 
 function asRows<T>(result: unknown): readonly T[] {
   if (!Array.isArray(result)) {
@@ -173,8 +169,7 @@ function toTask(row: TaskRow): ProjectTask {
     },
     createdAt: toDate(row.created_at),
     updatedAt: toDate(row.updated_at),
-    completedAt: nullableDate(row.completed_at),
-    archivedAt: nullableDate(row.archived_at)
+    completedAt: nullableDate(row.completed_at)
   };
 }
 
@@ -227,7 +222,6 @@ function snapshotToTask(value: unknown): ProjectTask {
     createdAt: toDate(parsed.createdAt as unknown as string),
     updatedAt: toDate(parsed.updatedAt as unknown as string),
     completedAt: parsed.completedAt === null ? null : toDate(parsed.completedAt as unknown as string),
-    archivedAt: parsed.archivedAt === null ? null : toDate(parsed.archivedAt as unknown as string),
     source: {
       ...parsed.source,
       acceptedAt: parsed.source.acceptedAt === null ? null : toDate(parsed.source.acceptedAt as unknown as string)
@@ -241,7 +235,6 @@ function serializeTask(task: ProjectTask): Record<string, unknown> {
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
     completedAt: task.completedAt?.toISOString() ?? null,
-    archivedAt: task.archivedAt?.toISOString() ?? null,
     source: { ...task.source, acceptedAt: task.source.acceptedAt?.toISOString() ?? null }
   };
 }
@@ -320,7 +313,7 @@ async function bumpOrderVersion(queryRunner: QueryRunner, ownerId: string, proje
 
 async function countActiveTasks(queryRunner: QueryRunner, ownerId: string, projectId: string): Promise<number> {
   const rows = asRows<CountRow>(await queryRunner.query(
-    `SELECT count(*) AS "count" FROM "project_tasks" WHERE "owner_id" = $1 AND "project_id" = $2 AND "status" <> 'archived'`,
+    `SELECT count(*) AS "count" FROM "project_tasks" WHERE "owner_id" = $1 AND "project_id" = $2`,
     [ownerId, projectId]
   ));
   return Number(rows[0]?.count ?? 0);
@@ -328,7 +321,7 @@ async function countActiveTasks(queryRunner: QueryRunner, ownerId: string, proje
 
 async function maxTaskPosition(queryRunner: QueryRunner, ownerId: string, projectId: string): Promise<number> {
   const rows = asRows<PositionRow>(await queryRunner.query(
-    `SELECT max("position") AS "max_position" FROM "project_tasks" WHERE "owner_id" = $1 AND "project_id" = $2 AND "status" <> 'archived'`,
+    `SELECT max("position") AS "max_position" FROM "project_tasks" WHERE "owner_id" = $1 AND "project_id" = $2`,
     [ownerId, projectId]
   ));
   return Number(rows[0]?.max_position ?? -1);
@@ -354,10 +347,9 @@ async function loadTaskBySource(queryRunner: QueryRunner, ownerId: string, proje
 
 async function loadTaskList(queryRunner: QueryRunner, ownerId: string, projectId: string, filter: ProjectTaskFilter, orderVersion?: number): Promise<ProjectTaskListSnapshot> {
   const conditions: Record<ProjectTaskFilter, string> = {
-    all: `t."status" <> 'archived'`,
+    all: `TRUE`,
     open: `t."status" IN ('todo', 'in_progress', 'blocked')`,
-    completed: `t."status" = 'done'`,
-    archived: `t."status" = 'archived'`
+    completed: `t."status" = 'done'`
   };
   const rows = asRows<TaskRow>(await queryRunner.query(
     `SELECT ${TASK_COLUMNS} FROM "project_tasks" t
@@ -447,22 +439,6 @@ async function appendTask(
   return task;
 }
 
-async function compactTaskPositions(queryRunner: QueryRunner, ownerId: string, projectId: string, removedPosition: number): Promise<void> {
-  const maxPosition = await maxTaskPosition(queryRunner, ownerId, projectId);
-  const count = await countActiveTasks(queryRunner, ownerId, projectId);
-  const offset = maxPosition + count + 2;
-  await queryRunner.query(
-    `UPDATE "project_tasks" SET "position" = "position" + $3
-     WHERE "owner_id" = $1 AND "project_id" = $2 AND "status" <> 'archived'`,
-    [ownerId, projectId, offset]
-  );
-  await queryRunner.query(
-    `UPDATE "project_tasks" SET "position" = CASE WHEN ("position" - $3) > $4 THEN "position" - $3 - 1 ELSE "position" - $3 END
-     WHERE "owner_id" = $1 AND "project_id" = $2 AND "status" <> 'archived'`,
-    [ownerId, projectId, offset, removedPosition]
-  );
-}
-
 function collectionPredicate(projectId: string | null, alias: string, parameter = 2): string {
   return projectId === null ? `${alias}."project_id" IS NULL` : `${alias}."project_id" = $${parameter}`;
 }
@@ -544,7 +520,7 @@ async function bumpCollectionOrderVersion(queryRunner: QueryRunner, ownerId: str
 async function countCollectionTasks(queryRunner: QueryRunner, ownerId: string, projectId: string | null): Promise<number> {
   const rows = asRows<CountRow>(await queryRunner.query(
     `SELECT count(*) AS "count" FROM "project_tasks" t
-     WHERE t."owner_id" = $1 AND ${collectionPredicate(projectId, 't')} AND t."status" <> 'archived'`,
+     WHERE t."owner_id" = $1 AND ${collectionPredicate(projectId, 't')}`,
     collectionValues(ownerId, projectId)
   ));
   return Number(rows[0]?.count ?? 0);
@@ -553,7 +529,7 @@ async function countCollectionTasks(queryRunner: QueryRunner, ownerId: string, p
 async function maxCollectionTaskPosition(queryRunner: QueryRunner, ownerId: string, projectId: string | null): Promise<number> {
   const rows = asRows<PositionRow>(await queryRunner.query(
     `SELECT max(t."position") AS "max_position" FROM "project_tasks" t
-     WHERE t."owner_id" = $1 AND ${collectionPredicate(projectId, 't')} AND t."status" <> 'archived'`,
+     WHERE t."owner_id" = $1 AND ${collectionPredicate(projectId, 't')}`,
     collectionValues(ownerId, projectId)
   ));
   return Number(rows[0]?.max_position ?? -1);
@@ -571,7 +547,7 @@ async function compactCollectionTaskPositions(queryRunner: QueryRunner, ownerId:
   const removedParameter = projectId === null ? '$3' : '$4';
   await queryRunner.query(
     `UPDATE "project_tasks" t SET "position" = t."position" + ${offsetParameter}
-     WHERE t."owner_id" = $1 AND ${predicate} AND t."status" <> 'archived'`,
+     WHERE t."owner_id" = $1 AND ${predicate}`,
     values
   );
   const secondValues = projectId === null ? [ownerId, offset, removedPosition] : [ownerId, projectId, offset, removedPosition];
@@ -579,7 +555,7 @@ async function compactCollectionTaskPositions(queryRunner: QueryRunner, ownerId:
     `UPDATE "project_tasks" t
      SET "position" = CASE WHEN (t."position" - ${offsetParameter}) > ${removedParameter}
        THEN t."position" - ${offsetParameter} - 1 ELSE t."position" - ${offsetParameter} END
-     WHERE t."owner_id" = $1 AND ${predicate} AND t."status" <> 'archived'`,
+     WHERE t."owner_id" = $1 AND ${predicate}`,
     secondValues
   );
 }
@@ -625,7 +601,7 @@ function persistedTaskField(row: TaskRow, field: keyof ActionLedgerReversibleFie
     case 'projectId': return row.project_id;
     case 'importance': return row.importance;
     case 'deadline': return row.deadline;
-    case 'archivedAt': return row.archived_at_exact ?? null;
+    case 'archivedAt': return null;
     case 'completedAt': return row.completed_at_exact ?? null;
     case 'subtasks': return row.subtasks ?? [];
     default: return undefined;
@@ -692,13 +668,13 @@ async function insertActiveTaskAtPosition(queryRunner: QueryRunner, ownerId: str
   const firstValues = projectId === null ? [ownerId, offset, position] : [ownerId, projectId, offset, position];
   await queryRunner.query(
     `UPDATE "project_tasks" t SET "position" = t."position" + ${offsetParameter}
-     WHERE t."owner_id" = $1 AND ${predicate} AND t."status" <> 'archived' AND t."position" >= ${positionParameter}`,
+     WHERE t."owner_id" = $1 AND ${predicate} AND t."position" >= ${positionParameter}`,
     firstValues
   );
   const secondValues = projectId === null ? [ownerId, offset, position] : [ownerId, projectId, offset, position];
   await queryRunner.query(
     `UPDATE "project_tasks" t SET "position" = t."position" - ${offsetParameter} + 1
-     WHERE t."owner_id" = $1 AND ${predicate} AND t."status" <> 'archived' AND t."position" >= (${offsetParameter}::integer + ${positionParameter}::integer)`,
+     WHERE t."owner_id" = $1 AND ${predicate} AND t."position" >= (${offsetParameter}::integer + ${positionParameter}::integer)`,
     secondValues
   );
 }
@@ -722,7 +698,6 @@ function taskReversibleFields(
   add('projectId', before.projectId, after.projectId);
   add('importance', before.importance, after.importance);
   add('deadline', before.deadline, after.deadline);
-  add('archivedAt', before.archivedAt?.toISOString() ?? null, after.archivedAt?.toISOString() ?? null);
   if (beforeCompletedAtExact !== undefined && afterCompletedAtExact !== undefined) {
     add('completedAt', beforeCompletedAtExact, afterCompletedAtExact);
   }
@@ -830,9 +805,6 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
     }
     if (input.expectedProjectId !== undefined && current.projectId !== input.expectedProjectId) {
       throw new ProjectTaskNotFoundError();
-    }
-    if (current.status === 'archived') {
-      throw new ProjectTaskArchivedError();
     }
     if (current.version !== input.expectedVersion) {
       throw new ProjectTaskVersionConflictError();
@@ -969,9 +941,6 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
     if (current.projectId !== observed.projectId) {
       throw new ProjectTaskMoveConflictError();
     }
-    if (current.status === 'archived') {
-      throw new ProjectTaskArchivedError();
-    }
     if (current.version !== input.expectedVersion) {
       throw new ProjectTaskVersionConflictError();
     }
@@ -1007,8 +976,8 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
     return makeTaskMutation({ task, before: current, sourceOrderVersion, destinationOrderVersion });
   }
 
-  /** Archives a task without deleting its stable row, source provenance, checklist, or history. */
-  public async archiveInTransaction(queryRunner: QueryRunner, input: ArchiveTaskMutationInput): Promise<AppliedTaskMutation> {
+  /** Deletes the canonical task and its task-scoped content inside the action-ledger transaction. */
+  public async deleteInTransaction(queryRunner: QueryRunner, input: DeleteTaskMutationInput): Promise<ActionLedgerMutationResult> {
     const observed = await loadTaskByOwner(queryRunner, input.ownerId, input.taskId);
     if (!observed) {
       throw new ProjectTaskNotFoundError();
@@ -1017,10 +986,7 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
       throw new ProjectTaskNotFoundError();
     }
     await lockCollectionProject(queryRunner, input.ownerId, observed.projectId);
-    const orderVersion = await lockCollectionOrderState(queryRunner, input.ownerId, observed.projectId);
-    if (input.expectedOrderVersion !== undefined && orderVersion !== input.expectedOrderVersion) {
-      throw new ProjectTaskOrderConflictError();
-    }
+    await lockCollectionOrderState(queryRunner, input.ownerId, observed.projectId);
     const current = await loadTaskByOwner(queryRunner, input.ownerId, input.taskId, true);
     if (!current) {
       throw new ProjectTaskNotFoundError();
@@ -1031,35 +997,31 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
     if (input.expectedProjectId !== undefined && current.projectId !== input.expectedProjectId) {
       throw new ProjectTaskNotFoundError();
     }
-    if (current.status === 'archived') {
-      throw new ProjectTaskArchivedError();
-    }
     if (current.version !== input.expectedVersion) {
       throw new ProjectTaskVersionConflictError();
     }
-    const updated = asRows<{ readonly id: string }>(await queryRunner.query(
-      `UPDATE "project_tasks" SET "status" = 'archived', "archived_at" = now(), "version" = "version" + 1, "updated_at" = now()
-       WHERE "owner_id" = $1 AND "id" = $2 AND "version" = $3 RETURNING "id"`,
+    await queryRunner.query(
+      `UPDATE "action_ledger_records" SET "reversible_fields" = '{}'::jsonb,
+         "undo_status" = CASE WHEN "undo_status" = 'available' THEN 'not_reversible'::"action_ledger_undo_status" ELSE "undo_status" END
+       WHERE "owner_id" = $1 AND "target_kind" = 'task' AND "target_id" = $2`,
+      [input.ownerId, input.taskId]
+    );
+    const deleted = asRows<{ readonly id: string }>(await queryRunner.query(
+      `DELETE FROM "project_tasks" WHERE "owner_id" = $1 AND "id" = $2 AND "version" = $3 RETURNING "id"`,
       [input.ownerId, input.taskId, input.expectedVersion]
     ));
-    if (!updated[0]) {
+    if (!deleted[0]) {
       throw new ProjectTaskVersionConflictError();
     }
     await compactCollectionTaskPositions(queryRunner, input.ownerId, current.projectId, current.position);
     const sourceOrderVersion = await bumpCollectionOrderVersion(queryRunner, input.ownerId, current.projectId);
-    const task = await loadTaskByOwner(queryRunner, input.ownerId, input.taskId);
-    if (!task) {
-      throw new ProjectTaskNotFoundError();
-    }
-    await insertTaskMutationEvent(queryRunner, {
-      ownerId: input.ownerId,
-      projectId: current.projectId,
-      taskId: task.id,
-      actorKind: input.actorKind,
-      eventType: 'task.status_changed',
-      details: { from: current.status, to: 'archived' }
-    });
-    return makeTaskMutation({ task, before: current, sourceOrderVersion });
+    return {
+      preVersion: current.version,
+      postVersion: null,
+      reversibleFields: {},
+      outcome: { targetId: current.id, targetVersion: null, sourceOrderVersion },
+      undoStatus: 'not_reversible'
+    };
   }
 
   /** Applies a version-checked task compensation on the action ledger's transaction. */
@@ -1069,7 +1031,7 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
   ): Promise<ActionLedgerMutationResult> {
     const { ownerId, original } = input;
     if (original.targetKind !== 'task' || original.undoStatus !== 'available') throw new ActionLedgerTargetStateConflictError('not_reversible');
-    if (!['task.create', 'task.update', 'task.move', 'task.archive'].includes(original.actionKind)) {
+    if (!['task.create', 'task.update', 'task.move'].includes(original.actionKind)) {
       throw new ActionLedgerTargetStateConflictError('unsupported_action');
     }
     if (original.postVersion === null || original.outcome.targetVersion !== original.postVersion || original.outcome.targetId !== original.targetId) {
@@ -1096,7 +1058,6 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
     if (current.projectId !== observed.projectId || current.version !== original.postVersion) throw new ActionLedgerTargetStateConflictError('changed');
 
     if (original.actionKind === 'task.create') {
-      if (current.status === 'archived') throw new ActionLedgerTargetStateConflictError('changed');
       const currentOrderVersion = orderVersions.get(current.projectId ?? 'inbox');
       if (original.outcome.destinationOrderVersion === undefined || original.outcome.destinationOrderVersion === null
         || currentOrderVersion === undefined || currentOrderVersion < original.outcome.destinationOrderVersion) {
@@ -1116,27 +1077,24 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
         || !Number.isSafeInteger(createdPosition) || createdPosition !== current.position) {
         throw new ActionLedgerTargetStateConflictError('missing_reversal_data');
       }
-      const updated = asRows<{ readonly version: number }>(await queryRunner.query(
-        `UPDATE "project_tasks" SET "status" = 'archived', "archived_at" = now(), "version" = "version" + 1, "updated_at" = now()
-         WHERE "owner_id" = $1 AND "id" = $2 AND "version" = $3 AND "status" <> 'archived' RETURNING "version"`,
+      const deleted = asRows<{ readonly id: string }>(await queryRunner.query(
+        `DELETE FROM "project_tasks" WHERE "owner_id" = $1 AND "id" = $2 AND "version" = $3 RETURNING "id"`,
         [ownerId, current.id, original.postVersion]
       ));
-      if (!updated[0]) throw new ActionLedgerTargetStateConflictError('changed');
+      if (!deleted[0]) throw new ActionLedgerTargetStateConflictError('changed');
       await compactCollectionTaskPositions(queryRunner, ownerId, current.projectId, current.position);
       const orderVersion = await bumpCollectionOrderVersion(queryRunner, ownerId, current.projectId);
-      await insertTaskMutationEvent(queryRunner, {
-        ownerId,
-        projectId: current.projectId,
-        taskId: current.id,
-        actorKind: 'manual',
-        eventType: 'task.status_changed',
-        details: { from: current.status, to: 'archived', undoOfActionId: original.id }
-      });
-      return undoTaskResult(current.id, current.version, updated[0].version, { sourceOrderVersion: orderVersion });
+      return {
+        preVersion: current.version,
+        postVersion: null,
+        reversibleFields: {},
+        outcome: { targetId: current.id, targetVersion: null, sourceOrderVersion: orderVersion },
+        undoStatus: 'not_reversible'
+      };
     }
 
     if (original.actionKind === 'task.update') {
-      if (current.status === 'archived' || Object.keys(reversible).length === 0) throw new ActionLedgerTargetStateConflictError('not_reversible');
+      if (Object.keys(reversible).length === 0) throw new ActionLedgerTargetStateConflictError('not_reversible');
       const statusField = reversible.status;
       const completedAtField = reversible.completedAt;
       if (statusField?.before === 'done' && !completedAtField) throw new ActionLedgerTargetStateConflictError('missing_reversal_data');
@@ -1151,7 +1109,7 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
         const currentValue = persistedTaskField(lockedRow, fieldName);
         if (!sameJsonValue(currentValue, pair.after)) throw new ActionLedgerTargetStateConflictError('changed');
         values.push(field === 'subtasks' ? JSON.stringify(pair.before) : pair.before);
-        const column = field === 'completedAt' ? 'completed_at' : field === 'archivedAt' ? 'archived_at' : field;
+        const column = field === 'completedAt' ? 'completed_at' : field;
         assignments.push(`"${column}" = $${values.length}${field === 'subtasks' ? '::jsonb' : field === 'completedAt' ? '::timestamptz' : ''}`);
       }
       if (statusField && !completedAtField && statusField.after === 'done') {
@@ -1181,35 +1139,9 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
       return undoTaskResult(current.id, current.version, updated[0].version, sourceOrderVersion === undefined ? {} : { sourceOrderVersion });
     }
 
-    if (original.actionKind === 'task.archive') {
-      const status = reversible.status;
-      const archivedAt = reversible.archivedAt;
-      if (current.status !== 'archived' || !status || status.before === 'archived' || status.after !== 'archived' || !archivedAt || archivedAt.before !== null) {
-        throw new ActionLedgerTargetStateConflictError('not_reversible');
-      }
-      assertExpectedOrderVersion(orderVersions.get(current.projectId ?? 'inbox'), original.outcome.sourceOrderVersion);
-      await insertActiveTaskAtPosition(queryRunner, ownerId, current.projectId, current.position);
-      const updated = asRows<{ readonly version: number }>(await queryRunner.query(
-        `UPDATE "project_tasks" SET "status" = $1, "archived_at" = $2::timestamptz, "version" = "version" + 1, "updated_at" = now()
-         WHERE "owner_id" = $3 AND "id" = $4 AND "version" = $5 AND "status" = 'archived' RETURNING "version"`,
-        [status.before, archivedAt.before, ownerId, current.id, current.version]
-      ));
-      if (!updated[0]) throw new ActionLedgerTargetStateConflictError('changed');
-      const orderVersion = await bumpCollectionOrderVersion(queryRunner, ownerId, current.projectId);
-      await insertTaskMutationEvent(queryRunner, {
-        ownerId,
-        projectId: current.projectId,
-        taskId: current.id,
-        actorKind: 'manual',
-        eventType: 'task.status_changed',
-        details: { from: 'archived', to: String(status.before), undoOfActionId: original.id }
-      });
-      return undoTaskResult(current.id, current.version, updated[0].version, { sourceOrderVersion: orderVersion });
-    }
-
     const projectIdField = reversible.projectId;
     const positionField = reversible.position;
-    if (!projectIdField || !positionField || !sameJsonValue(positionField.after, current.position) || current.status === 'archived') {
+    if (!projectIdField || !positionField || !sameJsonValue(positionField.after, current.position)) {
       throw new ActionLedgerTargetStateConflictError('not_reversible');
     }
     assertExpectedOrderVersion(orderVersions.get(projectIdField.before === null ? 'inbox' : String(projectIdField.before)), original.outcome.sourceOrderVersion);
@@ -1265,7 +1197,7 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
          AND ($6::date IS NULL OR t."deadline" >= $6::date)
          AND ($7::date IS NULL OR t."deadline" <= $7::date)
          AND ($8::text IS NULL OR t."title" ILIKE $8 OR COALESCE(t."details", '') ILIKE $8)
-         AND ($9::boolean OR (t."status" <> 'archived' AND (t."project_id" IS NULL OR p."status" <> 'archived')))
+         AND ($9::boolean OR (t."project_id" IS NULL OR p."status" <> 'archived'))
          AND ($10::timestamptz IS NULL OR (t."created_at", t."id") < ($10::timestamptz, $11::uuid))
        ORDER BY t."created_at" DESC, t."id" DESC
        LIMIT $12`,
@@ -1305,7 +1237,7 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
        FROM "project_tasks" t
        LEFT JOIN "projects" p ON p."id" = t."project_id" AND p."owner_id" = t."owner_id"
        WHERE t."owner_id" = $1 AND t."id" = $2
-         AND ($3::boolean OR (t."status" <> 'archived' AND (t."project_id" IS NULL OR p."status" <> 'archived')))
+         AND ($3::boolean OR (t."project_id" IS NULL OR p."status" <> 'archived'))
        LIMIT 1`,
       [input.ownerId, input.taskId, input.includeArchived]
     ));
@@ -1316,7 +1248,7 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
   public async countInboxTasks(input: { readonly ownerId: string }): Promise<number> {
     const rows = asRows<CountRow>(await this.dataSource.query(
       `SELECT count(*)::text AS "count" FROM "project_tasks"
-       WHERE "owner_id" = $1 AND "project_id" IS NULL AND "status" <> 'archived'`,
+       WHERE "owner_id" = $1 AND "project_id" IS NULL`,
       [input.ownerId]
     ));
     const count = Number(rows[0]?.count ?? 0);
@@ -1364,9 +1296,6 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
       const current = await loadTask(queryRunner, input.ownerId, input.projectId, input.taskId, true);
       if (!current) {
         throw new ProjectTaskNotFoundError();
-      }
-      if (current.status === 'archived') {
-        throw new ProjectTaskArchivedError();
       }
       if (current.version !== input.expectedVersion) {
         throw new ProjectTaskVersionConflictError();
@@ -1446,35 +1375,6 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
     }, fixedContentScope([{ entity: 'project_tasks', id: input.taskId }]));
   }
 
-  public async deleteTask(input: { readonly ownerId: string; readonly projectId: string; readonly taskId: string; readonly expectedVersion: number }): Promise<{ readonly orderVersion: number }> {
-    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
-      await lockActiveProject(queryRunner, input.ownerId, input.projectId);
-      await lockOrderState(queryRunner, input.ownerId, input.projectId);
-      const current = await loadTask(queryRunner, input.ownerId, input.projectId, input.taskId, true);
-      if (!current) throw new ProjectTaskNotFoundError();
-      if (current.version !== input.expectedVersion) throw new ProjectTaskVersionConflictError();
-      await queryRunner.query('DELETE FROM "project_tasks" WHERE "owner_id" = $1 AND "project_id" = $2 AND "id" = $3', [input.ownerId, input.projectId, input.taskId]);
-      if (current.source.suggestionId) {
-        await queryRunner.query('DELETE FROM "project_task_suggestions" WHERE "owner_id" = $1 AND "project_id" = $2 AND "id" = $3', [input.ownerId, input.projectId, current.source.suggestionId]);
-      }
-      if (current.status !== 'archived') await compactTaskPositions(queryRunner, input.ownerId, input.projectId, current.position);
-      return { orderVersion: await bumpOrderVersion(queryRunner, input.ownerId, input.projectId) };
-    }, {
-      before: async (transaction) => {
-        const rows = await transaction.query(
-          'SELECT "source_suggestion_id" FROM "project_tasks" WHERE "owner_id" = $1 AND "project_id" = $2 AND "id" = $3',
-          [input.ownerId, input.projectId, input.taskId]
-        ) as readonly { source_suggestion_id: string | null }[];
-        const suggestionId = rows[0]?.source_suggestion_id;
-        return [
-          { entity: 'project_tasks' as const, id: input.taskId },
-          ...(suggestionId ? [{ entity: 'project_task_suggestions' as const, id: suggestionId }] : [])
-        ];
-      },
-      after: async () => []
-    });
-  }
-
   public async reorderTask(input: ReorderProjectTaskRecord): Promise<ProjectTaskListSnapshot> {
     return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       await lockActiveProject(queryRunner, input.ownerId, input.projectId);
@@ -1486,12 +1386,9 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
       if (!current) {
         throw new ProjectTaskNotFoundError();
       }
-      if (current.status === 'archived') {
-        throw new ProjectTaskArchivedError();
-      }
       const neighborPosition = current.position + (input.direction === 'up' ? -1 : 1);
       const neighbors = asRows<{ readonly id: string; readonly position: number }>(await queryRunner.query(
-        `SELECT "id", "position" FROM "project_tasks" WHERE "owner_id" = $1 AND "project_id" = $2 AND "status" <> 'archived' AND "position" = $3 LIMIT 1 FOR UPDATE`,
+        `SELECT "id", "position" FROM "project_tasks" WHERE "owner_id" = $1 AND "project_id" = $2 AND "position" = $3 LIMIT 1 FOR UPDATE`,
         [input.ownerId, input.projectId, neighborPosition]
       ));
       const neighbor = neighbors[0];

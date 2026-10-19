@@ -994,12 +994,12 @@
         "parameters": [
           { "name": "workspaceId", "in": "query", "description": "Restrict the query to one owned workspace.", "schema": { "type": "string", "format": "uuid" } },
           { "name": "inboxOnly", "in": "query", "description": "When true, return Inbox tasks only; mutually exclusive with workspaceId.", "schema": { "type": "boolean", "default": false } },
-          { "name": "status", "in": "query", "description": "Filter by task status. Archived status requires includeArchived=true.", "schema": { "type": "string", "enum": ["todo", "in_progress", "blocked", "done", "archived"] } },
+          { "name": "status", "in": "query", "description": "Filter by task status.", "schema": { "type": "string", "enum": ["todo", "in_progress", "blocked", "done"] } },
           { "name": "importance", "in": "query", "schema": { "type": "string", "enum": ["low", "medium", "high", "urgent"] } },
           { "name": "deadlineFrom", "in": "query", "description": "Inclusive date-only lower bound.", "schema": { "type": "string", "format": "date" } },
           { "name": "deadlineTo", "in": "query", "description": "Inclusive date-only upper bound.", "schema": { "type": "string", "format": "date" } },
           { "name": "q", "in": "query", "description": "Case-insensitive title/details substring; at most 200 characters.", "schema": { "type": "string", "maxLength": 200 } },
-          { "name": "includeArchived", "in": "query", "description": "Include archived tasks and archived workspaces.", "schema": { "type": "boolean", "default": false } },
+          { "name": "includeArchived", "in": "query", "description": "Include tasks in archived workspaces.", "schema": { "type": "boolean", "default": false } },
           { "name": "limit", "in": "query", "description": "Maximum items in this page.", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 } },
           { "name": "cursor", "in": "query", "description": "Opaque continuation token bound to owner, filters, and limit.", "schema": { "type": "string", "maxLength": 1024 } }
         ],
@@ -1044,7 +1044,7 @@
         "operationId": "getInboxTaskCount",
         "security": [{ "sessionCookie": [] }],
         "responses": {
-          "200": { "description": "A server-owned Inbox count excluding archived tasks and independent of list filters or pagination.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/InboxTaskCountEnvelope" } } } },
+          "200": { "description": "A server-owned Inbox count independent of list filters or pagination.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/InboxTaskCountEnvelope" } } } },
           "400": { "$ref": "#/components/responses/ValidationError" },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "500": { "$ref": "#/components/responses/InternalError" }
@@ -1061,7 +1061,7 @@
         "operationId": "getGlobalTask",
         "security": [{ "sessionCookie": [] }],
         "parameters": [
-          { "name": "includeArchived", "in": "query", "description": "Allow an archived task or archived workspace.", "schema": { "type": "boolean", "default": false } }
+          { "name": "includeArchived", "in": "query", "description": "Allow a task in an archived workspace.", "schema": { "type": "boolean", "default": false } }
         ],
         "responses": {
           "200": { "description": "The task and its current Inbox/workspace identity.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GlobalTaskQueryItemEnvelope" } } } },
@@ -1098,6 +1098,30 @@
           "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
           "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
+      },
+      "delete": {
+        "tags": ["Global tasks"],
+        "summary": "Permanently delete an owner-owned task",
+        "operationId": "deleteGlobalTask",
+        "description": "Deletes the task and its task-owned children and records a non-reversible action receipt. Matching idempotent retries return the same receipt without restoring the task.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "$ref": "#/components/parameters/IfMatchProjectTaskVersionHeader" },
+          { "$ref": "#/components/parameters/ProjectTaskIdempotencyHeader" }
+        ],
+        "responses": {
+          "200": { "description": "Deletion receipt and current task collection order version.", "headers": { "ETag": { "description": "Current task collection order version as a quoted integer.", "schema": { "type": "string", "pattern": "^\"[1-9][0-9]*\"$" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GlobalTaskDeleteEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ProjectTaskBadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "$ref": "#/components/responses/ProjectTaskNotFound" },
+          "409": { "$ref": "#/components/responses/ProjectTaskUpdateConflict" },
+          "428": { "$ref": "#/components/responses/ProjectTaskPreconditionRequired" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
+        }
       }
     },
     "/api/v1/tasks/{taskId}/move": {
@@ -1125,33 +1149,6 @@
           "500": { "$ref": "#/components/responses/InternalError" },
           "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
           "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
-        }
-      }
-    },
-    "/api/v1/tasks/{taskId}/archive": {
-      "parameters": [
-        { "name": "taskId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
-        { "$ref": "#/components/parameters/OriginHeader" },
-        { "$ref": "#/components/parameters/CsrfHeader" },
-        { "$ref": "#/components/parameters/IfMatchProjectTaskVersionHeader" },
-        { "$ref": "#/components/parameters/ProjectTaskIdempotencyHeader" }
-      ],
-      "post": {
-        "tags": ["Global tasks"],
-        "summary": "Soft archive an owner-owned task and keep its stable ID/history",
-        "operationId": "archiveGlobalTask",
-        "security": [{ "sessionCookie": [] }],
-        "requestBody": { "required": false, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GlobalTaskArchiveRequest" } } } },
-        "responses": {
-          "200": { "description": "The archived task and its durable action receipt.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GlobalTaskMutationEnvelope" } } } },
-          "400": { "$ref": "#/components/responses/ProjectTaskBadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthenticated" },
-          "403": { "$ref": "#/components/responses/MutationForbidden" },
-          "404": { "$ref": "#/components/responses/ProjectTaskNotFound" },
-          "409": { "$ref": "#/components/responses/ProjectTaskUpdateConflict" },
-          "428": { "$ref": "#/components/responses/ProjectTaskPreconditionRequired" },
-          "500": { "$ref": "#/components/responses/InternalError" },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         }
       }
     },
@@ -3810,7 +3807,7 @@
           "Project tasks"
         ],
         "summary": "Update a project task",
-        "description": "Updates task text/planning or applies a status transition; requires the current quoted task version. Archived legacy tasks remain read-only.",
+        "description": "Updates task text/planning or applies a status transition; requires the current quoted task version. Tasks in archived workspaces remain read-only.",
         "operationId": "updateProjectTask",
         "security": [
           {
@@ -3885,114 +3882,6 @@
           "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
           "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
-      },
-      "delete": {
-        "tags": [
-          "Workspace redesign"
-        ],
-        "summary": "Archive a project task while preserving its stable ID and task events",
-        "security": [
-          {
-            "sessionCookie": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Task archived and the active project order updated.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProjectTaskRemovalEnvelope"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid path, body, query or version.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Session required.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Origin, CSRF or protected file denied.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Owned resource not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Resource changed or an active/unresolved operation blocks this action.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "428": {
-            "description": "Current quoted task version is required.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
-        },
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/OriginHeader"
-          },
-          {
-            "$ref": "#/components/parameters/CsrfHeader"
-          },
-          {
-            "$ref": "#/components/parameters/IfMatchProjectTaskVersionHeader"
-          },
-          {
-            "$ref": "#/components/parameters/ProjectTaskOptionalIdempotencyHeader"
-          }
-        ]
       }
     },
     "/api/v1/projects/{projectId}/task-order": {
@@ -4006,7 +3895,7 @@
           "Project tasks"
         ],
         "summary": "Move a project task by one position",
-        "description": "Swaps one non-archived task with its adjacent task in full project order. Requires the current order version in If-Match.",
+        "description": "Swaps one task with its adjacent task in full project order. Requires the current order version in If-Match.",
         "operationId": "reorderProjectTask",
         "security": [
           {
@@ -4971,14 +4860,13 @@
         "name": "status",
         "in": "query",
         "required": false,
-        "description": "Task filter: all (default), open, completed, or archived.",
+        "description": "Task filter: all (default), open, or completed.",
         "schema": {
           "type": "string",
           "enum": [
             "all",
             "open",
-            "completed",
-            "archived"
+            "completed"
           ],
           "default": "all"
         }
@@ -5688,7 +5576,7 @@
         }
       },
       "TaskQueryNotFound": {
-        "description": "The task is missing, belongs to another owner, or is archived by default; these cases are not distinguished.",
+        "description": "The task is missing or belongs to another owner; these cases are not distinguished.",
         "content": {
           "application/json": {
             "schema": { "$ref": "#/components/schemas/ErrorEnvelope" },
@@ -5747,7 +5635,7 @@
         }
       },
       "ProjectTaskUpdateConflict": {
-        "description": "The project is archived, the task version is stale, the status transition is invalid, or the task is archived.",
+        "description": "The project is archived, the task version is stale, or the status transition is invalid.",
         "content": {
           "application/json": {
             "schema": {
@@ -5780,22 +5668,13 @@
                     "message": "This task cannot move to that status."
                   }
                 }
-              },
-              "archived": {
-                "value": {
-                  "data": null,
-                  "error": {
-                    "code": "PROJECT_TASK_ARCHIVED",
-                    "message": "This task is archived and cannot be changed."
-                  }
-                }
               }
             }
           }
         }
       },
       "ProjectTaskOrderConflict": {
-        "description": "The project is archived, the task order version is stale, the task is archived, or the requested adjacent move is at an order boundary.",
+        "description": "The project is archived, the task order version is stale, or the requested adjacent move is at an order boundary.",
         "content": {
           "application/json": {
             "schema": {
@@ -5817,15 +5696,6 @@
                   "error": {
                     "code": "PROJECT_TASK_ORDER_CONFLICT",
                     "message": "The project task order changed. Reload the latest order and try again."
-                  }
-                }
-              },
-              "archived": {
-                "value": {
-                  "data": null,
-                  "error": {
-                    "code": "PROJECT_TASK_ARCHIVED",
-                    "message": "This task is archived and cannot be changed."
                   }
                 }
               },
@@ -6016,7 +5886,7 @@
         "properties": {
           "title": { "type": "string" },
           "details": { "type": "string", "nullable": true },
-          "status": { "type": "string", "enum": ["todo", "in_progress", "blocked", "done", "archived"] },
+          "status": { "type": "string", "enum": ["todo", "in_progress", "blocked", "done"] },
           "importance": { "type": "string", "enum": ["low", "medium", "high", "urgent"] },
           "deadline": { "type": "string", "format": "date", "nullable": true },
           "checklist": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseChecklistItem" } }
@@ -6108,7 +5978,7 @@
           "id": { "$ref": "#/components/schemas/Uuid" },
           "title": { "type": "string" },
           "details": { "type": "string", "nullable": true },
-          "status": { "type": "string", "enum": ["todo", "in_progress", "blocked", "done", "archived"] },
+          "status": { "type": "string", "enum": ["todo", "in_progress", "blocked", "done"] },
           "importance": { "type": "string", "enum": ["low", "medium", "high", "urgent"] },
           "deadline": { "type": "string", "format": "date", "nullable": true },
           "checklist": { "type": "array", "items": { "$ref": "#/components/schemas/ShowcaseChecklistItemDto" } }
@@ -8928,8 +8798,7 @@
           "todo",
           "in_progress",
           "blocked",
-          "done",
-          "archived"
+          "done"
         ]
       },
       "ProjectTaskSourceKind": {
@@ -8972,7 +8841,6 @@
           "createdAt",
           "updatedAt",
           "completedAt",
-          "archivedAt",
           "importance",
           "deadline",
           "subtasks"
@@ -9005,7 +8873,7 @@
           "position": {
             "type": "integer",
             "minimum": 0,
-            "description": "Zero-based position in the active task collection; archived tasks are excluded."
+            "description": "Zero-based position in the task collection."
           },
           "version": {
             "type": "integer",
@@ -9023,11 +8891,6 @@
             "format": "date-time"
           },
           "completedAt": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": true
-          },
-          "archivedAt": {
             "type": "string",
             "format": "date-time",
             "nullable": true
@@ -9255,7 +9118,7 @@
         "required": ["id", "actionKind", "undoStatus", "outcome"],
         "properties": {
           "id": { "$ref": "#/components/schemas/Uuid" },
-          "actionKind": { "type": "string", "enum": ["task.create", "task.update", "task.move", "task.archive"] },
+          "actionKind": { "type": "string", "enum": ["task.create", "task.update", "task.move"] },
           "undoStatus": { "type": "string", "enum": ["available", "not_reversible", "undone"] },
           "outcome": {
             "type": "object",
@@ -9286,6 +9149,46 @@
         "required": ["data", "error"],
         "properties": {
           "data": { "$ref": "#/components/schemas/GlobalTaskMutationResult" },
+          "error": { "type": "null" }
+        },
+        "additionalProperties": false
+      },
+      "TaskDeleteReceipt": {
+        "type": "object",
+        "required": ["id", "actionKind", "undoStatus", "outcome"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "actionKind": { "type": "string", "enum": ["task.delete"] },
+          "undoStatus": { "type": "string", "enum": ["not_reversible"] },
+          "outcome": {
+            "type": "object",
+            "required": ["targetId", "targetVersion", "sourceOrderVersion"],
+            "properties": {
+              "targetId": { "$ref": "#/components/schemas/Uuid" },
+              "targetVersion": { "type": "integer", "minimum": 1, "nullable": true },
+              "sourceOrderVersion": { "type": "integer", "minimum": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "GlobalTaskDeleteResult": {
+        "type": "object",
+        "required": ["taskId", "orderVersion", "receipt", "replayed"],
+        "properties": {
+          "taskId": { "$ref": "#/components/schemas/Uuid" },
+          "orderVersion": { "type": "integer", "minimum": 1 },
+          "receipt": { "$ref": "#/components/schemas/TaskDeleteReceipt" },
+          "replayed": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      },
+      "GlobalTaskDeleteEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/GlobalTaskDeleteResult" },
           "error": { "type": "null" }
         },
         "additionalProperties": false
@@ -9337,11 +9240,6 @@
           "expectedSourceOrderVersion": { "type": "integer", "minimum": 1 },
           "expectedDestinationOrderVersion": { "type": "integer", "minimum": 1 }
         },
-        "additionalProperties": false
-      },
-      "GlobalTaskArchiveRequest": {
-        "type": "object",
-        "properties": { "expectedOrderVersion": { "type": "integer", "minimum": 1 } },
         "additionalProperties": false
       },
       "ProjectTaskMutation": {
@@ -9487,7 +9385,7 @@
       },
       "UpdateProjectTaskStatusRequest": {
         "type": "object",
-        "description": "Apply an allowed status transition. Manual Done completes every checklist item in the same write. Use DELETE on the project task route to archive it.",
+        "description": "Apply an allowed status transition. Manual Done completes every checklist item in the same write. Use DELETE on /api/v1/tasks/{taskId} to permanently delete a task.",
         "required": [
           "status"
         ],
@@ -9517,7 +9415,7 @@
       },
       "ReorderProjectTaskRequest": {
         "type": "object",
-        "description": "Moves one non-archived task exactly one place in full project order.",
+        "description": "Moves one task exactly one place in full project order.",
         "required": [
           "taskId",
           "direction"
@@ -9993,34 +9891,6 @@
         },
         "required": [
           "title"
-        ],
-        "additionalProperties": false
-      },
-      "ProjectTaskRemovalEnvelope": {
-        "type": "object",
-        "properties": {
-          "data": {
-            "type": "object",
-            "properties": {
-              "orderVersion": {
-                "type": "integer",
-                "minimum": 1
-              }
-            },
-            "required": [
-              "orderVersion"
-            ],
-            "additionalProperties": false
-          },
-          "error": {
-            "nullable": true,
-            "type": "object",
-            "description": "Null on success."
-          }
-        },
-        "required": [
-          "data",
-          "error"
         ],
         "additionalProperties": false
       },
@@ -10766,7 +10636,7 @@
       },
       "HomeProposalAction": {
         "type": "string",
-        "enum": ["task.create", "task.update", "task.move", "task.archive", "workspace.create", "workspace.update_objective"]
+        "enum": ["task.create", "task.update", "task.move", "workspace.create", "workspace.update_objective"]
       },
       "HomeProposalSummary": {
         "type": "object",
