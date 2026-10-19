@@ -16,6 +16,8 @@ import { LoginPage } from '@/pages/login';
 import { NotFoundPage } from '@/pages/not-found';
 import { ShowcasePage } from '@/pages/showcase';
 import { AdminShowcasePage } from '@/pages/admin-showcase';
+import { AdminPortalPage } from '@/pages/admin-portal';
+import { UsagePage } from '@/pages/usage';
 import { selectSessionErrorCode, selectSessionStatus } from '@/entities/user-session';
 import { useAppSelector } from '@/app/store/hooks';
 import { getSafeReturnTo, loginPath } from '@/shared/lib/navigation';
@@ -63,6 +65,8 @@ export const router = createBrowserRouter([
                 element: <AppShell />,
                 children: [
                   { path: 'dashboard', element: <DashboardPage /> },
+                  { path: 'admin', element: <AdminPortalPage /> },
+                  { path: 'usage', element: <UsagePage /> },
                   { path: 'tasks', element: <AllTasksPage /> },
                   { path: 'tasks/:taskId', element: <TaskDetailPage /> },
                   { path: 'projects/:projectId', element: <ProjectWorkspacePage /> },

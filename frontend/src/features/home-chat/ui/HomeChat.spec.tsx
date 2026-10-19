@@ -31,6 +31,7 @@ const api = vi.hoisted(() => ({
   submitHomeTurn: vi.fn()
 }));
 const policyApi = vi.hoisted(() => ({ getAssistantExecutionPolicy: vi.fn() }));
+const usageApi = vi.hoisted(() => ({ useAccountUsage: vi.fn() }));
 
 vi.mock('@/entities/home-conversation', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/entities/home-conversation')>(),
@@ -40,6 +41,7 @@ vi.mock('@/entities/assistant-policy', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/entities/assistant-policy')>(),
   ...policyApi
 }));
+vi.mock('@/entities/account-usage', async (importOriginal) => ({ ...await importOriginal<typeof import('@/entities/account-usage')>(), ...usageApi }));
 
 const HOME_SCOPE: HomeConversationScope = { kind: 'home' };
 const WORKSPACE_ID = '11111111-1111-4111-8111-111111111111';
@@ -171,9 +173,22 @@ beforeEach(() => {
   api.listHomeTurns.mockReset().mockResolvedValue({ turns: [], nextAfterSequence: null });
   api.submitHomeTurn.mockReset().mockResolvedValue(submission('Plan a trip'));
   policyApi.getAssistantExecutionPolicy.mockReset().mockImplementation(async (query: { readonly scope: 'home' | 'workspace' }) => policyFor(query.scope));
+  usageApi.useAccountUsage.mockReset().mockReturnValue({ state: { status: 'success', data: { availability: { status: 'available', canSubmit: true, reason: null } } }, refresh: vi.fn() });
 });
 
 describe('Home chat', () => {
+  it('blocks unknown AI availability while preserving conversation navigation', async () => {
+    usageApi.useAccountUsage.mockReturnValue({ state: { status: 'error', data: null }, refresh: vi.fn() });
+    renderChat(`/dashboard?conversation=${CONVERSATION_ID}`);
+    const input = await screen.findByRole('textbox', { name: 'Message the assistant' });
+
+    expect(screen.getByTestId('home-chat-send')).toBeDisabled();
+    expect(screen.getByTestId('home-chat-usage-blocked')).toHaveTextContent('AI availability could not be checked');
+    expect(screen.getByTestId('home-chat-new')).toBeEnabled();
+    expect(input).toBeDisabled();
+    expect(api.submitHomeTurn).not.toHaveBeenCalled();
+  });
+
   it('keeps a Home draft and URL selection independent through close, navigation, reopen, and keyboard use', async () => {
     api.listHomeConversations.mockResolvedValue({ conversations: [conversation, secondConversation], nextCursor: null });
     const user = userEvent.setup();

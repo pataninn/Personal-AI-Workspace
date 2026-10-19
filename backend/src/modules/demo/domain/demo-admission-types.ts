@@ -44,8 +44,6 @@ export interface IDemoAdmissionRepository {
     readonly requestDigest: string;
     readonly networkHash: string;
     readonly networkKeyId: string;
-    readonly limits: DemoAbuseLimitValues;
-    readonly lifetimeMs: number;
   }): Promise<BeginDemoAdmissionResult>;
   recordProvisioningAttempt(admissionId: string): Promise<number>;
   markProvisioningFailed(admissionId: string, ownerId: string, failureCode: 'storage_unavailable' | 'storage_not_empty' | 'session_unavailable'): Promise<void>;

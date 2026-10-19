@@ -2,13 +2,11 @@ import { createHash, createHmac } from 'node:crypto';
 import { isIP } from 'node:net';
 
 import type { IOpaqueTokenProvider } from '@/modules/auth/repositories/security-providers';
-import type { DemoAbuseLimitValues, DemoAdmissionAttemptResult, IDemoAdmissionRepository, IDemoStorageBootstrap } from '@/modules/demo/domain/demo-admission-types';
+import type { DemoAdmissionAttemptResult, IDemoAdmissionRepository, IDemoStorageBootstrap } from '@/modules/demo/domain/demo-admission-types';
 import { DemoAdmissionRateLimitedError, DemoAdmissionUnavailableError, DemoAdmissionValidationError, DemoProvisioningFailedError, DemoShowcaseUnavailableError } from '@/modules/demo/domain/demo-admission-errors';
 
 export interface CreateDemoSessionConfiguration {
-  readonly limits?: DemoAbuseLimitValues;
   readonly networkHashSecret?: string;
-  readonly lifetimeMs: number;
   readonly isShowcaseAvailable?: () => Promise<boolean>;
   readonly provisionShowcaseCopy?: (admissionId: string, ownerId: string) => Promise<void>;
 }
@@ -26,9 +24,8 @@ export class CreateDemoSessionUseCase {
     const previous = await this.repository.findStatusByRequestDigest(requestDigest);
     if (previous) return { kind: 'status', state: previous.state };
 
-    const limits = this.configuration.limits;
     const secret = this.configuration.networkHashSecret;
-    if (!limits || !secret || Buffer.byteLength(secret, 'utf8') < 32 || !input.clientIp || isIP(input.clientIp) === 0) {
+    if (!secret || Buffer.byteLength(secret, 'utf8') < 32 || !input.clientIp || isIP(input.clientIp) === 0) {
       throw new DemoAdmissionUnavailableError();
     }
     if (this.configuration.isShowcaseAvailable) {
@@ -43,9 +40,7 @@ export class CreateDemoSessionUseCase {
       begun = await this.repository.beginAdmission({
         requestDigest,
         networkHash: network.hash,
-        networkKeyId: network.keyId,
-        limits,
-        lifetimeMs: this.configuration.lifetimeMs
+        networkKeyId: network.keyId
       });
     } catch (error: unknown) {
       if (error instanceof DemoAdmissionRateLimitedError || error instanceof DemoAdmissionUnavailableError) throw error;

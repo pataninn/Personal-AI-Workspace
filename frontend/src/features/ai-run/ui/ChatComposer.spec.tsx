@@ -21,6 +21,7 @@ const { sendMock, getRunMock, getManifestMock, decideMock, startMock, cancelMock
   getHistoryMock: vi.fn(),
   getPolicyMock: vi.fn()
 }));
+const usageApi = vi.hoisted(() => ({ useAccountUsage: vi.fn() }));
 
 vi.mock('@/entities/ai-run', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/entities/ai-run')>(),
@@ -35,6 +36,7 @@ vi.mock('@/entities/assistant-policy', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/entities/assistant-policy')>(),
   getAssistantExecutionPolicy: getPolicyMock
 }));
+vi.mock('@/entities/account-usage', async (importOriginal) => ({ ...await importOriginal<typeof import('@/entities/account-usage')>(), ...usageApi }));
 vi.mock('@/entities/conversation', async (importOriginal) => ({ ...await importOriginal<typeof import('@/entities/conversation')>(), getConversation: getHistoryMock }));
 vi.mock('@/features/ai-run/ui/AiRunTimeline', () => ({ AiRunTimeline: () => <div data-testid="ai-run-timeline" /> }));
 
@@ -82,6 +84,7 @@ describe('ChatComposer', () => {
     cancelMock.mockReset().mockResolvedValue({ ...pending, status: 'cancelled', decision: 'rejected' });
     getHistoryMock.mockReset().mockResolvedValue(history);
     getPolicyMock.mockReset().mockResolvedValue(readyPolicy);
+    usageApi.useAccountUsage.mockReset().mockReturnValue({ state: { status: 'success', data: { availability: { status: 'available', canSubmit: true, reason: null } } }, refresh: vi.fn() });
   });
 
   it('sends under the loaded scope policy without a decision or separate start request', async () => {
@@ -127,6 +130,20 @@ describe('ChatComposer', () => {
     expect(screen.getByRole('region', { name: 'Assistant policy summary' })).toHaveTextContent('The configured assistant runtime is unavailable, so no request is sent to the provider.');
     expect(sendMock).not.toHaveBeenCalled();
     expect(screen.getByTestId('message-input')).toHaveValue('Keep this until policy is ready');
+  });
+
+  it('blocks exhausted-account sends while keeping the local draft editable', async () => {
+    usageApi.useAccountUsage.mockReturnValue({ state: { status: 'success', data: { availability: { status: 'exhausted', canSubmit: false, reason: 'The AI allowance is exhausted.' } } }, refresh: vi.fn() });
+    renderComposer();
+    const user = userEvent.setup();
+    const input = screen.getByTestId('message-input');
+    await user.type(input, 'Keep this draft');
+
+    expect(screen.getByTestId('ai-run-submit')).toBeDisabled();
+    expect(screen.getByTestId('account-usage-gate')).toHaveTextContent('The AI allowance is exhausted.');
+    expect(screen.getByRole('link', { name: 'View usage' })).toHaveAttribute('href', '/usage');
+    expect(input).toHaveValue('Keep this draft');
+    expect(sendMock).not.toHaveBeenCalled();
   });
 
   it('retries a failed automatic submission with the same idempotency key and keeps the draft', async () => {

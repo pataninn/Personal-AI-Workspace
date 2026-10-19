@@ -42,6 +42,9 @@
       "name": "Account storage"
     },
     {
+      "name": "Account administration"
+    },
+    {
       "name": "Authentication"
     },
     {
@@ -168,6 +171,189 @@
             }
           },
           "404": { "description": "The file is not part of the current showcase.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/account/usage": {
+      "get": {
+        "tags": ["Account storage"],
+        "summary": "Read the authenticated account owner’s usage and AI admission status",
+        "operationId": "getAccountUsage",
+        "description": "The owner is derived from the authenticated session. Returns the caller’s own credit and storage totals only; it does not claim provider readiness.",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Owner-scoped usage snapshot.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AccountUsageEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "description": "Accounting or storage usage is unavailable; clients must fail closed for AI submission.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
+        }
+      }
+    },
+    "/api/v1/admin/accounts": {
+      "get": {
+        "tags": ["Account administration"],
+        "summary": "Search bounded account usage summaries",
+        "operationId": "listAdminAccounts",
+        "description": "Requires an active regular administrator. Returns at most 100 accounts and aggregate limits/usage; no resource content or credentials are exposed.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "name": "search", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 120 } }],
+        "responses": {
+          "200": { "description": "Bounded account summaries.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminAccountsEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "description": "An active regular administrator is required.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "post": {
+        "tags": ["Account administration"],
+        "summary": "Create a regular user account",
+        "operationId": "createAdminAccount",
+        "description": "Requires an active regular administrator, exact Origin, and CSRF token. Role is always user; the initial password is hashed and never returned.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/OriginHeader" }, { "$ref": "#/components/parameters/CsrfHeader" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminCreateAccountRequest" } } } },
+        "responses": {
+          "201": { "description": "Created regular account; credentials are not returned.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminAccountCreatedEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "description": "Origin/CSRF validation failed or an active regular administrator is required.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "The account identifier is already in use.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/admin/accounts/{accountId}/limits": {
+      "parameters": [{ "name": "accountId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } }],
+      "patch": {
+        "tags": ["Account administration"],
+        "summary": "Replace account credit and logical storage limits",
+        "operationId": "updateAdminAccountLimits",
+        "description": "Requires an active regular administrator, exact Origin, and CSRF token. Updates use expectedRevision CAS. A null limit is unlimited; string zero means no credit spending or storage growth. Existing usage and reservations are preserved even when a new limit is lower.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/OriginHeader" }, { "$ref": "#/components/parameters/CsrfHeader" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminAccountLimitsRequest" } } } },
+        "responses": {
+          "200": { "description": "Updated limits revision.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminAccountLimitsEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "The target account does not exist.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "The expected limits revision is stale.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
+        }
+      }
+    },
+    "/api/v1/admin/accounts/{accountId}/status": {
+      "parameters": [{ "name": "accountId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } }],
+      "patch": {
+        "tags": ["Account administration"],
+        "summary": "Enable or disable an account",
+        "operationId": "setAdminAccountStatus",
+        "description": "Requires an active regular administrator, exact Origin, and CSRF token. Disabling revokes the target’s sessions. The last active administrator cannot be disabled.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/OriginHeader" }, { "$ref": "#/components/parameters/CsrfHeader" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminAccountStatusRequest" } } } },
+        "responses": {
+          "200": { "description": "Updated account status.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminAccountStatusEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "The target account does not exist.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "Disabling the last active administrator is not allowed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/admin/accounts/{accountId}/password-resets": {
+      "parameters": [{ "name": "accountId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } }],
+      "post": {
+        "tags": ["Account administration"],
+        "summary": "Reset an account password",
+        "operationId": "resetAdminAccountPassword",
+        "description": "Requires an active regular administrator, exact Origin, and CSRF token. Accepts a new password only, hashes it, and revokes all target sessions. No password value is returned or audited.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/OriginHeader" }, { "$ref": "#/components/parameters/CsrfHeader" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminPasswordResetRequest" } } } },
+        "responses": {
+          "200": { "description": "Password reset and all sessions revoked.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminPasswordResetEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "The target account does not exist.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/admin/accounts/{accountId}/session-revocations": {
+      "parameters": [{ "name": "accountId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } }],
+      "post": {
+        "tags": ["Account administration"],
+        "summary": "Revoke an account’s active sessions",
+        "operationId": "revokeAdminAccountSessions",
+        "description": "Requires an active regular administrator, exact Origin, and CSRF token.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/OriginHeader" }, { "$ref": "#/components/parameters/CsrfHeader" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminEmptyRequest" } } } },
+        "responses": {
+          "200": { "description": "Sessions revoked.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminSessionRevocationEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "The target account does not exist.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/admin/demo-settings": {
+      "get": {
+        "tags": ["Account administration"],
+        "summary": "Read persisted demo policy settings and shared usage",
+        "operationId": "getAdminDemoSettings",
+        "description": "Requires an active regular administrator. The emergency inference pause applies to all accounts. Shared daily and campaign settled/reserved totals are returned without exposing individual demo usage.",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Persisted settings and shared usage.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminDemoSettingsEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "description": "An active regular administrator is required.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "description": "Persisted demo policy is unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
+        }
+      },
+      "put": {
+        "tags": ["Account administration"],
+        "summary": "Update persisted demo policy settings",
+        "operationId": "updateAdminDemoSettings",
+        "description": "Requires an active regular administrator, exact Origin, and CSRF token. expectedRevision provides CAS. Null limits are unlimited; string zero is a zero cap. Campaign identity may be initialized from null once; ordinary edits must retain an existing ID or receive DEMO_CAMPAIGN_ID_IMMUTABLE. Editing the cap for the same campaign preserves its settled and reserved counters and usage ledger. inferencePaused is the emergency pause for all accounts.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/OriginHeader" }, { "$ref": "#/components/parameters/CsrfHeader" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminDemoSettingsUpdateRequest" } } } },
+        "responses": {
+          "200": { "description": "Updated persisted policy and current shared usage.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminDemoSettingsEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "409": { "description": "ADMIN_REVISION_CONFLICT for a stale expectedRevision, or DEMO_CAMPAIGN_ID_IMMUTABLE for changing or clearing an already configured campaign ID.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "description": "Persisted demo policy is unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
+        }
+      }
+    },
+    "/api/v1/admin/audit": {
+      "get": {
+        "tags": ["Account administration"],
+        "summary": "Read recent safe administrator audit metadata",
+        "operationId": "listAdminAudit",
+        "description": "Requires an active regular administrator. Results are bounded and contain no credentials, secrets, or resource content.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 40 } }],
+        "responses": {
+          "200": { "description": "Recent safe audit metadata.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminAuditEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "description": "An active regular administrator is required.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
           "500": { "$ref": "#/components/responses/InternalError" }
         }
       }
@@ -5753,6 +5939,218 @@
       }
     },
     "schemas": {
+      "AccountCreditUsage": {
+        "type": "object",
+        "required": ["limitUnits", "settledUnits", "reservedUnits", "remainingUnits"],
+        "properties": {
+          "limitUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true, "description": "Null means unlimited; the string \"0\" means no allowance." },
+          "settledUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+          "reservedUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+          "remainingUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true }
+        },
+        "additionalProperties": false
+      },
+      "AccountUsageAvailability": {
+        "type": "object",
+        "required": ["status", "reason", "canSubmit"],
+        "properties": {
+          "status": { "type": "string", "enum": ["available", "exhausted", "paused", "unknown"] },
+          "reason": { "type": "string", "nullable": true },
+          "canSubmit": { "type": "boolean", "description": "Authoritative local admission state; does not assert a production provider is configured or ready." }
+        },
+        "additionalProperties": false
+      },
+      "AccountDailyCreditUsage": {
+        "type": "object",
+        "required": ["limitUnits", "settledUnits", "reservedUnits", "remainingUnits", "resetAt", "timeZone"],
+        "properties": {
+          "limitUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "settledUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+          "reservedUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+          "remainingUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "resetAt": { "type": "string", "format": "date-time" },
+          "timeZone": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "AccountUsageData": {
+        "type": "object",
+        "required": ["asOf", "expiresAt", "daily", "lifetime", "availability", "storage"],
+        "properties": {
+          "asOf": { "type": "string", "format": "date-time" },
+          "expiresAt": { "type": "string", "format": "date-time", "nullable": true },
+          "daily": { "$ref": "#/components/schemas/AccountDailyCreditUsage" },
+          "lifetime": { "$ref": "#/components/schemas/AccountCreditUsage" },
+          "availability": { "$ref": "#/components/schemas/AccountUsageAvailability" },
+          "storage": { "$ref": "#/components/schemas/StorageUsage" }
+        },
+        "additionalProperties": false
+      },
+      "AccountUsageEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": { "data": { "$ref": "#/components/schemas/AccountUsageData" }, "error": { "type": "null" } },
+        "additionalProperties": false
+      },
+      "StorageUsage": {
+        "type": "object",
+        "required": ["state", "unit", "unitSystem", "usedBytes", "reservedBytes", "limitBytes", "availableBytes", "overLimit", "asOf"],
+        "properties": {
+          "state": { "type": "string", "enum": ["reconciling", "ready", "unavailable"] },
+          "unit": { "type": "string", "enum": ["bytes"] },
+          "unitSystem": { "type": "string", "enum": ["decimal-si"] },
+          "usedBytes": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "reservedBytes": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "limitBytes": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "availableBytes": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "overLimit": { "type": "boolean", "nullable": true },
+          "asOf": { "type": "string", "format": "date-time", "nullable": true }
+        },
+        "additionalProperties": false
+      },
+      "AdminAccountStorageSummary": {
+        "type": "object",
+        "required": ["state", "usedBytes", "reservedBytes", "limitBytes", "overLimit", "asOf"],
+        "properties": {
+          "state": { "type": "string", "enum": ["ready", "reconciling", "unavailable"] },
+          "usedBytes": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "reservedBytes": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "limitBytes": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "overLimit": { "type": "boolean", "nullable": true },
+          "asOf": { "type": "string", "format": "date-time", "nullable": true }
+        },
+        "additionalProperties": false
+      },
+      "AdminAccountSummary": {
+        "type": "object",
+        "required": ["id", "displayName", "identifier", "accountKind", "role", "enabled", "expiresAt", "limitsRevision", "demoCreditLimitsConfigured", "daily", "lifetime", "storage", "canDisable", "disableReason"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "displayName": { "type": "string" },
+          "identifier": { "type": "string", "nullable": true },
+          "accountKind": { "type": "string", "enum": ["regular", "demo"] },
+          "role": { "type": "string", "enum": ["user", "admin"] },
+          "enabled": { "type": "boolean" },
+          "expiresAt": { "type": "string", "format": "date-time", "nullable": true },
+          "limitsRevision": { "type": "integer", "minimum": 1 },
+          "demoCreditLimitsConfigured": { "type": "boolean" },
+          "daily": { "$ref": "#/components/schemas/AccountCreditUsage" },
+          "lifetime": { "$ref": "#/components/schemas/AccountCreditUsage" },
+          "storage": { "$ref": "#/components/schemas/AdminAccountStorageSummary" },
+          "canDisable": { "type": "boolean" },
+          "disableReason": { "type": "string", "nullable": true }
+        },
+        "additionalProperties": false
+      },
+      "AdminAccountsEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": { "data": { "type": "object", "required": ["accounts"], "properties": { "accounts": { "type": "array", "maxItems": 100, "items": { "$ref": "#/components/schemas/AdminAccountSummary" } } }, "additionalProperties": false }, "error": { "type": "null" } },
+        "additionalProperties": false
+      },
+      "AdminCreateAccountRequest": {
+        "type": "object",
+        "required": ["displayName", "identifier", "password"],
+        "properties": { "displayName": { "type": "string", "minLength": 2, "maxLength": 80 }, "identifier": { "type": "string", "minLength": 3, "maxLength": 64 }, "password": { "type": "string", "minLength": 1, "maxLength": 1024, "writeOnly": true } },
+        "additionalProperties": false
+      },
+      "AdminAccountCreatedEnvelope": {
+        "type": "object",
+        "required": ["data", "error"],
+        "properties": { "data": { "type": "object", "required": ["account"], "properties": { "account": { "type": "object", "required": ["id", "displayName", "identifier", "accountKind", "role", "enabled"], "properties": { "id": { "$ref": "#/components/schemas/Uuid" }, "displayName": { "type": "string" }, "identifier": { "type": "string" }, "accountKind": { "type": "string", "enum": ["regular"] }, "role": { "type": "string", "enum": ["user"] }, "enabled": { "type": "boolean", "enum": [true] } }, "additionalProperties": false } }, "additionalProperties": false }, "error": { "type": "null" } },
+        "additionalProperties": false
+      },
+      "AdminAccountLimitsRequest": {
+        "type": "object",
+        "required": ["expectedRevision", "dailyCreditLimitUnits", "lifetimeCreditLimitUnits", "storageLimitBytes"],
+        "properties": { "expectedRevision": { "type": "integer", "minimum": 1 }, "dailyCreditLimitUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true }, "lifetimeCreditLimitUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true }, "storageLimitBytes": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true } },
+        "additionalProperties": false
+      },
+      "AdminAccountLimitsEnvelope": {
+        "type": "object", "required": ["data", "error"],
+        "properties": { "data": { "type": "object", "required": ["accountId", "limitsRevision"], "properties": { "accountId": { "$ref": "#/components/schemas/Uuid" }, "limitsRevision": { "type": "integer", "minimum": 1 } }, "additionalProperties": false }, "error": { "type": "null" } },
+        "additionalProperties": false
+      },
+      "AdminAccountStatusRequest": { "type": "object", "required": ["enabled"], "properties": { "enabled": { "type": "boolean" } }, "additionalProperties": false },
+      "AdminAccountStatusEnvelope": {
+        "type": "object", "required": ["data", "error"],
+        "properties": { "data": { "type": "object", "required": ["accountId", "enabled"], "properties": { "accountId": { "$ref": "#/components/schemas/Uuid" }, "enabled": { "type": "boolean" } }, "additionalProperties": false }, "error": { "type": "null" } },
+        "additionalProperties": false
+      },
+      "AdminPasswordResetRequest": { "type": "object", "required": ["password"], "properties": { "password": { "type": "string", "minLength": 1, "maxLength": 1024, "writeOnly": true } }, "additionalProperties": false },
+      "AdminPasswordResetEnvelope": {
+        "type": "object", "required": ["data", "error"],
+        "properties": { "data": { "type": "object", "required": ["reset", "sessionsRevoked"], "properties": { "reset": { "type": "boolean", "enum": [true] }, "sessionsRevoked": { "type": "boolean", "enum": [true] } }, "additionalProperties": false }, "error": { "type": "null" } },
+        "additionalProperties": false
+      },
+      "AdminEmptyRequest": { "type": "object", "additionalProperties": false },
+      "AdminSessionRevocationEnvelope": {
+        "type": "object", "required": ["data", "error"],
+        "properties": { "data": { "type": "object", "required": ["sessionsRevoked"], "properties": { "sessionsRevoked": { "type": "boolean", "enum": [true] } }, "additionalProperties": false }, "error": { "type": "null" } },
+        "additionalProperties": false
+      },
+      "AdminDemoSettingsUpdateRequest": {
+        "type": "object",
+        "required": ["expectedRevision", "defaultDailyLimitUnits", "defaultLifetimeLimitUnits", "sessionTtlHours", "globalAdmissionMax", "globalAdmissionWindowSeconds", "networkAdmissionMax", "networkAdmissionWindowSeconds", "runStartMax", "runStartWindowSeconds", "maxConcurrentCalls", "globalDailyLimitUnits", "campaignId", "campaignLimitUnits", "inferencePaused"],
+        "properties": {
+          "expectedRevision": { "type": "integer", "minimum": 1 },
+          "defaultDailyLimitUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "defaultLifetimeLimitUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "sessionTtlHours": { "type": "integer", "minimum": 1, "maximum": 24, "nullable": true },
+          "globalAdmissionMax": { "type": "integer", "minimum": 1, "maximum": 1000000, "nullable": true },
+          "globalAdmissionWindowSeconds": { "type": "integer", "minimum": 60, "maximum": 604800, "nullable": true },
+          "networkAdmissionMax": { "type": "integer", "minimum": 1, "maximum": 1000000, "nullable": true },
+          "networkAdmissionWindowSeconds": { "type": "integer", "minimum": 60, "maximum": 604800, "nullable": true },
+          "runStartMax": { "type": "integer", "minimum": 1, "maximum": 1000000, "nullable": true },
+          "runStartWindowSeconds": { "type": "integer", "minimum": 60, "maximum": 604800, "nullable": true },
+          "maxConcurrentCalls": { "type": "integer", "minimum": 1, "maximum": 32 },
+          "globalDailyLimitUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "campaignId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", "maxLength": 128, "nullable": true, "description": "May initialize from null; once set, later edits must keep the same value. Clearing or rotating returns HTTP 409 DEMO_CAMPAIGN_ID_IMMUTABLE." },
+          "campaignLimitUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "inferencePaused": { "type": "boolean", "description": "Emergency inference pause applying to all accounts." }
+        },
+        "additionalProperties": false,
+        "description": "Null limits are unlimited; the string \"0\" is a zero limit. expectedRevision is a compare-and-swap token. campaignId and campaignLimitUnits must both be set or both be null. Editing the cap without changing campaignId preserves settled and reserved usage."
+      },
+      "AdminDemoSettingsData": {
+        "type": "object",
+        "required": ["revision", "demoSettingsBootstrapped", "defaultDailyLimitUnits", "defaultLifetimeLimitUnits", "sessionTtlHours", "globalAdmissionMax", "globalAdmissionWindowSeconds", "networkAdmissionMax", "networkAdmissionWindowSeconds", "runStartMax", "runStartWindowSeconds", "maxConcurrentCalls", "globalDailyLimitUnits", "campaignId", "campaignLimitUnits", "inferencePaused", "usage"],
+        "properties": {
+          "revision": { "type": "integer", "minimum": 1 },
+          "demoSettingsBootstrapped": { "type": "boolean" },
+          "defaultDailyLimitUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "defaultLifetimeLimitUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "sessionTtlHours": { "type": "integer", "nullable": true },
+          "globalAdmissionMax": { "type": "integer", "nullable": true },
+          "globalAdmissionWindowSeconds": { "type": "integer", "nullable": true },
+          "networkAdmissionMax": { "type": "integer", "nullable": true },
+          "networkAdmissionWindowSeconds": { "type": "integer", "nullable": true },
+          "runStartMax": { "type": "integer", "nullable": true },
+          "runStartWindowSeconds": { "type": "integer", "nullable": true },
+          "maxConcurrentCalls": { "type": "integer" },
+          "globalDailyLimitUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "campaignId": { "type": "string", "nullable": true },
+          "campaignLimitUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "nullable": true },
+          "inferencePaused": { "type": "boolean" },
+          "usage": { "type": "object", "required": ["dailySettledUnits", "dailyReservedUnits", "campaignSettledUnits", "campaignReservedUnits", "dailyTimeZone"], "properties": { "dailySettledUnits": { "type": "string" }, "dailyReservedUnits": { "type": "string" }, "campaignSettledUnits": { "type": "string" }, "campaignReservedUnits": { "type": "string" }, "dailyTimeZone": { "type": "string", "enum": ["UTC"] } }, "additionalProperties": false }
+        },
+        "additionalProperties": false
+      },
+      "AdminDemoSettingsEnvelope": {
+        "type": "object", "required": ["data", "error"],
+        "properties": { "data": { "$ref": "#/components/schemas/AdminDemoSettingsData" }, "error": { "type": "null" } },
+        "additionalProperties": false
+      },
+      "AdminAuditEvent": {
+        "type": "object", "required": ["id", "actorName", "action", "target_account_id", "old_values", "new_values", "createdAt"],
+        "properties": { "id": { "$ref": "#/components/schemas/Uuid" }, "actorName": { "type": "string", "nullable": true }, "action": { "type": "string" }, "target_account_id": { "$ref": "#/components/schemas/Uuid", "nullable": true }, "old_values": { "type": "object", "additionalProperties": true }, "new_values": { "type": "object", "additionalProperties": true }, "createdAt": { "type": "string", "format": "date-time", "nullable": true } },
+        "additionalProperties": false
+      },
+      "AdminAuditEnvelope": {
+        "type": "object", "required": ["data", "error"],
+        "properties": { "data": { "type": "object", "required": ["events"], "properties": { "events": { "type": "array", "items": { "$ref": "#/components/schemas/AdminAuditEvent" } } }, "additionalProperties": false }, "error": { "type": "null" } },
+        "additionalProperties": false
+      },
       "Uuid": {
         "type": "string",
         "format": "uuid"

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAppSelector } from '@/app/store/hooks';
+import { AccountUsageGateNotice, useAccountUsage } from '@/entities/account-usage';
 import {
   createAiRun,
   decideEgress,
@@ -41,6 +42,11 @@ const STALE_DISCLOSURE_ERROR = 'This disclosure is no longer current. Review the
 
 export function AiRunEntry({ projectId, conversationId, request, recentMessageCount = 0, disabled, archivedDescriptionId, onConversationReconciled }: AiRunEntryProps): React.JSX.Element {
   const csrfToken = useAppSelector(selectCsrfToken);
+  const usage = useAccountUsage();
+  const quotaAvailable = usage.state.status === 'success' && usage.state.data.availability.canSubmit;
+  const quotaReason = usage.state.status === 'success'
+    ? usage.state.data.availability.reason ?? 'AI submissions are unavailable.'
+    : 'AI availability could not be checked. Sending stays paused until your allowance is available.';
   const location = useLocation();
   const navigate = useNavigate();
   const [intentLoading, setIntentLoading] = useState(false);
@@ -164,7 +170,7 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
 
   async function beginRun(forceFreshIntent = false, explicitlyConfirmedFreshRun = false): Promise<void> {
     setIntentError(null);
-    if (blankRequest || disabled || intentLoading || decisionLoading || memoryChoiceRequired || !runRestoreReady || runRestoreError) {
+    if (!quotaAvailable || blankRequest || disabled || intentLoading || decisionLoading || memoryChoiceRequired || !runRestoreReady || runRestoreError) {
       return;
     }
     if (runState && blocksAskAi(runState.snapshot.status) && !explicitlyConfirmedFreshRun) return;
@@ -239,7 +245,7 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
 
   async function submitDecision(decision: 'approve' | 'reject'): Promise<void> {
     const manifest = runState?.manifest;
-    if (!manifest || !csrfToken || decisionLoading || decisionOutcomeUnknown) {
+    if (!manifest || !csrfToken || decisionLoading || decisionOutcomeUnknown || decision === 'approve' && !quotaAvailable) {
       return;
     }
     setDecisionLoading(true);
@@ -392,13 +398,14 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
     }
   }
 
-  const formError = intentError ? <Alert tone="error" data-testid="ai-run-error" role="alert"><p>{intentError}</p>{memoryChoiceRequired ? <Button type="button" variant="secondary" data-testid="memory-context-continue-without" onClick={continueWithoutMemory}>Continue without project memory</Button> : <Button type="button" variant="secondary" data-testid="ai-run-error-retry" disabled={disabled || intentLoading} onClick={() => { void beginRun(); }}>Try again</Button>}</Alert> : memoryChoiceRequired ? <Alert tone="warning" data-testid="memory-context-choice-required" role="alert"><p>Review project memory and confirm the facts for this run, or explicitly continue without project memory.</p><Button type="button" variant="secondary" data-testid="memory-context-continue-without" onClick={continueWithoutMemory}>Continue without project memory</Button></Alert> : null;
+  const formError = intentError ? <Alert tone="error" data-testid="ai-run-error" role="alert"><p>{intentError}</p>{memoryChoiceRequired ? <Button type="button" variant="secondary" data-testid="memory-context-continue-without" onClick={continueWithoutMemory}>Continue without project memory</Button> : <Button type="button" variant="secondary" data-testid="ai-run-error-retry" disabled={disabled || !quotaAvailable || intentLoading} onClick={() => { void beginRun(); }}>Try again</Button>}</Alert> : memoryChoiceRequired ? <Alert tone="warning" data-testid="memory-context-choice-required" role="alert"><p>Review project memory and confirm the facts for this run, or explicitly continue without project memory.</p><Button type="button" variant="secondary" data-testid="memory-context-continue-without" onClick={continueWithoutMemory}>Continue without project memory</Button></Alert> : null;
   const blankMessage = blankRequest ? 'Enter a request before asking the assistant.' : null;
   const askAiBlockedByRun = Boolean(runState && blocksAskAi(runState.snapshot.status));
 
   return (
     <>
       <section className="ai-run-entry" data-testid="ai-run-entry" aria-describedby={disabled ? archivedDescription : undefined}>
+        <AccountUsageGateNotice state={usage.state} />
         <form data-testid="ai-run-form" onSubmit={(event) => { event.preventDefault(); void beginRun(); }}>
           <p className="field-help" id="ai-run-help">Ask AI first shows what will be sent to your model provider. Saving a message does not start a run.</p>
           <p className="field-help" data-testid="ai-run-approval-classification"><strong>Safe:</strong> choosing project context only prepares a local disclosure. <strong>Sensitive:</strong> sending it to your model provider needs your one-time approval or a saved provider permission. File changes and commands always need separate approval.</p>
@@ -432,7 +439,7 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
               data-testid="ai-run-submit"
               aria-busy={intentLoading}
               aria-describedby={["ai-run-help", blankMessage ? requestErrorId : null, disabled ? archivedDescription : null].filter(Boolean).join(' ')}
-              disabled={disabled || intentLoading || decisionLoading || memoryChoiceRequired || !permissionListReady || !csrfToken || blankRequest || !runRestoreReady || Boolean(runRestoreError) || askAiBlockedByRun}
+              disabled={disabled || !quotaAvailable || intentLoading || decisionLoading || memoryChoiceRequired || !permissionListReady || !csrfToken || blankRequest || !runRestoreReady || Boolean(runRestoreError) || askAiBlockedByRun}
             >
               {intentLoading ? <><span data-testid="ai-run-manifest-loading">Preparing provider disclosure…</span></> : 'Ask AI'}
             </Button>
@@ -443,9 +450,9 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
           {askAiBlockedByRun ? <p className="field-help" data-testid="ai-run-new-request-blocked" role="status">This run is still unresolved. Review or refresh it before starting another run.</p> : null}
         </form>
         <ProviderPermissionManager projectId={projectId} csrfToken={csrfToken} onListStateChange={handlePermissionListStateChange} />
-        {runState ? <RunStatusCard state={runState} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} onRetry={retryRun} onRefresh={refreshStatus} /> : null}
-        {runState && canSafelyRetry(runState.snapshot) ? <Button type="button" variant="secondary" data-testid="ai-run-safe-retry" disabled={disabled || intentLoading || decisionLoading || !csrfToken} onClick={retryRun}>Try again</Button> : null}
-        {runState && requiresDuplicateConfirmation(runState.snapshot) ? <Button type="button" variant="secondary" data-testid="ai-run-separate-request" disabled={disabled || intentLoading || decisionLoading || !csrfToken} onClick={() => setDuplicateWorkConfirm(true)}>Start a separate run</Button> : null}
+        {runState ? <RunStatusCard state={runState} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} retryDisabled={!quotaAvailable} onRetry={retryRun} onRefresh={refreshStatus} /> : null}
+        {runState && canSafelyRetry(runState.snapshot) ? <Button type="button" variant="secondary" data-testid="ai-run-safe-retry" disabled={disabled || !quotaAvailable || intentLoading || decisionLoading || !csrfToken} onClick={retryRun}>Try again</Button> : null}
+        {runState && requiresDuplicateConfirmation(runState.snapshot) ? <Button type="button" variant="secondary" data-testid="ai-run-separate-request" disabled={disabled || !quotaAvailable || intentLoading || decisionLoading || !csrfToken} onClick={() => setDuplicateWorkConfirm(true)}>Start a separate run</Button> : null}
         {runState && shouldRenderTimeline(runState.snapshot) ? <AiRunTimeline snapshot={runState.snapshot} manifest={runState.manifest} projectId={projectId} conversationId={conversationId} csrfToken={csrfToken} disabled={disabled} onSnapshotChange={(snapshot) => { setRunState((current) => current ? { ...current, snapshot } : current); }} onConversationReconciled={onConversationReconciled} /> : null}
         {runState && shouldRenderChangeReview(runState.snapshot) ? <ProposedChangeReview runId={runState.snapshot.runId} readOnly={disabled} conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`} /> : null}
       </section>
@@ -456,7 +463,8 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
         decisionAction={decisionAction}
         decisionError={decisionError}
         decisionOutcomeUnknown={decisionOutcomeUnknown}
-        approveEnabled={runState?.snapshot.status === 'pending_approval' && runState.snapshot.decision === 'pending'}
+        approveEnabled={quotaAvailable && runState?.snapshot.status === 'pending_approval' && runState.snapshot.decision === 'pending'}
+        approveBlockedReason={!quotaAvailable ? quotaReason : undefined}
         rememberProviderPermission={rememberProviderPermission}
         onOpenChange={handleDialogOpenChange}
         onApprove={() => { void submitDecision('approve'); }}
@@ -475,7 +483,7 @@ export function AiRunEntry({ projectId, conversationId, request, recentMessageCo
           <AlertDialogDescription>The provider may already have received the earlier request. Starting a separate run may repeat provider work.</AlertDialogDescription>
           <div className="dialog-actions">
             <AlertDialogCancel asChild><Button type="button" variant="secondary">Keep current run</Button></AlertDialogCancel>
-            <Button type="button" data-testid="ai-run-separate-confirm" disabled={disabled || intentLoading || decisionLoading} onClick={confirmSeparateRun}>Confirm and start separate run</Button>
+            <Button type="button" data-testid="ai-run-separate-confirm" disabled={disabled || !quotaAvailable || intentLoading || decisionLoading} onClick={confirmSeparateRun}>Confirm and start separate run</Button>
           </div>
         </AlertDialogContent>
       </AlertDialogRoot>

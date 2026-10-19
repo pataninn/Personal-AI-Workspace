@@ -14,9 +14,10 @@ interface RunStatusCardProps {
   readonly conversationHref: string;
   readonly onRetry: () => void;
   readonly onRefresh: () => void;
+  readonly retryDisabled?: boolean;
 }
 
-export function RunStatusCard({ state, conversationHref, onRetry, onRefresh }: RunStatusCardProps): React.JSX.Element | null {
+export function RunStatusCard({ state, conversationHref, onRetry, onRefresh, retryDisabled = false }: RunStatusCardProps): React.JSX.Element | null {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const { snapshot } = state;
 
@@ -62,7 +63,7 @@ export function RunStatusCard({ state, conversationHref, onRetry, onRefresh }: R
   return <div data-testid="ai-run-status-card"><Card className="run-status-card" data-testid="run-error">
     <h3 ref={headingRef} tabIndex={-1} data-testid="run-provider-failed">{reviewRequired ? 'Run needs review' : 'The model provider could not start this request'}</h3>
     <Alert tone={reviewRequired ? 'warning' : 'error'} role="alert">{message}</Alert>
-    <div className="run-status-actions">{reviewRequired ? <Button type="button" variant="secondary" data-testid="run-status-refresh" onClick={onRefresh}>Refresh run status</Button> : <Button type="button" variant="secondary" data-testid="run-error-retry" onClick={onRetry}>Try again</Button>}<a className="button button-secondary" data-testid="run-back-to-conversation" href={conversationHref}>Back to conversation</a></div>
+    <div className="run-status-actions">{reviewRequired ? <Button type="button" variant="secondary" data-testid="run-status-refresh" onClick={onRefresh}>Refresh run status</Button> : <Button type="button" variant="secondary" data-testid="run-error-retry" disabled={retryDisabled} onClick={onRetry}>Try again</Button>}<a className="button button-secondary" data-testid="run-back-to-conversation" href={conversationHref}>Back to conversation</a></div>
   </Card></div>;
 }
 

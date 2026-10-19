@@ -5,7 +5,7 @@
 **Last Updated:** 2026-10-19
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Fourteen tasks delivered:1.1,2.1,2.2,3.1,3.2,3.3,3.4,3.5,4.1,4.2,5.1,5.2,6.1,6.2. Latest HEAD `ddc2a355f6f3886048433cea7a6a28de08891261`. Task4.3 independent QA PASS; local commit pending. Task3.6 QA cycle1 FAIL (High campaign-ID rotation); targeted repair/regression active. Task7.1 durable scheduler implementation active after contract/architecture gate.
+**Status:** Execution active. Fifteen tasks delivered:1.1,2.1,2.2,3.1,3.2,3.3,3.4,3.5,4.1,4.2,4.3,5.1,5.2,6.1,6.2. Latest HEAD `9b4a05dbfbad66535695d6d4b70731c9a62c5c6d`. Task3.6 independent QA cycle2 PASS; scoped local commit pending. Task5.3 task editor andTask7.1 durable scheduler implementation active.
 
 **Current execution boundary (user update):** Complete, independently verify, and commit every task through Task7.3, then stop for the user to review the application. Tasks8.1/8.2 deployment and subsequent release acceptance remain planned and must not begin before that review.
 
@@ -371,7 +371,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-3-6-admin-portal/artifacts/`
-- `Current status:` Developer Ready for QA: backend5focused unit suites19tests, guarded real0037 PG1suite/1test, backend types, frontend5files43tests/types, Vite production build and Playwright route-stub smoke1test PASS. Initial SQL nullable-bigint issue and pause-precedence assertion repaired; failed attempts and guard timing retained. Browser proof is mock-only; no live API/provider/deployment claim. Canonical dev-summary and artifacts/validation.md record evidence; Independent QA cycle1 FAIL (High): changing/clearing configured campaign ID switches the usage ledger and violates stable-campaign budget semantics. Developer targeted repair/regression is active; initial configuration must stay distinct from rotation. Scoped local commit remains pending.
+- `Current status:` Independent QA cycle2 PASS; QA1 High campaign rotation finding is repaired and retained in history. Tester independently reran repository/OpenAPI2suites8tests PASS. New immutable-ID guard preserves same-campaign settled/reserved usage, initial setup is allowed, UI configuredID read-only. Required admin/usage APIs are documented. Prior focused backend/frontend/types, guarded0037PG1/1, build and mocked-browser1test evidence reused where unchanged. Mobile/keyboard-only browser checks remain explicit accepted Low evidence debt. Scoped local task commit pending; no live provider/API/deployment claim from mocks.
 
 **Description:** Provide protected admin account management and usage views backed by admin-only APIs. Include configurable demo budgets and publishing controls.
 
@@ -474,11 +474,11 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 4.3 â€” Unify task deletion and remove archive behavior
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** developer, tester
 **Depends on:** 4.2
 **Risk:** High: deletion, provenance, and historical data
-**Contract:** `.codex/docs/hackathon-release/task-4-3-task-delete-migration/contract.md` (planned; developer owns the contract gate)
+**Contract:** `.codex/docs/hackathon-release/task-4-3-task-delete-migration/contract.md` (implemented; developer-owned)
 
 **MCP Inputs & Required Evidence:**
 
@@ -489,22 +489,24 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-4-3-task-delete-migration/artifacts/`
-- `Current status:` Developer contract/source map complete after delivered4.2; implementation is active across canonical deletion, archive callers and migration0036. Backend typecheck and8focused non-DB suites83tests PASS; task-owned global task OpenAPI spec passes after restoring collateral collection/filter definitions. One storage-quota OpenAPI baseline check remains failing for7unchanged Home/AI-run response references, explicitly logged as existing drift. Guarded canonical migration PostgreSQL test passes (1/1, clean guards); frontend deletion tests40/40 and both TS projects pass. Exact undo replay wiring is complete; focused mutation/action/handler units24/24, backend types and guarded Home parity5/5 pass with clean fresh postguard. Independent tester QA PASS; additional exact ownership-boundaries PG2/2 with clean guards closes the old traceability gap. Required local task commit pending. Reuse existing Task1.1 and prepared Task5.3 delete-confirmation design; additive migration0036 reserved after skills0035. Preserve archived content and rollback mapping, canonical deletion/replay/undo safety. No runtime proof claimed yet.
+- `Current status:` Delivered at `9b4a05dbfbad66535695d6d4b70731c9a62c5c6d` after independent QA PASS. Focused backend/frontend units and guarded migration1/1, Home parity5/5, ownership2/2 evidence pass; replacement non-DB integration4suites14tests passes. Isolated staged backend and both frontend typechecks PASS after excluding an admin-only fixture hunk. Root verified exact85paths, branch, empty index, task-only shared hunks and preserved foreign/protected work. Original failed attempts remain documented. Accepted Low stale OpenAPI archived prose and seven pre-existing unrelated413 omissions remain logged.
+
+**Delivered commit:** `9b4a05dbfbad66535695d6d4b70731c9a62c5c6d` (independent QA PASS; root verified85paths and isolated typechecks).
 
 **Description:** Unify assigned/unassigned task deletion and remove archive across public schemas, tool commands, filters, and domain transitions.
 
 **Subtasks:**
 
-- [ ] Preserve legacy archived tasks through documented done/todo conversion with rollback mapping.
-- [ ] Reconcile ordering, subtasks, suggestion references, action-ledger replay/undo, versions, and idempotent deletion.
-- [ ] Remove stale archive callers/fixtures/contracts and ensure undo cannot resurrect deleted tasks.
+- [x] Preserve legacy archived tasks through documented done/todo conversion with rollback mapping.
+- [x] Reconcile ordering, subtasks, suggestion references, action-ledger replay/undo, versions, and idempotent deletion.
+- [x] Remove stale archive callers/fixtures/contracts and ensure undo cannot resurrect deleted tasks.
 
 **Definition of Done:**
 
-- [ ] Existing archived task content survives migration; rootless/project tasks delete correctly; stale deletes conflict; no supported API/tool can archive or resurrect a deleted task.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
-- [ ] Developer-owned contract implemented and verified before task closure.
+- [x] Existing archived task content survives migration; rootless/project tasks delete correctly; stale deletes conflict; no supported API/tool can archive or resurrect a deleted task.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Developer-owned contract implemented and verified before task closure.
 
 **Upstream Outputs Needed:** Architecture sections 4.2, 11; completed dependency outputs.
 
@@ -588,7 +590,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 5.3 â€” Open task details editable with Save and dirty-exit protection
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 4.3, 5.2
 **Risk:** High: lost drafts and stale updates
@@ -603,7 +605,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-5-3-direct-task-editor/artifacts/`
-- `Current status:` Task-scoped ui-spec.md complete as independent design preparation during Task4.1 QA repair; conflict review reuses existing controls and preserves explicit upstream draft/latest requirements, with no custom merge interface. Application implementation remains held until dependencies4.3 and5.2 are delivered; no implementation or live validation claimed.
+- `Current status:` UI specification complete; implementation starting after delivered dependencies4.3 and5.2. Reuse canonical versioned save/delete APIs and existing conflict controls. Immediate edit, explicit Save, draft retention and dirty-exit safeguards are required; no new browser evidence yet.
 
 **Description:** Replace view/edit toggling with a controlled editable task form and delete-only action.
 
@@ -1098,13 +1100,13 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | 3.3 â€” Provision private one-click demo identities | `[x]` | PASS; `3f4adabbe22a8303406cea9e4441b3e987f605d3` |
 | 3.4 â€” Publish a protected showcase and open editable demo copies | `[x]` | PASS; `ae188ba9d39264ff4b981dc745b7a1daafd70c20` |
 | 3.5 â€” Expire and clean up demos safely | `[x]` | PASS; `57a477f060e3c4a2ffb11fd01f3d6d4a983c4db1`; isolated types PASS |
-| 3.6 â€” Build account, quota, and demo administration UI | `[~]` | QA cycle1 FAIL High campaign-ID rotation; targeted repair active |
+| 3.6 â€” Build account, quota, and demo administration UI | `[~]` | QA cycle2 PASS; campaign guard repaired; local commit pending |
 | 4.1 â€” Replace per-turn consent with workspace-scoped automatic execution | `[x]` | PASS; `4f9ad9bddf227f53b7c55db237cc4a9a8d716846`; accepted Low viewport/test debt |
 | 4.2 â€” Execute Home task and workspace actions through canonical use cases | `[x]` | PASS; `00e40200ad40ddda73605295b151f42e90466690`; Low live-status refinement logged |
-| 4.3 â€” Unify task deletion and remove archive behavior | `[~]` | Independent QA PASS; migration/parity/ownership PG proof; local commit pending |
+| 4.3 â€” Unify task deletion and remove archive behavior | `[x]` | PASS; `9b4a05dbfbad66535695d6d4b70731c9a62c5c6d`; Low OpenAPI prose debt |
 | 5.1 â€” Move Home assistant into a floating Ask panel | `[x]` | PASS; `1d22db9fe9f3fb67ac05eddf199952dadf2a5fb3` |
 | 5.2 â€” Replace Inbox emphasis with Add task and View all | `[x]` | PASS; `fdb200dc23eb83a1047f138ccdd8f7316f3855b1` |
-| 5.3 â€” Open task details editable with Save and dirty-exit protection | `[ ]` | Pending |
+| 5.3 â€” Open task details editable with Save and dirty-exit protection | `[~]` | Task editor implementation active; existing UI spec |
 | 5.4 â€” Audit spacing, responsiveness, and accessibility across release screens | `[ ]` | Pending |
 | 6.1 â€” Make memory and selected context visibly control future runs | `[x]` | PASS; `633cbeecd934ddd0e1042441158f91ca5e98435e`; accepted Low selector debt |
 | 6.2 â€” Persist editable user skills with bounded invocation | `[x]` | PASS; `ddc2a355f6f3886048433cea7a6a28de08891261`; Low title-length debt |
@@ -1130,6 +1132,8 @@ Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 4.2, 5.1, 5.2, and 6.1 are de
 - Existing repository Git status was unavailable under sandbox ownership checks during planning. No global Git configuration was changed; implementation should establish the current working-tree baseline using an appropriately scoped read.
 
 ## Tech Debt Log
+
+- Task3.6 accepted Low evidence debt: mobile and keyboard-only admin/Usage browser journeys were not exercised. Desktop route-stub smoke, semantic source review, focused API/DB checks and typechecks passed; no claim of mobile/keyboard-only browser validation. Refine/check these later under the user priority for functional completion. Campaign identity High finding is repaired, not waived.
 
 - Task4.3 accepted Low: `backend/openapi.json` project-task filter prose still mentions `archived`; schema and runtime accept only all/open/completed. Remove the stale description during later documentation refinement. No live archive path is enabled; independent QA PASS.
 

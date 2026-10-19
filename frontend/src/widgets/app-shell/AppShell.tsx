@@ -105,6 +105,7 @@ export function AppShell(): React.JSX.Element {
           <div className="account-area">
             <AccountMenu
               displayName={displayName}
+              isAdmin={principal?.accountKind === 'regular' && principal.role === 'admin'}
               isSigningOut={isSigningOut}
               logoutError={logoutError}
               onSignOut={handleSignOut}
@@ -127,12 +128,13 @@ const ACCOUNT_MENU_ITEM_ID = 'account-menu-sign-out';
 
 interface AccountMenuProps {
   readonly displayName: string;
+  readonly isAdmin: boolean;
   readonly isSigningOut: boolean;
   readonly logoutError: boolean;
   readonly onSignOut: () => void;
 }
 
-function AccountMenu({ displayName, isSigningOut, logoutError, onSignOut }: AccountMenuProps): React.JSX.Element {
+function AccountMenu({ displayName, isAdmin, isSigningOut, logoutError, onSignOut }: AccountMenuProps): React.JSX.Element {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -245,6 +247,8 @@ function AccountMenu({ displayName, isSigningOut, logoutError, onSignOut }: Acco
         >
           <div className="account-menu-label" role="presentation">{displayName}</div>
           <div className="account-menu-separator" role="separator" />
+          <Link className="account-menu-item" role="menuitem" tabIndex={0} to="/usage" onClick={() => closeMenu(false)}>Usage</Link>
+          {isAdmin ? <Link className="account-menu-item" role="menuitem" tabIndex={0} to="/admin" onClick={() => closeMenu(false)}>Admin portal</Link> : null}
           <div className="account-menu-feedback" role="group" aria-label="Sign out status">
             {isSigningOut ? <p className="logout-status" data-testid="logout-status-message" role="status" aria-live="polite">Signing out…</p> : null}
             {logoutError ? <Alert tone="error" data-testid="logout-error-message">{AUTH_COPY.logoutFailed}</Alert> : null}
@@ -282,12 +286,13 @@ function ShellBreadcrumb(): React.JSX.Element {
   const { pathname } = useLocation();
   const project = useAppSelector(selectProjects).find((candidate) => candidate.id === projectId);
   const section = pathname.split('/').at(-1);
-  const labels: Record<string, string> = { activity: 'Activity', memory: 'Memory', context: 'Context', tasks: 'Tasks', 'file-history': 'History' };
+  const labels: Record<string, string> = { activity: 'Activity', memory: 'Memory', context: 'Context', tasks: 'Tasks', 'file-history': 'History', admin: 'Admin portal', usage: 'Usage' };
   const title = pathname === '/tasks' ? 'All tasks' : pathname.startsWith('/tasks/') ? 'Task details' : projectId && section && labels[section] ? labels[section] : project?.name ?? 'Home';
   return <nav className="shell-breadcrumb" aria-label="Current page"><strong>{title}</strong></nav>;
 }
 
 function WorkspaceNavigation({ currentPath, onNavigate }: { readonly currentPath: string; readonly onNavigate?: () => void }): React.JSX.Element {
+  const principal = useAppSelector(selectPrincipal);
   return (
     <nav className="shell-nav" data-testid="app-shell-nav" aria-label="Primary navigation">
       <NavLink
@@ -300,6 +305,12 @@ function WorkspaceNavigation({ currentPath, onNavigate }: { readonly currentPath
         <Icon name="home" /><span>Home</span>
       </NavLink>
       <ProjectNavigation onNavigate={onNavigate} />
+      <NavLink className={({ isActive }) => `shell-nav-link${isActive ? ' is-active' : ''}`} to="/usage" aria-current={currentPath === '/usage' ? 'page' : undefined} onClick={onNavigate}>
+        <span>Usage</span>
+      </NavLink>
+      {principal?.accountKind === 'regular' && principal.role === 'admin' ? <NavLink className={({ isActive }) => `shell-nav-link${isActive ? ' is-active' : ''}`} to="/admin" aria-current={currentPath === '/admin' ? 'page' : undefined} onClick={onNavigate}>
+        <span>Admin portal</span>
+      </NavLink> : null}
     </nav>
   );
 }

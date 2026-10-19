@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 
 import { useAppSelector } from '@/app/store/hooks';
 import { cancelAiRun, type AiRunSnapshot } from '@/entities/ai-run';
+import { AccountUsageGateNotice, useAccountUsage } from '@/entities/account-usage';
 import type { ConversationHistoryResponse } from '@/entities/conversation';
 import { selectCsrfToken } from '@/entities/user-session';
 import { AssistantPolicySummary } from '@/features/assistant-policy-status';
@@ -27,6 +28,8 @@ export function ChatComposer({ projectId, conversationId, disabled, archivedDesc
   const csrfToken = useAppSelector(selectCsrfToken);
   const submitButton = useRef<HTMLButtonElement>(null);
   const policy = useWorkspaceAssistantPolicy(projectId);
+  const usage = useAccountUsage();
+  const quotaAvailable = usage.state.status === 'success' && usage.state.data.availability.canSubmit;
   const [legacyCancelPending, setLegacyCancelPending] = useState(false);
   const [legacyCancelError, setLegacyCancelError] = useState<string | null>(null);
   const legacyCancelKey = useRef<{ readonly runId: string; readonly key: string } | null>(null);
@@ -62,7 +65,7 @@ export function ChatComposer({ projectId, conversationId, disabled, archivedDesc
   }
 
   const retryError = (): void => {
-    if (chat.errorAction === 'retry-send') void chat.retrySend();
+    if (chat.errorAction === 'retry-send' && quotaAvailable) void chat.retrySend();
     else if (chat.run) void chat.refreshStatus();
     else chat.refresh();
   };
@@ -71,6 +74,7 @@ export function ChatComposer({ projectId, conversationId, disabled, archivedDesc
     <section className="chat-composer max-h-[55%] overflow-y-auto" aria-label="Message composer" tabIndex={0} data-testid="chat-composer">
       {timelineTarget ? createPortal(timeline, timelineTarget) : timeline}
       <AssistantPolicySummary compact status={policy.status} policy={policy.policy} />
+      <AccountUsageGateNotice state={usage.state} />
       {policy.status === 'error' ? <Alert tone="error" role="alert" data-testid="workspace-policy-load-error">
         <p>Workspace assistant policy could not be checked. Sending stays paused until it can be verified.</p>
         <Button type="button" variant="secondary" onClick={policy.retry}>Retry policy check</Button>
@@ -96,38 +100,39 @@ export function ChatComposer({ projectId, conversationId, disabled, archivedDesc
       {chat.pending || chat.restoring && legacyPending ? <p className="form-status" data-testid="chat-send-status" role="status" aria-live="polite">
         {chat.pending ? 'Starting assistant run...' : 'Checking saved run status...'}
       </p> : null}
-      <form className="message-composer" onSubmit={(event) => { event.preventDefault(); void chat.send(); }}>
+      <form className="message-composer" onSubmit={(event) => { event.preventDefault(); if (quotaAvailable) void chat.send(); }}>
         <Label htmlFor="chat-message">Message</Label>
         <Textarea id="chat-message" data-testid="message-input" placeholder="Message the assistant" rows={3} value={chat.content}
           onChange={(event) => chat.setContent(event.target.value)}
-          onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void chat.send(); } }}
+          onKeyDown={(event) => { if (quotaAvailable && event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void chat.send(); } }}
           aria-describedby={disabled ? archivedDescriptionId : 'chat-send-help'} disabled={!canEditDraft || chat.pending} />
         <div className="composer-actions">
           <p id="chat-send-help" className="field-help">Ctrl+Enter or Cmd+Enter to send.</p>
           <Button ref={submitButton} type="submit" data-testid="ai-run-submit" aria-busy={chat.pending}
             aria-describedby={disabled ? archivedDescriptionId : undefined}
-            disabled={disabled || !policy.ready || chat.busy || !csrfToken || !chat.content.trim()}>
+            disabled={disabled || !quotaAvailable || !policy.ready || chat.busy || !csrfToken || !chat.content.trim()}>
             {chat.pending ? 'Sending...' : 'Send'}<Icon name="arrow" size={18} />
           </Button>
         </div>
       </form>
       {chat.error ? <Alert tone="error" role="alert" data-testid="chat-send-error"><p>{chat.error}</p>
-        {chat.errorAction ? <Button type="button" variant="secondary" disabled={chat.pending || chat.restoring} onClick={retryError}>
+        {chat.errorAction ? <Button type="button" variant="secondary" disabled={chat.pending || chat.restoring || chat.errorAction === 'retry-send' && !quotaAvailable} onClick={retryError}>
           {chat.errorAction === 'retry-send' ? 'Try again' : 'Refresh run status'}
         </Button> : null}
       </Alert> : null}
       {showStatusCard && chat.run ? <RunStatusCard state={{ snapshot: chat.run, manifest: chat.manifest }}
         conversationHref={`/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`}
+        retryDisabled={!quotaAvailable}
         onRetry={() => { void chat.safeRetry(); }} onRefresh={() => { void chat.refreshStatus(); }} /> : null}
-      {chat.safeRetryAvailable && policy.ready ? <Button type="button" variant="secondary" data-testid="ai-run-safe-retry" disabled={disabled || chat.pending || chat.restoring || !csrfToken} onClick={() => { void chat.safeRetry(); }}>Try again</Button> : null}
-      {chat.separateRunAvailable && policy.ready ? <Button type="button" variant="secondary" data-testid="ai-run-separate-request" disabled={disabled || chat.pending || chat.restoring || !csrfToken} onClick={() => chat.setDuplicateWorkConfirm(true)}>Start a separate run</Button> : null}
+      {chat.safeRetryAvailable && policy.ready ? <Button type="button" variant="secondary" data-testid="ai-run-safe-retry" disabled={disabled || !quotaAvailable || chat.pending || chat.restoring || !csrfToken} onClick={() => { void chat.safeRetry(); }}>Try again</Button> : null}
+      {chat.separateRunAvailable && policy.ready ? <Button type="button" variant="secondary" data-testid="ai-run-separate-request" disabled={disabled || !quotaAvailable || chat.pending || chat.restoring || !csrfToken} onClick={() => chat.setDuplicateWorkConfirm(true)}>Start a separate run</Button> : null}
       <AlertDialogRoot open={chat.duplicateWorkConfirm} onOpenChange={(open) => { if (!open) chat.setDuplicateWorkConfirm(false); }}>
         <AlertDialogContent data-testid="ai-run-duplicate-work-warning" onCloseAutoFocus={(event) => { event.preventDefault(); submitButton.current?.focus(); }}>
           <AlertDialogTitle>Start a separate assistant run?</AlertDialogTitle>
           <AlertDialogDescription>The provider may already have received the earlier request. Starting a separate run may repeat provider work.</AlertDialogDescription>
           <div className="dialog-actions">
             <AlertDialogCancel asChild><Button type="button" variant="secondary">Keep current run</Button></AlertDialogCancel>
-            <Button type="button" data-testid="ai-run-separate-confirm" disabled={disabled || chat.pending || chat.restoring || !policy.ready || !csrfToken} onClick={() => { void chat.startSeparateRun(); }}>Confirm and start separate run</Button>
+            <Button type="button" data-testid="ai-run-separate-confirm" disabled={disabled || !quotaAvailable || chat.pending || chat.restoring || !policy.ready || !csrfToken} onClick={() => { void chat.startSeparateRun(); }}>Confirm and start separate run</Button>
           </div>
         </AlertDialogContent>
       </AlertDialogRoot>

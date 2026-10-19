@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '@/app/store/hooks';
 import { getDemoShowcaseCopy, retryDemoShowcaseCopy } from '@/entities/demo';
 import type { DemoShowcaseCopy } from '@/entities/demo';
+import { useAccountUsage } from '@/entities/account-usage';
 import { selectCsrfToken, selectExpiresAt, selectPrincipal, sessionCleared } from '@/entities/user-session';
 import { signOut } from '@/features/auth';
 import { Alert, Button, Card, Skeleton, Spinner } from '@/shared/ui';
@@ -185,13 +186,21 @@ function CopyUnavailable({ state, retryAllowed = false, isRetrying = false, isSi
 }
 
 function PrivateDemoBanner({ expiresAt, planningOnly }: { readonly expiresAt: string | null; readonly planningOnly: boolean }): React.JSX.Element {
+  const usage = useAccountUsage();
+  const availability = usage.state.status === 'success' ? usage.state.data.availability : null;
+  const status = availability?.status ?? 'unknown';
+  const message = status === 'available' ? 'AI budget available'
+    : status === 'exhausted' ? 'AI allowance reached'
+      : status === 'paused' ? 'AI paused by administrator'
+        : 'AI availability could not be checked';
   return (
     <aside className="border-b border-[var(--color-border)] bg-[var(--color-surface-muted)] px-4 py-3" data-testid="private-demo-banner" aria-label="Private demo information">
       <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-5 gap-y-2">
         <strong>Private demo</strong>
         <span>{expiresAt ? `Expires ${formatExpiry(expiresAt)}` : 'Expiry unavailable'}</span>
         {planningOnly ? <span>Planning only</span> : null}
-        <span>AI availability unavailable</span>
+        <span data-testid="demo-ai-availability" role="status" aria-live="polite">{message}</span>
+        <Link className="text-[var(--color-link)] underline underline-offset-4" to="/usage">Usage</Link>
         <Link className="text-[var(--color-link)] underline underline-offset-4" to="/showcase">View showcase</Link>
       </div>
     </aside>

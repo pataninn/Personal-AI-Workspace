@@ -16,6 +16,7 @@ interface UserCreditRow {
 interface AccountLimitsRow {
   daily_credit_limit_units: string | null;
   lifetime_credit_limit_units: string | null;
+  demo_credit_limits_configured: boolean;
   credit_timezone: string;
   pending_credit_timezone: string | null;
   timezone_effective_at: Date | string | null;
@@ -75,6 +76,7 @@ export class TypeOrmCreditLedgerRepository implements ICreditLedgerRepository {
       const databaseNow = await this.databaseNow(runner);
       const activeLimits = await this.applyPendingTimeZone(runner, command.ownerId, limits, databaseNow);
 
+      if (user.account_kind === 'demo' && !activeLimits.demo_credit_limits_configured) throw denied('unconfigured');
       if (user.account_kind === 'demo'
         && (policy.demo_daily_limit_units === null || policy.demo_campaign_limit_units === null || policy.demo_campaign_id === null)) {
         throw denied('unconfigured');

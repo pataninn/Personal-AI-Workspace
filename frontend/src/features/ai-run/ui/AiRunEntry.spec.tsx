@@ -21,6 +21,7 @@ const { createAiRunMock, getAiRunMock, getEgressManifestMock, decideEgressMock, 
   listPermissionsMock: vi.fn(),
   revokePermissionMock: vi.fn()
 }));
+const usageApi = vi.hoisted(() => ({ useAccountUsage: vi.fn() }));
 
 vi.mock('@/entities/ai-run/api/ai-run-api', () => ({
   createAiRun: createAiRunMock,
@@ -33,6 +34,7 @@ vi.mock('@/entities/ai-run/api/ai-run-api', () => ({
 }));
 
 vi.mock('@/entities/project-fact/api/project-fact-api', () => ({ listProjectFacts: listFactsMock }));
+vi.mock('@/entities/account-usage', async (importOriginal) => ({ ...await importOriginal<typeof import('@/entities/account-usage')>(), ...usageApi }));
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const CONVERSATION_ID = '44444444-4444-4444-8444-000000000001';
@@ -132,6 +134,7 @@ describe('AiRunEntry', () => {
     listFactsMock.mockReset().mockResolvedValue([projectFact]);
     createAiRunMock.mockResolvedValue({ ...pending, manifest } satisfies AiRunIntent);
     getEgressManifestMock.mockResolvedValue(manifest);
+    usageApi.useAccountUsage.mockReset().mockReturnValue({ state: { status: 'success', data: { availability: { status: 'available', canSubmit: true, reason: null } } }, refresh: vi.fn() });
   });
 
   it('restores the exact pending provider disclosure and consent dialog from the conversation URL', async () => {
@@ -210,6 +213,20 @@ describe('AiRunEntry', () => {
     expect(screen.getByTestId('ai-run-entry')).toHaveTextContent('Ask AI first shows what will be sent to your model provider.');
     expect(screen.getByTestId('ai-run-request-error')).toHaveTextContent('Enter a request before asking the assistant.');
     expect(createAiRunMock).not.toHaveBeenCalled();
+  });
+
+  it('blocks provider approval when the account is globally paused but still allows safe rejection', async () => {
+    window.history.replaceState({}, '', `/?runId=${RUN_ID}`);
+    getAiRunMock.mockResolvedValue(pending);
+    usageApi.useAccountUsage.mockReturnValue({ state: { status: 'success', data: { availability: { status: 'paused', canSubmit: false, reason: 'AI inference is paused by an administrator.' } } }, refresh: vi.fn() });
+    renderEntry();
+
+    expect(await screen.findByTestId('provider-consent-alert-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('provider-consent-availability')).toHaveTextContent('AI inference is paused by an administrator.');
+    expect(screen.getByTestId('provider-consent-approve')).toBeDisabled();
+    expect(screen.getByTestId('provider-consent-reject')).toBeEnabled();
+    expect(createAiRunMock).not.toHaveBeenCalled();
+    expect(decideEgressMock).not.toHaveBeenCalled();
   });
 
   it('shows the exact provider disclosure before a decision and keeps Save message separate', async () => {

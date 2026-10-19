@@ -109,6 +109,8 @@ import { TypeOrmSkillRepository } from '@/infrastructure/database/repositories/t
 import { TypeOrmSkillInvocationRepository } from '@/infrastructure/database/repositories/typeorm-skill-invocation-repository';
 import { BuildShowcasePreviewUseCase, PublishShowcaseUseCase } from '@/modules/showcases/use-cases/showcase-use-cases';
 import { CreateSkillUseCase, DeleteSkillUseCase, GetSkillUseCase, InvokeSkillUseCase, ListSkillsUseCase, UpdateSkillUseCase } from '@/modules/skills';
+import { AdminPortalUseCases } from '@/modules/admin-portal';
+import { TypeOrmAdminPortalRepository } from '@/infrastructure/database/repositories/typeorm-admin-portal-repository';
 
 export interface Application {
   readonly app: Express;
@@ -162,7 +164,7 @@ export async function createApplication(
     const skillRepository = new TypeOrmSkillRepository(dataSource, storageContentAccounting);
     const skillInvocationRepository = new TypeOrmSkillInvocationRepository(dataSource);
     const storageFileMutation = new StorageQuotaFileMutation(storageQuotaRepository);
-    const demoAdmissionRepository = new TypeOrmDemoAdmissionRepository(dataSource, config.demoAbuseLimits);
+    const demoAdmissionRepository = new TypeOrmDemoAdmissionRepository(dataSource);
     const userRepository = new TypeOrmUserRepository(dataSource);
     const localUserPassword = config.localUserPassword ?? await readSecretFile(config.localUserPasswordFile);
     if (localUserPassword) {
@@ -324,14 +326,19 @@ export async function createApplication(
       { sessionLifetimeMs: config.sessionLifetimeMs }
     );
     const getSession = new GetSessionUseCase(sessionRepository, tokenProvider, clock);
+    const adminPortal = new AdminPortalUseCases(
+      new TypeOrmAdminPortalRepository(dataSource), passwordHasher, new GetStorageUsage(storageQuotaRepository)
+    );
+    await demoAdmissionRepository.bootstrapSettings({
+      lifetimeHours: config.demoSessionLifetimeMs / (60 * 60 * 1_000),
+      ...(config.demoAbuseLimits ? { limits: config.demoAbuseLimits } : {})
+    });
     const createDemoSession = new CreateDemoSessionUseCase(
       demoAdmissionRepository,
       new TypeOrmDemoStorageBootstrap(dataSource, storageContentAccounting, storageQuotaRepository),
       tokenProvider,
       {
-        ...(config.demoAbuseLimits ? { limits: config.demoAbuseLimits } : {}),
         ...(config.demoNetworkHashSecret ? { networkHashSecret: config.demoNetworkHashSecret } : {}),
-        lifetimeMs: config.demoSessionLifetimeMs,
         isShowcaseAvailable: async () => {
           if (!config.showcaseLimits) return false;
           const current = await showcaseRepository.getCurrentSummary();
@@ -361,7 +368,7 @@ export async function createApplication(
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https'),
           ...(config.showcaseLimits ? { limits: config.showcaseLimits } : {}),
-          admissionConfigurationReady: () => Boolean(config.demoAbuseLimits && config.demoNetworkHashSecret
+          admissionConfigurationReady: () => Boolean(config.demoNetworkHashSecret
             && Buffer.byteLength(config.demoNetworkHashSecret, 'utf8') >= 32),
           managedStorageReady
         },
@@ -373,6 +380,12 @@ export async function createApplication(
           updateSkill: new UpdateSkillUseCase(projectRepository, skillRepository),
           deleteSkill: new DeleteSkillUseCase(skillRepository),
           invokeSkill: new InvokeSkillUseCase(skillRepository, skillInvocationRepository, homeConversationRepository, submitHomeTurn),
+          appOrigin: config.appOrigin,
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
+        adminPortal: {
+          portal: adminPortal,
+          getSession,
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },

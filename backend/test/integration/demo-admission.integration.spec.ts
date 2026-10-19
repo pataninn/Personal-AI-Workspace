@@ -287,7 +287,8 @@ describeDatabase('Task 3.3 demo admission with PostgreSQL', () => {
     quotaRepository = new TypeOrmStorageQuotaRepository(dataSource);
     const accounting = new TypeOrmStorageContentAccounting(dataSource, quotaRepository);
     const bootstrap = new TypeOrmDemoStorageBootstrap(dataSource, accounting, quotaRepository);
-    admissionRepository = new TypeOrmDemoAdmissionRepository(dataSource, limits);
+    admissionRepository = new TypeOrmDemoAdmissionRepository(dataSource);
+    await admissionRepository.bootstrapSettings({ lifetimeHours: 24, limits });
     showcaseRepository = new TypeOrmShowcaseRepository(dataSource);
     workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'task-3-4-demo-copy-'));
     const workspaceBoundary = new TestManagedWorkspaceBoundary(workspaceRoot);
@@ -315,9 +316,7 @@ describeDatabase('Task 3.3 demo admission with PostgreSQL', () => {
       showcaseLimits
     );
     demoUseCase = new CreateDemoSessionUseCase(admissionRepository, bootstrap, tokenProvider, {
-      limits,
       networkHashSecret: networkSecret,
-      lifetimeMs: 24 * 60 * 60 * 1000,
       isShowcaseAvailable: async () => Boolean(await showcaseRepository.getCurrentSummary()),
       // This admission integration pins the fixture version but leaves copy execution to Task 3.4 tests.
       provisionShowcaseCopy: async () => undefined
@@ -431,7 +430,7 @@ describeDatabase('Task 3.3 demo admission with PostgreSQL', () => {
       admissionRepository,
       { initializeEmptyAccount: async () => undefined },
       tokenProvider,
-      { limits, networkHashSecret: rotatedSecret, lifetimeMs: 24 * 60 * 60 * 1000 }
+      { networkHashSecret: rotatedSecret }
     );
     await expect(rotatedUseCase.execute({ idempotencyKey: thirdKey, clientIp: '192.0.2.56' }))
       .rejects.toThrow(DemoAdmissionUnavailableError);

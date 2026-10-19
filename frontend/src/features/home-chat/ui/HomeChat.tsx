@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 
 import { AssistantPolicySummary } from '@/features/assistant-policy-status';
 import type { HomeConversationScope } from '@/entities/home-conversation';
+import { useAccountUsage } from '@/entities/account-usage';
 import {
   Alert,
   Button,
@@ -39,6 +40,8 @@ interface HomeChatProps {
 
 export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = true, disabled = false, disabledReason, onSummaryRefreshRequested, onClose }: HomeChatProps): React.JSX.Element | null {
   const isAsk = presentation === 'ask';
+  const usage = useAccountUsage();
+  const quotaAvailable = usage.state.status === 'success' && usage.state.data.availability.canSubmit;
   const chat = useHomeChat({ scope, disabled, syncConversationInUrl: !isAsk });
   const planningRecords = useHomePlanningRecords({
     conversationId: chat.selectedConversationId,
@@ -51,7 +54,7 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
   const archivedId = 'home-chat-archived-description';
   const isWorkspace = scope.kind === 'workspace';
   const currentTitle = chat.isNewConversation ? 'New conversation' : chat.selectedConversation?.title ?? 'Assistant conversation';
-  const composerDisabled = disabled || chat.busy || !chat.policyReady || chat.runtimeUnavailable || chat.createNeedsRetry || chat.sendStatus === 'uncertain';
+  const composerDisabled = disabled || !quotaAvailable || chat.busy || !chat.policyReady || chat.runtimeUnavailable || chat.createNeedsRetry || chat.sendStatus === 'uncertain';
   const allowUndo = chat.policyReady && chat.policyStatus?.policy?.capabilities.includes('home_action_undo') === true;
   const legacyActiveTurn = chat.activeTurn && chat.isLegacyTurn(chat.activeTurn.id) && ['pending', 'running', 'cancel_requested', 'unknown'].includes(chat.activeTurn.status);
 
@@ -66,10 +69,12 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>): void {
     event.preventDefault();
+    if (!quotaAvailable) return;
     void chat.send();
   }
 
   function handleComposerKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>): void {
+    if (!quotaAvailable) return;
     const isImeComposing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
     if (isAsk && event.key === 'Enter' && !event.shiftKey && !isImeComposing) {
       event.preventDefault();
@@ -133,6 +138,10 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
     </header>
 
     <AssistantPolicySummary status={chat.policyLoadStatus} policy={chat.policyStatus} compact={isAsk} />
+    {!quotaAvailable ? <Alert tone={usage.state.status === 'success' && usage.state.data.availability.status !== 'unknown' ? 'info' : 'warning'} data-testid="home-chat-usage-blocked">
+      <span>{usage.state.status === 'success' ? usage.state.data.availability.reason ?? 'AI submissions are unavailable.' : 'AI availability could not be checked. Sending stays paused until your allowance is available.'}</span>
+      <Link className="text-[var(--color-link)] underline underline-offset-4" to="/usage">View usage</Link>
+    </Alert> : null}
     {(!chat.policyReady || chat.runtimeUnavailable) && chat.policyLoadStatus !== 'loading' ? <Alert tone="warning" data-testid="home-chat-policy-unavailable">
       <span>Assistant execution is unavailable for this scope. Your draft is preserved until availability is confirmed.</span>
       <Button type="button" variant="secondary" data-testid="home-chat-refresh-policy" onClick={chat.retryPolicy}>Refresh availability</Button>
@@ -201,7 +210,7 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
           {chat.createNeedsRetry ? <Button type="button" variant="secondary" data-testid="home-chat-retry-create" disabled={chat.busy || disabled} onClick={() => { void chat.retryCreate(); }}>Retry conversation creation</Button> : null}
           {chat.sendStatus === 'uncertain' && chat.submitCanRetry ? <>
             <Button type="button" variant="secondary" data-testid="home-chat-check-submission" disabled={chat.busy || disabled} onClick={() => { void chat.checkSubmission(); }}>Check status</Button>
-            <Button type="button" variant="secondary" data-testid="home-chat-retry-send" disabled={chat.busy || disabled || !chat.policyReady} onClick={() => { void chat.retrySameSubmission(); }}>Retry same send</Button>
+            <Button type="button" variant="secondary" data-testid="home-chat-retry-send" disabled={chat.busy || disabled || !chat.policyReady || !quotaAvailable} onClick={() => { void chat.retrySameSubmission(); }}>Retry same send</Button>
           </> : null}
           {chat.sendStatus === 'uncertain' && !chat.submitCanRetry ? <Button type="button" variant="secondary" data-testid="home-chat-refresh-submission" disabled={chat.busy} onClick={() => { void chat.checkSubmission(); }}>Refresh status</Button> : null}
         </Alert> : null}
@@ -225,7 +234,7 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
           <div className="home-chat-composer-footer">
             <p id={isAsk ? 'home-chat-ask-help' : 'home-chat-help'} className="field-help">{isAsk ? 'Enter to send · Shift+Enter for a new line.' : 'Ctrl+Enter or Cmd+Enter to send.'}</p>
             <span className="home-chat-character-count" aria-live="off">{chat.draft.length.toLocaleString()} / 20,000</span>
-            <Button type="submit" data-testid="home-chat-send" disabled={!chat.canSend} aria-busy={chat.sendStatus === 'submitting'}>Send</Button>
+            <Button type="submit" data-testid="home-chat-send" disabled={!chat.canSend || !quotaAvailable} aria-busy={chat.sendStatus === 'submitting'}>Send</Button>
           </div>
         </form>
       </div>

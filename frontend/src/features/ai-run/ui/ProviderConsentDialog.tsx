@@ -10,6 +10,7 @@ interface ProviderConsentDialogProps {
   readonly decisionError: string | null;
   readonly decisionOutcomeUnknown: boolean;
   readonly approveEnabled: boolean;
+  readonly approveBlockedReason?: string;
   readonly rememberProviderPermission: boolean;
   readonly showFactContent?: boolean;
   readonly onOpenChange: (open: boolean) => void;
@@ -29,6 +30,7 @@ export function ProviderConsentDialog({
   decisionError,
   decisionOutcomeUnknown,
   approveEnabled,
+  approveBlockedReason,
   rememberProviderPermission,
   showFactContent = true,
   onOpenChange,
@@ -170,6 +172,7 @@ export function ProviderConsentDialog({
           </dl> : null}
         </section>
 
+        {approveBlockedReason ? <Alert tone="warning" data-testid="provider-consent-availability" role="status">{approveBlockedReason}</Alert> : null}
         {decisionError ? <Alert tone={isStale ? 'warning' : 'error'} data-testid="provider-consent-error" role="alert">{decisionError}</Alert> : null}
         {statusText ? <div className="form-status" data-testid="provider-consent-status" role="status" aria-live="polite" aria-busy="true"><Spinner label={statusText} /><span>{statusText}</span></div> : null}
 

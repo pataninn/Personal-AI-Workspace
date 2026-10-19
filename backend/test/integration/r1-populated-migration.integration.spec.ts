@@ -407,15 +407,17 @@ describeDatabase('R1 populated database migration regression', () => {
     });
     const commandProposals = { execute: jest.fn().mockResolvedValue({ resource: { id: 'unused', status: 'pending_approval', safeMessage: 'Review command.' }, replayed: false }) };
     const principalAuthorization = new PrincipalAuthorization(users, { now: () => new Date() });
+    const demoAdmission = new TypeOrmDemoAdmissionRepository(dataSource);
+    await demoAdmission.bootstrapSettings({ lifetimeHours: 24, limits: {
+      globalAdmissionMax: 10,
+      globalAdmissionWindowSeconds: 3600,
+      networkAdmissionMax: 10,
+      networkAdmissionWindowSeconds: 900,
+      runStartMax: 10,
+      runStartWindowSeconds: 3600
+    } });
     const start = new StartAiRunUseCase(
-      expiryRuns, conversations, runtime, eventPublisher, new TypeOrmDemoAdmissionRepository(dataSource, {
-        globalAdmissionMax: 10,
-        globalAdmissionWindowSeconds: 3600,
-        networkAdmissionMax: 10,
-        networkAdmissionWindowSeconds: 900,
-        runStartMax: 10,
-        runStartWindowSeconds: 3600
-      }), commandProposals, new TypeOrmProjectRepository(dataSource),
+      expiryRuns, conversations, runtime, eventPublisher, demoAdmission, commandProposals, new TypeOrmProjectRepository(dataSource),
       undefined, undefined, undefined, principalAuthorization
     );
 

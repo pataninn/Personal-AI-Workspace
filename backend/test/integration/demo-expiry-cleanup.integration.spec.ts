@@ -207,7 +207,7 @@ describeDatabase('Task 3.5 demo expiry cleanup with PostgreSQL and managed stora
       FROM "demo_admission_counters" ORDER BY "scope_kind","scope_key"`)).resolves.toEqual(counterBaseline);
 
     const bootstrap = { initializeEmptyAccount: jest.fn() };
-    const replay = new CreateDemoSessionUseCase(new TypeOrmDemoAdmissionRepository(source), bootstrap, {} as never, { lifetimeMs: 60_000 });
+    const replay = new CreateDemoSessionUseCase(new TypeOrmDemoAdmissionRepository(source), bootstrap, {} as never, {});
     await expect(replay.execute({ idempotencyKey: IDEMPOTENCY_KEY, clientIp: '127.0.0.1' })).resolves.toEqual({ kind: 'status', state: 'failed' });
     expect(bootstrap.initializeEmptyAccount).not.toHaveBeenCalled();
     await expect(scalarCount(source, 'users', DEMO_OWNER_ID)).resolves.toBe(0);
@@ -309,7 +309,7 @@ describeDatabase('Task 3.5 demo expiry cleanup with PostgreSQL and managed stora
       .resolves.toEqual(campaignCreditBaseline);
 
     const bootstrap = { initializeEmptyAccount: jest.fn() };
-    const replay = new CreateDemoSessionUseCase(new TypeOrmDemoAdmissionRepository(source), bootstrap, {} as never, { lifetimeMs: 60_000 });
+    const replay = new CreateDemoSessionUseCase(new TypeOrmDemoAdmissionRepository(source), bootstrap, {} as never, {});
     await expect(replay.execute({ idempotencyKey: IDEMPOTENCY_KEY, clientIp: '127.0.0.1' })).resolves.toEqual({ kind: 'status', state: 'failed' });
     expect(bootstrap.initializeEmptyAccount).not.toHaveBeenCalled();
     await expect(source.query('SELECT "id" FROM "users" WHERE "id"=$1', [DEMO_OWNER_ID])).resolves.toHaveLength(0);
