@@ -2,12 +2,13 @@ import { configureStore } from '@reduxjs/toolkit';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
-import { MemoryRouter, useNavigate } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { userSessionReducer } from '@/entities/user-session';
+import { sessionAuthenticated, userSessionReducer } from '@/entities/user-session';
 import type { HomeConversationEvent, HomeConversationScope, HomeConversationSnapshot, HomeTurnSnapshot, HomeTurnSubmission } from '@/entities/home-conversation';
 import { HomeChat } from '@/features/home-chat/ui/HomeChat';
+import { HomeAsk } from '@/widgets/app-shell/HomeAsk';
 import { useHomeChat } from '@/features/home-chat/model/use-home-chat';
 import { ApiClientError } from '@/shared/api';
 
@@ -137,6 +138,25 @@ function renderProbe(entry: string, scope = HOME_SCOPE): void {
   render(<Provider store={store}><MemoryRouter initialEntries={[entry]}><HookProbe scope={scope} /></MemoryRouter></Provider>);
 }
 
+function AskShellHarness(): React.JSX.Element {
+  const navigate = useNavigate();
+  const location = useLocation();
+  return <>
+    <button type="button" data-testid="navigate-home-work" onClick={() => navigate('/tasks?from=assistant-test')}>Open tasks</button>
+    <HomeAsk />
+    <output data-testid="ask-location">{`${location.pathname}${location.search}`}</output>
+  </>;
+}
+
+function renderAsk(entry = '/dashboard?tab=home') {
+  const store = configureStore({
+    reducer: { userSession: userSessionReducer },
+    preloadedState: { userSession: { status: 'authenticated' as const, principal: { id: 'owner', displayName: 'User', accountKind: 'regular' as const, role: 'user' as const }, csrfToken: 'csrf', expiresAt: null, errorCode: null } }
+  });
+  render(<Provider store={store}><MemoryRouter initialEntries={[entry]}><AskShellHarness /></MemoryRouter></Provider>);
+  return store;
+}
+
 beforeEach(() => {
   window.sessionStorage.clear();
   api.cancelHomeTurn.mockReset().mockResolvedValue({ turn: { ...pendingTurn, status: 'cancel_requested' }, replayed: false });
@@ -154,6 +174,57 @@ beforeEach(() => {
 });
 
 describe('Home chat', () => {
+  it('keeps a Home draft and URL selection independent through close, navigation, reopen, and keyboard use', async () => {
+    api.listHomeConversations.mockResolvedValue({ conversations: [conversation, secondConversation], nextCursor: null });
+    const user = userEvent.setup();
+    renderAsk();
+
+    const launcher = screen.getByRole('button', { name: 'Open Home assistant' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await user.click(launcher);
+    const input = await screen.findByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(input).toBeEnabled());
+    const conversationTrigger = screen.getByTestId('home-chat-conversation-trigger');
+    await waitFor(() => expect(conversationTrigger).toHaveAttribute('aria-label', 'Conversation: Planning question'));
+    await user.type(input, 'first conversation draft');
+    expect(screen.getByTestId('ask-location')).toHaveTextContent('/dashboard?tab=home');
+
+    await user.click(screen.getByRole('button', { name: 'Close assistant' }));
+    expect(launcher).toHaveFocus();
+    await user.click(screen.getByTestId('navigate-home-work'));
+    expect(screen.getByTestId('ask-location')).toHaveTextContent('/tasks?from=assistant-test');
+
+    await user.click(launcher);
+    expect(await screen.findByRole('textbox', { name: 'Message' })).toHaveValue('first conversation draft');
+    const reopenedInput = screen.getByRole('textbox', { name: 'Message' });
+    await user.click(reopenedInput);
+    await user.keyboard('{Shift>}{Enter}{/Shift}');
+    expect(reopenedInput).toHaveValue('first conversation draft\n');
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(launcher).toHaveFocus();
+  });
+
+  it('resets Ask panel state when the signed-in principal changes', async () => {
+    api.listHomeConversations.mockResolvedValue({ conversations: [], nextCursor: null });
+    const user = userEvent.setup();
+    const store = renderAsk();
+    await user.click(screen.getByRole('button', { name: 'Open Home assistant' }));
+    const input = await screen.findByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(input).toBeEnabled());
+    await user.type(input, 'private draft for owner one');
+
+    store.dispatch(sessionAuthenticated({
+      principal: { id: 'owner-two', displayName: 'Second user', accountKind: 'regular', role: 'user' },
+      csrfToken: 'csrf-two',
+      expiresAt: '2026-10-19T00:00:00.000Z'
+    }));
+
+    await waitFor(() => expect(screen.getByTestId('home-chat-input')).toHaveValue(''));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
   it('keeps a draft and its idempotency key while policy refresh is required after an unavailable response', async () => {
     policyApi.getAssistantExecutionPolicy.mockImplementationOnce(async () => policyFor('home'))
       .mockImplementationOnce(async () => ({ ...policyFor('home'), readiness: { state: 'unavailable', reasonCode: 'runtime_unverified' } }))

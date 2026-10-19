@@ -137,6 +137,7 @@ function definitiveClientRejection(error: unknown): boolean {
 export interface UseHomeChatOptions {
   readonly scope: HomeConversationScope;
   readonly disabled?: boolean;
+  readonly syncConversationInUrl?: boolean;
 }
 
 export interface HomeChatController {
@@ -153,6 +154,7 @@ export interface HomeChatController {
   readonly selectedConversation: HomeConversationSnapshot | null;
   readonly selectedConversationId: string | null;
   readonly isNewConversation: boolean;
+  readonly selectConversation: (conversationId: string) => void;
   readonly startNewConversation: () => void;
   readonly navigationLocked: boolean;
   readonly messages: readonly HomeMessageSnapshot[];
@@ -191,11 +193,12 @@ export interface HomeChatController {
   readonly loadStatus: (turnId: string) => string | null;
 }
 
-export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): HomeChatController {
+export function useHomeChat({ scope, disabled = false, syncConversationInUrl = true }: UseHomeChatOptions): HomeChatController {
   const [searchParams, setSearchParams] = useSearchParams();
   const csrfToken = useAppSelector(selectCsrfToken);
   const scopeId = scopeKey(scope);
-  const urlConversationId = searchParams.get('conversation');
+  const [localConversationId, setLocalConversationId] = useState<string | null>(null);
+  const urlConversationId = syncConversationInUrl ? searchParams.get('conversation') : localConversationId;
   const [selectionOverride, setSelectionOverride] = useState<{ readonly from: string | null; readonly value: string | null } | null>(null);
   const selectedConversationId = selectionOverride?.from === urlConversationId ? selectionOverride.value : urlConversationId;
   const [isNewConversation, setIsNewConversation] = useState(false);
@@ -231,7 +234,8 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
   const [historyStatus, setHistoryStatus] = useState<LoadStatus>('idle');
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [refreshAttempt, setRefreshAttempt] = useState(0);
-  const [draft, setDraft] = useState('');
+  const [draftsByViewKey, setDraftsByViewKey] = useState<Readonly<Record<string, string>>>({});
+  const draft = draftsByViewKey[selectedViewKey] ?? '';
   const [sendStatus, setSendStatus] = useState<SendStatus>('idle');
   const [sendError, setSendError] = useState<string | null>(null);
   const [createNeedsRetry, setCreateNeedsRetry] = useState(false);
@@ -259,6 +263,29 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
   policyReadyRef.current = policyReady;
   const knownLegacyTurnIds = useMemo(() => new Set([...legacyTurnIds(events), ...locallyBlockedLegacyTurns]), [events, locallyBlockedLegacyTurns]);
 
+  const setDraft = useCallback((value: string): void => {
+    setDraftsByViewKey((previous) => ({ ...previous, [selectedViewKey]: value }));
+  }, [selectedViewKey]);
+
+  const setConversationSelection = useCallback((conversationId: string | null, newConversation: boolean, replace = false): void => {
+    const targetKey = viewKey(scopeIdRef.current, conversationId, newConversation);
+    setSelectionOverride({ from: urlConversationRef.current, value: conversationId });
+    setIsNewConversation(newConversation);
+    viewKeyRef.current = targetKey;
+    previousViewKeyRef.current = targetKey;
+    if (syncConversationInUrl) {
+      setSearchParams((previous) => {
+        const next = new URLSearchParams(previous);
+        if (conversationId) next.set('conversation', conversationId);
+        else next.delete('conversation');
+        return next;
+      }, { replace });
+      return;
+    }
+    urlConversationRef.current = conversationId;
+    setLocalConversationId(conversationId);
+  }, [setSearchParams, syncConversationInUrl]);
+
   if (previousViewKeyRef.current !== selectedViewKey) {
     previousViewKeyRef.current = selectedViewKey;
     busyTokenRef.current += 1;
@@ -282,7 +309,6 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     if (prevScopeIdRef.current !== scopeId) {
       prevScopeIdRef.current = scopeId;
       setIsNewConversation(false);
-      setDraft('');
       setSendError(null);
       sendIntentRef.current = null;
       createIntentRef.current = null;
@@ -347,12 +373,8 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     if (loadedListScope !== scopeId || listStatus !== 'success' || selectedConversationId || isNewConversation) return;
     const first = conversations[0];
     if (!first) return;
-    setSearchParams((previous) => {
-      const next = new URLSearchParams(previous);
-      next.set('conversation', first.id);
-      return next;
-    }, { replace: true });
-  }, [conversations, isNewConversation, listStatus, loadedListScope, scopeId, selectedConversationId, setSearchParams]);
+    setConversationSelection(first.id, false, true);
+  }, [conversations, isNewConversation, listStatus, loadedListScope, scopeId, selectedConversationId, setConversationSelection]);
 
   useEffect(() => {
     if (!selectedConversationId) {
@@ -499,22 +521,19 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
 
   const startNewConversation = useCallback((): void => {
     if (sendIntentRef.current || createIntentRef.current) return;
-    setSelectionOverride({ from: urlConversationRef.current, value: null });
-    setIsNewConversation(true);
-    viewKeyRef.current = viewKey(scopeIdRef.current, null, true);
+    setConversationSelection(null, true);
     sendIntentRef.current = null;
     createIntentRef.current = null;
     setSendStatus('idle');
     setSendError(null);
     setCreateNeedsRetry(false);
     setSubmitCanRetry(false);
-    setDraft('');
-    setSearchParams((previous) => {
-      const next = new URLSearchParams(previous);
-      next.delete('conversation');
-      return next;
-    });
-  }, [setSearchParams]);
+  }, [setConversationSelection]);
+
+  const selectConversation = useCallback((conversationId: string): void => {
+    if (sendIntentRef.current || createIntentRef.current) return;
+    setConversationSelection(conversationId, false);
+  }, [setConversationSelection]);
 
   const loadEarlierMessages = useCallback(async (): Promise<void> => {
     if (!selectedConversationId || messageCursor === null || historyStatus !== 'success') return;
@@ -554,7 +573,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     }
     if (submission.execution.state === 'unsupported' || submission.turn.status === 'unsupported') markUnsupported();
     if ((submission.execution.state === 'running' || submission.execution.state === 'resumed') && submission.turn.status === 'running') {
-      setDraft((previous) => previous === content ? '' : previous);
+      setDraftsByViewKey((previous) => previous[requestKey] === content ? { ...previous, [requestKey]: '' } : previous);
     }
     setSendStatus('idle');
   }, [current, markUnsupported]);
@@ -588,7 +607,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
       setSubmitCanRetry(false);
       sendIntentRef.current = null;
       if (found.turn.status === 'unsupported') markUnsupported();
-      if (found.turn.status === 'running') setDraft((previous) => previous === intent.content ? '' : previous);
+      if (found.turn.status === 'running') setDraftsByViewKey((previous) => previous[requestKey] === intent.content ? { ...previous, [requestKey]: '' } : previous);
       return 'found';
     } catch {
       if (current(requestKey)) {
@@ -617,16 +636,13 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
       setCreateNeedsRetry(false);
       setConversations((previous) => [conversation, ...previous.filter((item) => item.id !== conversation.id)]);
       setLoadedConversation(conversation);
-      setIsNewConversation(false);
       const targetKey = viewKey(scopeIdRef.current, conversation.id, false);
-      setSelectionOverride({ from: urlConversationRef.current, value: conversation.id });
-      viewKeyRef.current = targetKey;
-      previousViewKeyRef.current = targetKey;
-      setSearchParams((previous) => {
-        const next = new URLSearchParams(previous);
-        next.set('conversation', conversation.id);
+      setDraftsByViewKey((previous) => {
+        const next = { ...previous, [targetKey]: previous[requestKey] ?? content };
+        delete next[requestKey];
         return next;
       });
+      setConversationSelection(conversation.id, false);
       return conversation;
     } catch (error: unknown) {
       if (!current(requestKey)) return null;
@@ -636,7 +652,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
       else setCreateNeedsRetry(true);
       return null;
     }
-  }, [csrfToken, current, setSearchParams]);
+  }, [csrfToken, current, setConversationSelection]);
 
   const retryCreate = useCallback(async (): Promise<void> => {
     const intent = createIntentRef.current;
@@ -652,16 +668,13 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
       setCreateNeedsRetry(false);
       setConversations((previous) => [conversation, ...previous.filter((item) => item.id !== conversation.id)]);
       setLoadedConversation(conversation);
-      setIsNewConversation(false);
       const targetKey = viewKey(scopeIdRef.current, conversation.id, false);
-      setSelectionOverride({ from: urlConversationRef.current, value: conversation.id });
-      viewKeyRef.current = targetKey;
-      previousViewKeyRef.current = targetKey;
-      setSearchParams((previous) => {
-        const next = new URLSearchParams(previous);
-        next.set('conversation', conversation.id);
+      setDraftsByViewKey((previous) => {
+        const next = { ...previous, [targetKey]: previous[requestKey] ?? '' };
+        delete next[requestKey];
         return next;
       });
+      setConversationSelection(conversation.id, false);
       setSendStatus('idle');
     } catch (error: unknown) {
       if (current(requestKey)) {
@@ -670,7 +683,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
         if (definitiveClientRejection(error)) { createIntentRef.current = null; setCreateNeedsRetry(false); }
       }
     } finally { endBusyOperation(operation); }
-  }, [csrfToken, current, disabled, setSearchParams]);
+  }, [csrfToken, current, disabled, setConversationSelection]);
 
   const performSubmit = useCallback(async (intent: SendIntent, requestKey: string): Promise<void> => {
     if (!csrfToken || busyRef.current) return;
@@ -880,7 +893,7 @@ export function useHomeChat({ scope, disabled = false }: UseHomeChatOptions): Ho
     conversations: loadedListScope === scopeId ? conversations : [], listStatus, listError,
     hasMoreConversations: Boolean(listCursor), loadMoreConversations, retryConversationList,
     selectedConversation, selectedConversationId, isNewConversation,
-    startNewConversation, navigationLocked,
+    selectConversation, startNewConversation, navigationLocked,
     messages: visibleMessages, turns, events, eventsConversationId: loadedEventsConversationId === selectedConversationId ? selectedConversationId : null,
     lastProcessedEventSequence, historyStatus, historyError,
     hasEarlierMessages: messageCursor !== null, loadEarlierMessages,

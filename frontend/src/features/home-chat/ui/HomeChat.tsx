@@ -3,7 +3,24 @@ import { Link } from 'react-router-dom';
 
 import { AssistantPolicySummary } from '@/features/assistant-policy-status';
 import type { HomeConversationScope } from '@/entities/home-conversation';
-import { Alert, Button, Icon, Label, MarkdownContent, Skeleton, Spinner, Textarea } from '@/shared/ui';
+import {
+  Alert,
+  Button,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRoot,
+  DropdownMenuTrigger,
+  Icon,
+  Label,
+  MarkdownContent,
+  Skeleton,
+  Spinner,
+  Textarea
+} from '@/shared/ui';
 
 import { useHomePlanningRecords } from '../model/use-home-planning-records';
 import { useHomeChat } from '../model/use-home-chat';
@@ -12,13 +29,17 @@ import { HomePlanningRecords, UnattachedHomePlanningRecords } from './HomePlanni
 interface HomeChatProps {
   readonly scope: HomeConversationScope;
   readonly scopeLabel: string;
+  readonly presentation?: 'embedded' | 'ask';
+  readonly open?: boolean;
   readonly disabled?: boolean;
   readonly disabledReason?: string;
   readonly onSummaryRefreshRequested?: () => void;
+  readonly onClose?: () => void;
 }
 
-export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason, onSummaryRefreshRequested }: HomeChatProps): React.JSX.Element {
-  const chat = useHomeChat({ scope, disabled });
+export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = true, disabled = false, disabledReason, onSummaryRefreshRequested, onClose }: HomeChatProps): React.JSX.Element | null {
+  const isAsk = presentation === 'ask';
+  const chat = useHomeChat({ scope, disabled, syncConversationInUrl: !isAsk });
   const planningRecords = useHomePlanningRecords({
     conversationId: chat.selectedConversationId,
     events: chat.events,
@@ -48,19 +69,70 @@ export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason, 
     void chat.send();
   }
 
-  return <section className={`home-chat ${isWorkspace ? 'home-chat-workspace' : 'home-chat-home'}`} data-testid={isWorkspace ? 'planning-chat' : 'home-chat'}>
-    <header className="home-chat-header">
+  function handleComposerKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>): void {
+    const isImeComposing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
+    if (isAsk && event.key === 'Enter' && !event.shiftKey && !isImeComposing) {
+      event.preventDefault();
+      void chat.send();
+      return;
+    }
+    if (!isAsk && event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      void chat.send();
+    }
+  }
+
+  if (isAsk && !open) return null;
+
+  const panel = <section className={`home-chat ${isWorkspace ? 'home-chat-workspace' : 'home-chat-home'}${isAsk ? ' home-chat-ask' : ''}`} data-testid={isWorkspace ? 'planning-chat' : 'home-chat'}>
+    <header className={`home-chat-header${isAsk ? ' home-chat-ask-header' : ''}`}>
       <div>
         <p className="product-label">{scopeLabel}</p>
-        <h2>{isWorkspace ? 'Planning chat' : 'Ask the Home assistant'}</h2>
-        <p className="home-chat-current-title" title={currentTitle}>{currentTitle}</p>
+        {isAsk ? <DialogTitle className="home-chat-ask-title">Ask the Home assistant</DialogTitle> : <h2>{isWorkspace ? 'Planning chat' : 'Ask the Home assistant'}</h2>}
+        {isAsk
+          ? <DialogDescription className="home-chat-ask-description">Home scope. Assistant access follows the policy shown below.</DialogDescription>
+          : <p className="home-chat-current-title" title={currentTitle}>{currentTitle}</p>}
       </div>
-      <Button type="button" variant="secondary" data-testid="home-chat-new" disabled={disabled || chat.busy || chat.navigationLocked} onClick={chat.startNewConversation}>
+      {isAsk ? <div className="home-chat-ask-actions">
+        <DropdownMenuRoot modal={false}>
+          <DropdownMenuTrigger asChild>
+            <Button type="button" variant="ghost" data-testid="home-chat-conversation-trigger" className="home-chat-conversation-trigger" aria-label={`Conversation: ${currentTitle}`} disabled={disabled || chat.navigationLocked}>
+              <span title={currentTitle}>{currentTitle}</span><Icon name="chevron" size={16} />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="home-chat-history-menu">
+            <DropdownMenuLabel>Home conversations</DropdownMenuLabel>
+            {chat.listStatus === 'loading' ? <div className="home-chat-history-menu-state" role="status">Loading history…</div> : null}
+            {chat.listStatus === 'error' ? <div className="home-chat-history-menu-error" role="alert">
+              <span>{chat.listError ?? 'Saved conversations could not be loaded.'}</span>
+              <Button type="button" variant="secondary" data-testid="home-chat-history-retry" onClick={chat.retryConversationList}>Retry history</Button>
+            </div> : null}
+            {chat.listStatus === 'success' && chat.conversations.length === 0 ? <div className="home-chat-history-menu-state">No saved conversations yet.</div> : null}
+            {chat.conversations.map((conversation) => <DropdownMenuItem
+              key={conversation.id}
+              className="home-chat-history-menu-item"
+              data-testid={`home-chat-history-item-${conversation.id}`}
+              data-current={chat.selectedConversationId === conversation.id || undefined}
+              disabled={disabled || chat.busy || chat.navigationLocked}
+              onSelect={() => chat.selectConversation(conversation.id)}
+            >
+              <span>{conversation.title}</span><time dateTime={conversation.updatedAt}>{new Date(conversation.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time>
+            </DropdownMenuItem>)}
+            {chat.hasMoreConversations ? <DropdownMenuItem className="home-chat-history-menu-item" disabled={chat.busy} onSelect={() => { void chat.loadMoreConversations(); }}>More history</DropdownMenuItem> : null}
+          </DropdownMenuContent>
+        </DropdownMenuRoot>
+        <Button type="button" variant="secondary" data-testid="home-chat-new" disabled={disabled || chat.busy || chat.navigationLocked} onClick={chat.startNewConversation}>
+          <Icon name="plus" size={16} /><span className="home-chat-new-label">New</span>
+        </Button>
+        <Button type="button" variant="ghost" data-testid="home-chat-close" aria-label="Close assistant" onClick={onClose}>
+          <Icon name="close" size={18} />
+        </Button>
+      </div> : <Button type="button" variant="secondary" data-testid="home-chat-new" disabled={disabled || chat.busy || chat.navigationLocked} onClick={chat.startNewConversation}>
         <Icon name="plus" size={16} />New conversation
-      </Button>
+      </Button>}
     </header>
 
-    <AssistantPolicySummary status={chat.policyLoadStatus} policy={chat.policyStatus} />
+    <AssistantPolicySummary status={chat.policyLoadStatus} policy={chat.policyStatus} compact={isAsk} />
     {(!chat.policyReady || chat.runtimeUnavailable) && chat.policyLoadStatus !== 'loading' ? <Alert tone="warning" data-testid="home-chat-policy-unavailable">
       <span>Assistant execution is unavailable for this scope. Your draft is preserved until availability is confirmed.</span>
       <Button type="button" variant="secondary" data-testid="home-chat-refresh-policy" onClick={chat.retryPolicy}>Refresh availability</Button>
@@ -70,14 +142,16 @@ export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason, 
     {chat.runtimeUnavailable ? <Alert tone="error" data-testid="home-chat-runtime-unavailable" role="alert">The configured assistant runtime is unavailable. Refresh availability before trying again.</Alert> : null}
     {chat.reconnecting ? <p className="home-chat-reconnect" role="status" aria-live="polite"><Spinner label="Reconnecting" /> Reconnecting…</p> : null}
 
-    <div className="home-chat-layout">
-      <aside className="home-chat-history" aria-label="Saved conversations">
-        <HistoryList chat={chat} disabled={disabled} testIdPrefix="home-chat-history-desktop" />
-      </aside>
-      <details className="home-chat-history-mobile" open={historyOpen} onToggle={(event) => setHistoryOpen(event.currentTarget.open)}>
-        <summary data-testid="home-chat-history-summary">History{chat.conversations.length ? ` (${chat.conversations.length})` : ''}</summary>
-        <HistoryList chat={chat} disabled={disabled} testIdPrefix="home-chat-history-mobile" />
-      </details>
+    <div className={`home-chat-layout${isAsk ? ' home-chat-layout-ask' : ''}`}>
+      {!isAsk ? <>
+        <aside className="home-chat-history" aria-label="Saved conversations">
+          <HistoryList chat={chat} disabled={disabled} testIdPrefix="home-chat-history-desktop" />
+        </aside>
+        <details className="home-chat-history-mobile" open={historyOpen} onToggle={(event) => setHistoryOpen(event.currentTarget.open)}>
+          <summary data-testid="home-chat-history-summary">History{chat.conversations.length ? ` (${chat.conversations.length})` : ''}</summary>
+          <HistoryList chat={chat} disabled={disabled} testIdPrefix="home-chat-history-mobile" />
+        </details>
+      </> : null}
 
       <div className="home-chat-main">
         {chat.historyStatus === 'loading' ? <div className="home-chat-loading" aria-busy="true" data-testid="home-chat-loading"><p role="status">Loading conversation…</p><Skeleton className="home-chat-skeleton" /><Skeleton className="home-chat-skeleton short" /></div> : null}
@@ -87,7 +161,7 @@ export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason, 
         </Alert> : null}
         {chat.historyStatus === 'success' ? <>
           {chat.hasEarlierMessages ? <div className="home-chat-earlier"><Button type="button" variant="ghost" data-testid="home-chat-load-earlier" disabled={chat.busy} onClick={() => { void chat.loadEarlierMessages(); }}>Load earlier messages</Button></div> : null}
-          {chat.messages.filter((message) => message.role === 'user' || message.role === 'assistant').length === 0 ? <div className="home-chat-empty" data-testid="home-chat-empty"><strong>{isWorkspace ? 'Start planning for this workspace.' : 'Start with a question or a task you want to plan.'}</strong>{!isWorkspace ? <p>Your saved messages will appear here.</p> : null}</div> : null}
+          {chat.messages.filter((message) => message.role === 'user' || message.role === 'assistant').length === 0 ? <div className="home-chat-empty" data-testid="home-chat-empty"><strong>{isAsk ? 'What would you like to work on?' : isWorkspace ? 'Start planning for this workspace.' : 'Start with a question or a task you want to plan.'}</strong>{isAsk ? <p>Try: Plan my day from my tasks and saved working hours.</p> : !isWorkspace ? <p>Your saved messages will appear here.</p> : null}</div> : null}
           <ol className="home-chat-messages" aria-label="Conversation messages" data-testid="home-chat-messages">
             {chat.messages.filter((message) => message.role === 'user' || message.role === 'assistant').map((message) => {
               const status = message.role === 'user' ? chat.loadStatus(message.turnId) : null;
@@ -101,7 +175,7 @@ export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason, 
           </ol>
           <UnattachedHomePlanningRecords records={planningRecords} displayedTurnIds={new Set(chat.messages.filter((message) => message.role === 'assistant').map((message) => message.turnId))} allowUndo={allowUndo} />
         </> : null}
-        {chat.historyStatus === 'idle' && (!chat.selectedConversationId && (chat.isNewConversation || chat.listStatus === 'success')) ? <div className="home-chat-empty" data-testid="home-chat-empty"><strong>{isWorkspace ? 'Start planning for this workspace.' : 'Start with a question or a task you want to plan.'}</strong>{!isWorkspace ? <p>Your saved messages will appear here.</p> : null}</div> : null}
+        {chat.historyStatus === 'idle' && (!chat.selectedConversationId && (chat.isNewConversation || chat.listStatus === 'success')) ? <div className="home-chat-empty" data-testid="home-chat-empty"><strong>{isAsk ? 'What would you like to work on?' : isWorkspace ? 'Start planning for this workspace.' : 'Start with a question or a task you want to plan.'}</strong>{isAsk ? <p>Try: Plan my day from my tasks and saved working hours.</p> : !isWorkspace ? <p>Your saved messages will appear here.</p> : null}</div> : null}
 
         {legacyActiveTurn ? <Alert tone="warning" data-testid="home-chat-legacy-blocked">
           <span>This saved action cannot be resumed. Start a new request if it is supported for this scope.</span>
@@ -135,21 +209,21 @@ export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason, 
         {chat.activeTurn?.status === 'running' ? <div className="home-chat-stop-row"><Button type="button" variant="secondary" data-testid="home-chat-stop" disabled={disabled || chat.cancelPending} onClick={() => { void chat.cancel(); }}>{chat.cancelPending ? 'Stopping…' : 'Stop response'}</Button></div> : null}
 
         <form className="home-chat-composer" onSubmit={handleSubmit}>
-          <Label htmlFor={isWorkspace ? 'planning-chat-message' : 'home-chat-message'}>Message the assistant</Label>
+          <Label htmlFor={isWorkspace ? 'planning-chat-message' : 'home-chat-message'}>{isAsk ? 'Message' : 'Message the assistant'}</Label>
           <Textarea
             id={isWorkspace ? 'planning-chat-message' : 'home-chat-message'}
             data-testid="home-chat-input"
-            rows={4}
+            rows={isAsk ? 3 : 4}
             maxLength={20000}
-            placeholder={isWorkspace ? 'Start planning for this workspace…' : 'Ask a question or plan your next step…'}
+            placeholder={isAsk ? 'Ask about your work' : isWorkspace ? 'Start planning for this workspace…' : 'Ask a question or plan your next step…'}
             value={chat.draft}
             onChange={(event) => { chat.setDraft(event.target.value); if (chat.sendError) chat.clearSendError(); }}
-            onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void chat.send(); } }}
+            onKeyDown={handleComposerKeyDown}
             disabled={composerDisabled}
-            aria-describedby={`${isWorkspace && disabled ? archivedId : ''} home-chat-help`.trim()}
+            aria-describedby={`${isWorkspace && disabled ? archivedId : ''} ${isAsk ? 'home-chat-ask-help' : 'home-chat-help'}`.trim()}
           />
           <div className="home-chat-composer-footer">
-            <p id="home-chat-help" className="field-help">Ctrl+Enter or Cmd+Enter to send.</p>
+            <p id={isAsk ? 'home-chat-ask-help' : 'home-chat-help'} className="field-help">{isAsk ? 'Enter to send · Shift+Enter for a new line.' : 'Ctrl+Enter or Cmd+Enter to send.'}</p>
             <span className="home-chat-character-count" aria-live="off">{chat.draft.length.toLocaleString()} / 20,000</span>
             <Button type="submit" data-testid="home-chat-send" disabled={!chat.canSend} aria-busy={chat.sendStatus === 'submitting'}>Send</Button>
           </div>
@@ -158,6 +232,7 @@ export function HomeChat({ scope, scopeLabel, disabled = false, disabledReason, 
     </div>
 
   </section>;
+  return isAsk ? <DialogContent className="home-ask-dialog" data-testid="home-ask-dialog">{panel}</DialogContent> : panel;
 }
 
 interface HistoryListProps {

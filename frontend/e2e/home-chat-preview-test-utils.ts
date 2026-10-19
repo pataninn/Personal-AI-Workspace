@@ -70,6 +70,15 @@ export async function signIn(page: Page): Promise<void> {
   await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);
 }
 
+export async function openHomeAsk(page: Page, conversationId?: string): Promise<void> {
+  await page.getByTestId('home-ask-launcher').click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  if (conversationId) {
+    await page.getByTestId('home-chat-conversation-trigger').click();
+    await page.getByTestId(`home-chat-history-item-${conversationId}`).click();
+  }
+}
+
 export async function approveByKeyboard(page: Page, dialog: Locator, buttonName: string): Promise<void> {
   const firstButton = dialog.getByRole('button', { name: 'Keep private' });
   await expect(firstButton).toBeFocused();

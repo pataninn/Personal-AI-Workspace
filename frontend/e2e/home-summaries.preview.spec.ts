@@ -2,7 +2,7 @@ import { expect, test, type Browser, type Page, type TestInfo } from '@playwrigh
 
 import { HomeChatPreviewApi } from './home-chat-preview-fixtures';
 import { makeConversation, makeMessage, makeTurn } from './home-chat-preview-data';
-import { captureScreenshot, signIn } from './home-chat-preview-test-utils';
+import { captureScreenshot, openHomeAsk, signIn } from './home-chat-preview-test-utils';
 import {
   ACCEPT_ITEM_ONE_ID,
   ACCEPT_ITEM_THREE_ID,
@@ -107,7 +107,7 @@ test('renders bounded Up next actions and complete active/archive workspace summ
 test('keeps saved previews read-only while supported receipt undo stays available', async ({ page }, testInfo) => {
   const { homeApi, summaries, planning } = await installPlanningScenario(page);
   await signIn(page);
-  await page.goto('/dashboard?conversation=' + HOME_SUMMARY_CONVERSATION_ID);
+  await openHomeAsk(page, HOME_SUMMARY_CONVERSATION_ID);
 
   const draftCard = page.getByTestId('home-proposal-card-' + DRAFT_PROPOSAL_ID);
   await expect(draftCard).toContainText('Saved planning preview');
@@ -159,7 +159,7 @@ test('keeps saved previews read-only while supported receipt undo stays availabl
 test('shows saved proposal outcomes and receipts at mobile and zoom-equivalent sizes without retired actions', async ({ page, browser }, testInfo) => {
   const { homeApi, summaries, planning } = await installPlanningScenario(page, { includeInitialReceipts: false });
   await signIn(page);
-  await page.goto('/dashboard?conversation=' + HOME_SUMMARY_CONVERSATION_ID);
+  await openHomeAsk(page, HOME_SUMMARY_CONVERSATION_ID);
 
   const legacyAccepted = page.getByTestId('home-proposal-card-' + ACCEPT_PROPOSAL_ID);
   const savedItem = page.getByTestId('home-proposal-item-' + ACCEPT_ITEM_ONE_ID);
@@ -222,7 +222,7 @@ async function verifyTwoHundredPercentEquivalent(browser: Browser, testInfo: Tes
     startPreviewBrowserEvidence(page);
     const { homeApi, summaries, planning } = await installPlanningScenario(page);
     await signIn(page);
-    await page.goto(`/dashboard?conversation=${HOME_SUMMARY_CONVERSATION_ID}`);
+    await openHomeAsk(page, HOME_SUMMARY_CONVERSATION_ID);
     const chat = page.getByTestId('home-chat');
     await expect(page.getByTestId(`home-receipt-target-${CONFLICT_RECEIPT_ID}`)).toBeVisible();
     const width = await chat.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));

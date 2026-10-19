@@ -1,0 +1,12 @@
+frontend/src/widgets/app-shell/AppShell.tsx
+frontend/src/widgets/app-shell/index.ts
+frontend/src/widgets/app-shell/HomeAsk.tsx
+frontend/src/widgets/app-shell/home-ask.css
+frontend/src/features/home-chat/model/use-home-chat.ts
+frontend/src/features/home-chat/ui/HomeChat.tsx
+frontend/src/features/home-chat/ui/HomeChat.spec.tsx
+frontend/src/pages/dashboard/DashboardPage.tsx
+frontend/src/pages/dashboard/DashboardPage.spec.tsx
+frontend/e2e/home-chat-preview-test-utils.ts
+frontend/e2e/home-chat.preview.spec.ts
+frontend/e2e/home-summaries.preview.spec.ts

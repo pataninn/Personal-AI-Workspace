@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { sessionCleared, selectCsrfToken, selectPrincipal } from '@/entities/user-session';
@@ -21,6 +21,11 @@ import {
   DrawerTitle,
   DrawerTrigger
 } from '@/shared/ui';
+import { HomeAsk } from '@/widgets/app-shell/HomeAsk';
+
+export interface AppShellOutletContext {
+  readonly registerHomeSummaryRefresh: (refresh: (() => void) | null) => void;
+}
 
 export function AppShell(): React.JSX.Element {
   const dispatch = useAppDispatch();
@@ -29,12 +34,19 @@ export function AppShell(): React.JSX.Element {
   const principal = useAppSelector(selectPrincipal);
   const csrfToken = useAppSelector(selectCsrfToken);
   const mainRef = useRef<HTMLElement>(null);
+  const homeSummaryRefreshRef = useRef<(() => void) | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [logoutError, setLogoutError] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<ProjectSnapshot | null>(null);
   useProjectListLoader();
   const displayName = principal?.displayName || 'Local user';
+  const registerHomeSummaryRefresh = useCallback((refresh: (() => void) | null): void => {
+    homeSummaryRefreshRef.current = refresh;
+  }, []);
+  const requestHomeSummaryRefresh = useCallback((): void => {
+    homeSummaryRefreshRef.current?.();
+  }, []);
 
   useEffect(() => {
     mainRef.current?.focus();
@@ -99,11 +111,12 @@ export function AppShell(): React.JSX.Element {
             />
           </div>
         </header>
-        <main ref={mainRef} className="app-shell-main" data-testid="app-shell-main" tabIndex={-1}>
+        <main ref={mainRef} className={`app-shell-main${principal ? ' home-ask-shell-main' : ''}`} data-testid="app-shell-main" tabIndex={-1}>
           <ProjectHeader onRemove={setRemoveTarget} />
-          <Outlet />
+          <Outlet context={{ registerHomeSummaryRefresh } satisfies AppShellOutletContext} />
         </main>
       </div>
+      <HomeAsk onSummaryRefreshRequested={requestHomeSummaryRefresh} />
       <RemoveProjectDialog project={removeTarget} onOpenChange={(open) => { if (!open) setRemoveTarget(null); }} onRemoved={() => { setRemoveTarget(null); navigate('/dashboard'); }} />
     </div>
   );

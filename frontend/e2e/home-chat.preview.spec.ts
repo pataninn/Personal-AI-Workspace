@@ -2,9 +2,10 @@ import { expect, test } from '@playwright/test';
 
 import { HomeChatPreviewApi } from './home-chat-preview-fixtures';
 import { makeConversation, makeEvent, makeMessage, makeTurn, SYNTHETIC_TIME, type SyntheticScope } from './home-chat-preview-data';
-import { archivedWorkspace, captureScreenshot, fileBackedProject, installFixture, saveBrowserEvidence, setBrowserEvidenceMetadata, signIn, startBrowserEvidence } from './home-chat-preview-test-utils';
+import { archivedWorkspace, captureScreenshot, fileBackedProject, installFixture, openHomeAsk, saveBrowserEvidence, setBrowserEvidenceMetadata, signIn, startBrowserEvidence } from './home-chat-preview-test-utils';
 
 const HOME_CONVERSATION_ID = 'c3100000-0000-4000-8000-000000000010';
+const SECOND_HOME_CONVERSATION_ID = 'c3100000-0000-4000-8000-000000000015';
 const WORKSPACE_ID = 'c3100000-0000-4000-8000-000000000011';
 const ARCHIVED_CONVERSATION_ID = 'c3100000-0000-4000-8000-000000000012';
 const ACTIVE_TURN_ID = 'c3100000-0000-4000-8000-000000000013';
@@ -19,6 +20,7 @@ test('sends automatically from Home under an explicitly synthetic ready policy',
   const fixture = new HomeChatPreviewApi(page);
   await installFixture(page, fixture);
   await signIn(page);
+  await openHomeAsk(page);
 
   const chat = page.getByTestId('home-chat');
   await expect(chat).toBeVisible();
@@ -29,15 +31,15 @@ test('sends automatically from Home under an explicitly synthetic ready policy',
   await expect(policy).toContainText('preview-only');
   await expect(policy).toContainText('Assistant is available.');
 
-  const composer = page.getByRole('textbox', { name: 'Message the assistant' });
+  const composer = page.getByRole('textbox', { name: 'Message' });
   await composer.fill('Help me plan the next release review.');
   await expect(composer).toBeFocused();
   await captureScreenshot(page, testInfo, 'home-chat-ready-policy-keyboard.png');
-  await composer.press('Control+Enter');
+  await composer.press('Enter');
 
   await expect(chat.getByTestId('home-chat-messages').getByText('Assistant is responding…', { exact: true })).toBeVisible();
   await expect(composer).toHaveValue('');
-  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('dialog')).toBeVisible();
   await captureScreenshot(page, testInfo, 'home-chat-automatic-send-desktop.png');
 
   expect(fixture.calls.createRequests).toHaveLength(1);
@@ -75,14 +77,101 @@ test('sends automatically from Home under an explicitly synthetic ready policy',
   await captureScreenshot(page, testInfo, 'home-chat-automatic-send-mobile-320.png');
 });
 
+test('opens Home Ask by keyboard and preserves history selection and drafts across close, navigation, and reopen', async ({ page }, testInfo) => {
+  const first = makeConversation(HOME_CONVERSATION_ID, { kind: 'home' }, 'First synthetic conversation');
+  const second = makeConversation(SECOND_HOME_CONVERSATION_ID, { kind: 'home' }, 'Second synthetic conversation');
+  const fixture = new HomeChatPreviewApi(page, { conversations: [first, second] });
+  await installFixture(page, fixture);
+  const homeHistoryResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === 'GET' && url.pathname === '/api/v1/home/conversations' && url.searchParams.get('scope') === 'home';
+  });
+  await signIn(page);
+  expect((await homeHistoryResponse).status()).toBe(200);
+
+  const launcher = page.getByTestId('home-ask-launcher');
+  await launcher.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  const desktopBounds = await dialog.boundingBox();
+  const desktopViewport = page.viewportSize();
+  if (!desktopBounds || !desktopViewport) throw new Error('The desktop Ask dialog should fit the viewport.');
+  expect(desktopBounds.x).toBeGreaterThanOrEqual(0);
+  expect(desktopBounds.y).toBeGreaterThanOrEqual(0);
+  expect(desktopBounds.width).toBeLessThanOrEqual(440);
+  expect(desktopBounds.x + desktopBounds.width).toBeLessThanOrEqual(desktopViewport.width + 1);
+  expect(desktopBounds.y + desktopBounds.height).toBeLessThanOrEqual(desktopViewport.height + 1);
+  setBrowserEvidenceMetadata(page, 'askDesktopDialog', { viewport: desktopViewport, bounds: desktopBounds });
+  await captureScreenshot(page, testInfo, 'home-ask-desktop-dialog.png');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(launcher).toBeFocused();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await launcher.focus();
+  await page.keyboard.press('Enter');
+  await expect(dialog).toBeVisible();
+  const input = page.getByRole('textbox', { name: 'Message' });
+  await expect(input).toBeEnabled();
+  const conversationTrigger = page.getByTestId('home-chat-conversation-trigger');
+  await expect(conversationTrigger).toBeFocused();
+  await input.fill('Draft for the first conversation.');
+
+  await conversationTrigger.press('Enter');
+  await expect(page.getByRole('menu')).toBeVisible();
+  await page.getByTestId(`home-chat-history-item-${SECOND_HOME_CONVERSATION_ID}`).click();
+  await expect(conversationTrigger).toHaveAttribute('aria-label', 'Conversation: Second synthetic conversation');
+  await expect(input).toHaveValue('');
+  await input.fill('Draft for the second conversation.');
+
+  await conversationTrigger.press('Enter');
+  await page.getByTestId(`home-chat-history-item-${HOME_CONVERSATION_ID}`).click();
+  await expect(conversationTrigger).toHaveAttribute('aria-label', 'Conversation: First synthetic conversation');
+  await expect(input).toHaveValue('Draft for the first conversation.');
+
+  await conversationTrigger.press('Enter');
+  await expect(page.getByRole('menu')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu')).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(launcher).toBeFocused();
+
+  await page.getByTestId('home-view-all-tasks').click();
+  await expect(page).toHaveURL(/\/tasks$/u);
+  await launcher.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue('Draft for the first conversation.');
+  await expect(page.getByTestId('home-chat-conversation-trigger')).toHaveAttribute('aria-label', 'Conversation: First synthetic conversation');
+  await expect(page.getByTestId('home-chat-send')).toBeVisible();
+
+  const bounds = await page.getByRole('dialog').boundingBox();
+  if (!bounds) throw new Error('The mobile Ask panel should have a measurable viewport box.');
+  expect(bounds.x).toBeGreaterThanOrEqual(0);
+  expect(bounds.y).toBeGreaterThanOrEqual(0);
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(391);
+  expect(bounds.y + bounds.height).toBeLessThanOrEqual(845);
+  const width = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
+  expect(width.scroll).toBeLessThanOrEqual(width.client + 1);
+  expect(fixture.calls.listQueries).toContainEqual({ scope: 'home', workspaceId: null });
+  expect(fixture.getBlockedExternalRequests()).toEqual([]);
+  setBrowserEvidenceMetadata(page, 'askMobileDialog', { viewport: { width: 390, height: 844 }, bounds, width, conversations: fixture.calls.listQueries });
+  await captureScreenshot(page, testInfo, 'home-ask-mobile-history-navigation.png');
+});
+
 test('blocks sends when the policy reports an unavailable synthetic runtime', async ({ page }, testInfo) => {
   const fixture = new HomeChatPreviewApi(page, { policyState: 'unavailable' });
   await installFixture(page, fixture);
   await signIn(page);
+  await openHomeAsk(page);
 
   await expect(page.getByTestId('home-chat-policy-unavailable')).toBeVisible();
   await expect(page.getByTestId('assistant-policy-readiness')).toContainText('configured assistant runtime is unavailable');
-  await expect(page.getByRole('textbox', { name: 'Message the assistant' })).toBeDisabled();
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeDisabled();
   await expect(page.getByTestId('home-chat-send')).toBeDisabled();
   expect(fixture.calls.createRequests).toHaveLength(0);
   expect(fixture.calls.submitRequests).toHaveLength(0);
@@ -95,9 +184,10 @@ test('fails closed when policy availability cannot be reached', async ({ page },
   const fixture = new HomeChatPreviewApi(page, { failPolicyReads: 1 });
   await installFixture(page, fixture);
   await signIn(page);
+  await openHomeAsk(page);
 
   await expect(page.getByTestId('assistant-policy-readiness')).toContainText('could not be checked');
-  await expect(page.getByRole('textbox', { name: 'Message the assistant' })).toBeDisabled();
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeDisabled();
   await expect(page.getByTestId('home-chat-send')).toBeDisabled();
   expect(fixture.calls.policyNetworkFailures).toBe(1);
   expect(fixture.calls.createRequests).toHaveLength(0);
@@ -112,19 +202,19 @@ test('recovers history and retries an uncertain send with the same key before re
   const fixture = new HomeChatPreviewApi(page, { conversations: [conversation], failEventReads: 2, failTurnSubmissions: 1 });
   await installFixture(page, fixture);
   await signIn(page);
-  await page.goto('/dashboard?conversation=' + HOME_CONVERSATION_ID);
+  await openHomeAsk(page, HOME_CONVERSATION_ID);
   const historyError = page.getByTestId('home-chat-history-error');
   await expect(historyError).toBeVisible();
   await historyError.getByRole('button', { name: 'Refresh history' }).click();
   await expect(page.getByTestId('home-chat-empty')).toBeVisible();
 
   const draft = 'Retry this saved conversation safely.';
-  await page.getByRole('textbox', { name: 'Message the assistant' }).fill(draft);
+  await page.getByRole('textbox', { name: 'Message' }).fill(draft);
   await page.getByTestId('home-chat-send').click();
   const uncertain = page.getByTestId('home-chat-send-error');
   await expect(uncertain).toBeVisible();
   await expect(uncertain.getByRole('button', { name: 'Retry same send' })).toBeEnabled();
-  await expect(page.getByRole('textbox', { name: 'Message the assistant' })).toHaveValue(draft);
+  await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue(draft);
   expect(fixture.calls.submitRequests).toHaveLength(1);
 
   await uncertain.getByRole('button', { name: 'Retry same send' }).click();
@@ -134,6 +224,7 @@ test('recovers history and retries an uncertain send with the same key before re
   expect(fixture.calls.submitRequests[1]?.body.message).toBe(fixture.calls.submitRequests[0]?.body.message);
   expect(fixture.calls.retiredDecisionRequests).toBe(0);
   await page.reload();
+  await openHomeAsk(page);
   const savedMessage = page.getByText(draft, { exact: true });
   await expect(savedMessage).toBeVisible();
   await expect(savedMessage).toHaveCount(1);
@@ -154,7 +245,7 @@ test('keeps a pending legacy consent turn read-only without runtime polling or d
   });
   await installFixture(page, fixture);
   await signIn(page);
-  await page.goto('/dashboard?conversation=' + HOME_CONVERSATION_ID);
+  await openHomeAsk(page, HOME_CONVERSATION_ID);
 
   await expect(page.getByTestId('home-chat-legacy-blocked')).toContainText('This saved action cannot be resumed.');
   await expect(page.getByTestId('home-chat-messages')).toContainText('This request predates stored policy binding.');
@@ -177,7 +268,7 @@ test('shows stopping until a status read confirms cancellation', async ({ page }
   });
   await installFixture(page, fixture);
   await signIn(page);
-  await page.goto(`/dashboard?conversation=${HOME_CONVERSATION_ID}`);
+  await openHomeAsk(page, HOME_CONVERSATION_ID);
   await expect(page.getByRole('button', { name: 'Stop response' })).toBeVisible();
   await page.getByRole('button', { name: 'Stop response' }).click();
   await expect(page.getByText('Stopping…', { exact: true }).first()).toBeVisible();
@@ -207,7 +298,7 @@ test('keeps an interrupted cancel request as stopping until reconciliation repor
   });
   await installFixture(page, fixture);
   await signIn(page);
-  await page.goto(`/dashboard?conversation=${HOME_CONVERSATION_ID}`);
+  await openHomeAsk(page, HOME_CONVERSATION_ID);
   await expect(page.getByTestId('home-chat-messages').getByText('Stopping…', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Check status' }).click();
   await expect(page.getByTestId('home-chat-unknown-status')).toBeVisible();
@@ -258,7 +349,7 @@ test('refreshes an unknown turn without repeating cancellation', async ({ page }
   });
   await installFixture(page, fixture);
   await signIn(page);
-  await page.goto(`/dashboard?conversation=${HOME_CONVERSATION_ID}`);
+  await openHomeAsk(page, HOME_CONVERSATION_ID);
   const unknownStatus = page.getByTestId('home-chat-unknown-status');
   await expect(unknownStatus).toBeVisible();
   await unknownStatus.getByRole('button', { name: 'Check status' }).click();

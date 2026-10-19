@@ -2,7 +2,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { MemoryRouter, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DashboardPage } from '@/pages/dashboard/DashboardPage';
@@ -10,6 +10,7 @@ import { projectReducer, type ProjectSnapshot, type ProjectState } from '@/entit
 import type { ProjectOverview } from '@/entities/project/api/project-overview-api';
 import { sessionCleared, userSessionReducer } from '@/entities/user-session';
 import { ApiClientError, registerSessionExpiryHandler } from '@/shared/api';
+import type { AppShellOutletContext } from '@/widgets/app-shell';
 
 const { createProjectMock, getProjectMock, listProjectsMock, getProjectOverviewMock } = vi.hoisted(() => ({
   createProjectMock: vi.fn(), getProjectMock: vi.fn(), listProjectsMock: vi.fn(), getProjectOverviewMock: vi.fn()
@@ -20,11 +21,6 @@ vi.mock('@/entities/project/api/project-api', () => ({
   updateProjectStatus: vi.fn()
 }));
 vi.mock('@/entities/project/api/project-overview-api', () => ({ getProjectOverview: getProjectOverviewMock }));
-vi.mock('@/widgets/home-chat', () => ({
-  HomeChatWidget: ({ scope, scopeLabel, onSummaryRefreshRequested }: { readonly scope: { readonly kind: string }; readonly scopeLabel: string; readonly onSummaryRefreshRequested?: () => void }) =>
-    <section data-testid="home-chat-widget" data-scope={scope.kind} aria-label={scopeLabel}><button type="button" data-testid="simulate-confirmed-home-action" onClick={onSummaryRefreshRequested}>Simulate confirmed action</button></section>
-}));
-
 const ACTIVE_PROJECT: ProjectSnapshot = {
   id: '11111111-1111-4111-8111-111111111111', name: 'Website', slug: 'website', workspaceMode: 'file_backed', capabilities: { planning: true, fileAccess: true }, status: 'active', version: 1,
   createdAt: '2026-09-12T00:00:00.000Z', updatedAt: '2026-09-12T00:00:00.000Z'
@@ -44,14 +40,16 @@ function LocationProbe(): React.JSX.Element {
   return <output data-testid="location-probe">{`${location.pathname}${location.search}`}</output>;
 }
 
-function renderDashboard(projectState: ProjectState = PROJECT_STATE, initialEntry = '/dashboard') {
+function renderDashboard(projectState: ProjectState = PROJECT_STATE, initialEntry = '/dashboard', shellContext: AppShellOutletContext | null = null) {
   const store = configureStore({ reducer: { project: projectReducer, userSession: userSessionReducer }, preloadedState: { project: projectState, userSession: AUTHENTICATED_SESSION } });
   render(<Provider store={store}><MemoryRouter initialEntries={[initialEntry]}><Routes>
-    <Route path="/dashboard" element={<DashboardPage />} />
-    <Route path="/projects/:projectId" element={<h1>Selected project</h1>} />
-    <Route path="/projects/:projectId/tasks" element={<h1>Project tasks</h1>} />
-    <Route path="/tasks" element={<h1>All tasks</h1>} />
-    <Route path="/tasks/:taskId" element={<h1>Global task</h1>} />
+    <Route element={<Outlet context={shellContext} />}>
+      <Route path="/dashboard" element={<DashboardPage />} />
+      <Route path="/projects/:projectId" element={<h1>Selected project</h1>} />
+      <Route path="/projects/:projectId/tasks" element={<h1>Project tasks</h1>} />
+      <Route path="/tasks" element={<h1>All tasks</h1>} />
+      <Route path="/tasks/:taskId" element={<h1>Global task</h1>} />
+    </Route>
   </Routes><LocationProbe /></MemoryRouter></Provider>);
   return store;
 }
@@ -65,17 +63,16 @@ describe('DashboardPage chat and task Home', () => {
     listProjectsMock.mockResolvedValue({ projects: [ACTIVE_PROJECT] });
   });
 
-  it('places the Home conversation after the hero and Up next after the conversation', async () => {
+  it('keeps Home work surfaces primary and removes the inline conversation', async () => {
     renderDashboard();
 
-    const chat = await screen.findByTestId('home-chat-widget');
     const hero = screen.getByRole('heading', { name: 'Home' }).closest('header');
+    if (!hero) throw new Error('Home hero header should be rendered.');
     const upNextHeading = screen.getByRole('heading', { name: 'Up next' });
 
-    expect(chat).toHaveAttribute('data-scope', 'home');
-    expect(chat).toHaveAttribute('aria-label', 'Home');
-    expect(hero?.nextElementSibling).toBe(chat);
-    expect(Boolean(chat.compareDocumentPosition(upNextHeading) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(screen.queryByTestId('home-chat-widget')).not.toBeInTheDocument();
+    expect(hero.nextElementSibling).toHaveAttribute('data-testid', 'home-overview-widget');
+    expect(Boolean(hero.compareDocumentPosition(upNextHeading) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
     expect(screen.getByTestId('home-add-task-toggle')).toHaveAttribute('aria-controls', 'home-task-capture-form');
     expect(screen.getByTestId('home-view-all-tasks')).toHaveAttribute('href', '/tasks');
     expect(screen.queryByRole('heading', { name: 'Inbox' })).not.toBeInTheDocument();
@@ -220,15 +217,19 @@ describe('DashboardPage chat and task Home', () => {
     expect(screen.queryByText('internal detail')).not.toBeInTheDocument();
   });
 
-  it('refreshes the bounded overview and complete workspace list after a confirmed chat action', async () => {
+  it('registers the Home summary refresh callback used by confirmed assistant actions', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ data: { count: 2 }, error: null }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
-    renderDashboard();
-    await screen.findByTestId('home-chat-widget');
+    const refreshHomeSummaries: { current: (() => void) | null } = { current: null };
+    renderDashboard(PROJECT_STATE, '/dashboard', { registerHomeSummaryRefresh: (refresh) => { refreshHomeSummaries.current = refresh; } });
+    await screen.findByRole('heading', { name: 'Up next' });
+    await waitFor(() => expect(refreshHomeSummaries.current).toEqual(expect.any(Function)));
     expect(fetchMock).not.toHaveBeenCalled();
-    await userEvent.setup().click(screen.getByTestId('simulate-confirmed-home-action'));
+    getProjectOverviewMock.mockClear();
+    listProjectsMock.mockClear();
+    refreshHomeSummaries.current?.();
 
-    await waitFor(() => expect(getProjectOverviewMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(getProjectOverviewMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(listProjectsMock).toHaveBeenCalledTimes(1));
     expect(fetchMock).not.toHaveBeenCalled();
   });
