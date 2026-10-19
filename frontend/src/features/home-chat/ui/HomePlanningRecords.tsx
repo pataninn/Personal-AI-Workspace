@@ -49,7 +49,7 @@ function ReceiptCard({ receipt, allowUndo, onRefresh, onUndo }: {
   const targetName = task?.title ?? workspace?.name;
   const targetHref = task ? `/tasks/${encodeURIComponent(task.id)}` : workspace ? `/projects/${encodeURIComponent(workspace.id)}` : null;
   return <Card className="home-receipt-card" id={`home-receipt-${receipt.id}`} data-testid={`home-receipt-card-${receipt.id}`}>
-    <div className="home-record-heading"><h3>Saved action</h3><span className="home-record-state">{receipt.state === 'loading' ? 'Checking receipt…' : receipt.receipt?.undoStatus === 'undone' ? 'Undo completed' : receipt.receipt?.undoStatus === 'not_reversible' || receipt.receipt?.undoStatus === 'available' ? 'Saved' : ''}</span></div>
+    <div className="home-record-heading"><h3>{receipt.receipt ? `${receiptActionLabel(receipt.receipt.actionKind)} · ${receipt.receipt.actorKind === 'assistant' ? 'Assistant' : 'You'}` : 'Saved action'}</h3><span className="home-record-state">{receipt.state === 'loading' ? 'Checking receipt…' : receipt.receipt?.undoStatus === 'undone' ? 'Undo completed' : receipt.receipt?.undoStatus === 'not_reversible' || receipt.receipt?.undoStatus === 'available' ? 'Applied' : ''}</span></div>
     {receipt.state === 'error' ? <Alert tone="warning" data-testid={`home-receipt-error-${receipt.id}`}>
       The saved receipt could not be checked. <Button type="button" variant="secondary" data-testid={`home-receipt-refresh-${receipt.id}`} onClick={() => { void onRefresh(receipt.id); }}>Refresh receipt</Button>
     </Alert> : null}
@@ -65,6 +65,23 @@ function ReceiptCard({ receipt, allowUndo, onRefresh, onUndo }: {
       {receipt.receipt?.undoStatus === 'undone' ? <p className="home-record-description">Undo completed. The current target remains available above when it still exists.</p> : null}
     </> : null}
   </Card>;
+}
+
+function receiptActionLabel(actionKind: string): string {
+  const labels: Readonly<Record<string, string>> = {
+    'task.create': 'Created task',
+    'task.update': 'Updated task',
+    'task.move': 'Moved task',
+    'task.archive': 'Archived task',
+    'task.restore': 'Restored task',
+    'task.reorder': 'Reordered tasks',
+    'workspace.create': 'Created workspace',
+    'workspace.update': 'Updated workspace',
+    'workspace.archive': 'Archived workspace',
+    'workspace.restore': 'Restored workspace',
+    undo: 'Undid an action'
+  };
+  return labels[actionKind] ?? 'Completed action';
 }
 
 function ProposalCard({ record, onRetry }: { readonly record: HomeProposalCardState; readonly onRetry: () => void }): React.JSX.Element {

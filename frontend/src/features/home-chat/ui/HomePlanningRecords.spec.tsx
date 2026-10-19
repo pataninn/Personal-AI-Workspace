@@ -52,4 +52,25 @@ describe('HomePlanningRecords', () => {
     expect(screen.getByText('Legacy action · blocked')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /apply|resume|cancel remaining/iu })).not.toBeInTheDocument();
   });
+
+  it('shows the recorded actor and action as applied in the Home receipt card', () => {
+    const records: HomePlanningRecordsController = {
+      receipts: [{
+        id: '88888888-8888-4888-8888-888888888888', turnId: TURN_ID, state: 'ready',
+        receipt: {
+          id: '88888888-8888-4888-8888-888888888888', actionKind: 'task.create', actorKind: 'assistant', turnId: TURN_ID,
+          targetKind: 'task', targetId: '99999999-9999-4999-8999-999999999999', postVersion: 1,
+          undoStatus: 'available', undoActionId: null
+        },
+        target: null, targetUnavailable: true, undoPending: false, undoError: null, conflictReason: null
+      }],
+      proposals: [], proposalsState: 'ready', proposalsError: null,
+      refreshReceipt: vi.fn(async () => undefined), undoReceipt: vi.fn(async () => undefined), retryProposals: vi.fn()
+    };
+    render(<MemoryRouter><HomePlanningRecords records={records} turnId={TURN_ID} allowUndo /></MemoryRouter>);
+
+    expect(screen.getByRole('heading', { name: 'Created task · Assistant' })).toBeInTheDocument();
+    expect(screen.getByText('Applied')).toBeInTheDocument();
+    expect(screen.getByText('The saved target is unavailable.')).toBeInTheDocument();
+  });
 });

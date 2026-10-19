@@ -9,8 +9,10 @@ import type { HomePlanningToolRequest, HomePlanningToolResultCandidate, HomePlan
 import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
 import type { GlobalTaskQueryItem } from '@/modules/tasks/domain/global-task-query';
 import type { GlobalTaskQueryFilters } from '@/modules/tasks/domain/global-task-query';
+import { ProjectTaskVersionConflictError } from '@/modules/tasks/domain/project-task-errors';
 import type { GetGlobalTaskUseCase, ListGlobalTasksUseCase } from '@/modules/tasks/use-cases/global-task-query-use-cases';
 import type { ITaskMutationCommands } from '@/modules/tasks/use-cases/task-mutation-use-cases';
+import { ProjectVersionConflictError } from '@/modules/projects/domain/project-errors';
 import type { Project } from '@/modules/projects/domain/project-types';
 import type { IWorkspacePlanningUseCases } from '@/modules/projects/use-cases/workspace-planning-use-cases';
 import type { IActionUndoUseCases } from '@/modules/home-assistant/use-cases/action-undo-use-cases';
@@ -103,7 +105,7 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
         const current = await this.scopedTask(input.ownerId, input.scope, taskId, false);
         const subtasks = args.subtasks === undefined ? undefined : normalizeSubtaskPatch(args.subtasks, current.task.subtasks.map((item) => item.id));
         if (!await this.policyAllows(input, turn, capability, current.task.projectId ?? undefined)) return null;
-        const receipt = await this.dependencies.taskMutations.update({
+        const outcome = await runExpectedVersionMutation(() => this.dependencies.taskMutations.update({
           ownerId: input.ownerId, taskId, expectedVersion: args.expectedVersion as number,
           ...(current.task.projectId ? { expectedProjectId: current.task.projectId } : {}),
           operationKey, actorKind: 'assistant', turnId: turn.id,
@@ -113,8 +115,9 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
           ...(args.importance === undefined ? {} : { importance: args.importance }),
           ...(args.deadline === undefined ? {} : { deadline: resolveDeadline(args.deadline, this.dependencies.timeZone) }),
           ...(subtasks === undefined ? {} : { subtasks })
-        });
-        return immediate(receipt.receipt, receipt.replayed);
+        }));
+        if (outcome.kind === 'conflict') return versionConflictResolution();
+        return immediate(outcome.value.receipt, outcome.value.replayed);
       }
       case 'home_move_task': {
         const taskId = args.taskId as string;
@@ -123,26 +126,28 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
         await this.assertTaskWorkspace(input.ownerId, input.scope, destination);
         if (!await this.policyAllows(input, turn, capability, current.task.projectId ?? undefined)
           || !await this.policyAllows(input, turn, capability, destination ?? undefined)) return null;
-        const receipt = await this.dependencies.taskMutations.move({
+        const outcome = await runExpectedVersionMutation(() => this.dependencies.taskMutations.move({
           ownerId: input.ownerId, taskId, expectedVersion: args.expectedVersion as number, workspaceId: destination,
           operationKey, actorKind: 'assistant', turnId: turn.id,
           ...(args.expectedSourceOrderVersion === undefined ? {} : { expectedSourceOrderVersion: args.expectedSourceOrderVersion as number }),
           ...(args.expectedDestinationOrderVersion === undefined ? {} : { expectedDestinationOrderVersion: args.expectedDestinationOrderVersion as number })
-        });
-        return immediate(receipt.receipt, receipt.replayed);
+        }));
+        if (outcome.kind === 'conflict') return versionConflictResolution();
+        return immediate(outcome.value.receipt, outcome.value.replayed);
       }
       case 'home_archive_task': {
         const taskId = args.taskId as string;
         // An archived task is still needed to re-enter the canonical ledger for an identical retry.
         const current = await this.scopedTask(input.ownerId, input.scope, taskId, true);
         if (!await this.policyAllows(input, turn, capability, current.task.projectId ?? undefined)) return null;
-        const receipt = await this.dependencies.taskMutations.archive({
+        const outcome = await runExpectedVersionMutation(() => this.dependencies.taskMutations.archive({
           ownerId: input.ownerId, taskId, expectedVersion: args.expectedVersion as number,
           ...(current.task.projectId ? { expectedProjectId: current.task.projectId } : {}),
           ...(args.expectedOrderVersion === undefined ? {} : { expectedOrderVersion: args.expectedOrderVersion as number }),
           operationKey, actorKind: 'assistant', turnId: turn.id
-        });
-        return immediate(receipt.receipt, receipt.replayed);
+        }));
+        if (outcome.kind === 'conflict') return versionConflictResolution();
+        return immediate(outcome.value.receipt, outcome.value.replayed);
       }
       case 'home_create_workspace': {
         if (input.scope.kind !== 'home') throw new HomePlanningScopeConflictError();
@@ -157,11 +162,12 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
         const workspaceId = args.workspaceId as string;
         await this.assertWorkspace(input.ownerId, input.scope, workspaceId);
         if (!await this.policyAllows(input, turn, capability, workspaceId)) return null;
-        const result = await this.dependencies.workspaces.updateObjective({
+        const outcome = await runExpectedVersionMutation(() => this.dependencies.workspaces.updateObjective({
           ownerId: input.ownerId, projectId: workspaceId, expectedVersion: args.expectedVersion as number,
           operationKey, objective: args.objective, actorKind: 'assistant', turnId: turn.id
-        });
-        return immediate(result.receipt, result.replayed);
+        }));
+        if (outcome.kind === 'conflict') return versionConflictResolution();
+        return immediate(outcome.value.receipt, outcome.value.replayed);
       }
       case 'home_undo_action': {
         const actionId = args.actionId as string;
@@ -416,6 +422,21 @@ function boundedCandidate(scope: HomeConversationScope, categories: HomePlanning
   const bytes = Buffer.byteLength(JSON.stringify(data), 'utf8');
   if (bytes < 1 || bytes > maxBytes) throw new HomeConversationInputInvalidError('The Home planning result exceeds its supported size.');
   return { scope, categories, itemCount, data };
+}
+
+type ExpectedVersionMutationOutcome<T> = { readonly kind: 'applied'; readonly value: T } | { readonly kind: 'conflict' };
+
+async function runExpectedVersionMutation<T>(mutation: () => Promise<T>): Promise<ExpectedVersionMutationOutcome<T>> {
+  try {
+    return { kind: 'applied', value: await mutation() };
+  } catch (error: unknown) {
+    if (error instanceof ProjectTaskVersionConflictError || error instanceof ProjectVersionConflictError) return { kind: 'conflict' };
+    throw error;
+  }
+}
+
+function versionConflictResolution(): HomePlanningToolResolution {
+  return { kind: 'immediate', result: { outcome: 'conflict', code: 'VERSION_CONFLICT' } };
 }
 
 function immediate(record: ActionLedgerRecord, replayed: boolean): HomePlanningToolResolution {

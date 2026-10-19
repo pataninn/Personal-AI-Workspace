@@ -141,6 +141,8 @@ class AcpSession:
             value = result
         elif result.get('outcome') == 'denied' and set(result) == {'outcome', 'code'} and result.get('code') == 'CONSENT_DENIED':
             value = result
+        elif result.get('outcome') == 'conflict' and set(result) == {'outcome', 'code'} and result.get('code') == 'VERSION_CONFLICT':
+            value = result
         else:
             raise BridgeError('Invalid Home tool result')
         try:

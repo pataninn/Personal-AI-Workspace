@@ -474,7 +474,9 @@ function immediateData(resolution: HomePlanningToolResolution | null): {
   readonly receipt: { readonly id: string; readonly actionKind: string; readonly targetKind: string; readonly targetId: string; readonly undoStatus: string };
   readonly replayed: boolean;
 } {
-  if (!resolution || resolution.kind !== 'immediate') throw new Error('The expected Home planning command did not return an immediate receipt.');
+  if (!resolution || resolution.kind !== 'immediate' || resolution.result.outcome !== 'shared') {
+    throw new Error('The expected Home planning command did not return an applied receipt.');
+  }
   const data = resolution.result.data;
   if (!isRecord(data.receipt) || typeof data.replayed !== 'boolean'
     || typeof data.receipt.id !== 'string' || typeof data.receipt.actionKind !== 'string'

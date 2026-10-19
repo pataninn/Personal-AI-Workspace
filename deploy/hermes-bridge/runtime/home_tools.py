@@ -42,6 +42,9 @@ def call_home_tool(name, args):
         return json.dumps(result['data'], separators=(',', ':'))
     if result.get('outcome') == 'denied' and result.get('code') == 'CONSENT_DENIED':
         return json.dumps({'outcome': 'denied', 'code': 'CONSENT_DENIED'})
+    if (result.get('outcome') == 'conflict' and set(result) == {'outcome', 'code'}
+            and result.get('code') == 'VERSION_CONFLICT'):
+        return json.dumps({'outcome': 'conflict', 'code': 'VERSION_CONFLICT'})
     return json.dumps({'error': 'The Home tool result could not be validated.'})
 
 

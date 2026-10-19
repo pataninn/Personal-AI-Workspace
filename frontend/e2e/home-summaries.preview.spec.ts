@@ -124,6 +124,8 @@ test('keeps saved previews read-only while supported receipt undo stays availabl
   expect(planning.calls.retiredProposalMutationRequests).toBe(0);
 
   const conflictReceipt = page.getByTestId('home-receipt-card-' + CONFLICT_RECEIPT_ID);
+  await expect(conflictReceipt).toContainText('Created task · Assistant');
+  await expect(conflictReceipt).toContainText('Applied');
   await expect(conflictReceipt.getByTestId('home-receipt-target-' + CONFLICT_RECEIPT_ID)).toHaveText('Synthetic task with a changed version');
   await page.getByTestId('home-receipt-undo-' + CONFLICT_RECEIPT_ID).click();
   const conflict = page.getByTestId('home-receipt-undo-conflict-' + CONFLICT_RECEIPT_ID);
@@ -143,6 +145,7 @@ test('keeps saved previews read-only while supported receipt undo stays availabl
   expect(retryRequests).toHaveLength(2);
   expect(retryRequests[1]?.idempotencyKey).toBe(retryRequests[0]?.idempotencyKey);
   await page.reload();
+  await openHomeAsk(page, HOME_SUMMARY_CONVERSATION_ID);
   await expect(page.getByTestId('home-proposal-card-' + DRAFT_PROPOSAL_ID)).toContainText('Saved planning preview');
   await expect(page.getByTestId('home-proposal-card-' + ACCEPT_PROPOSAL_ID)).toContainText('Legacy accepted · blocked');
   await expect(page.getByTestId('home-receipt-card-' + RETRY_RECEIPT_ID)).toContainText('Undo completed');

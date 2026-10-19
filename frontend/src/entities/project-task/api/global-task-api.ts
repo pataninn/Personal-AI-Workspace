@@ -22,6 +22,8 @@ export type TaskUndoStatus = 'available' | 'not_reversible' | 'undone';
 export interface TaskActionReceiptMetadata {
   readonly id: string;
   readonly actionKind: string;
+  readonly actorKind: 'manual' | 'assistant';
+  readonly turnId: string | null;
   readonly targetKind: 'task' | 'workspace';
   readonly targetId: string;
   readonly postVersion: number | null;
@@ -157,6 +159,7 @@ function normalizeMutationResult(value: Record<string, unknown> | null, actionKi
 function normalizeActionReceipt(value: unknown): TaskActionReceiptMetadata {
   const record = asRecord(value);
   if (!record || !isUuid(record.id) || typeof record.actionKind !== 'string' ||
+      !((record.actorKind === 'manual' && record.turnId === null) || (record.actorKind === 'assistant' && isUuid(record.turnId))) ||
       (record.targetKind !== 'task' && record.targetKind !== 'workspace') || !isUuid(record.targetId) ||
       (record.postVersion !== null && !readPositiveInteger(record.postVersion)) ||
       (record.undoStatus !== 'available' && record.undoStatus !== 'not_reversible' && record.undoStatus !== 'undone') ||
@@ -164,6 +167,8 @@ function normalizeActionReceipt(value: unknown): TaskActionReceiptMetadata {
   return {
     id: record.id,
     actionKind: record.actionKind,
+    actorKind: record.actorKind,
+    turnId: record.turnId as string | null,
     targetKind: record.targetKind,
     targetId: record.targetId,
     postVersion: record.postVersion as number | null,

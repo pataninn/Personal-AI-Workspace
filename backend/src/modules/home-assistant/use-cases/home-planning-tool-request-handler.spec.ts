@@ -3,6 +3,8 @@ import type { HomeConversation, HomeTurn } from '@/modules/home-assistant/domain
 import type { IHomeConversationRepository } from '@/modules/home-assistant/repositories/home-conversation-repository';
 import { HomePlanningToolRequestHandler } from '@/modules/home-assistant/use-cases/home-planning-tool-request-handler';
 import type { HomePlanningToolRequest } from '@/modules/home-assistant/repositories/home-planning-tool-request-handler';
+import { ProjectTaskVersionConflictError, ProjectTaskIdempotencyReusedError } from '@/modules/tasks/domain/project-task-errors';
+import { ProjectVersionConflictError } from '@/modules/projects/domain/project-errors';
 
 const OWNER = '11111111-1111-4111-8111-111111111111';
 const CONVERSATION = '22222222-2222-4222-8222-222222222222';
@@ -39,11 +41,15 @@ function setup(options: { readonly capabilities?: readonly AssistantExecutionAut
     task: { id: TASK, ownerId: OWNER, projectId: null, title: 'Task', details: null, status: 'todo', importance: 'medium', deadline: null, version: 1, subtasks: [] },
     workspace: null
   })) };
-  const taskMutations = { create: jest.fn(async () => ({ receipt: { id: 'receipt-1', actionKind: 'task.create', targetKind: 'task', targetId: TASK, outcome: { targetVersion: 1 }, undoStatus: 'available' }, replayed: false })) };
+  const taskMutations = {
+    create: jest.fn(async () => ({ receipt: { id: 'receipt-1', actionKind: 'task.create', targetKind: 'task', targetId: TASK, outcome: { targetVersion: 1 }, undoStatus: 'available' }, replayed: false })),
+    update: jest.fn(async () => ({ receipt: { id: 'receipt-3', actionKind: 'task.update', targetKind: 'task', targetId: TASK, outcome: { targetVersion: 2 }, undoStatus: 'available' }, replayed: false }))
+  };
   const workspaces = {
     reuse: jest.fn(async () => project),
     search: jest.fn(async () => ({ projects: [project], limit: 10, hasMore: false })),
-    createPlanning: jest.fn(async () => ({ receipt: { id: 'receipt-2', actionKind: 'workspace.create', targetKind: 'workspace', targetId: PROJECT, outcome: { targetVersion: 1 }, undoStatus: 'available' }, replayed: false }))
+    createPlanning: jest.fn(async () => ({ receipt: { id: 'receipt-2', actionKind: 'workspace.create', targetKind: 'workspace', targetId: PROJECT, outcome: { targetVersion: 1 }, undoStatus: 'available' }, replayed: false })),
+    updateObjective: jest.fn(async () => ({ receipt: { id: 'receipt-4', actionKind: 'workspace.update', targetKind: 'workspace', targetId: PROJECT, outcome: { targetVersion: 2 }, undoStatus: 'available' }, replayed: false }))
   };
   const undoReceipt = { id: 'receipt-1', ownerId: OWNER, actionKind: 'task.create', targetKind: 'task' as 'task' | 'workspace', targetId: TASK, outcome: { targetVersion: 1 }, undoStatus: 'available' };
   const undo = { getReceipt: jest.fn(async () => undoReceipt), undo: jest.fn(async () => ({ undoReceipt, replayed: false })) };
@@ -111,6 +117,23 @@ describe('HomePlanningToolRequestHandler', () => {
     expect(assertHome).toHaveBeenCalledTimes(2);
     expect(taskMutations.create).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER, projectId: null, actorKind: 'assistant', turnId: TURN }));
     expect(result).toMatchObject({ kind: 'immediate', result: { outcome: 'shared' } });
+  });
+
+  it('returns a bounded non-applied conflict for exact canonical expected-version errors only', async () => {
+    const { handler, taskMutations, workspaces } = setup();
+    taskMutations.update.mockRejectedValueOnce(new ProjectTaskVersionConflictError());
+    const taskConflict = await handler.resolve(request('home_update_task', { taskId: TASK, expectedVersion: 1, title: 'Updated task' }));
+
+    expect(taskConflict).toEqual({ kind: 'immediate', result: { outcome: 'conflict', code: 'VERSION_CONFLICT' } });
+
+    workspaces.updateObjective.mockRejectedValueOnce(new ProjectVersionConflictError());
+    const workspaceConflict = await handler.resolve(request('home_update_workspace_objective', { workspaceId: PROJECT, expectedVersion: 1, objective: 'New objective' }));
+
+    expect(workspaceConflict).toEqual({ kind: 'immediate', result: { outcome: 'conflict', code: 'VERSION_CONFLICT' } });
+
+    taskMutations.update.mockRejectedValueOnce(new ProjectTaskIdempotencyReusedError());
+    await expect(handler.resolve(request('home_update_task', { taskId: TASK, expectedVersion: 1, title: 'Updated task' })))
+      .rejects.toBeInstanceOf(ProjectTaskIdempotencyReusedError);
   });
 
   it('keeps bulk proposal tools blocked without creating a proposal', async () => {

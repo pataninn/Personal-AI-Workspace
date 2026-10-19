@@ -255,6 +255,7 @@ function sameProvider(received: HomePlanningProvider, configured: HomePlanningPr
 function validToolResult(result: SendHomePlanningToolResultInput['result']): boolean {
   if (!isRecord(result)) return false;
   if (result.outcome === 'denied') return Object.keys(result).length === 2 && result.code === 'CONSENT_DENIED';
+  if (result.outcome === 'conflict') return Object.keys(result).length === 2 && result.code === 'VERSION_CONFLICT';
   if (result.outcome !== 'shared' || Object.keys(result).length !== 2 || !isRecord(result.data)) return false;
   return isJsonValue(result.data, 0);
 }

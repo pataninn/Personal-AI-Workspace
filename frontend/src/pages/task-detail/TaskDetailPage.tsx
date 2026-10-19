@@ -149,6 +149,8 @@ export function TaskDetailPage(): React.JSX.Element {
     const savedReceipt: TaskActionReceiptMetadata = {
       id: result.receipt.id,
       actionKind,
+      actorKind: 'manual',
+      turnId: null,
       targetKind: 'task',
       targetId: result.item.task.id,
       postVersion: result.item.task.version,

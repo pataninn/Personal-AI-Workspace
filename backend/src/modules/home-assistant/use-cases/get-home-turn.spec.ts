@@ -137,6 +137,20 @@ describe('GetHomeTurnUseCase', () => {
     expect(result.status).toBe('completed');
   });
 
+  it('continues with the bounded version-conflict result after current policy checks', async () => {
+    const event = { sequence: 1, type: 'home.tool.requested' as const, requestId: 'request-conflict', sessionId: 'session-1', name: 'home_update_task', args: { taskId: PROJECT, expectedVersion: 1, title: 'Updated task' } };
+    const { useCase, runtime } = setup({
+      events: [event],
+      handlerResult: { kind: 'immediate', result: { outcome: 'conflict', code: 'VERSION_CONFLICT' } }
+    });
+
+    const result = await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+
+    expect(runtime.sendToolResult).toHaveBeenCalledWith({ turnId: TURN, requestId: 'request-conflict', result: { outcome: 'conflict', code: 'VERSION_CONFLICT' } });
+    expect(runtime.cancel).not.toHaveBeenCalled();
+    expect(result.status).toBe('completed');
+  });
+
   it('suppresses continuation when policy changes after resolving a tool result', async () => {
     const event = { sequence: 1, type: 'home.tool.requested' as const, requestId: 'request-1', sessionId: 'session-1', name: 'home_list_tasks', args: { limit: 1 } };
     const { useCase, conversations, runtime } = setup({

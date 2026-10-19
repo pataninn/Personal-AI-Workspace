@@ -42,6 +42,7 @@ vi.mock('@/entities/project-task', async (importOriginal) => ({
 const CONVERSATION_ID = '11111111-1111-4111-8111-111111111111';
 const SECOND_CONVERSATION_ID = '22222222-2222-4222-8222-222222222222';
 const TURN_ID = '33333333-3333-4333-8333-333333333333';
+const EVENT_TURN_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const RECEIPT_ID = '44444444-4444-4444-8444-444444444444';
 const WORKSPACE_ID = '55555555-5555-4555-8555-555555555555';
 const PROPOSAL_ID = '66666666-6666-4666-8666-666666666666';
@@ -75,9 +76,9 @@ function wrapper({ children }: { readonly children: ReactNode }): React.JSX.Elem
   return <Provider store={store}>{children}</Provider>;
 }
 
-function receiptEvent(): HomeConversationEvent {
+function receiptEvent(turnId = TURN_ID): HomeConversationEvent {
   return {
-    sequence: 1, type: 'action.receipt', turnId: TURN_ID, entityId: RECEIPT_ID,
+    sequence: 1, type: 'action.receipt', turnId, entityId: RECEIPT_ID,
     payload: { actionKind: 'task.create', targetKind: 'workspace', targetId: WORKSPACE_ID }, createdAt: NOW
   };
 }
@@ -91,7 +92,7 @@ beforeEach(() => {
   api.listHomeProposals.mockResolvedValue({ proposals: [], nextCursor: null });
   api.getHomeProposal.mockResolvedValue(reviewProposal);
   api.getProject.mockResolvedValue({ id: WORKSPACE_ID, name: 'Release planning', slug: 'release-planning', workspaceMode: 'planning', capabilities: { planning: true, fileAccess: false }, status: 'active', version: 1, createdAt: NOW, updatedAt: NOW });
-  api.getTaskActionReceipt.mockResolvedValue({ id: RECEIPT_ID, actionKind: 'workspace.create', targetKind: 'workspace', targetId: WORKSPACE_ID, postVersion: 1, undoStatus: 'available', undoActionId: null });
+  api.getTaskActionReceipt.mockResolvedValue({ id: RECEIPT_ID, actionKind: 'workspace.create', actorKind: 'assistant', turnId: TURN_ID, targetKind: 'workspace', targetId: WORKSPACE_ID, postVersion: 1, undoStatus: 'available', undoActionId: null });
   api.getGlobalTask.mockResolvedValue({ task: { id: '88888888-8888-4888-8888-888888888888' }, collection: 'inbox', workspace: null });
 });
 
@@ -102,9 +103,10 @@ describe('useHomePlanningRecords', () => {
     await waitFor(() => expect(result.current.proposalsState).toBe('ready'));
     expect(result.current.receipts).toHaveLength(0);
 
-    rerender({ ...options, events: [receiptEvent()], eventsConversationId: CONVERSATION_ID });
+    rerender({ ...options, events: [receiptEvent(EVENT_TURN_ID)], eventsConversationId: CONVERSATION_ID });
     await waitFor(() => expect(result.current.receipts[0]?.state).toBe('ready'));
     expect(result.current.receipts[0]?.target).toMatchObject({ id: WORKSPACE_ID, name: 'Release planning' });
+    expect(result.current.receipts[0]).toMatchObject({ turnId: TURN_ID, receipt: { actorKind: 'assistant', turnId: TURN_ID } });
     expect(api.getProject).toHaveBeenCalledWith(WORKSPACE_ID);
   });
 
@@ -117,7 +119,7 @@ describe('useHomePlanningRecords', () => {
 
     rerender({ ...baseOptions(SECOND_CONVERSATION_ID), events: [], eventsConversationId: SECOND_CONVERSATION_ID });
     await act(async () => {
-      resolveReceipt?.({ id: RECEIPT_ID, actionKind: 'workspace.create', targetKind: 'workspace', targetId: WORKSPACE_ID, postVersion: 1, undoStatus: 'available', undoActionId: null });
+      resolveReceipt?.({ id: RECEIPT_ID, actionKind: 'workspace.create', actorKind: 'assistant', turnId: TURN_ID, targetKind: 'workspace', targetId: WORKSPACE_ID, postVersion: 1, undoStatus: 'available', undoActionId: null });
     });
     await waitFor(() => expect(result.current.receipts).toEqual([]));
     expect(api.getProject).not.toHaveBeenCalled();

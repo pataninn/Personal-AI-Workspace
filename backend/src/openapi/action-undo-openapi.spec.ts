@@ -23,8 +23,11 @@ describe('action undo OpenAPI contract', () => {
     expect(operation.security).toEqual([{ sessionCookie: [] }]);
     ['200', '400', '401', '404', '500'].forEach((status) => expect(responses[status]).toBeDefined());
     expect(Object.keys(properties).sort()).toEqual([
-      'actionKind', 'id', 'postVersion', 'targetId', 'targetKind', 'undoActionId', 'undoStatus'
+      'actionKind', 'actorKind', 'id', 'postVersion', 'targetId', 'targetKind', 'turnId', 'undoActionId', 'undoStatus'
     ].sort());
+    expect(record(properties.actorKind, 'actor kind property').enum).toEqual(['manual', 'assistant']);
+    expect(record(properties.turnId, 'turn ID property').nullable).toBe(true);
+    expect(metadata.required).toEqual(expect.arrayContaining(['actorKind', 'turnId']));
     expect(properties.reversibleFields).toBeUndefined();
     expect(properties.requestFingerprint).toBeUndefined();
   });
@@ -37,6 +40,8 @@ describe('action undo OpenAPI contract', () => {
     const responses = record(operation.responses, 'undo responses');
     const components = record(document.components, 'components');
     const schemas = record(components.schemas, 'schemas');
+    const summary = record(schemas.ActionUndoRecordSummary, 'undo record summary schema');
+    const summaryProperties = record(summary.properties, 'undo record summary properties');
     const parameters = Array.isArray(operation.parameters) ? operation.parameters : [];
     const refs = parameters.filter((item) => item && typeof item === 'object').map((item) => (item as JsonRecord).$ref);
 
@@ -53,5 +58,8 @@ describe('action undo OpenAPI contract', () => {
     ['200', '400', '401', '403', '404', '409', '500'].forEach((status) => expect(responses[status]).toBeDefined());
     ['ActionUndoRequest', 'ActionUndoRecordSummary', 'ActionUndoTarget', 'ActionUndoSuccessEnvelope', 'ActionUndoConflictEnvelope']
       .forEach((name) => expect(schemas[name]).toBeDefined());
+    expect(record(summaryProperties.actorKind, 'summary actor kind property').enum).toEqual(['manual', 'assistant']);
+    expect(record(summaryProperties.turnId, 'summary turn ID property').nullable).toBe(true);
+    expect(summary.required).toEqual(expect.arrayContaining(['actorKind', 'turnId']));
   });
 });

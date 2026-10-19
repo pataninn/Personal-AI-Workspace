@@ -149,13 +149,18 @@ describe('HermesHomePlanningRuntime', () => {
       .resolves.toEqual({ accepted: true });
     await expect(runtime.sendToolResult({ turnId, requestId: '18', result: { outcome: 'denied', code: 'CONSENT_DENIED' } }))
       .resolves.toEqual({ accepted: true });
+    await expect(runtime.sendToolResult({ turnId, requestId: '19', result: { outcome: 'conflict', code: 'VERSION_CONFLICT' } }))
+      .resolves.toEqual({ accepted: true });
     expect(call.mock.calls[1][0]).toBe('planning-home-tool-result');
     expect(call.mock.calls[2][3]).toEqual({ requestId: '18', result: { outcome: 'denied', code: 'CONSENT_DENIED' } });
-    await expect(runtime.sendToolResult({ turnId, requestId: '19', result: { outcome: 'shared', data: { value: 'x'.repeat(256 * 1024) } } }))
+    expect(call.mock.calls[3][3]).toEqual({ requestId: '19', result: { outcome: 'conflict', code: 'VERSION_CONFLICT' } });
+    await expect(runtime.sendToolResult({ turnId, requestId: '20', result: { outcome: 'shared', data: { value: 'x'.repeat(256 * 1024) } } }))
       .rejects.toBeInstanceOf(AiRunRuntimeUnavailableError);
-    await expect(runtime.sendToolResult({ turnId, requestId: '20', result: { outcome: 'denied', code: 'CONSENT_DENIED', data: { secret: true } } as never }))
+    await expect(runtime.sendToolResult({ turnId, requestId: '21', result: { outcome: 'conflict', code: 'OTHER', data: { secret: true } } as never }))
       .rejects.toBeInstanceOf(AiRunRuntimeUnavailableError);
-    expect(call).toHaveBeenCalledTimes(3);
+    await expect(runtime.sendToolResult({ turnId, requestId: '22', result: { outcome: 'denied', code: 'CONSENT_DENIED', data: { secret: true } } as never }))
+      .rejects.toBeInstanceOf(AiRunRuntimeUnavailableError);
+    expect(call).toHaveBeenCalledTimes(4);
   });
 
   it('confirms cancellation only when the bridge does and rejects results after cancellation', async () => {

@@ -454,6 +454,14 @@ class HomeToolRegistryTests(unittest.TestCase):
                 {'outcome': 'denied', 'code': 'CONSENT_DENIED'},
             )
 
+            future.result.return_value = {'outcome': 'conflict', 'code': 'VERSION_CONFLICT'}
+            self.assertEqual(
+                json.loads(home_tool_transport.call_home_tool('home_update_task', {'taskId': '00000000-0000-0000-0000-000000000001', 'expectedVersion': 1, 'title': 'Updated'})),
+                {'outcome': 'conflict', 'code': 'VERSION_CONFLICT'},
+            )
+            future.result.return_value = {'outcome': 'conflict', 'code': 'RAW_ERROR'}
+            self.assertIn('error', json.loads(home_tool_transport.call_home_tool('home_update_task', {'taskId': '00000000-0000-0000-0000-000000000001', 'expectedVersion': 1, 'title': 'Updated'})))
+
         self.assertIn('error', json.loads(home_tool_transport.call_home_tool('terminal', {})))
         with patch.object(home_tool_transport, 'CLIENT', None):
             self.assertIn('error', json.loads(home_tool_transport.call_home_tool('home_list_tasks', {})))
@@ -503,15 +511,29 @@ class AcpHomeToolTransportTests(unittest.TestCase):
         session._home_tool_request({'id': 'req_1', 'method': '_pai/home_tools', 'params': {'sessionId': 'session-1', 'name': 'home_list_tasks', 'args': {'limit': 10}}})
         session.home_tool_result('req_1', {'outcome': 'denied', 'code': 'CONSENT_DENIED'})
         self.assertEqual(session.send.call_args.args[0]['result'], {'outcome': 'denied', 'code': 'CONSENT_DENIED'})
+        self.assertEqual(
+            acp.AcpSession._validate_home_tool_result({'outcome': 'conflict', 'code': 'VERSION_CONFLICT'}),
+            {'outcome': 'conflict', 'code': 'VERSION_CONFLICT'},
+        )
         with self.assertRaises(BridgeError):
             acp.AcpSession._validate_home_tool_result({'outcome': 'shared', 'data': {'value': 'x' * (256 * 1024)}})
         with self.assertRaises(BridgeError):
             acp.AcpSession._validate_home_tool_result({'outcome': 'denied', 'code': 'CONSENT_DENIED', 'data': 'secret'})
+        with self.assertRaises(BridgeError):
+            acp.AcpSession._validate_home_tool_result({'outcome': 'conflict', 'code': 'RAW_ERROR'})
+        with self.assertRaises(BridgeError):
+            acp.AcpSession._validate_home_tool_result({'outcome': 'conflict', 'code': 'VERSION_CONFLICT', 'message': 'raw exception'})
         deeply_nested = {}
         for _ in range(34):
             deeply_nested = {'nested': deeply_nested}
         with self.assertRaises(BridgeError):
             acp.AcpSession._validate_home_tool_result({'outcome': 'shared', 'data': deeply_nested})
+
+    def test_version_conflict_result_round_trip_stays_bounded_and_code_only(self):
+        session = self.new_session()
+        session._home_tool_request({'id': 'req_conflict', 'method': '_pai/home_tools', 'params': {'sessionId': 'session-1', 'name': 'home_update_task', 'args': {'taskId': '00000000-0000-0000-0000-000000000001', 'expectedVersion': 1, 'title': 'Updated'}}})
+        session.home_tool_result('req_conflict', {'outcome': 'conflict', 'code': 'VERSION_CONFLICT'})
+        self.assertEqual(session.send.call_args.args[0]['result'], {'outcome': 'conflict', 'code': 'VERSION_CONFLICT'})
 
     def test_tool_request_event_and_request_count_are_bounded(self):
         session = self.new_session()

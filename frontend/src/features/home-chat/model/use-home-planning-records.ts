@@ -179,7 +179,7 @@ export function useHomePlanningRecords({
       setReceipts((previous) => previous.map((item) => {
         if (item.id !== receiptId) return item;
         const reconciled = item.receipt?.undoStatus !== receipt.undoStatus && receipt.undoStatus !== 'available';
-        return { ...item, state: 'ready', receipt, target, targetUnavailable, undoPending: false,
+        return { ...item, turnId: receipt.turnId, state: 'ready', receipt, target, targetUnavailable, undoPending: false,
           ...(reconciled ? { undoError: null, conflictReason: null } : {}) };
       }));
     } catch {

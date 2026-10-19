@@ -9,6 +9,7 @@ import { AppError } from '@/shared/errors/app-error';
 
 const OWNER = '11111111-1111-4111-8111-111111111111';
 const ACTION = '22222222-2222-4222-8222-222222222222';
+const TURN = '55555555-5555-4555-8555-555555555555';
 const ORIGIN = 'https://127.0.0.1:8443';
 
 const original: ActionLedgerRecord = {
@@ -48,7 +49,7 @@ function mutationHeaders(): Record<string, string> {
 
 describe('Action undo route', () => {
   it('returns only owner-scoped receipt metadata for reload verification', async () => {
-    const privateReceipt = { ...original, reversibleFields: { title: { before: 'old', after: 'new' } }, requestFingerprint: 'private-fingerprint' };
+    const privateReceipt = { ...original, actorKind: 'assistant' as const, turnId: TURN, reversibleFields: { title: { before: 'old', after: 'new' } }, requestFingerprint: 'private-fingerprint' };
     const getReceipt = jest.fn(async () => privateReceipt);
     const app = appWithUndo({ undo: jest.fn(), getReceipt });
     const response = await request(app).get(`/api/v1/actions/${ACTION}`).set('Cookie', '__Host-pa_session=session-token');
@@ -57,6 +58,8 @@ describe('Action undo route', () => {
     expect(response.body.data).toEqual({
       id: ACTION,
       actionKind: 'workspace.create',
+      actorKind: 'assistant',
+      turnId: TURN,
       targetKind: 'workspace',
       targetId: '33333333-3333-4333-8333-333333333333',
       postVersion: 2,
@@ -69,7 +72,8 @@ describe('Action undo route', () => {
   });
 
   it('requires same-origin CSRF and sends the authenticated owner plus key to the use case', async () => {
-    const undo = jest.fn(async () => ({ originalAction: original, undoReceipt: original, target: null, replayed: false }));
+    const assistantAction = { ...original, actorKind: 'assistant' as const, turnId: TURN };
+    const undo = jest.fn(async () => ({ originalAction: assistantAction, undoReceipt: assistantAction, target: null, replayed: false }));
     const app = appWithUndo({ undo });
     const blocked = await request(app).post(`/api/v1/actions/${ACTION}/undo`).set('Cookie', '__Host-pa_session=session-token').send({});
     expect(blocked.status).toBe(403);
@@ -77,7 +81,12 @@ describe('Action undo route', () => {
 
     const response = await request(app).post(`/api/v1/actions/${ACTION}/undo`).set(mutationHeaders()).send({ completedTaskCreateActionIds: [] });
     expect(response.status).toBe(200);
-    expect(response.body.data).toMatchObject({ originalAction: { id: ACTION }, undoReceipt: { id: ACTION }, target: null, replayed: false });
+    expect(response.body.data).toMatchObject({
+      originalAction: { id: ACTION, actorKind: 'assistant', turnId: TURN },
+      undoReceipt: { id: ACTION, actorKind: 'assistant', turnId: TURN },
+      target: null,
+      replayed: false
+    });
     expect(undo).toHaveBeenCalledWith({ ownerId: OWNER, actionId: ACTION, operationKey: 'undo-workspace-1', completedTaskCreateActionIds: [] });
   });
 
@@ -99,7 +108,7 @@ describe('Action undo route', () => {
     const response = await request(app).post(`/api/v1/actions/${ACTION}/undo`).set(mutationHeaders()).send({});
 
     expect(response.status).toBe(409);
-    expect(response.body.data).toMatchObject({ originalAction: { id: ACTION }, target: null, reason: 'changed' });
+    expect(response.body.data).toMatchObject({ originalAction: { id: ACTION, actorKind: 'manual', turnId: null }, target: null, reason: 'changed' });
     expect(response.body.error.code).toBe('ACTION_UNDO_CONFLICT');
   });
 });

@@ -121,6 +121,8 @@ interface SyntheticHomeEvent {
 interface SyntheticReceiptMetadata {
   readonly id: string;
   readonly actionKind: string;
+  readonly actorKind: 'manual' | 'assistant';
+  readonly turnId: string | null;
   readonly targetKind: 'task';
   readonly targetId: string;
   readonly postVersion: number | null;
@@ -537,7 +539,7 @@ function makeTaskUpdateProposalItem(id: string, position: number, taskId: string
 
 function receiptRecord(id: string, targetId: string, behavior: SyntheticUndoBehavior): SyntheticReceiptRecord {
   return {
-    metadata: { id, actionKind: 'task.create', targetKind: 'task', targetId, postVersion: 1, undoStatus: 'available', undoActionId: null },
+    metadata: { id, actionKind: 'task.create', actorKind: 'assistant', turnId: HOME_SUMMARY_TURN_ID, targetKind: 'task', targetId, postVersion: 1, undoStatus: 'available', undoActionId: null },
     behavior,
     undoAttempts: 0
   };

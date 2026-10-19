@@ -1,4 +1,5 @@
 import type { HomeConsentCategory, HomeConversationScope } from '@/modules/home-assistant/domain/home-conversation-types';
+import type { HomePlanningToolResult } from '@/modules/home-assistant/repositories/home-planning-runtime';
 
 /** A typed request from the dedicated planning runner, already owned by one Home turn. */
 export interface HomePlanningToolRequest {
@@ -23,7 +24,7 @@ export type HomePlanningToolResolution =
   | { readonly kind: 'consented'; readonly candidate: HomePlanningToolResultCandidate }
   | {
     readonly kind: 'immediate';
-    readonly result: { readonly outcome: 'shared'; readonly data: Readonly<Record<string, unknown>> };
+    readonly result: HomePlanningToolResult;
     /** Internal owner-checked target used to recheck scope policy before runtime continuation. */
     readonly authorizationProjectId?: string;
   };

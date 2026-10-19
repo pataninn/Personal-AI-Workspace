@@ -6,6 +6,7 @@ import { archiveGlobalTask, createGlobalTask, createInboxTask, getGlobalTask, ge
 const WORKSPACE_ID = '11111111-1111-4111-8111-111111111111';
 const TASK_ID = '22222222-2222-4222-8222-222222222222';
 const ACTION_ID = '33333333-3333-4333-8333-333333333333';
+const TURN_ID = '44444444-4444-4444-8444-444444444444';
 const task = {
   id: TASK_ID, projectId: null, title: 'Send the proposal', details: null, importance: 'medium', deadline: null, subtasks: [],
   status: 'todo', position: 0, version: 1,
@@ -101,7 +102,7 @@ describe('global task API', () => {
   });
 
   it('verifies safe receipt metadata on reload and submits an idempotent undo', async () => {
-    const safeReceipt = { id: ACTION_ID, actionKind: 'task.archive', targetKind: 'task', targetId: TASK_ID, postVersion: 5, undoStatus: 'available', undoActionId: null };
+    const safeReceipt = { id: ACTION_ID, actionKind: 'task.archive', actorKind: 'assistant', turnId: TURN_ID, targetKind: 'task', targetId: TASK_ID, postVersion: 5, undoStatus: 'available', undoActionId: null } as const;
     fetchMock.mockResolvedValueOnce(envelope(safeReceipt));
     await expect(getTaskActionReceipt(ACTION_ID)).resolves.toEqual(safeReceipt);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(`/api/v1/actions/${ACTION_ID}`);
@@ -117,10 +118,17 @@ describe('global task API', () => {
 
     fetchMock.mockResolvedValueOnce(envelope({ ...safeReceipt, targetId: 'not-a-task-id' }));
     await expect(getTaskActionReceipt(ACTION_ID)).rejects.toBeInstanceOf(ApiClientError);
+
+    fetchMock.mockResolvedValueOnce(envelope({ ...safeReceipt, actorKind: 'unknown' }));
+    await expect(getTaskActionReceipt(ACTION_ID)).rejects.toBeInstanceOf(ApiClientError);
+    fetchMock.mockResolvedValueOnce(envelope({ ...safeReceipt, turnId: 'not-a-turn-id' }));
+    await expect(getTaskActionReceipt(ACTION_ID)).rejects.toBeInstanceOf(ApiClientError);
+    fetchMock.mockResolvedValueOnce(envelope({ ...safeReceipt, turnId: null }));
+    await expect(getTaskActionReceipt(ACTION_ID)).rejects.toBeInstanceOf(ApiClientError);
   });
 
   it('accepts workspace and unavailable undo targets without exposing folder metadata as a task', async () => {
-    const safeReceipt = { id: ACTION_ID, actionKind: 'workspace.update', targetKind: 'workspace', targetId: WORKSPACE_ID, postVersion: 4, undoStatus: 'undone', undoActionId: ACTION_ID };
+    const safeReceipt = { id: ACTION_ID, actionKind: 'workspace.update', actorKind: 'manual', turnId: null, targetKind: 'workspace', targetId: WORKSPACE_ID, postVersion: 4, undoStatus: 'undone', undoActionId: ACTION_ID } as const;
     const workspace = { id: WORKSPACE_ID, name: 'Planning', slug: 'planning', objective: null, workspaceMode: 'planning', capabilities: { planning: true, fileAccess: false }, status: 'active', version: 4, createdAt: '2026-10-16T08:00:00.000Z', updatedAt: '2026-10-16T08:00:00.000Z' };
     fetchMock.mockResolvedValueOnce(envelope({ originalAction: safeReceipt, undoReceipt: { ...safeReceipt, actionKind: 'undo', undoStatus: 'not_reversible' }, target: { kind: 'workspace', workspace }, replayed: false }));
     await expect(undoTaskAction(ACTION_ID, 'csrf', 'workspace-undo-key')).resolves.toEqual({

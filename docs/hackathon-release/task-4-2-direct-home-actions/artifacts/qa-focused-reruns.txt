@@ -1,0 +1,33 @@
+Task 4.2 focused QA reruns
+Date: 2026-10-19
+App: Personal-AI-Workspace, branch feature/automatic-assistant-tools, HEAD 633cbeecd934ddd0e1042441158f91ca5e98435e
+
+Independent reruns
+
+Backend unit tests, from Personal-AI-Workspace/backend:
+node node_modules/jest/bin/jest.js --config jest.config.cjs --runInBand src/modules/home-assistant/controllers/action-undo-router.spec.ts src/modules/home-assistant/use-cases/home-planning-tool-request-handler.spec.ts src/modules/home-assistant/use-cases/get-home-turn.spec.ts src/infrastructure/hermes/hermes-home-planning-runtime.spec.ts src/openapi/action-undo-openapi.spec.ts
+Result: exit 0; 5 suites passed; 31 tests passed; 0 snapshots.
+
+Hermes bridge tests, from Personal-AI-Workspace/deploy/hermes-bridge:
+python -m unittest discover -s tests -p test_planning_runtime.py -v
+Result: exit 0; 23 tests passed.
+
+Frontend unit tests, from Personal-AI-Workspace/frontend:
+node node_modules/vitest/vitest.mjs run --config vitest.config.mjs --configLoader runner src/entities/project-task/api/global-task-api.spec.ts src/features/home-chat/model/use-home-planning-records.spec.tsx src/features/home-chat/ui/HomePlanningRecords.spec.tsx src/pages/task-detail/TaskDetailPage.spec.tsx
+Result: exit 0; 4 files passed; 24 tests passed. The runner printed existing React Router v7 future-flag notices.
+
+Invocation correction
+
+The first local backend/Python invocation attempts did not launch the test suites: the Jest path was relative to the wrong working directory, and the Python module form required a package that the tests folder does not provide. The direct Jest binary and unittest discovery commands above then ran successfully. These were runner invocation errors, not application test failures.
+
+Reviewed developer evidence
+
+- Backend TypeScript, frontend app/node TypeScript, and the Vite preview build passed per the Task 4.2 dev-summary.
+- The local Playwright preview journey finished 3/3 after its test reopened Home Ask after reload. The developer retained the initial 2/3 run, where the page reload closed the transient drawer, and the corrected run in the Task 4.2 handoff.
+- The browser fixture uses synthetic data only. The retained JSON shows no blocked external requests and no retired proposal mutation requests. It includes expected synthetic auth bootstrap and undo conflict/unavailable responses; it proves no live provider, database, or production behavior.
+
+PostgreSQL evidence reuse
+
+No PostgreSQL run was started for this QA pass. Task 4.2 adds receipt DTO fields and a bounded tool-result union; it changes no database repository, migration, schema, or canonical mutation implementation. The only change to the command-parity integration spec is its helper type guard for the new result union. The prior Home command-parity guarded run remains applicable to the unchanged canonical handler/repositories and proves task/workspace mutations, replay, owner rejection, assistant receipt attribution, content-free event pointers, and action/receipt rollback (two suites / five tests): .codex/docs/home-assistant/task-4-2-planning-tools-and-provider-consent/artifacts/command-parity-postgres.md. The prior Task 3.2 guarded PostgreSQL test also verifies task/action-ledger replay and rollback of task, event, receipt, quota references, and counters: .codex/docs/hackathon-release/task-3-2-storage-quotas/artifacts/test-project-task-storage-quota.md.
+
+New Task 4.2 behavior that does not need a DB write is covered by the focused Jest and bridge tests: only the two canonical expected-version exception classes produce the fixed VERSION_CONFLICT result, no receipt accompanies it, unrelated idempotency failures continue through the existing error path, and the exact bounded envelope is validated across TypeScript and Python.

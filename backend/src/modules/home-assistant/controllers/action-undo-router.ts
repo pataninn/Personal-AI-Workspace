@@ -38,6 +38,8 @@ function serializeAction(record: ActionLedgerRecord): Record<string, unknown> {
   return {
     id: record.id,
     actionKind: record.actionKind,
+    actorKind: record.actorKind,
+    turnId: record.turnId,
     targetKind: record.targetKind,
     targetId: record.targetId,
     preVersion: record.preVersion,
@@ -53,6 +55,8 @@ function serializeReceiptMetadata(record: ActionLedgerRecord): Record<string, un
   return {
     id: record.id,
     actionKind: record.actionKind,
+    actorKind: record.actorKind,
+    turnId: record.turnId,
     targetKind: record.targetKind,
     targetId: record.targetId,
     postVersion: record.postVersion,

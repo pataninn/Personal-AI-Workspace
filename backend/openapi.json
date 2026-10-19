@@ -10081,13 +10081,15 @@
         "properties": {
           "id": { "$ref": "#/components/schemas/Uuid" },
           "actionKind": { "type": "string" },
+          "actorKind": { "type": "string", "enum": ["manual", "assistant"], "description": "Whether a person or the assistant applied this action." },
+          "turnId": { "allOf": [{ "$ref": "#/components/schemas/Uuid" }], "nullable": true, "description": "The assistant turn associated with this action, or null for manual actions." },
           "targetKind": { "type": "string", "enum": ["task", "workspace"] },
           "targetId": { "$ref": "#/components/schemas/Uuid" },
           "postVersion": { "type": "integer", "minimum": 1, "nullable": true },
           "undoStatus": { "type": "string", "enum": ["available", "not_reversible", "undone"] },
           "undoActionId": { "allOf": [{ "$ref": "#/components/schemas/Uuid" }], "nullable": true }
         },
-        "required": ["id", "actionKind", "targetKind", "targetId", "postVersion", "undoStatus", "undoActionId"],
+        "required": ["id", "actionKind", "actorKind", "turnId", "targetKind", "targetId", "postVersion", "undoStatus", "undoActionId"],
         "additionalProperties": false
       },
       "ActionReceiptMetadataEnvelope": {
@@ -10104,6 +10106,8 @@
         "properties": {
           "id": { "$ref": "#/components/schemas/Uuid" },
           "actionKind": { "type": "string" },
+          "actorKind": { "type": "string", "enum": ["manual", "assistant"], "description": "Whether a person or the assistant applied this action." },
+          "turnId": { "allOf": [{ "$ref": "#/components/schemas/Uuid" }], "nullable": true, "description": "The assistant turn associated with this action, or null for manual actions." },
           "targetKind": { "type": "string", "enum": ["task", "workspace"] },
           "targetId": { "$ref": "#/components/schemas/Uuid" },
           "preVersion": { "type": "integer", "minimum": 1, "nullable": true },
@@ -10113,7 +10117,7 @@
           "undoActionId": { "allOf": [{ "$ref": "#/components/schemas/Uuid" }], "nullable": true },
           "createdAt": { "type": "string", "format": "date-time" }
         },
-        "required": ["id", "actionKind", "targetKind", "targetId", "preVersion", "postVersion", "outcome", "undoStatus", "undoActionId", "createdAt"],
+        "required": ["id", "actionKind", "actorKind", "turnId", "targetKind", "targetId", "preVersion", "postVersion", "outcome", "undoStatus", "undoActionId", "createdAt"],
         "additionalProperties": false
       },
       "ActionUndoTarget": {

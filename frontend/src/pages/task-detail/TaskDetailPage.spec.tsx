@@ -38,7 +38,7 @@ const inboxItem: GlobalTaskItem = {
     createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:00:00.000Z', completedAt: null, archivedAt: null },
   collection: 'inbox', workspace: null
 };
-const savedReceipt = { id: ACTION_ID, actionKind: 'task.update', targetKind: 'task', targetId: TASK_ID, postVersion: 2, undoStatus: 'available', undoActionId: null } as const;
+const savedReceipt = { id: ACTION_ID, actionKind: 'task.update', actorKind: 'manual', turnId: null, targetKind: 'task', targetId: TASK_ID, postVersion: 2, undoStatus: 'available', undoActionId: null } as const;
 const projectListState = { listStatus: 'success' as const, projects: [WORKSPACE, PLANNING, archivedWorkspace], errorCode: null, detailById: {} };
 
 function LocationProbe(): React.JSX.Element {

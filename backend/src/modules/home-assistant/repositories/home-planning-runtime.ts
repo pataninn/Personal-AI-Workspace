@@ -45,7 +45,8 @@ export interface PollHomePlanningRunResult {
 
 export type HomePlanningToolResult =
   | { readonly outcome: 'shared'; readonly data: Readonly<Record<string, unknown>> }
-  | { readonly outcome: 'denied'; readonly code: 'CONSENT_DENIED' };
+  | { readonly outcome: 'denied'; readonly code: 'CONSENT_DENIED' }
+  | { readonly outcome: 'conflict'; readonly code: 'VERSION_CONFLICT' };
 
 export interface SendHomePlanningToolResultInput {
   readonly turnId: string;
