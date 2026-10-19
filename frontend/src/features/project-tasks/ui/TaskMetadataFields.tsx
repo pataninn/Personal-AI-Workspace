@@ -8,10 +8,11 @@ interface TaskMetadataFieldsProps {
   readonly disabled: boolean;
   readonly errors: ProjectTaskFieldErrors;
   readonly onChange: (value: TaskMetadataDraft) => void;
+  readonly checklistMode?: boolean;
 }
 
 /** User-chosen importance and calendar date accompany a simple one-level checklist. */
-export function TaskMetadataFields({ value, disabled, errors, onChange }: TaskMetadataFieldsProps): React.JSX.Element {
+export function TaskMetadataFields({ value, disabled, errors, onChange, checklistMode = false }: TaskMetadataFieldsProps): React.JSX.Element {
   function changeSubtask(index: number, title: string): void {
     onChange({ ...value, subtasks: value.subtasks.map((subtask, itemIndex) => itemIndex === index ? { ...subtask, title } : subtask) });
   }
@@ -24,9 +25,14 @@ export function TaskMetadataFields({ value, disabled, errors, onChange }: TaskMe
       </div>
       <div className="field-group"><Label htmlFor="project-task-deadline">Deadline (optional)</Label><Input type="date" id="project-task-deadline" data-testid="project-task-deadline-input" value={value.deadline} disabled={disabled} aria-invalid={Boolean(errors.deadline)} aria-describedby={errors.deadline ? 'project-task-deadline-error' : undefined} onChange={(event) => { onChange({ ...value, deadline: event.currentTarget.value }); }} />{errors.deadline ? <p id="project-task-deadline-error" className="field-error" role="alert">{errors.deadline}</p> : null}</div>
     </div>
-    <fieldset className="space-y-2"><legend className="font-medium">Subtasks (optional)</legend><p className="text-xs text-[var(--color-text-muted)]">Finishing all items completes the task. Marking the task complete checks every item; unchecking an item reopens it.</p>
-      {value.subtasks.map((subtask, index) => <div key={subtask.id ?? `draft-${index}`} className="flex items-end gap-2"><div className="min-w-0 flex-1"><Label htmlFor={`project-task-subtask-${index}`}>Subtask {index + 1}</Label><Input id={`project-task-subtask-${index}`} value={subtask.title} disabled={disabled} aria-invalid={Boolean(errors.subtasks)} aria-describedby={errors.subtasks ? 'project-task-subtasks-error' : undefined} onChange={(event) => { changeSubtask(index, event.currentTarget.value); }} /></div><Button type="button" variant="ghost" disabled={disabled} aria-label={`Remove subtask ${index + 1}`} onClick={() => { onChange({ ...value, subtasks: value.subtasks.filter((_, itemIndex) => itemIndex !== index) }); }}>Remove</Button></div>)}
-      <Button type="button" variant="secondary" data-testid="project-task-add-subtask" disabled={disabled || value.subtasks.length >= 50} onClick={() => { onChange({ ...value, subtasks: [...value.subtasks, { title: '', completed: false }] }); }}>Add subtask</Button>
+    <fieldset className="space-y-2"><legend className="font-medium">{checklistMode ? 'Checklist (optional)' : 'Subtasks (optional)'}</legend><p className="text-xs text-[var(--color-text-muted)]">Finishing all items completes the task. Marking the task complete checks every item; unchecking an item reopens it.</p>
+      {value.subtasks.map((subtask, index) => <div key={subtask.id ?? `draft-${index}`} className="flex items-end gap-2">
+        {checklistMode ? <Label className="task-checklist-completion"><input type="checkbox" checked={subtask.completed ?? false} disabled={disabled} aria-label={`Mark ${subtask.title.trim() || `checklist item ${index + 1}`} complete`} onChange={(event) => { onChange({ ...value, subtasks: value.subtasks.map((item, itemIndex) => itemIndex === index ? { ...item, completed: event.currentTarget.checked } : item) }); }} /><span>Complete</span></Label> : null}
+        <div className="min-w-0 flex-1"><Label htmlFor={`project-task-subtask-${index}`}>{checklistMode ? `Checklist item ${index + 1}` : `Subtask ${index + 1}`}</Label><Input id={`project-task-subtask-${index}`} value={subtask.title} disabled={disabled} aria-invalid={Boolean(errors.subtasks)} aria-describedby={errors.subtasks ? 'project-task-subtasks-error' : undefined} onChange={(event) => { changeSubtask(index, event.currentTarget.value); }} /></div>
+        <Button type="button" variant="ghost" disabled={disabled} aria-label={`Remove ${checklistMode ? 'checklist item' : 'subtask'} ${subtask.title.trim() || index + 1}`} onClick={() => { onChange({ ...value, subtasks: value.subtasks.filter((_, itemIndex) => itemIndex !== index) }); }}>Remove</Button>
+      </div>)}
+      <Button type="button" variant="secondary" data-testid="project-task-add-subtask" disabled={disabled || value.subtasks.length >= 50} onClick={() => { onChange({ ...value, subtasks: [...value.subtasks, { title: '', completed: false }] }); }}>{checklistMode ? 'Add checklist item' : 'Add subtask'}</Button>
+      {value.subtasks.length >= 50 ? <p className="supporting-copy" role="status">The 50-item checklist limit has been reached.</p> : null}
       {errors.subtasks ? <p id="project-task-subtasks-error" className="field-error" role="alert">{errors.subtasks}</p> : null}
     </fieldset>
   </div>;

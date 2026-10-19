@@ -5,9 +5,9 @@
 **Last Updated:** 2026-10-19
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Fifteen tasks delivered:1.1,2.1,2.2,3.1,3.2,3.3,3.4,3.5,4.1,4.2,4.3,5.1,5.2,6.1,6.2. Latest HEAD `9b4a05dbfbad66535695d6d4b70731c9a62c5c6d`. Task3.6 independent QA cycle2 PASS; scoped local commit pending. Task5.3 task editor andTask7.1 durable scheduler implementation active.
+**Status:** Execution active. Sixteen tasks delivered: 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 4.1, 4.2, 4.3, 5.1, 5.2, 6.1, 6.2. Latest verified delivery `84b983b145eb2b9b9968e292360862d16f14c50d`. Task5.3 QA1 found a pending-delete exit gap; targeted repair active. Task7.1 scheduler guarded PostgreSQL proof is active. Task6.3 UI spec and architecture decisions are complete; developer contract and implementation active.
 
-**Current execution boundary (user update):** Complete, independently verify, and commit every task through Task7.3, then stop for the user to review the application. Tasks8.1/8.2 deployment and subsequent release acceptance remain planned and must not begin before that review.
+**Current execution boundary (user update):** User requested stopping after the current task. Finish Task5.3 editor QA and scoped local commit, then stop. Tasks6.3/7.1 are checkpointed with unfinished work preserved; no further tasks, deployment8.x or acceptance9.x begin. Earlier through7.3 scope remains queued for a later resume.
 
 ## Plan Summary
 
@@ -356,11 +356,11 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 3.6 â€” Build account, quota, and demo administration UI
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 3.4, 3.5
 **Risk:** High: privileged actions and secrets
-**Contract:** `.codex/docs/hackathon-release/task-3-6-admin-portal/contract.md` (planned; developer owns the contract gate)
+**Contract:** `.codex/docs/hackathon-release/task-3-6-admin-portal/contract.md` (implemented; developer-owned)
 
 **MCP Inputs & Required Evidence:**
 
@@ -371,24 +371,26 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-3-6-admin-portal/artifacts/`
-- `Current status:` Independent QA cycle2 PASS; QA1 High campaign rotation finding is repaired and retained in history. Tester independently reran repository/OpenAPI2suites8tests PASS. New immutable-ID guard preserves same-campaign settled/reserved usage, initial setup is allowed, UI configuredID read-only. Required admin/usage APIs are documented. Prior focused backend/frontend/types, guarded0037PG1/1, build and mocked-browser1test evidence reused where unchanged. Mobile/keyboard-only browser checks remain explicit accepted Low evidence debt. Scoped local task commit pending; no live provider/API/deployment claim from mocks.
+- `Current status:` Delivered at `84b983b145eb2b9b9968e292360862d16f14c50d` after independent QA cycle2 PASS. QA1 High campaign identity bug repaired; targeted independent repository/OpenAPI8/8 PASS. Prior guarded0037PG1/1, focused units, build and mock-browser proof retained with scope limits. Isolated staged backend/frontend app TypeScript PASS; Node config inputs are unchanged from prior node-project checks. Root verified exact60paths(49source+11docs), branch, empty index, correct artifacts layout and task-only shared hunks. Local unpublished location-only amend preserved source content. Mobile/keyboard-only proof remains accepted Low; no live provider claim.
+
+**Delivered commit:** `84b983b145eb2b9b9968e292360862d16f14c50d` (independent QA2 PASS; root verified60paths; source checks PASS).
 
 **Description:** Provide protected admin account management and usage views backed by admin-only APIs. Include configurable demo budgets and publishing controls.
 
 **Subtasks:**
 
-- [ ] Create/list/search accounts, disable/revoke, reset initial credentials securely, and protect last-admin availability.
-- [ ] Edit daily/lifetime/storage limits; show totals, reservations, exhaustion, and limit-below-usage outcomes.
-- [ ] Configure demo limits/expiry/global pause; record sensitive-action audit metadata without secrets.
-- [ ] Connect the existing private-demo banner to the owner-scoped credit/availability read model and real Usage view: known remaining credits, exhausted/global-paused/unknown reasons, and disabled AI with manual editing preserved. Do not expose admin totals or link to an unavailable view.
+- [x] Create/list/search accounts, disable/revoke, reset initial credentials securely, and protect last-admin availability.
+- [x] Edit daily/lifetime/storage limits; show totals, reservations, exhaustion, and limit-below-usage outcomes.
+- [x] Configure demo limits/expiry/global pause; record sensitive-action audit metadata without secrets.
+- [x] Connect the existing private-demo banner to the owner-scoped credit/availability read model and real Usage view: known remaining credits, exhausted/global-paused/unknown reasons, and disabled AI with manual editing preserved. Do not expose admin totals or link to an unavailable view.
 
 **Definition of Done:**
 
-- [ ] Non-admin direct API access is denied; no existing password/key is exposed; limit changes affect new admissions and active runs at defined boundaries.
-- [ ] Private-demo credit/Usage banner and AI controls reflect authoritative known/exhausted/paused/unknown state; unknown/paused/exhausted AI is disabled while permitted manual edits remain usable. This completes the explicit Task3.4 unknown-state integration follow-up before user review.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
-- [ ] Developer-owned contract implemented and verified before task closure.
+- [x] Non-admin direct API access is denied; no existing password/key is exposed; limit changes affect new admissions and active runs at defined boundaries.
+- [x] Private-demo credit/Usage banner and AI controls reflect authoritative known/exhausted/paused/unknown state; unknown/paused/exhausted AI is disabled while permitted manual edits remain usable. This completes the explicit Task3.4 unknown-state integration follow-up before user review.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Developer-owned contract implemented and verified before task closure.
 
 **Upstream Outputs Needed:** Architecture sections 4.3, 7.3; Task 1.1 ui-spec.md and relevant task contracts; completed dependency outputs.
 
@@ -605,7 +607,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-5-3-direct-task-editor/artifacts/`
-- `Current status:` UI specification complete; implementation starting after delivered dependencies4.3 and5.2. Reuse canonical versioned save/delete APIs and existing conflict controls. Immediate edit, explicit Save, draft retention and dirty-exit safeguards are required; no new browser evidence yet.
+- `Current status:` Independent QA cycle2 PASS; QA1 pending-delete gap resolved/history retained. Tester independently reran15/15 focused route tests; both frontend types PASS. Previous2/2route-stub browser/build evidence is explicitly pre-repair. All requested editor behavior verified within documented scope. Scoped local commit/root audit pending; stop after delivery.
 
 **Description:** Replace view/edit toggling with a controlled editable task form and delete-only action.
 
@@ -746,7 +748,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 6.3 â€” Expose editable skills and a working Plan my day flow
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 6.2
 **Risk:** Medium: usable output and permissions
@@ -761,7 +763,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-6-3-skills-interface/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Checkpointed for user-requested stop. UI spec/preflight/contract complete; four backend summary-projection files drafted. Home wiring and frontend skills/publisher/results remain unfinished. No6.3checks run; NOT Ready for QA. See dev-summary.md.
 
 **Description:** Build skill list/detail/editor and invocation states with a useful saved plan based on tasks, deadlines, and memory.
 
@@ -839,7 +841,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-7-1-durable-scheduler/artifacts/`
-- `Current status:` Developer contract/source-map gate starting after delivered3.1/3.5/6.2; focused durable backend implementation next. No scheduler runtime proof claimed yet.
+- `Current status:` Checkpointed for user-requested stop. Final scheduler PostgreSQL4/4 PASS includes fresh child-worker poll1/invoke0 reconciliation and repository-connection fencing. Filtered cleanup remains FAIL: cancelled occurrence but purging/storage barrier. Wrapper quoting failure and subsequent successful fresh independent postguard are recorded; fixture databases absent. NOT Ready for QA; remaining work preserved.
 
 **Description:** Add PostgreSQL schedule/occurrence/lease persistence and independent worker execution using the shared runtime authorization path.
 
@@ -1100,19 +1102,19 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | 3.3 â€” Provision private one-click demo identities | `[x]` | PASS; `3f4adabbe22a8303406cea9e4441b3e987f605d3` |
 | 3.4 â€” Publish a protected showcase and open editable demo copies | `[x]` | PASS; `ae188ba9d39264ff4b981dc745b7a1daafd70c20` |
 | 3.5 â€” Expire and clean up demos safely | `[x]` | PASS; `57a477f060e3c4a2ffb11fd01f3d6d4a983c4db1`; isolated types PASS |
-| 3.6 â€” Build account, quota, and demo administration UI | `[~]` | QA cycle2 PASS; campaign guard repaired; local commit pending |
+| 3.6 â€” Build account, quota, and demo administration UI | `[x]` | PASS; `84b983b145eb2b9b9968e292360862d16f14c50d`; Low browser evidence debt |
 | 4.1 â€” Replace per-turn consent with workspace-scoped automatic execution | `[x]` | PASS; `4f9ad9bddf227f53b7c55db237cc4a9a8d716846`; accepted Low viewport/test debt |
 | 4.2 â€” Execute Home task and workspace actions through canonical use cases | `[x]` | PASS; `00e40200ad40ddda73605295b151f42e90466690`; Low live-status refinement logged |
 | 4.3 â€” Unify task deletion and remove archive behavior | `[x]` | PASS; `9b4a05dbfbad66535695d6d4b70731c9a62c5c6d`; Low OpenAPI prose debt |
 | 5.1 â€” Move Home assistant into a floating Ask panel | `[x]` | PASS; `1d22db9fe9f3fb67ac05eddf199952dadf2a5fb3` |
 | 5.2 â€” Replace Inbox emphasis with Add task and View all | `[x]` | PASS; `fdb200dc23eb83a1047f138ccdd8f7316f3855b1` |
-| 5.3 â€” Open task details editable with Save and dirty-exit protection | `[~]` | Task editor implementation active; existing UI spec |
+| 5.3 â€” Open task details editable with Save and dirty-exit protection | `[~]` | QA2 PASS; scoped local commit/root audit pending, then stop |
 | 5.4 â€” Audit spacing, responsiveness, and accessibility across release screens | `[ ]` | Pending |
 | 6.1 â€” Make memory and selected context visibly control future runs | `[x]` | PASS; `633cbeecd934ddd0e1042441158f91ca5e98435e`; accepted Low selector debt |
 | 6.2 â€” Persist editable user skills with bounded invocation | `[x]` | PASS; `ddc2a355f6f3886048433cea7a6a28de08891261`; Low title-length debt |
-| 6.3 â€” Expose editable skills and a working Plan my day flow | `[ ]` | Pending |
+| 6.3 â€” Expose editable skills and a working Plan my day flow | `[~]` | Checkpointed incomplete; contract and draft summary projection, no checks |
 | 6.4 â€” Add bounded portable workspace export and usage settings | `[ ]` | Pending |
-| 7.1 â€” Implement durable daily schedules and job claiming | `[~]` | Developer contract gate and durable backend implementation starting |
+| 7.1 â€” Implement durable daily schedules and job claiming | `[~]` | Checkpointed incomplete; scheduler4/4 PASS, cleanup storage failure unresolved |
 | 7.2 â€” Produce and persist useful daily briefings | `[ ]` | Pending |
 | 7.3 â€” Add schedule controls, Run now, and run history | `[ ]` | Pending |
 | 8.1 â€” Prepare persistent host, proxy, worker, and migration deployment | `[ ]` | Pending |
@@ -1122,7 +1124,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Blocked Items and implementation-time inputs
 
-Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 4.2, 5.1, 5.2, and 6.1 are delivered. Task3.5 demo cleanup is delivered at `57a477f060e3c4a2ffb11fd01f3d6d4a983c4db1`; Task6.2 skills is delivered at `ddc2a355f6f3886048433cea7a6a28de08891261`; Task4.3 deletion has independent QA PASS and its scoped local commit is pending; Task3.6 administration is in independent QA; Task4.2 direct Home actions are delivered at `00e40200ad40ddda73605295b151f42e90466690`; Task6.1 memory/context is delivered at `633cbeecd934ddd0e1042441158f91ca5e98435e`. Current subagents use GPT-6 Luna with maximum reasoning. Existing work is preserved; model availability must be reported honestly. Dependency ordering above applies.
+Sixteen tasks are delivered as listed in Plan Summary. Remaining through the review boundary: 5.3, 5.4, 6.3, 6.4, 7.1, 7.2, 7.3. Current subagents use GPT-6 Luna with maximum reasoning. Preserve existing work; finish functional scope with focused checks, then stop before deployment8.x and acceptance9.x for user review.
 
 - Task 8.1/8.2 needs the real deployment host/domain and DNS/certificate access. Do not claim the local self-signed setup fixes public browser trust.
 - Credit enforcement requires actual provider pricing and a way to bound/meter all Hermes calls. Public AI access stays disabled if that cannot be established.

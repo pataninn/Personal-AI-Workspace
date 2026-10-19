@@ -25,6 +25,7 @@ import { HomeAsk } from '@/widgets/app-shell/HomeAsk';
 
 export interface AppShellOutletContext {
   readonly registerHomeSummaryRefresh: (refresh: (() => void) | null) => void;
+  readonly registerTaskEditorExitGuard?: (guard: (() => Promise<boolean>) | null) => void;
 }
 
 export function AppShell(): React.JSX.Element {
@@ -35,6 +36,7 @@ export function AppShell(): React.JSX.Element {
   const csrfToken = useAppSelector(selectCsrfToken);
   const mainRef = useRef<HTMLElement>(null);
   const homeSummaryRefreshRef = useRef<(() => void) | null>(null);
+  const taskEditorExitGuardRef = useRef<(() => Promise<boolean>) | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [logoutError, setLogoutError] = useState(false);
@@ -47,6 +49,9 @@ export function AppShell(): React.JSX.Element {
   const requestHomeSummaryRefresh = useCallback((): void => {
     homeSummaryRefreshRef.current?.();
   }, []);
+  const registerTaskEditorExitGuard = useCallback((guard: (() => Promise<boolean>) | null): void => {
+    taskEditorExitGuardRef.current = guard;
+  }, []);
 
   useEffect(() => {
     mainRef.current?.focus();
@@ -56,6 +61,8 @@ export function AppShell(): React.JSX.Element {
     if (isSigningOut || !csrfToken) {
       return;
     }
+    const canSignOut = await (taskEditorExitGuardRef.current?.() ?? Promise.resolve(true));
+    if (!canSignOut) return;
     setIsSigningOut(true);
     setLogoutError(false);
     try {
@@ -114,7 +121,7 @@ export function AppShell(): React.JSX.Element {
         </header>
         <main ref={mainRef} className={`app-shell-main${principal ? ' home-ask-shell-main' : ''}`} data-testid="app-shell-main" tabIndex={-1}>
           <ProjectHeader onRemove={setRemoveTarget} />
-          <Outlet context={{ registerHomeSummaryRefresh } satisfies AppShellOutletContext} />
+          <Outlet context={{ registerHomeSummaryRefresh, registerTaskEditorExitGuard } satisfies AppShellOutletContext} />
         </main>
       </div>
       <HomeAsk onSummaryRefreshRequested={requestHomeSummaryRefresh} />

@@ -1,14 +1,15 @@
 import { configureStore } from '@reduxjs/toolkit';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { createMemoryRouter, Outlet, RouterProvider, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { projectReducer } from '@/entities/project';
 import type { ProjectSnapshot } from '@/entities/project';
-import type { GlobalTaskItem } from '@/entities/project-task';
+import type { GlobalTaskDeleteResult, GlobalTaskItem } from '@/entities/project-task';
 import { userSessionReducer } from '@/entities/user-session';
+import type { AppShellOutletContext } from '@/widgets/app-shell';
 import { ApiClientError } from '@/shared/api';
 import { TaskDetailPage } from '@/pages/task-detail/TaskDetailPage';
 
@@ -46,14 +47,40 @@ function LocationProbe(): React.JSX.Element {
   return <output data-testid="location">{`${location.pathname}${location.search}`}</output>;
 }
 
-function renderTaskDetail(entry = `/tasks/${TASK_ID}`): void {
+function renderTaskDetail(entry = `/tasks/${TASK_ID}`, shellContext: AppShellOutletContext | null = null, initialEntries: string[] = [entry]) {
   const store = configureStore({ reducer: { project: projectReducer, userSession: userSessionReducer }, preloadedState: { project: projectListState, userSession: SESSION } });
-  render(<Provider store={store}><MemoryRouter initialEntries={[entry]}><Routes><Route path="/tasks/:taskId" element={<TaskDetailPage />} /></Routes><LocationProbe /></MemoryRouter></Provider>);
+  const router = createMemoryRouter([{
+    element: <Outlet context={shellContext} />,
+    children: [
+      { path: '/tasks/:taskId', element: <><TaskDetailPage /><LocationProbe /></> },
+      { path: '/tasks', element: <><h1>All tasks</h1><LocationProbe /></> },
+      { path: '/dashboard', element: <><h1>Dashboard</h1><LocationProbe /></> }
+    ]
+  }], { initialEntries });
+  const view = render(<Provider store={store}><RouterProvider router={router} /></Provider>);
+  return { ...view, router };
 }
 
 function mutationResult(item: GlobalTaskItem, actionKind: 'task.update' | 'task.move', undoStatus: 'available' | 'not_reversible' = 'available') {
   return { item, receipt: { id: ACTION_ID, actionKind, undoStatus }, replayed: false };
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+const deletedTask: GlobalTaskDeleteResult = {
+  taskId: TASK_ID,
+  orderVersion: 2,
+  receipt: { id: ACTION_ID, actionKind: 'task.delete', undoStatus: 'not_reversible' },
+  replayed: false
+};
 
 describe('TaskDetailPage', () => {
   beforeEach(() => {
@@ -66,13 +93,20 @@ describe('TaskDetailPage', () => {
 
   afterEach(() => { globalThis.sessionStorage.clear(); });
 
-  it('loads a stable task, exposes the manual actions, and shows Inbox location', async () => {
+  it('loads an immediately editable task with a normalized no-op Save and shows Inbox location', async () => {
+    const user = userEvent.setup();
     renderTaskDetail();
     expect(await screen.findByRole('heading', { name: 'Send the proposal' })).toBeInTheDocument();
     expect(screen.getByText('Inbox', { selector: 'dd' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
+    expect(screen.getByLabelText(/Task title/)).toHaveValue('Send the proposal');
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('task-detail-save')).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Move' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Send the proposal' })).toHaveFocus();
+    await user.clear(screen.getByLabelText(/Task title/));
+    await user.type(screen.getByLabelText(/Task title/), '  Send the proposal  ');
+    expect(screen.getByTestId('task-detail-save')).toBeDisabled();
     expect(mocks.getGlobalTask).toHaveBeenCalledWith(TASK_ID, false);
   });
 
@@ -84,16 +118,107 @@ describe('TaskDetailPage', () => {
     mocks.getInboxTaskCount.mockRejectedValueOnce(new Error('Refresh unavailable'));
     renderTaskDetail();
     await screen.findByRole('heading', { name: 'Send the proposal' });
-    await user.click(screen.getByRole('button', { name: 'Edit' }));
-    await user.clear(screen.getByLabelText('Task title'));
-    await user.type(screen.getByLabelText('Task title'), 'Send the updated proposal');
-    await user.click(screen.getByTestId('project-task-editor-save'));
+    await user.clear(screen.getByLabelText(/Task title/));
+    await user.type(screen.getByLabelText(/Task title/), 'Send the updated proposal');
+    await user.click(screen.getByTestId('task-detail-save'));
 
     expect(await screen.findByTestId('task-action-receipt')).toHaveTextContent('Task changes saved');
     expect(screen.getByTestId('task-refresh-warning')).toHaveTextContent('some lists or counts may be stale');
     expect(screen.getByRole('heading', { name: 'Send the updated proposal' })).toBeInTheDocument();
     expect(mocks.updateGlobalTask).toHaveBeenCalledWith(TASK_ID, { title: 'Send the updated proposal' }, 1, 'csrf-token', expect.any(String));
     expect(mocks.getTaskActionReceipt).toHaveBeenCalledWith(ACTION_ID);
+  });
+
+  it('retries an uncertain save with the same idempotency key and clears dirty state on success', async () => {
+    const user = userEvent.setup();
+    const saved = { ...inboxItem, task: { ...inboxItem.task, title: 'Send the saved proposal', details: 'Preserved details', subtasks: [{ ...inboxItem.task.subtasks[0]!, title: 'Send it', completed: true }], version: 2 } };
+    mocks.getGlobalTask.mockResolvedValueOnce(inboxItem).mockResolvedValue(saved);
+    mocks.updateGlobalTask.mockRejectedValueOnce(new Error('Connection dropped')).mockResolvedValueOnce(mutationResult(saved, 'task.update'));
+    renderTaskDetail();
+    await screen.findByRole('heading', { name: 'Send the proposal' });
+    await user.clear(screen.getByLabelText(/Task title/));
+    await user.type(screen.getByLabelText(/Task title/), 'Send the saved proposal');
+    await user.clear(screen.getByLabelText('Details (optional)'));
+    await user.type(screen.getByLabelText('Details (optional)'), 'Preserved details');
+    await user.click(screen.getByRole('checkbox', { name: 'Mark Check dates complete' }));
+    await user.clear(screen.getByLabelText('Checklist item 1'));
+    await user.type(screen.getByLabelText('Checklist item 1'), 'Send it');
+    await user.click(screen.getByTestId('task-detail-save'));
+    expect(await screen.findByTestId('task-save-error')).toHaveTextContent('outcome is uncertain');
+    expect(screen.getByLabelText(/Task title/)).toHaveValue('Send the saved proposal');
+    expect(screen.getByLabelText('Details (optional)')).toHaveValue('Preserved details');
+    expect(screen.getByLabelText('Checklist item 1')).toHaveValue('Send it');
+    expect(screen.getByRole('checkbox', { name: 'Mark Send it complete' })).toBeChecked();
+    const firstKey = mocks.updateGlobalTask.mock.calls[0]?.[4];
+    await user.click(screen.getByRole('button', { name: 'Retry save' }));
+    expect(await screen.findByTestId('task-save-notice')).toHaveTextContent('Task saved.');
+    expect(mocks.updateGlobalTask).toHaveBeenCalledTimes(2);
+    expect(mocks.updateGlobalTask.mock.calls[1]?.[4]).toBe(firstKey);
+    expect(screen.getByTestId('task-detail-save')).toBeDisabled();
+  });
+
+  it('blocks dirty route exit once and lets the user keep or discard the draft', async () => {
+    const user = userEvent.setup();
+    renderTaskDetail();
+    await screen.findByRole('heading', { name: 'Send the proposal' });
+    await user.clear(screen.getByLabelText(/Task title/));
+    await user.type(screen.getByLabelText(/Task title/), 'Unsaved title');
+    await user.click(screen.getByTestId('task-detail-back-to-tasks'));
+    expect(await screen.findByTestId('task-dirty-exit-confirmation')).toBeVisible();
+    expect(screen.getByTestId('location')).toHaveTextContent(`/tasks/${TASK_ID}`);
+    await user.click(screen.getByTestId('task-dirty-exit-keep'));
+    expect(screen.queryByTestId('task-dirty-exit-confirmation')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Task title/)).toHaveValue('Unsaved title');
+
+    await user.click(screen.getByTestId('task-detail-back-to-tasks'));
+    await user.click(screen.getByTestId('task-dirty-exit-discard'));
+    expect(await screen.findByRole('heading', { name: 'All tasks' })).toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent('/tasks');
+  });
+
+  it('warns on hard exit only while draft is dirty and lets Cancel restore the saved fields', async () => {
+    const user = userEvent.setup();
+    renderTaskDetail();
+    await screen.findByRole('heading', { name: 'Send the proposal' });
+    const pristine = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(pristine);
+    expect(pristine.defaultPrevented).toBe(false);
+
+    await user.clear(screen.getByLabelText(/Task title/));
+    await user.type(screen.getByLabelText(/Task title/), 'Unsaved title');
+    const dirty = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(dirty);
+    expect(dirty.defaultPrevented).toBe(true);
+    await user.click(screen.getByTestId('task-detail-cancel'));
+    await user.click(screen.getByTestId('task-dirty-exit-discard'));
+    expect(screen.getByLabelText(/Task title/)).toHaveValue('Send the proposal');
+    expect(screen.getByTestId('task-detail-save')).toBeDisabled();
+  });
+
+  it('asks before sign-out and resolves the shell guard only after an explicit choice', async () => {
+    const user = userEvent.setup();
+    const requestExit = vi.fn<() => Promise<boolean>>();
+    const shellContext: AppShellOutletContext = {
+      registerHomeSummaryRefresh: vi.fn(),
+      registerTaskEditorExitGuard: (guard) => { if (guard) requestExit.mockImplementation(guard); }
+    };
+    renderTaskDetail(`/tasks/${TASK_ID}`, shellContext);
+    await screen.findByRole('heading', { name: 'Send the proposal' });
+    await waitFor(() => expect(requestExit.getMockImplementation()).toBeTypeOf('function'));
+    await user.clear(screen.getByLabelText(/Task title/));
+    await user.type(screen.getByLabelText(/Task title/), 'Keep private draft');
+
+    const keepRequest = requestExit();
+    expect(await screen.findByTestId('task-dirty-exit-confirmation')).toBeVisible();
+    await user.click(screen.getByTestId('task-dirty-exit-keep'));
+    expect(await keepRequest).toBe(false);
+    expect(screen.getByLabelText(/Task title/)).toHaveValue('Keep private draft');
+
+    const discardRequest = requestExit();
+    await screen.findByTestId('task-dirty-exit-confirmation');
+    await user.click(screen.getByTestId('task-dirty-exit-discard'));
+    expect(await discardRequest).toBe(true);
+    expect(screen.getByLabelText(/Task title/)).toHaveValue('Send the proposal');
   });
 
   it('keeps the user edit and rebases untouched fields after a stale-version conflict', async () => {
@@ -104,14 +229,15 @@ describe('TaskDetailPage', () => {
     mocks.updateGlobalTask.mockRejectedValueOnce(new ApiClientError(409, 'PROJECT_TASK_VERSION_CONFLICT', 'Changed')).mockResolvedValueOnce(mutationResult(saved, 'task.update'));
     renderTaskDetail();
     await screen.findByRole('heading', { name: 'Send the proposal' });
-    await user.click(screen.getByRole('button', { name: 'Edit' }));
-    await user.clear(screen.getByLabelText('Task title'));
-    await user.type(screen.getByLabelText('Task title'), 'My title');
-    await user.click(screen.getByTestId('project-task-editor-save'));
+    await user.clear(screen.getByLabelText(/Task title/));
+    await user.type(screen.getByLabelText(/Task title/), 'My title');
+    await user.click(screen.getByTestId('task-detail-save'));
     expect(await screen.findByTestId('project-task-version-conflict')).toBeVisible();
+    expect(screen.getByRole('region', { name: 'Your draft' })).toHaveTextContent('My title');
+    expect(screen.getByRole('region', { name: 'Latest saved' })).toHaveTextContent('Remote detail update');
     await user.click(screen.getByTestId('project-task-conflict-keep-editing'));
     expect(screen.getByLabelText('Details (optional)')).toHaveValue('Remote detail update');
-    await user.click(screen.getByTestId('project-task-editor-save'));
+    await user.click(screen.getByTestId('task-detail-save'));
 
     await screen.findByTestId('task-action-receipt');
     expect(mocks.updateGlobalTask).toHaveBeenLastCalledWith(TASK_ID, { title: 'My title' }, 2, 'csrf-token', expect.any(String));
@@ -160,10 +286,14 @@ describe('TaskDetailPage', () => {
     });
     renderTaskDetail();
     await screen.findByRole('heading', { name: 'Send the proposal' });
+    await user.clear(screen.getByLabelText(/Task title/));
+    await user.type(screen.getByLabelText(/Task title/), 'Unsaved title');
     await user.click(screen.getByRole('button', { name: 'Delete' }));
-    expect(screen.getByTestId('task-delete-confirmation')).toHaveTextContent('permanently deleted');
+    expect(screen.getByTestId('task-delete-confirmation')).toHaveTextContent('will be deleted');
+    expect(screen.getByTestId('task-delete-confirmation')).toHaveTextContent('Your unsaved edits will also be discarded.');
     await user.click(screen.getByTestId('task-delete-confirmation-cancel'));
     expect(mocks.deleteGlobalTask).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(/Task title/)).toHaveValue('Unsaved title');
 
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     await user.click(screen.getByTestId('task-delete-confirmation-confirm'));
@@ -174,6 +304,78 @@ describe('TaskDetailPage', () => {
     expect(mocks.deleteGlobalTask).toHaveBeenCalledTimes(2);
     expect(mocks.deleteGlobalTask.mock.calls[0]).toEqual([TASK_ID, 1, 'csrf-token', firstKey]);
     expect(mocks.deleteGlobalTask.mock.calls[1]?.[3]).toBe(firstKey);
+  });
+
+  it('blocks Back, SPA navigation, hard exit, and sign-out until pending delete succeeds', async () => {
+    const user = userEvent.setup();
+    const deletion = deferred<GlobalTaskDeleteResult>();
+    mocks.deleteGlobalTask.mockReturnValue(deletion.promise);
+    const requestSignOut = vi.fn<() => Promise<boolean>>();
+    const shellContext: AppShellOutletContext = {
+      registerHomeSummaryRefresh: vi.fn(),
+      registerTaskEditorExitGuard: (guard) => { if (guard) requestSignOut.mockImplementation(guard); }
+    };
+    const { router } = renderTaskDetail(`/tasks/${TASK_ID}`, shellContext, ['/tasks', `/tasks/${TASK_ID}`]);
+    await screen.findByRole('heading', { name: 'Send the proposal' });
+    await waitFor(() => expect(requestSignOut.getMockImplementation()).toBeTypeOf('function'));
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await user.click(screen.getByTestId('task-delete-confirmation-confirm'));
+
+    expect(screen.getByTestId('task-delete-confirmation-confirm')).toHaveTextContent('Deleting…');
+    expect(screen.getByTestId('task-delete-confirmation-confirm')).toBeDisabled();
+    expect(mocks.deleteGlobalTask).toHaveBeenCalledTimes(1);
+
+    await act(async () => { await router.navigate(-1); });
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(`/tasks/${TASK_ID}`));
+    await act(async () => { await router.navigate('/tasks'); });
+    expect(screen.getByTestId('location')).toHaveTextContent(`/tasks/${TASK_ID}`);
+    expect(screen.queryByTestId('task-dirty-exit-confirmation')).not.toBeInTheDocument();
+    expect(await requestSignOut()).toBe(false);
+
+    const hardExit = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(hardExit);
+    expect(hardExit.defaultPrevented).toBe(true);
+    expect(mocks.deleteGlobalTask).toHaveBeenCalledTimes(1);
+
+    await act(async () => { deletion.resolve(deletedTask); });
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/tasks'));
+    expect(mocks.deleteGlobalTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the draft when a deferred delete fails', async () => {
+    const user = userEvent.setup();
+    const deletion = deferred<GlobalTaskDeleteResult>();
+    mocks.deleteGlobalTask.mockReturnValue(deletion.promise);
+    renderTaskDetail();
+    await screen.findByRole('heading', { name: 'Send the proposal' });
+    await user.clear(screen.getByLabelText(/Task title/));
+    await user.type(screen.getByLabelText(/Task title/), 'Draft survives delete failure');
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await user.click(screen.getByTestId('task-delete-confirmation-confirm'));
+
+    await act(async () => { deletion.reject(new Error('Connection dropped')); });
+    expect(await screen.findByRole('alert')).toHaveTextContent('delete outcome is uncertain');
+    expect(screen.getByLabelText(/Task title/)).toHaveValue('Draft survives delete failure');
+    expect(screen.getByTestId('location')).toHaveTextContent(`/tasks/${TASK_ID}`);
+    expect(screen.getByTestId('task-delete-confirmation-confirm')).toHaveTextContent('Retry delete');
+    expect(mocks.deleteGlobalTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a late delete response override a route after the detail page is gone', async () => {
+    const user = userEvent.setup();
+    const deletion = deferred<GlobalTaskDeleteResult>();
+    mocks.deleteGlobalTask.mockReturnValue(deletion.promise);
+    const { router, unmount } = renderTaskDetail();
+    await screen.findByRole('heading', { name: 'Send the proposal' });
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await user.click(screen.getByTestId('task-delete-confirmation-confirm'));
+    expect(mocks.deleteGlobalTask).toHaveBeenCalledTimes(1);
+
+    unmount();
+    await router.navigate('/dashboard');
+    expect(router.state.location.pathname).toBe('/dashboard');
+    await act(async () => { deletion.resolve(deletedTask); });
+    expect(router.state.location.pathname).toBe('/dashboard');
   });
 
   it('reloads a receipt only when its server-confirmed target matches this task', async () => {

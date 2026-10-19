@@ -1,10 +1,10 @@
 import { useRef, useState } from 'react';
 
-import { TASK_IMPORTANCE_LABELS } from '@/entities/project-task';
 import type { ProjectTask, ProjectTaskDraft, ProjectTaskSuggestion } from '@/entities/project-task';
 import { validateProjectTaskDraft } from '@/features/project-tasks/model/project-task-validation';
 import type { ProjectTaskFieldErrors, TaskMetadataDraft } from '@/features/project-tasks/model/project-task-validation';
 import { TaskMetadataFields } from '@/features/project-tasks/ui/TaskMetadataFields';
+import { TaskVersionConflict } from '@/features/project-tasks/ui/TaskVersionConflict';
 import { AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogRoot, AlertDialogTitle, Button, DialogContent, DialogDescription, DialogRoot, DialogTitle, Input, Label, Textarea } from '@/shared/ui';
 
 export type TaskEditorTarget =
@@ -12,7 +12,7 @@ export type TaskEditorTarget =
   | { readonly kind: 'suggestion'; readonly suggestion: ProjectTaskSuggestion };
 
 export type TaskEditorSaveResult =
-  | { readonly status: 'saved' }
+  | { readonly status: 'saved'; readonly task?: ProjectTask }
   | { readonly status: 'conflict'; readonly latest: ProjectTask | null }
   | { readonly status: 'error'; readonly message: string; readonly fieldErrors?: ProjectTaskFieldErrors };
 
@@ -152,7 +152,7 @@ export function TaskEditorDialog({ target, saving, onOpenChange, onSave, onClose
             {target?.kind === 'suggestion' ? 'Review this assistant suggestion. It will stay separate until you add it to the project.' : 'Tasks are reminders for you. They do not run automatically.'}
           </DialogDescription>
           {sourceText ? <p className="project-task-editor-source">{sourceText}</p> : null}
-          {conflict !== undefined ? <TaskVersionConflict latest={conflict} onReload={reloadLatest} onKeepDraft={keepDraft} /> : null}
+          {conflict !== undefined ? <TaskVersionConflict latest={conflict} draft={{ title, details, metadata }} onReload={reloadLatest} onKeepDraft={keepDraft} /> : null}
           {saveNotice ? <p className="project-task-editor-notice" role="status">{saveNotice}</p> : null}
           {error ? <p className="project-task-editor-error" role="alert">{error}</p> : null}
           <form className="project-task-editor-form" onSubmit={(event) => { void submit(event); }} noValidate>
@@ -203,27 +203,6 @@ export function TaskEditorDialog({ target, saving, onOpenChange, onSave, onClose
         </AlertDialogContent>
       </AlertDialogRoot>
     </>
-  );
-}
-
-function TaskVersionConflict({ latest, onReload, onKeepDraft }: {
-  readonly latest: ProjectTask | null;
-  readonly onReload: () => void;
-  readonly onKeepDraft: () => void;
-}): React.JSX.Element {
-  if (!latest) {
-    return <section className="project-task-version-conflict" data-testid="project-task-version-conflict" role="alert"><p>This task is no longer available to edit. Your draft remains here so you can copy it.</p></section>;
-  }
-  return (
-    <section className="project-task-version-conflict" data-testid="project-task-version-conflict" role="alert">
-      <h3>This task changed elsewhere.</h3>
-      <p>Reload the latest version or keep your draft open. Review the current task before saving over it.</p>
-      <dl><dt>Latest title</dt><dd>{latest.title}</dd>{latest.details ? <><dt>Latest details</dt><dd>{latest.details}</dd></> : null}<dt>Importance</dt><dd>{TASK_IMPORTANCE_LABELS[latest.importance]}</dd><dt>Deadline</dt><dd>{latest.deadline ?? 'No deadline'}</dd>{latest.subtasks.length ? <><dt>Checklist</dt><dd>{latest.subtasks.map((subtask) => `${subtask.completed ? 'Completed' : 'Open'}: ${subtask.title}`).join('; ')}</dd></> : null}</dl>
-      <div className="project-task-conflict-actions">
-        <Button type="button" variant="secondary" data-testid="project-task-conflict-reload" onClick={onReload}>Reload latest</Button>
-        <Button type="button" variant="secondary" data-testid="project-task-conflict-keep-editing" onClick={onKeepDraft}>Keep editing my draft</Button>
-      </div>
-    </section>
   );
 }
 

@@ -1,0 +1,20 @@
+Task 5.3 implementation and test sources (paths relative to Personal-AI-Workspace):
+frontend/e2e/task-5-3-direct-task-editor.spec.ts
+frontend/src/app/styles/globals.css
+frontend/src/features/project-tasks/model/project-task-validation.spec.ts
+frontend/src/features/project-tasks/model/project-task-validation.ts
+frontend/src/features/project-tasks/ui/TaskConfirmationDialog.tsx
+frontend/src/features/project-tasks/ui/TaskEditorDialog.tsx
+frontend/src/features/project-tasks/ui/TaskMetadataFields.tsx
+frontend/src/features/project-tasks/ui/TaskVersionConflict.spec.tsx
+frontend/src/features/project-tasks/ui/TaskVersionConflict.tsx
+frontend/src/pages/task-detail/TaskDetailEditor.tsx
+frontend/src/pages/task-detail/TaskDetailPage.spec.tsx
+frontend/src/pages/task-detail/TaskDetailPage.tsx
+frontend/src/widgets/app-shell/AppShell.spec.tsx
+frontend/src/widgets/app-shell/AppShell.tsx
+
+Canonical tracker snapshot refreshed by root instruction (not implementation behavior):
+docs/hackathon-release/tasks.md
+
+Count: 14 task-owned implementation/test files plus 1 canonical tracker snapshot. No backend/API files changed. AppShell.tsx contains only the Task 5.3 outlet-context/sign-out preflight working hunk in this task's source scope.

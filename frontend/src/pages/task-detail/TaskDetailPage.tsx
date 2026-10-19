@@ -1,15 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link, useBeforeUnload, useBlocker, useLocation, useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router-dom';
 
 import { useAppDispatch, useAppSelector } from '@/app/store/hooks';
 import { loadProjects, selectProjectListStatus, selectProjects } from '@/entities/project';
 import type { GlobalTaskItem, ProjectTask, ProjectTaskDraft, TaskActionReceiptMetadata, TaskMutationKind } from '@/entities/project-task';
-import { deleteGlobalTask, formatTaskDeadline, getGlobalTask, getInboxTaskCount, getTaskActionReceipt, moveGlobalTask, ProjectTaskStatusLabel, TASK_IMPORTANCE_LABELS, undoTaskAction, updateGlobalTask } from '@/entities/project-task';
+import { deleteGlobalTask, getGlobalTask, getInboxTaskCount, getTaskActionReceipt, moveGlobalTask, ProjectTaskStatusLabel, undoTaskAction, updateGlobalTask } from '@/entities/project-task';
 import { selectCsrfToken, selectPrincipal } from '@/entities/user-session';
-import { TaskConfirmationDialog, TaskEditorDialog, type TaskEditorSaveResult } from '@/features/project-tasks';
+import { TaskConfirmationDialog, type TaskEditorSaveResult } from '@/features/project-tasks';
 import { clearTaskReceiptPointer, createTaskPatch, readTaskReceiptPointer, saveTaskReceiptPointer, TaskMoveDialog } from '@/features/task-actions';
 import { ApiClientError } from '@/shared/api';
-import { Alert, Button, ErrorState, Skeleton } from '@/shared/ui';
+import { Alert, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogRoot, AlertDialogTitle, Button, ErrorState, Skeleton } from '@/shared/ui';
+import { TaskDetailEditor } from '@/pages/task-detail/TaskDetailEditor';
+import type { AppShellOutletContext } from '@/widgets/app-shell';
 
 type DetailState = { readonly taskId: string; readonly includeArchived: boolean; readonly status: 'loading' | 'success' | 'error'; readonly item: GlobalTaskItem | null };
 type ActionError = { readonly message: string; readonly retryable: boolean };
@@ -17,6 +19,8 @@ type ActionError = { readonly message: string; readonly retryable: boolean };
 export function TaskDetailPage(): React.JSX.Element {
   const { taskId = '' } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const shellContext = useOutletContext<AppShellOutletContext | null>();
   const [searchParams, setSearchParams] = useSearchParams();
   const includeArchived = searchParams.get('includeArchived') === 'true';
   const dispatch = useAppDispatch();
@@ -26,8 +30,11 @@ export function TaskDetailPage(): React.JSX.Element {
   const csrfToken = useAppSelector(selectCsrfToken);
   const [state, setState] = useState<DetailState>({ taskId: '', includeArchived: false, status: 'loading', item: null });
   const [loadAttempt, setLoadAttempt] = useState(0);
-  const [editOpen, setEditOpen] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
+  const [editDirty, setEditDirty] = useState(false);
+  const [exitPromptOpen, setExitPromptOpen] = useState(false);
+  const [editResetNonce, setEditResetNonce] = useState(0);
+  const [taskUnavailable, setTaskUnavailable] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('');
   const [moveSaving, setMoveSaving] = useState(false);
@@ -44,11 +51,27 @@ export function TaskDetailPage(): React.JSX.Element {
   const [receiptReloadAttempt, setReceiptReloadAttempt] = useState(0);
   const [refreshWarning, setRefreshWarning] = useState(false);
   const [announcement, setAnnouncement] = useState('');
-  const editTriggerRef = useRef<HTMLButtonElement>(null);
+  const pageHeadingRef = useRef<HTMLHeadingElement>(null);
   const moveTriggerRef = useRef<HTMLButtonElement>(null);
+  const pageActiveRef = useRef(false);
+  const taskIdRef = useRef(taskId);
+  const locationPathRef = useRef(location.pathname);
+  const editDirtyRef = useRef(false);
+  const editSavingRef = useRef(false);
+  const deleteSavingRef = useRef(false);
+  const signOutResolverRef = useRef<((approved: boolean) => void) | null>(null);
+  const signOutPromiseRef = useRef<Promise<boolean> | null>(null);
   const moveIntent = useRef<{ readonly taskId: string; readonly expectedVersion: number; readonly workspaceId: string | null; readonly key: string } | null>(null);
   const deleteIntent = useRef<{ readonly taskId: string; readonly expectedVersion: number; readonly key: string } | null>(null);
   const undoIntent = useRef<{ readonly actionId: string; readonly key: string } | null>(null);
+
+  taskIdRef.current = taskId;
+  locationPathRef.current = location.pathname;
+
+  useEffect(() => {
+    pageActiveRef.current = true;
+    return () => { pageActiveRef.current = false; };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -109,6 +132,66 @@ export function TaskDetailPage(): React.JSX.Element {
   const currentLocation = item?.workspace?.name ?? 'Inbox';
   const visibleReceipt = receiptOwnerId === ownerId && receipt?.targetKind === 'task' && receipt.targetId === taskId ? receipt : null;
   const canMutate = task !== null && item?.workspace?.status !== 'archived';
+  const blocker = useBlocker(({ currentLocation, nextLocation }) => {
+    if (currentLocation.pathname === nextLocation.pathname && currentLocation.search === nextLocation.search && currentLocation.hash === nextLocation.hash) return false;
+    return editDirtyRef.current || editSavingRef.current || deleteSavingRef.current;
+  });
+
+  useEffect(() => {
+    if (deleteSavingRef.current && blocker.state === 'blocked') blocker.reset();
+  }, [blocker]);
+
+  const requestSignOut = useCallback((): Promise<boolean> => {
+    if (deleteSavingRef.current) return Promise.resolve(false);
+    if (!editDirtyRef.current && !editSavingRef.current) return Promise.resolve(true);
+    if (signOutPromiseRef.current) return signOutPromiseRef.current;
+    setExitPromptOpen(true);
+    signOutPromiseRef.current = new Promise<boolean>((resolve) => { signOutResolverRef.current = resolve; });
+    return signOutPromiseRef.current;
+  }, []);
+
+  useBeforeUnload((event) => {
+    if (editDirtyRef.current || editSavingRef.current || deleteSavingRef.current) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  });
+
+  useEffect(() => {
+    if (current?.status === 'success') pageHeadingRef.current?.focus();
+  }, [taskId, current?.status]);
+
+  useEffect(() => {
+    editDirtyRef.current = editDirty;
+  }, [editDirty]);
+
+  useEffect(() => {
+    editSavingRef.current = editSaving;
+  }, [editSaving]);
+
+  useEffect(() => {
+    const register = shellContext?.registerTaskEditorExitGuard;
+    register?.(requestSignOut);
+    return () => {
+      register?.(null);
+      const resolveSignOut = signOutResolverRef.current;
+      signOutResolverRef.current = null;
+      signOutPromiseRef.current = null;
+      resolveSignOut?.(false);
+    };
+  }, [shellContext?.registerTaskEditorExitGuard, requestSignOut]);
+
+  useEffect(() => {
+    setTaskUnavailable(false);
+    editDirtyRef.current = false;
+    setEditDirty(false);
+    setExitPromptOpen(false);
+  }, [taskId]);
+
+  function onEditorDirtyChange(dirty: boolean): void {
+    editDirtyRef.current = dirty;
+    setEditDirty(dirty);
+  }
 
   function setCanonicalItem(nextItem: GlobalTaskItem): void {
     const historical = nextItem.workspace?.status === 'archived';
@@ -125,8 +208,10 @@ export function TaskDetailPage(): React.JSX.Element {
     try {
       const latest = await getGlobalTask(taskId, true);
       setCanonicalItem(latest);
+      setTaskUnavailable(false);
       return latest;
-    } catch {
+    } catch (error: unknown) {
+      if (error instanceof ApiClientError && error.statusCode === 404) setTaskUnavailable(true);
       return null;
     }
   }
@@ -172,13 +257,19 @@ export function TaskDetailPage(): React.JSX.Element {
   async function saveTask(draft: ProjectTaskDraft, idempotencyKey: string, expectedVersion: number | null, baseline: ProjectTask | null): Promise<TaskEditorSaveResult> {
     if (!task || !csrfToken || !baseline || expectedVersion === null) return { status: 'error', message: 'Task editing is not available right now.' };
     const patch = createTaskPatch(baseline, draft);
-    if (Object.keys(patch).length === 0) return { status: 'saved' };
+    if (Object.keys(patch).length === 0) return { status: 'saved', task: baseline };
+    editSavingRef.current = true;
     setEditSaving(true);
     try {
       const result = await updateGlobalTask(taskId, patch, expectedVersion, csrfToken, idempotencyKey);
       applyCommittedMutation(result, 'task.update', 'Task changes saved.');
-      return { status: 'saved' };
+      setTaskUnavailable(false);
+      return { status: 'saved', task: result.item.task };
     } catch (error: unknown) {
+      if (error instanceof ApiClientError && error.statusCode === 404) {
+        setTaskUnavailable(true);
+        return { status: 'conflict', latest: null };
+      }
       if (isTaskConflict(error)) {
         const latest = await reloadLatest();
         if (latest) return { status: 'conflict', latest: latest.task };
@@ -186,8 +277,37 @@ export function TaskDetailPage(): React.JSX.Element {
       }
       return { status: 'error', message: isUncertain(error) ? 'The edit outcome is uncertain. Retry to safely check the same edit.' : 'The task could not be updated. Review the fields and try again.' };
     } finally {
+      editSavingRef.current = false;
       setEditSaving(false);
     }
+  }
+
+  function discardEditorDraft(): void {
+    if (editSaving) return;
+    setEditResetNonce((value) => value + 1);
+    editDirtyRef.current = false;
+    setEditDirty(false);
+    setExitPromptOpen(false);
+    const resolveSignOut = signOutResolverRef.current;
+    if (resolveSignOut) {
+      signOutResolverRef.current = null;
+      signOutPromiseRef.current = null;
+      resolveSignOut(true);
+      return;
+    }
+    if (blocker.state === 'blocked') {
+      blocker.proceed();
+      return;
+    }
+  }
+
+  function keepEditorDraft(): void {
+    setExitPromptOpen(false);
+    if (blocker.state === 'blocked') blocker.reset();
+    const resolveSignOut = signOutResolverRef.current;
+    signOutResolverRef.current = null;
+    signOutPromiseRef.current = null;
+    resolveSignOut?.(false);
   }
 
   function openMove(): void {
@@ -234,28 +354,37 @@ export function TaskDetailPage(): React.JSX.Element {
   }
 
   async function deleteTask(): Promise<void> {
-    if (!task || !csrfToken) return;
+    if (!task || !csrfToken || deleteSavingRef.current) return;
+    const targetTaskId = task.id;
+    const targetLocationPath = location.pathname;
     const intent = deleteIntent.current?.taskId === task.id && deleteIntent.current.expectedVersion === task.version
       ? deleteIntent.current
       : { taskId: task.id, expectedVersion: task.version, key: crypto.randomUUID() };
     deleteIntent.current = intent;
+    deleteSavingRef.current = true;
     setDeleteSaving(true);
     setDeleteError(null);
     try {
-      await deleteGlobalTask(task.id, intent.expectedVersion, csrfToken, intent.key);
+      await deleteGlobalTask(targetTaskId, intent.expectedVersion, csrfToken, intent.key);
       deleteIntent.current = null;
-      if (ownerId) clearTaskReceiptPointer(ownerId, task.id);
+      if (ownerId) clearTaskReceiptPointer(ownerId, targetTaskId);
+      if (!pageActiveRef.current || taskIdRef.current !== targetTaskId || locationPathRef.current !== targetLocationPath) return;
+      editDirtyRef.current = false;
+      setEditDirty(false);
       setDeleteOpen(false);
       navigate(path, { replace: true });
     } catch (error: unknown) {
+      if (!pageActiveRef.current || taskIdRef.current !== targetTaskId || locationPathRef.current !== targetLocationPath) return;
       if (isTaskConflict(error)) {
         deleteIntent.current = null;
         const latest = await reloadLatest();
         if (error instanceof ApiClientError && error.statusCode === 404 && !latest) {
-          setDeleteOpen(false);
-          navigate(path, { replace: true });
-        } else {
+          setTaskUnavailable(true);
+          setDeleteError({ message: 'This task is no longer available. Your unsaved draft is still here.', retryable: false });
+        } else if (latest) {
           setDeleteError({ message: 'This task changed elsewhere. The latest version is loaded; review it before deleting.', retryable: false });
+        } else {
+          setDeleteError({ message: 'The latest task could not be loaded. Your draft is still here; try again.', retryable: true });
         }
       } else if (isUncertain(error)) {
         setDeleteError({ message: 'The delete outcome is uncertain. Retry to safely check the same request.', retryable: true });
@@ -264,7 +393,8 @@ export function TaskDetailPage(): React.JSX.Element {
         setDeleteError({ message: 'The task could not be deleted. Review its latest state and try again.', retryable: false });
       }
     } finally {
-      setDeleteSaving(false);
+      deleteSavingRef.current = false;
+      if (pageActiveRef.current) setDeleteSaving(false);
     }
   }
 
@@ -318,15 +448,16 @@ export function TaskDetailPage(): React.JSX.Element {
   const visibleTask = visibleItem.task;
   const historical = visibleItem.workspace?.status === 'archived';
   return <article className="task-detail-page" data-testid="task-detail-page">
-    <header className="task-detail-header"><div><p className="product-label">{visibleItem.workspace?.name ?? 'Inbox'}{visibleItem.workspace?.status === 'archived' ? ' · Archived workspace' : ''}</p><h1>{visibleTask.title}</h1></div><Link className="button button-secondary" data-testid="task-detail-back-to-tasks" to={path}>Back to tasks</Link></header>
+    <header className="task-detail-header"><div><p className="product-label">{visibleItem.workspace?.name ?? 'Inbox'}{visibleItem.workspace?.status === 'archived' ? ' · Archived workspace' : ''}</p><h1 ref={pageHeadingRef} tabIndex={-1}>{visibleTask.title}</h1></div></header>
     {visibleItem.workspace?.status === 'archived' ? <Alert tone="warning" data-testid="task-detail-archived-workspace">This task belongs to an archived workspace and is read-only here.</Alert> : null}
-    {canMutate ? <div className="task-detail-actions" aria-label="Task actions">
-      <Button ref={editTriggerRef} type="button" variant="secondary" data-testid="task-edit-open" onClick={() => { setEditOpen(true); }}>Edit</Button>
-      <Button ref={moveTriggerRef} type="button" variant="secondary" data-testid="task-move-open" onClick={openMove}>Move</Button>
-      <Button type="button" variant="destructive" data-testid="task-delete-open" disabled={deleteSaving || !csrfToken} onClick={() => { setDeleteError(null); setDeleteOpen(true); }}>
-        Delete
-      </Button>
-    </div> : null}
+    {canMutate ? <TaskDetailEditor key={`${ownerId ?? 'anonymous'}:${visibleTask.id}`} task={visibleTask} saving={editSaving} resetNonce={editResetNonce} unavailable={taskUnavailable} onSave={saveTask} onDirtyChange={onEditorDirtyChange} onCancelRequest={() => { setExitPromptOpen(true); }} onTaskUnavailable={() => { setTaskUnavailable(true); }} /> : null}
+    <dl className="task-detail-fields">
+      <div><dt>Status</dt><dd><ProjectTaskStatusLabel status={visibleTask.status} /></dd></div>
+      <div><dt>Location</dt><dd>{visibleItem.workspace ? `${visibleItem.workspace.name}${visibleItem.workspace.status === 'archived' ? ' (archived workspace)' : ''}` : 'Inbox'}</dd></div>
+    </dl>
+    {!canMutate && visibleTask.details ? <section aria-labelledby="task-detail-details-heading"><h2 id="task-detail-details-heading">Details</h2><p className="task-detail-copy">{visibleTask.details}</p></section> : null}
+    {!canMutate && visibleTask.subtasks.length ? <section aria-labelledby="task-detail-checklist-heading"><h2 id="task-detail-checklist-heading">Checklist</h2><ul className="task-detail-checklist">{visibleTask.subtasks.map((subtask) => <li key={subtask.id}><span>{subtask.completed ? 'Completed' : 'Open'}</span> {subtask.title}</li>)}</ul></section> : null}
+    <section className="task-detail-source" data-testid="task-detail-source"><h2>Source</h2><p>{visibleTask.source.label}</p>{visibleTask.source.kind === 'assistant_suggestion' ? <p>Accepted {new Date(visibleTask.source.acceptedAt).toLocaleString()}</p> : null}</section>
     {announcement ? <p role="status" aria-live="polite" data-testid="task-action-announcement">{announcement}</p> : null}
     {refreshWarning ? <Alert tone="warning" data-testid="task-refresh-warning" role="alert">The task change was saved, but some lists or counts may be stale. <Button type="button" variant="secondary" data-testid="task-refresh-views" onClick={() => { void refreshCommittedViews(); }}>Refresh views</Button></Alert> : null}
     {visibleReceipt ? <section className="task-action-receipt" aria-labelledby="task-action-receipt-heading" data-testid="task-action-receipt">
@@ -341,19 +472,25 @@ export function TaskDetailPage(): React.JSX.Element {
       </Alert>
       {undoError ? <Alert tone="error" role="alert" data-testid="task-undo-error"><p>{undoError.message}</p>{undoError.retryable ? <Button type="button" variant="secondary" data-testid="task-undo-refresh-receipt" onClick={() => { setReceiptReloadAttempt((value) => value + 1); }}>Refresh receipt</Button> : null}</Alert> : null}
     </section> : receiptLoading ? <p role="status" data-testid="task-receipt-loading">Checking saved receipt…</p> : receiptLoadError ? <Alert tone="warning" data-testid="task-receipt-load-error">The saved task is still available, but its receipt could not be checked. <Button type="button" variant="secondary" data-testid="task-receipt-refresh" onClick={() => { setReceiptReloadAttempt((value) => value + 1); }}>Refresh receipt</Button></Alert> : null}
-    <dl className="task-detail-fields">
-      <div><dt>Status</dt><dd><ProjectTaskStatusLabel status={visibleTask.status} /></dd></div>
-      <div><dt>Importance</dt><dd>{TASK_IMPORTANCE_LABELS[visibleTask.importance]}</dd></div>
-      <div><dt>Deadline</dt><dd>{visibleTask.deadline ? formatTaskDeadline(visibleTask.deadline) : 'No deadline'}</dd></div>
-      <div><dt>Location</dt><dd>{visibleItem.workspace ? `${visibleItem.workspace.name}${visibleItem.workspace.status === 'archived' ? ' (archived workspace)' : ''}` : 'Inbox'}</dd></div>
-    </dl>
-    {visibleTask.details ? <section aria-labelledby="task-detail-details-heading"><h2 id="task-detail-details-heading">Details</h2><p className="task-detail-copy">{visibleTask.details}</p></section> : null}
-    {visibleTask.subtasks.length ? <section aria-labelledby="task-detail-checklist-heading"><h2 id="task-detail-checklist-heading">Checklist</h2><ul className="task-detail-checklist">{visibleTask.subtasks.map((subtask) => <li key={subtask.id}><span>{subtask.completed ? 'Completed' : 'Open'}</span> {subtask.title}</li>)}</ul></section> : null}
-    <TaskConfirmationDialog open={deleteOpen} title="Delete this task?" description={`“${visibleTask.title}” and its checklist will be permanently deleted. This cannot be undone.`}
+    {canMutate ? <div className="task-detail-actions" aria-label="Task actions">
+      <Button ref={moveTriggerRef} type="button" variant="secondary" data-testid="task-move-open" aria-describedby={editDirty ? 'task-move-disabled-reason' : undefined} disabled={editDirty || editSaving} title={editDirty ? 'Save or cancel edits before moving this task' : undefined} onClick={openMove}>Move</Button>
+      <Button type="button" variant="destructive" data-testid="task-delete-open" disabled={deleteSaving || editSaving || taskUnavailable || !csrfToken} onClick={() => { setDeleteError(null); setDeleteOpen(true); }}>
+        Delete
+      </Button>
+    </div> : null}
+    {canMutate && editDirty ? <p id="task-move-disabled-reason" className="supporting-copy">Save or cancel edits before moving this task.</p> : null}
+    <Link className="button button-secondary" data-testid="task-detail-back-to-tasks" to={path}>Back to tasks</Link>
+    <TaskConfirmationDialog open={deleteOpen} title="Delete task?" description={`“${visibleTask.title}” and its checklist will be deleted. This cannot be undone.${editDirty ? ' Your unsaved edits will also be discarded.' : ''}`}
+      pendingLabel="Deleting…"
       confirmLabel={deleteError?.retryable ? 'Retry delete' : 'Delete task'} pending={deleteSaving} testId="task-delete-confirmation" error={deleteError?.message}
       onOpenChange={(open) => { if (!open && !deleteSaving) { setDeleteOpen(false); setDeleteError(null); } }} onConfirm={() => { void deleteTask(); }} />
-    {editOpen ? <TaskEditorDialog key={visibleTask.id} target={{ kind: 'task', task: visibleTask }} saving={editSaving} onOpenChange={setEditOpen} onSave={saveTask}
-      onCloseAutoFocus={(event) => { event.preventDefault(); editTriggerRef.current?.focus(); }} /> : null}
+    <AlertDialogRoot open={(blocker.state === 'blocked' && !deleteSavingRef.current) || exitPromptOpen} onOpenChange={(open) => { if (!open && !editSaving && !deleteSavingRef.current) keepEditorDraft(); }}>
+      <AlertDialogContent data-testid="task-dirty-exit-confirmation" aria-describedby="task-dirty-exit-description">
+        <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
+        <AlertDialogDescription id="task-dirty-exit-description">Your changes to this task have not been saved.</AlertDialogDescription>
+        <div className="dialog-actions"><AlertDialogCancel asChild><Button type="button" variant="secondary" data-testid="task-dirty-exit-keep" disabled={editSaving} onClick={keepEditorDraft}>Keep editing</Button></AlertDialogCancel><Button type="button" variant="destructive" data-testid="task-dirty-exit-discard" disabled={editSaving} onClick={discardEditorDraft}>Discard changes</Button></div>
+      </AlertDialogContent>
+    </AlertDialogRoot>
     <TaskMoveDialog open={moveOpen} currentLocation={currentLocation} currentWorkspaceId={visibleTask.projectId} projects={projects} projectListStatus={projectListStatus}
       selectedWorkspaceId={selectedWorkspaceId} saving={moveSaving} error={moveError?.message ?? null} retryable={moveError?.retryable ?? false}
       onCloseAutoFocus={(event) => { event.preventDefault(); moveTriggerRef.current?.focus(); }}
