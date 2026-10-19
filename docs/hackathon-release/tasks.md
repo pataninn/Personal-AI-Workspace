@@ -5,7 +5,7 @@
 **Last Updated:** 2026-10-19
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 4.1, 5.1, 5.2, and 6.1 delivered. Task3.5 demo cleanup, Task4.2 direct Home actions and Task6.2 persisted skills are in progress; Task6.1 memory/context is delivered at `633cbeecd934ddd0e1042441158f91ca5e98435e`.
+**Status:** Execution active. Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 4.1, 4.2, 5.1, 5.2, and 6.1 delivered. Task3.5 demo cleanup repair, Task4.3 canonical deletion and Task6.2 persisted skills are in progress; Task4.2 direct Home actions are delivered at `00e40200ad40ddda73605295b151f42e90466690`; Task6.1 memory/context is delivered at `633cbeecd934ddd0e1042441158f91ca5e98435e`.
 
 **Current execution boundary (user update):** Complete, independently verify, and commit every task through Task7.3, then stop for the user to review the application. Tasks8.1/8.2 deployment and subsequent release acceptance remain planned and must not begin before that review.
 
@@ -333,22 +333,22 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-3-5-demo-expiry/artifacts/`
-- `Current status:` Cleanup implementation and migration0034 exercised by guarded PostgreSQL1suite2tests PASS: expired-owner finalization, status-only replay, preserved regular/admin/showcase/counters, pending root-effect barrier, persisted restart/resume and exact managed child removal. Same-process preguard and fresh-process postguard verified base identity and zero target DBs. Developer Ready: focused3suites15tests and backend typecheck PASS, exact manifest/self-review/validation receipt complete. Independent QA cycle1 found a High blocker: settled credit usage owner FK prevents final demo-user deletion; current PG fixture omits this normal usage case. Repair/regression required before closure; report being finalized.
+- `Current status:` Cleanup implementation and migration0034 exercised by guarded PostgreSQL1suite2tests PASS: expired-owner finalization, status-only replay, preserved regular/admin/showcase/counters, pending root-effect barrier, persisted restart/resume and exact managed child removal. Same-process preguard and fresh-process postguard verified base identity and zero target DBs. Developer Ready: focused3suites15tests and backend typecheck PASS, exact manifest/self-review/validation receipt complete. Independent QA cycle1 found a High blocker: settled credit usage owner FK prevents final demo-user deletion; current PG fixture omits this normal usage case. Official QA cycle1 FAIL recorded; architect approved terminal ledger retention via nullable owner columns and explicit locked detach, preserved FK actions, no late policy-lock inversion, null-owner terminal replay handling. Developer repair Ready for QA2: retained terminal ledger rows with detached owners, inflight/unknown barriers, null-owner replay handling. Focused15unit tests and guarded PostgreSQL3/3 PASS with migration0034 and fresh separate identity/zero-target postguard. Current shared backend typecheck fails only on concurrent4.3 WIP; not claimed PASS. Independent QA cycle2 PASS: focused15tests rerun, guarded PG3 reviewed and credit retention/lock/replay repair verified; cycle1 history retained. Required local task commit pending; shared4.3 typecheck limitation remains explicit.
 
 **Description:** Use a durable PostgreSQL-backed cleanup worker with ownership manifests and retryable phases. Expiry denies access immediately, independently of deletion lag. Include expired pending and failed admission owners from Task3.3: key replay never resumes bootstrap or recovers a session; durable restartable cleanup is their recovery path.
 
 **Subtasks:**
 
-- [ ] Cancel demo jobs/runs and recheck expiry before every promotion/download; handle late callbacks.
-- [ ] Purge owned DB content, roots, recovery copies, exports, sessions, and sandbox resources with resolved-path checks.
-- [ ] Retry partial failures; record cleanup lag and backup/provider retention limitations; exclude published showcases and all regular users.
+- [x] Cancel demo jobs/runs and recheck expiry before every promotion/download; handle late callbacks.
+- [x] Purge owned DB content, roots, recovery copies, exports, sessions, and sandbox resources with resolved-path checks.
+- [x] Retry partial failures; record cleanup lag and backup/provider retention limitations; exclude published showcases and all regular users.
 
 **Definition of Done:**
 
-- [ ] Expiry/run races cannot write after expiry; worker restart completes partial cleanup; fixture tests prove regular and showcase data are untouched.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
-- [ ] Developer-owned contract implemented and verified before task closure.
+- [x] Expiry/run races cannot write after expiry; worker restart completes partial cleanup; fixture tests prove regular and showcase data are untouched.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Developer-owned contract implemented and verified before task closure.
 
 **Upstream Outputs Needed:** Architecture sections 6, 11; completed dependency outputs.
 
@@ -436,7 +436,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 4.2 — Execute Home task and workspace actions through canonical use cases
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** developer, tester
 **Depends on:** 4.1
 **Risk:** High: duplicate mutations and misleading provenance
@@ -451,7 +451,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-4-2-direct-home-actions/artifacts/`
-- `Current status:` Developer Ready for independent QA: provenance DTO/OpenAPI/UI and architect-approved exact stale-version conflict result implemented. Focused Jest5suites31tests, bridgePython23tests, Vitest4files24tests, Playwright3tests, backend/frontend typechecks and preview build PASS. Initial browser2/3 drawer-after-reload assumption retained; corrected test reopens Ask and final3/3 passes. Canonical summary/self-review/exact manifest and safe synthetic PNG/JSON present. Independent QA PASS: reran31Jest/23Python/24Vitest, reviewed final3browser and unchanged prior guarded PG transaction/replay proof; Low live-status refinement logged. Required task commit pending. No live provider claim.
+- `Current status:` Developer Ready for independent QA: provenance DTO/OpenAPI/UI and architect-approved exact stale-version conflict result implemented. Focused Jest5suites31tests, bridgePython23tests, Vitest4files24tests, Playwright3tests, backend/frontend typechecks and preview build PASS. Initial browser2/3 drawer-after-reload assumption retained; corrected test reopens Ask and final3/3 passes. Canonical summary/self-review/exact manifest and safe synthetic PNG/JSON present. Independent QA PASS: reran31Jest/23Python/24Vitest, reviewed final3browser and unchanged prior guarded PG transaction/replay proof; Low live-status refinement logged. Delivered local commit `00e40200ad40ddda73605295b151f42e90466690`; root verified exact25source plus12safe docs=37paths, receipt-only OpenAPI hunk, correct feature branch, empty index and preserved protected/foreign changes. No push. No live provider claim.
 
 **Description:** Replace routine proposal acceptance with direct typed tool execution for user-requested in-scope actions, preserving receipts and version checks. Architecture preflight is complete in `task-4-2-direct-home-actions/architecture-preflight.md`; developer contract/source-map and task-scoped receipt UI spec are complete, and developer_direct_actions_luna now owns the refreshed contract and application implementation. Tasks4.1,3.4,5.1 are delivered; memory prompt and demo cleanup files have separate owners. No runtime evidence claimed yet.
 
@@ -474,7 +474,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 4.3 — Unify task deletion and remove archive behavior
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** developer, tester
 **Depends on:** 4.2
 **Risk:** High: deletion, provenance, and historical data
@@ -489,7 +489,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-4-3-task-delete-migration/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Developer contract/source map complete after delivered4.2; implementation is active across canonical deletion, archive callers and migration0036. Reuse existing Task1.1 and prepared Task5.3 delete-confirmation design; additive migration0036 reserved after skills0035. Preserve archived content and rollback mapping, canonical deletion/replay/undo safety. No runtime proof claimed yet.
 
 **Description:** Unify assigned/unassigned task deletion and remove archive across public schemas, tool commands, filters, and domain transitions.
 
@@ -717,7 +717,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-6-2-skill-definitions/artifacts/`
-- `Current status:` Developer-owned contract/source map complete; CRUD/templates/storage implementation active after delivered4.1/6.1. Additive migration0035 reserved. Narrow architecture preflight complete: immutable invocation claim, trusted Home turn binding before startup, replay without duplicate start and declared-tool/current-policy intersection. Invocation implementation proceeds after coordinated shared-source handoff. Demo cleanup0034 and direct-action runtime/result files have separate owners. No runtime evidence claimed yet.
+- `Current status:` Developer-owned contract/source map complete; CRUD/templates/schema/accounting implemented with8focused Jest tests and an earlier backend typecheck PASS. Home turn binding, invocation endpoint and per-tool ceiling checks are implemented; router dependency test fixed and missing-source binding/replay regressions added:4skills suites12tests plus3repository/Home suites21tests PASS. Current full types and handler suite encounter concurrent4.3 archive-type WIP; no current whole-backend typecheck PASS claimed. Additive migration0035 reserved. Narrow architecture preflight complete: immutable invocation claim, trusted Home turn binding before startup, replay without duplicate start and declared-tool/current-policy intersection. Invocation implementation proceeds after coordinated shared-source handoff. Architect-approved FK correction now preserves the invocation marker after workspace deletion and denies missing-source tools/replay. Publication/copy integration, final wiring and guardedPG proof remain before QA Ready. Demo cleanup0034 and direct-action runtime/result files have separate owners. No runtime evidence claimed yet.
 
 **Description:** Add account/workspace skill definitions and versioned invocation while reusing bundled runtime skills and existing AI orchestration.
 
@@ -1095,11 +1095,11 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | 3.2 — Enforce account storage limits on every persistent write | `[x]` | PASS; `b5d40315680b73afac3e04c1a52b8ceaba83a1bf` |
 | 3.3 — Provision private one-click demo identities | `[x]` | PASS; `3f4adabbe22a8303406cea9e4441b3e987f605d3` |
 | 3.4 — Publish a protected showcase and open editable demo copies | `[x]` | PASS; `ae188ba9d39264ff4b981dc745b7a1daafd70c20` |
-| 3.5 — Expire and clean up demos safely | `[~]` | QA cycle1 High blocker: settled usage FK prevents owner purge; repair pending |
+| 3.5 — Expire and clean up demos safely | `[~]` | Independent QA2 PASS;15units/PG3; task commit pending |
 | 3.6 — Build account, quota, and demo administration UI | `[ ]` | Pending |
 | 4.1 — Replace per-turn consent with workspace-scoped automatic execution | `[x]` | PASS; `4f9ad9bddf227f53b7c55db237cc4a9a8d716846`; accepted Low viewport/test debt |
-| 4.2 — Execute Home task and workspace actions through canonical use cases | `[~]` | Independent QA PASS; task commit pending |
-| 4.3 — Unify task deletion and remove archive behavior | `[ ]` | Pending |
+| 4.2 — Execute Home task and workspace actions through canonical use cases | `[x]` | PASS; `00e40200ad40ddda73605295b151f42e90466690`; Low live-status refinement logged |
+| 4.3 — Unify task deletion and remove archive behavior | `[~]` | Canonical delete contract/implementation starts; migration0036 reserved |
 | 5.1 — Move Home assistant into a floating Ask panel | `[x]` | PASS; `1d22db9fe9f3fb67ac05eddf199952dadf2a5fb3` |
 | 5.2 — Replace Inbox emphasis with Add task and View all | `[x]` | PASS; `fdb200dc23eb83a1047f138ccdd8f7316f3855b1` |
 | 5.3 — Open task details editable with Save and dirty-exit protection | `[ ]` | Pending |
@@ -1118,7 +1118,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Blocked Items and implementation-time inputs
 
-Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 4.1, 5.1, 5.2, and 6.1 are delivered. Task3.5 demo cleanup, Task4.2 direct Home actions and Task6.2 persisted skills are in progress; Task6.1 memory/context is delivered at `633cbeecd934ddd0e1042441158f91ca5e98435e`. Current subagents use GPT-6 Luna with maximum reasoning. Existing work is preserved; model availability must be reported honestly. Dependency ordering above applies.
+Tasks 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 4.1, 4.2, 5.1, 5.2, and 6.1 are delivered. Task3.5 demo cleanup repair, Task4.3 canonical deletion and Task6.2 persisted skills are in progress; Task4.2 direct Home actions are delivered at `00e40200ad40ddda73605295b151f42e90466690`; Task6.1 memory/context is delivered at `633cbeecd934ddd0e1042441158f91ca5e98435e`. Current subagents use GPT-6 Luna with maximum reasoning. Existing work is preserved; model availability must be reported honestly. Dependency ordering above applies.
 
 - Task 8.1/8.2 needs the real deployment host/domain and DNS/certificate access. Do not claim the local self-signed setup fixes public browser trust.
 - Credit enforcement requires actual provider pricing and a way to bound/meter all Hermes calls. Public AI access stays disabled if that cannot be established.

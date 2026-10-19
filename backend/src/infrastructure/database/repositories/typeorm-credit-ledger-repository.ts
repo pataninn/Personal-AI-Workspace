@@ -38,7 +38,7 @@ interface PolicyRow {
 
 interface ReservationRow {
   id: string;
-  owner_id: string;
+  owner_id: string | null;
   account_kind: 'regular' | 'demo';
   source_kind: CreditCallSourceKind;
   source_id: string;
@@ -177,6 +177,10 @@ export class TypeOrmCreditLedgerRepository implements ICreditLedgerRepository {
       await this.lockPolicy(runner);
       const metadata = await this.findReservation(runner, command.reservationId, false);
       if (!metadata) throw new Error('The provider call reservation does not exist.');
+      if (metadata.status === 'settled' || metadata.status === 'over_bound') {
+        return { outcome: 'replayed', chargedUnits: BigInt(metadata.charged_units ?? '0') };
+      }
+      if (metadata.owner_id === null) throw new Error('A detached provider reservation cannot be settled.');
       await this.lockUser(runner, metadata.owner_id);
       await this.lockLimits(runner, metadata.owner_id);
       await this.ensureAccountTotal(runner, metadata.owner_id);
@@ -188,6 +192,7 @@ export class TypeOrmCreditLedgerRepository implements ICreditLedgerRepository {
       }
       const reservation = await this.findReservation(runner, command.reservationId, true);
       if (!reservation) throw new Error('The provider call reservation does not exist.');
+      if (reservation.owner_id === null) throw new Error('The provider call owner was detached before settlement.');
       if (reservation.status === 'settled' || reservation.status === 'over_bound') {
         return { outcome: 'replayed', chargedUnits: BigInt(reservation.charged_units ?? '0') };
       }
@@ -270,6 +275,7 @@ export class TypeOrmCreditLedgerRepository implements ICreditLedgerRepository {
       const reservation = await this.lockReservationScope(runner, reservationId);
       if (reservation.status === 'released') return;
       if (reservation.status !== 'in_flight') throw new Error('Only a provider call known not to have been sent can be released.');
+      if (reservation.owner_id === null) throw new Error('An in-flight provider reservation must retain its owner.');
       const amount = BigInt(reservation.reserved_units);
       await this.releaseReserved(runner, 'credit_account_totals', { owner_id: reservation.owner_id }, amount);
       await this.releaseReserved(runner, 'credit_account_daily_windows', { owner_id: reservation.owner_id, window_start: reservation.account_window_start }, amount);
@@ -313,6 +319,10 @@ export class TypeOrmCreditLedgerRepository implements ICreditLedgerRepository {
     await this.lockPolicy(runner);
     const metadata = await this.findReservation(runner, reservationId, false);
     if (!metadata) throw new Error('The provider call reservation does not exist.');
+    if (metadata.owner_id === null) {
+      if (metadata.status === 'settled' || metadata.status === 'released' || metadata.status === 'over_bound') return metadata;
+      throw new Error('An unresolved provider reservation cannot be detached from its owner.');
+    }
     await this.lockUser(runner, metadata.owner_id);
     await this.lockLimits(runner, metadata.owner_id);
     await this.ensureAccountTotal(runner, metadata.owner_id);
@@ -347,7 +357,8 @@ export class TypeOrmCreditLedgerRepository implements ICreditLedgerRepository {
   }
 
   private async lockUser(runner: QueryRunner, ownerId: string): Promise<void> {
-    await runner.query('SELECT "id" FROM "users" WHERE "id" = $1 FOR UPDATE', [ownerId]);
+    const rows: readonly { readonly id: string }[] = await runner.query('SELECT "id" FROM "users" WHERE "id" = $1 FOR UPDATE', [ownerId]);
+    if (!rows[0]) throw denied('account_inactive');
   }
 
   private async lockLimits(runner: QueryRunner, ownerId: string): Promise<AccountLimitsRow> {

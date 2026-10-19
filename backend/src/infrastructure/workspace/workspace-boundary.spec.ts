@@ -201,6 +201,93 @@ describe('WorkspaceBoundaryAdapter', () => {
       .rejects.toBeInstanceOf(WorkspaceBoundaryUnavailableError);
   });
 
+  it('removes only the manifested managed project child after validating its complete tree', async () => {
+    const ownerId = '11111111-1111-4111-8111-111111111111';
+    const projectId = '22222222-2222-4222-8222-222222222222';
+    const projectPath = `/account-workspaces/${ownerId}/projects/${projectId}`;
+    const entries = new Map<string, WorkspaceStats>([
+      ['/workspace', stats({ directory: true, dev: 1, ino: 1 })], ['/workspace/.identity', stats({ file: true })],
+      ['/account-workspaces', stats({ directory: true, dev: 2, ino: 2 })],
+      ['/account-workspaces/.personal-ai-managed-storage-identity', stats({ file: true })],
+      [`/account-workspaces/${ownerId}`, stats({ directory: true, dev: 2, ino: 3 })],
+      [`/account-workspaces/${ownerId}/projects`, stats({ directory: true, dev: 2, ino: 4 })],
+      [projectPath, stats({ directory: true, dev: 2, ino: 5 })],
+      [`${projectPath}/note.txt`, stats({ file: true })]
+    ]);
+    const fileSystem: WorkspaceFileSystem = {
+      lstat: async (filePath) => {
+        const entry = entries.get(filePath);
+        if (!entry) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        return entry;
+      },
+      readFile: async (filePath) => filePath === '/workspace/.identity' ? 'host-marker' : 'managed-marker',
+      realpath: async (filePath) => filePath,
+      readdir: async (directoryPath) => [...entries.keys()]
+        .filter((entry) => entry.startsWith(`${directoryPath}/`))
+        .map((entry) => entry.slice(directoryPath.length + 1).split('/')[0]!)
+        .filter((entry, index, all) => all.indexOf(entry) === index),
+      unlink: async (filePath) => { entries.delete(filePath); },
+      rmdir: async (directoryPath) => {
+        if ([...entries.keys()].some((entry) => entry.startsWith(`${directoryPath}/`))) throw new Error('not empty');
+        entries.delete(directoryPath);
+      }
+    };
+    const adapter = new WorkspaceBoundaryAdapter({
+      containerRoot: '/workspace', identityFile: '/workspace/.identity', expectedIdentity: 'host-marker',
+      managedContainerRoot: '/account-workspaces',
+      managedIdentityFile: '/account-workspaces/.personal-ai-managed-storage-identity',
+      managedExpectedIdentity: 'managed-marker', fileSystem
+    });
+
+    await adapter.removeManagedProjectRoot(ownerId, projectId);
+
+    expect(entries.has(projectPath)).toBe(false);
+    expect(entries.has(`/account-workspaces/${ownerId}`)).toBe(true);
+    expect(entries.has(`/account-workspaces/${ownerId}/projects`)).toBe(true);
+    expect(entries.has('/account-workspaces')).toBe(true);
+  });
+
+  it('refuses the whole root removal before deleting files when its tree contains a reparse point', async () => {
+    const ownerId = '11111111-1111-4111-8111-111111111111';
+    const projectId = '22222222-2222-4222-8222-222222222222';
+    const projectPath = `/account-workspaces/${ownerId}/projects/${projectId}`;
+    const entries = new Map<string, WorkspaceStats>([
+      ['/workspace', stats({ directory: true, dev: 1, ino: 1 })], ['/workspace/.identity', stats({ file: true })],
+      ['/account-workspaces', stats({ directory: true, dev: 2, ino: 2 })],
+      ['/account-workspaces/.personal-ai-managed-storage-identity', stats({ file: true })],
+      [`/account-workspaces/${ownerId}`, stats({ directory: true, dev: 2, ino: 3 })],
+      [`/account-workspaces/${ownerId}/projects`, stats({ directory: true, dev: 2, ino: 4 })],
+      [projectPath, stats({ directory: true, dev: 2, ino: 5 })],
+      [`${projectPath}/a.txt`, stats({ file: true })],
+      [`${projectPath}/z-link`, stats({ symbolicLink: true })]
+    ]);
+    const fileSystem: WorkspaceFileSystem = {
+      lstat: async (filePath) => {
+        const entry = entries.get(filePath);
+        if (!entry) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        return entry;
+      },
+      readFile: async (filePath) => filePath === '/workspace/.identity' ? 'host-marker' : 'managed-marker',
+      realpath: async (filePath) => filePath,
+      readdir: async (directoryPath) => [...entries.keys()]
+        .filter((entry) => entry.startsWith(`${directoryPath}/`))
+        .map((entry) => entry.slice(directoryPath.length + 1).split('/')[0]!)
+        .filter((entry, index, all) => all.indexOf(entry) === index),
+      unlink: async (filePath) => { entries.delete(filePath); },
+      rmdir: async (directoryPath) => { entries.delete(directoryPath); }
+    };
+    const adapter = new WorkspaceBoundaryAdapter({
+      containerRoot: '/workspace', identityFile: '/workspace/.identity', expectedIdentity: 'host-marker',
+      managedContainerRoot: '/account-workspaces',
+      managedIdentityFile: '/account-workspaces/.personal-ai-managed-storage-identity',
+      managedExpectedIdentity: 'managed-marker', fileSystem
+    });
+
+    await expect(adapter.removeManagedProjectRoot(ownerId, projectId)).rejects.toBeInstanceOf(WorkspaceStorageUnavailableError);
+    expect(entries.has(projectPath)).toBe(true);
+    expect(entries.has(`${projectPath}/a.txt`)).toBe(true);
+  });
+
   it('keeps managed storage unavailable when its marker or distinct mount identity cannot be verified', async () => {
     const base = new Map<string, WorkspaceStats>([
       ['/workspace', stats({ directory: true, dev: 1, ino: 1 })],

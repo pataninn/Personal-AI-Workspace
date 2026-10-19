@@ -33,6 +33,7 @@ export interface IWorkspaceBoundary {
   validateProjectRoot(relativeRoot: string): Promise<string>;
   createProjectRoot?(relativeRoot: string): Promise<string>;
   createManagedProjectRoot?(ownerId: string, projectId: string): Promise<string>;
+  removeManagedProjectRoot?(ownerId: string, projectId: string): Promise<void>;
   resolveProjectRoot?(scope: ProjectRootScope): Promise<ResolvedProjectRoot>;
   getManagedSnapshot?(): Promise<WorkspaceBoundarySnapshot>;
   inspectManagedNamespace?(): Promise<ManagedNamespaceInventory>;

@@ -145,7 +145,17 @@ export class TypeOrmDemoShowcaseCopyManager implements IDemoShowcaseCopyManager 
         let storageKind: 'managed' | null = null;
         if (hasFiles) {
           if (row.phase === 'root_pending') {
-            relativeRoot = await this.workspaceBoundary.createManagedProjectRoot?.(ownerId, projectId) ?? null;
+            if (!this.workspaceBoundary.createManagedProjectRoot) {
+              await this.finishRootEffect(admissionId, ownerId, projectId, claimToken, 'absent');
+              throw storageUnavailable();
+            }
+            try {
+              relativeRoot = await this.workspaceBoundary.createManagedProjectRoot(ownerId, projectId);
+              await this.finishRootEffect(admissionId, ownerId, projectId, claimToken, 'verified');
+            } catch (error: unknown) {
+              await this.finishRootEffect(admissionId, ownerId, projectId, claimToken, 'unknown');
+              throw error;
+            }
             if (!relativeRoot) throw storageUnavailable();
             await this.advance(admissionId, ownerId, claimToken, 'root_created');
           } else if (row.phase === 'root_created' || row.phase === 'database_created' || row.phase === 'files_pending') {
@@ -203,15 +213,18 @@ export class TypeOrmDemoShowcaseCopyManager implements IDemoShowcaseCopyManager 
         await manager.query(`UPDATE "demo_showcase_copies" SET "state"='failed', "phase"='unknown', "retry_allowed"=false, "failure_code"='expired', "updated_at"=clock_timestamp() WHERE "admission_id"=$1`, [admissionId]);
         return null;
       }
-      if (!locked.owner_active || (locked.owner_expires_at && new Date(locked.owner_expires_at).getTime() <= Date.now())) {
+      if (!locked.owner_active) {
         await manager.query(`UPDATE "demo_showcase_copies" SET "state"='failed', "phase"='unknown', "retry_allowed"=false, "failure_code"='expired', "claim_token"=NULL, "claim_expires_at"=NULL, "updated_at"=clock_timestamp() WHERE "admission_id"=$1`, [admissionId]);
         return null;
       }
       if (locked.admission_status !== 'ready') return null;
-      if (row.claim_token && row.claim_expires_at && new Date(row.claim_expires_at).getTime() > Date.now()) return null;
-      if (row.phase === 'root_pending' && row.claim_token) {
-        await manager.query(`UPDATE "demo_showcase_copies" SET "state"='failed', "phase"='unknown', "retry_allowed"=false, "failure_code"='unknown_side_effect', "claim_token"=NULL, "claim_expires_at"=NULL, "updated_at"=clock_timestamp() WHERE "admission_id"=$1`, [admissionId]);
-        return null;
+      if (locked.copy_claim_live) return null;
+      let rootReceipt: 'absent' | 'verified' | 'unknown' | 'pending' | null = null;
+      if (row.phase === 'root_pending') {
+        rootReceipt = rows<{ readonly outcome: 'absent' | 'verified' | 'unknown' | 'pending' }>(await manager.query(
+          'SELECT "outcome" FROM "demo_copy_effect_receipts" WHERE "admission_id"=$1 FOR UPDATE', [admissionId]
+        ))[0]?.outcome ?? null;
+        if (rootReceipt === null || rootReceipt === 'pending' || rootReceipt === 'unknown') return null;
       }
       if (row.state === 'failed' && !row.retry_allowed) return null;
       if (!this.limits) return null;
@@ -223,7 +236,8 @@ export class TypeOrmDemoShowcaseCopyManager implements IDemoShowcaseCopyManager 
       const idMap = parseJson(row.id_map);
       const persistedMap = Object.keys(idMap.tasks ?? {}).length + Object.keys(idMap.facts ?? {}).length > 0
         || version.snapshot.tasks.length + version.snapshot.facts.length === 0 ? idMap : emptyIdMap(version.snapshot);
-      const phase: CopyPhase = row.phase === 'queued' && version.files.length > 0 ? 'root_pending' : row.phase;
+      const phase: CopyPhase = row.phase === 'queued' && version.files.length > 0 ? 'root_pending'
+        : row.phase === 'root_pending' && rootReceipt === 'verified' ? 'root_created' : row.phase;
       const updated = rows<CopyRow>(await manager.query(`
         UPDATE "demo_showcase_copies" SET "state"='pending', "phase"=$2, "claim_token"=$3,
           "claim_expires_at"=clock_timestamp() + interval '5 minutes', "attempts"="attempts" + 1,
@@ -234,6 +248,16 @@ export class TypeOrmDemoShowcaseCopyManager implements IDemoShowcaseCopyManager 
       `, [admissionId, phase, claimToken, JSON.stringify(persistedMap)]));
       const claimed = updated[0];
       if (!claimed) return null;
+      if (phase === 'root_pending' && row.phase === 'queued') {
+        await manager.query(`INSERT INTO "demo_copy_effect_receipts"
+          ("admission_id", "owner_id", "project_id", "effect_kind", "claim_token", "outcome")
+          VALUES ($1,$2,$3,'managed_project_root_create',$4,'pending')
+          ON CONFLICT ("admission_id") DO NOTHING`, [admissionId, ownerId, row.target_project_id, claimToken]);
+      } else if (phase === 'root_pending' && rootReceipt === 'absent') {
+        await manager.query(`UPDATE "demo_copy_effect_receipts"
+          SET "claim_token"=$2, "outcome"='pending', "completed_at"=NULL, "updated_at"=clock_timestamp()
+          WHERE "admission_id"=$1 AND "outcome"='absent'`, [admissionId, claimToken]);
+      }
       return { row: claimed, claimToken, snapshot: version.snapshot, files: version.files };
     });
   }
@@ -241,7 +265,7 @@ export class TypeOrmDemoShowcaseCopyManager implements IDemoShowcaseCopyManager 
   private async cloneRows(admissionId: string, ownerId: string, claimToken: string, projectId: string, snapshot: CurrentShowcaseDto, idMap: CopyIdMap): Promise<void> {
     await this.dataSource.transaction(async (manager) => {
       const locked = await this.lockCopy(manager, admissionId, ownerId);
-      if (!locked || locked.copy.claim_token !== claimToken) throw storageUnavailable();
+      if (!locked || locked.copy.claim_token !== claimToken || !locked.owner_active || locked.admission_status !== 'ready') throw storageUnavailable();
       if (locked.copy.phase === 'database_created' || locked.copy.phase === 'files_pending') return;
       const maxGrowth = BigInt(this.limits?.maxSnapshotBytes ?? 1) * 2n + 1_048_576n;
       await this.quota.runDatabaseMutation(manager, { ownerId, maximumGrowthBytes: maxGrowth }, async () => {
@@ -310,8 +334,7 @@ export class TypeOrmDemoShowcaseCopyManager implements IDemoShowcaseCopyManager 
     await this.dataSource.transaction(async (manager) => {
       const locked = await this.lockCopy(manager, admissionId, ownerId);
       if (!locked || locked.copy.claim_token !== claimToken || locked.copy.pinned_version_id === null
-        || locked.admission_status !== 'ready' || !locked.owner_active
-        || (locked.owner_expires_at && new Date(locked.owner_expires_at).getTime() <= Date.now())) throw storageUnavailable();
+        || locked.admission_status !== 'ready' || !locked.owner_active) throw storageUnavailable();
       const projectRows = rows<{ readonly relative_root: string | null; readonly relative_root_key: string | null; readonly storage_kind: string | null }>(await manager.query(
         'SELECT "relative_root", "relative_root_key", "storage_kind" FROM "projects" WHERE "owner_id"=$1 AND "id"=$2 AND "status"=\'active\' FOR SHARE', [ownerId, projectId]
       ));
@@ -349,9 +372,22 @@ export class TypeOrmDemoShowcaseCopyManager implements IDemoShowcaseCopyManager 
   private async advance(admissionId: string, ownerId: string, claimToken: string, phase: CopyPhase): Promise<void> {
     await this.dataSource.transaction(async (manager) => {
       const locked = await this.lockCopy(manager, admissionId, ownerId);
-      if (!locked || locked.copy.claim_token !== claimToken) throw storageUnavailable();
+      if (!locked || locked.copy.claim_token !== claimToken || !locked.owner_active || locked.admission_status !== 'ready') throw storageUnavailable();
       await manager.query(`UPDATE "demo_showcase_copies" SET "phase"=$3, "claim_expires_at"=clock_timestamp() + interval '5 minutes', "updated_at"=clock_timestamp() WHERE "admission_id"=$1 AND "claim_token"=$2`, [admissionId, claimToken, phase]);
     });
+  }
+
+  private async finishRootEffect(
+    admissionId: string,
+    ownerId: string,
+    projectId: string,
+    claimToken: string,
+    outcome: 'absent' | 'verified' | 'unknown'
+  ): Promise<void> {
+    await this.dataSource.query(`UPDATE "demo_copy_effect_receipts"
+      SET "outcome"=$5, "completed_at"=clock_timestamp(), "updated_at"=clock_timestamp()
+      WHERE "admission_id"=$1 AND "owner_id"=$2 AND "project_id"=$3 AND "claim_token"=$4 AND "outcome"='pending'`,
+    [admissionId, ownerId, projectId, claimToken, outcome]);
   }
 
   private async fail(admissionId: string, ownerId: string, claimToken: string | null, code: 'quota' | 'storage' | 'unknown_side_effect' | 'expired', retryAllowed: boolean, unknown: boolean): Promise<void> {
@@ -367,26 +403,28 @@ export class TypeOrmDemoShowcaseCopyManager implements IDemoShowcaseCopyManager 
   }
 
   private async lockCopy(manager: EntityManager, admissionId: string, ownerId: string): Promise<{
-    readonly copy: CopyRow; readonly admission_status: string; readonly owner_active: boolean; readonly owner_expires_at: Date | string | null;
+    readonly copy: CopyRow; readonly admission_status: string; readonly owner_active: boolean;
+    readonly copy_claim_live: boolean;
   } | null> {
     const admissions = rows<{ readonly id: string; readonly status: string }>(await manager.query(
       'SELECT "id", "status" FROM "demo_admissions" WHERE "id"=$1 AND "owner_id"=$2 FOR UPDATE', [admissionId, ownerId]
     ));
     if (!admissions[0]) return null;
-    const owners = rows<{ readonly id: string; readonly is_active: boolean; readonly expires_at: Date | string | null }>(await manager.query(
-      'SELECT "id", "is_active", "expires_at" FROM "users" WHERE "id"=$1 FOR UPDATE', [ownerId]
+    const owners = rows<{ readonly id: string; readonly active_now: boolean }>(await manager.query(
+      'SELECT "id", ("is_active"=true AND ("expires_at" IS NULL OR "expires_at">clock_timestamp())) AS "active_now" FROM "users" WHERE "id"=$1 FOR UPDATE', [ownerId]
     ));
     if (!owners[0]) return null;
     const copy = rows<CopyRow>(await manager.query(`
       SELECT "admission_id", "owner_id", "pinned_version_id", "target_project_id", "state", "phase", "claim_token",
-        "claim_expires_at", "attempts", "retry_allowed", "id_map", "workspace_mode", "file_access"
+        "claim_expires_at", "attempts", "retry_allowed", "id_map", "workspace_mode", "file_access",
+        ("claim_token" IS NOT NULL AND "claim_expires_at">clock_timestamp()) AS "copy_claim_live"
       FROM "demo_showcase_copies" WHERE "admission_id"=$1 AND "owner_id"=$2 FOR UPDATE
     `, [admissionId, ownerId]))[0];
     return copy ? {
       copy,
       admission_status: admissions[0].status,
-      owner_active: owners[0].is_active && (!owners[0].expires_at || new Date(owners[0].expires_at).getTime() > Date.now()),
-      owner_expires_at: owners[0].expires_at
+      owner_active: owners[0].active_now,
+      copy_claim_live: (copy as CopyRow & { readonly copy_claim_live?: boolean }).copy_claim_live === true
     } : null;
   }
 }

@@ -63,6 +63,7 @@ import { WorkspaceMutationGatewayAdapter } from '@/infrastructure/workspace/work
 import { ProjectFileGateway } from '@/infrastructure/workspace/project-file-gateway';
 import { TypeOrmProjectFileAccess } from '@/infrastructure/database/repositories/typeorm-project-file-access';
 import { TypeOrmProjectRemovalRepository } from '@/infrastructure/database/repositories/typeorm-project-removal-repository';
+import { TypeOrmDemoExpiryCleanupRepository } from '@/infrastructure/database/repositories/typeorm-demo-expiry-cleanup-repository';
 import { TypeOrmProjectOverviewRepository } from '@/infrastructure/database/repositories/typeorm-project-overview-repository';
 import { ProjectRecoveryCleaner } from '@/infrastructure/workspace/project-recovery-cleaner';
 import { DeleteProjectUseCase } from '@/modules/projects/use-cases/delete-project';
@@ -97,6 +98,7 @@ import { GetStorageUsage } from '@/modules/storage-quotas/use-cases/get-storage-
 import { TypeOrmDemoAdmissionRepository } from '@/infrastructure/database/repositories/typeorm-demo-admission-repository';
 import { TypeOrmDemoStorageBootstrap } from '@/infrastructure/database/typeorm-demo-storage-bootstrap';
 import { CreateDemoSessionUseCase } from '@/modules/demo/use-cases/create-demo-session';
+import { CleanupExpiredDemosUseCase } from '@/modules/demo/use-cases/cleanup-expired-demos';
 import { TypeOrmAssistantScopePolicyRepository } from '@/infrastructure/database/repositories/typeorm-assistant-scope-policy-repository';
 import { GetAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/get-assistant-execution-policy';
 import { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
@@ -185,9 +187,10 @@ export async function createApplication(
     if (recoveredHomeTurnCount > 0) {
       logger.warn({ recoveredHomeTurnCount }, 'Interrupted Home turns were marked for review after startup.');
     }
+    const projectRecoveryCleaner = new ProjectRecoveryCleaner(config.recoveryRoot);
     const projectRemovalRepository = new TypeOrmProjectRemovalRepository(
       dataSource,
-      new ProjectRecoveryCleaner(config.recoveryRoot),
+      projectRecoveryCleaner,
       storageContentAccounting,
       storageQuotaRepository,
       storageRootMappingRepository
@@ -227,6 +230,9 @@ export async function createApplication(
     const demoShowcaseCopy = new TypeOrmDemoShowcaseCopyManager(
       dataSource, showcaseRepository, projectRepository, workspaceBoundary, projectFileAccess, projectFileGateway,
       storageFileMutation, storageQuotaRepository, storageContentAccounting, config.showcaseLimits
+    );
+    const demoExpiryCleanupRepository = new TypeOrmDemoExpiryCleanupRepository(
+      dataSource, workspaceBoundary, projectRecoveryCleaner, storageRootMappingRepository, storageQuotaRepository
     );
     const managedStorageReady = async (): Promise<boolean> => Boolean(config.accountWorkspacesIdentity)
       && (await workspaceBoundary.getManagedSnapshot()).status === 'ready';
@@ -291,6 +297,8 @@ export async function createApplication(
     const decideEgress = new DecideEgressUseCase(aiRunRepository, projectRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot, projectFactRepository, providerPermissionRepository, assistantExecutionPolicy);
     const sendChatMessage = new SendChatMessageUseCase(projectChatContext, projectFactRepository, createAiRun, decideEgress, startAiRun);
     const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository, commandRepository, stagingGateway);
+    const cancelSandboxCommand = new CancelSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger);
+    const cleanupExpiredDemos = new CleanupExpiredDemosUseCase(demoExpiryCleanupRepository, cancelAiRun, cancelSandboxCommand);
     const passwordHasher = new BcryptPasswordHasher();
     const tokenProvider = new OpaqueTokenProvider(config.sessionSecret);
     const login = new LoginUseCase(
@@ -449,7 +457,7 @@ export async function createApplication(
           listCommands: new ListSandboxCommandsUseCase(aiRunRepository, commandRepository, projectRepository),
            getCommand: new GetSandboxCommandUseCase(aiRunRepository, commandRepository, projectRepository),
            decideCommand: decideSandboxCommand,
-           cancelCommand: new CancelSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger),
+           cancelCommand: cancelSandboxCommand,
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },
@@ -523,6 +531,10 @@ export async function createApplication(
           stagingGateway?.cleanupExpired() ?? Promise.resolve(0),
           physicalStorageMonitor.observe()
         ]);
+        try { await projectRemovalRepository.cleanupPending(); } catch { /* durable removal jobs remain demo-cleanup barriers */ }
+        try { await cleanupExpiredDemos.execute(); } catch {
+          logger.warn({ operation: 'demo expiry cleanup' }, 'Demo expiry maintenance remains pending and will retry.');
+        }
         return cleanedStagingCount;
       } },
       logger,

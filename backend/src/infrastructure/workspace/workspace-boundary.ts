@@ -33,6 +33,8 @@ export interface WorkspaceFileSystem {
   readFile(filePath: string): Promise<string>;
   realpath(filePath: string): Promise<string>;
   readdir?(directoryPath: string): Promise<readonly string[]>;
+  unlink?(filePath: string): Promise<void>;
+  rmdir?(directoryPath: string): Promise<void>;
 }
 
 const defaultFileSystem: WorkspaceFileSystem = {
@@ -40,7 +42,9 @@ const defaultFileSystem: WorkspaceFileSystem = {
   mkdir: async (filePath) => { await nodeFs.mkdir(filePath); },
   readFile: (filePath) => nodeFs.readFile(filePath, 'utf8'),
   realpath: (filePath) => nodeFs.realpath(filePath),
-  readdir: async (directoryPath) => await nodeFs.readdir(directoryPath)
+  readdir: async (directoryPath) => await nodeFs.readdir(directoryPath),
+  unlink: async (filePath) => await nodeFs.unlink(filePath),
+  rmdir: async (directoryPath) => await nodeFs.rmdir(directoryPath)
 };
 
 export interface WorkspaceBoundaryOptions {
@@ -156,6 +160,44 @@ export class WorkspaceBoundaryAdapter implements IWorkspaceBoundary {
       }
     }
     return `projects/${projectId}`;
+  }
+
+  /** Removes only one canonical managed project child; owner and namespace directories are retained. */
+  public async removeManagedProjectRoot(ownerId: string, projectId: string): Promise<void> {
+    if (!isCanonicalUuid(ownerId) || !isCanonicalUuid(projectId)
+      || !this.fileSystem.readdir || !this.fileSystem.unlink || !this.fileSystem.rmdir) {
+      throw new WorkspaceStorageUnavailableError();
+    }
+    const root = await this.verifyManagedRoot();
+    const ownerPath = path.posix.join(root, ownerId);
+    const projectsPath = path.posix.join(ownerPath, 'projects');
+    for (const parent of [ownerPath, projectsPath]) {
+      try {
+        await this.assertCanonicalManagedDirectory(root, parent);
+      } catch (error: unknown) {
+        if (hasFileSystemCode(error, 'ENOENT')) return;
+        throw new WorkspaceStorageUnavailableError();
+      }
+    }
+    const projectPath = path.posix.join(projectsPath, projectId);
+    try {
+      await this.assertCanonicalManagedDirectory(projectsPath, projectPath);
+    } catch (error: unknown) {
+      if (hasFileSystemCode(error, 'ENOENT')) return;
+      throw new WorkspaceStorageUnavailableError();
+    }
+    try {
+      await this.removeManagedTree(root, projectPath);
+      await this.fileSystem.rmdir(projectPath);
+    } catch {
+      throw new WorkspaceStorageUnavailableError();
+    }
+    try {
+      await this.fileSystem.lstat(projectPath);
+      throw new WorkspaceStorageUnavailableError();
+    } catch (error: unknown) {
+      if (!hasFileSystemCode(error, 'ENOENT')) throw new WorkspaceStorageUnavailableError();
+    }
   }
 
   public async resolveProjectRoot(scope: ProjectRootScope): Promise<ResolvedProjectRoot> {
@@ -342,6 +384,50 @@ export class WorkspaceBoundaryAdapter implements IWorkspaceBoundary {
       return { ownerId, unsafe, projectIds };
     } catch {
       return { ownerId, unsafe: true, projectIds: [] };
+    }
+  }
+
+  private async removeManagedTree(managedRoot: string, directoryPath: string): Promise<void> {
+    await this.validateManagedTree(managedRoot, directoryPath);
+    await this.assertCanonicalManagedDirectory(managedRoot, directoryPath);
+    const entries = await this.fileSystem.readdir!(directoryPath);
+    for (const entry of entries) {
+      if (!entry || entry === '.' || entry === '..' || path.posix.basename(entry) !== entry || entry.includes('/')) {
+        throw new WorkspaceStorageUnavailableError();
+      }
+      const child = path.posix.join(directoryPath, entry);
+      const stats = await this.fileSystem.lstat(child);
+      if (isReparsePoint(stats)) throw new WorkspaceStorageUnavailableError();
+      if (stats.isDirectory()) {
+        await this.removeManagedTree(managedRoot, child);
+        await this.fileSystem.rmdir!(child);
+      } else if (stats.isFile()) {
+        const resolved = await this.fileSystem.realpath(child);
+        if (resolved !== child || !isContained(managedRoot, resolved)) throw new WorkspaceStorageUnavailableError();
+        await this.fileSystem.unlink!(child);
+      } else {
+        throw new WorkspaceStorageUnavailableError();
+      }
+    }
+  }
+
+  private async validateManagedTree(managedRoot: string, directoryPath: string): Promise<void> {
+    await this.assertCanonicalManagedDirectory(managedRoot, directoryPath);
+    for (const entry of await this.fileSystem.readdir!(directoryPath)) {
+      if (!entry || entry === '.' || entry === '..' || path.posix.basename(entry) !== entry || entry.includes('/')) {
+        throw new WorkspaceStorageUnavailableError();
+      }
+      const child = path.posix.join(directoryPath, entry);
+      const stats = await this.fileSystem.lstat(child);
+      if (isReparsePoint(stats)) throw new WorkspaceStorageUnavailableError();
+      if (stats.isDirectory()) {
+        await this.validateManagedTree(managedRoot, child);
+      } else if (stats.isFile()) {
+        const resolved = await this.fileSystem.realpath(child);
+        if (resolved !== child || !isContained(managedRoot, resolved)) throw new WorkspaceStorageUnavailableError();
+      } else {
+        throw new WorkspaceStorageUnavailableError();
+      }
     }
   }
 

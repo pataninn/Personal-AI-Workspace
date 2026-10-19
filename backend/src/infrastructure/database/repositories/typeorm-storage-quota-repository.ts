@@ -33,6 +33,7 @@ import type {
   StorageQuotaTransaction
 } from '@/modules/storage-quotas/repositories/storage-quota-repository';
 import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
+import { projectRootOverlapKey } from '@/modules/projects/domain/project-root-policy';
 
 interface AccountRow {
   storage_limit_bytes: string | null;
@@ -396,6 +397,161 @@ export class TypeOrmStorageQuotaRepository implements IStorageQuotaRepository {
         [ownerId, (account.usedBytes - releasedBytes).toString()]);
     });
     if (inconsistent) throw accountingUnavailable();
+  }
+
+  /** Releases only a manifested managed root's file charges after demo maintenance verifies its purge. */
+  public async releaseDemoProjectReferencesAfterVerifiedPurge(
+    ownerId: string,
+    rootKey: string,
+    admissionId: string,
+    generation: string,
+    leaseToken: string
+  ): Promise<void> {
+    await this.inTransaction(async (transaction) => {
+      const account = await this.lockAccount(transaction, ownerId);
+      if (account.state !== 'ready') throw accountingUnavailable();
+      await lockStorageRootOwner(transaction, ownerId);
+      const cleanup = await queryRows<{ readonly generation: string }>(transaction,
+        `SELECT c."generation" FROM "demo_expiry_cleanups" c
+         JOIN "demo_admissions" a ON a."id"=c."admission_id"
+         WHERE c."admission_id"=$1 AND c."generation"=$2 AND c."lease_token"=$3
+           AND c."lease_expires_at">clock_timestamp() AND c."phase"='purging' AND a."owner_id"=$4
+         FOR UPDATE OF c, a`, [admissionId, generation, leaseToken, ownerId]);
+      if (!cleanup[0]) throw accountingUnavailable();
+      const unresolved = await queryRows<{ readonly id: string }>(transaction,
+        `SELECT "id" FROM "storage_filesystem_reservations"
+         WHERE "owner_id"=$1 AND "root_key"=$2 AND "status" IN ('pending','unknown') FOR UPDATE`, [ownerId, rootKey]);
+      if (unresolved.length > 0) throw accountingUnavailable();
+      const references = await queryRows<{ readonly byte_count: string }>(transaction,
+        `SELECT "byte_count" FROM "storage_resource_references"
+         WHERE "owner_id"=$1 AND "root_key"=$2 AND "resource_kind" IN ('project_file','retained_root') FOR UPDATE`, [ownerId, rootKey]);
+      const releasedBytes = references.reduce((sum, reference) => sum + BigInt(reference.byte_count), 0n);
+      if (releasedBytes > account.usedBytes) throw accountingUnavailable();
+      await transaction.query(
+        `DELETE FROM "storage_resource_references"
+         WHERE "owner_id"=$1 AND "root_key"=$2 AND "resource_kind" IN ('project_file','retained_root')`, [ownerId, rootKey]);
+      await transaction.query(
+        `UPDATE "storage_account_totals" SET "used_bytes"=$2, "updated_at"=clock_timestamp() WHERE "owner_id"=$1`,
+        [ownerId, (account.usedBytes - releasedBytes).toString()]);
+    });
+  }
+
+  /** Detaches one exact project only after this demo cleanup generation owns the purge phase. */
+  public async retireDemoProjectRoot(
+    ownerId: string,
+    projectId: string,
+    rootKey: string | null,
+    admissionId: string,
+    generation: string,
+    leaseToken: string
+  ): Promise<void> {
+    await this.inTransaction(async (transaction) => {
+      const account = await this.lockAccount(transaction, ownerId);
+      if (account.state !== 'ready') throw accountingUnavailable();
+      await lockStorageRootOwner(transaction, ownerId);
+      const cleanup = await queryRows<{ readonly generation: string }>(transaction,
+        `SELECT c."generation" FROM "demo_expiry_cleanups" c JOIN "demo_admissions" a ON a."id"=c."admission_id"
+         WHERE c."admission_id"=$1 AND c."generation"=$2 AND c."lease_token"=$3
+           AND c."lease_expires_at">clock_timestamp() AND c."phase"='purging' AND a."owner_id"=$4
+         FOR UPDATE OF c,a`, [admissionId, generation, leaseToken, ownerId]);
+      if (!cleanup[0]) throw accountingUnavailable();
+      const unresolved = await queryRows<{ readonly id: string }>(transaction,
+        `SELECT "id" FROM "storage_filesystem_reservations"
+         WHERE "owner_id"=$1 AND "project_id"=$2 AND "status" IN ('pending','unknown') FOR UPDATE`, [ownerId, projectId]);
+      if (unresolved.length > 0) throw accountingUnavailable();
+      if (rootKey === null) {
+        const mappings = await queryRows<{ readonly root_key: string }>(transaction,
+          'SELECT "root_key" FROM "storage_root_mappings" WHERE "owner_id"=$1 AND "project_id"=$2 FOR UPDATE', [ownerId, projectId]);
+        if (mappings.length > 0) throw accountingUnavailable();
+      } else {
+        if (rootKey !== projectRootOverlapKey(`projects/${projectId}`)) throw accountingUnavailable();
+        const mappings = await queryRows<{ readonly storage_kind: string; readonly relative_root: string; readonly state: string }>(transaction,
+          `SELECT "storage_kind","relative_root","state" FROM "storage_root_mappings"
+           WHERE "owner_id"=$1 AND "project_id"=$2 AND "root_key"=$3 AND "locator_project_id"=$2 FOR UPDATE`,
+          [ownerId, projectId, rootKey]);
+        if (mappings.length !== 1 || mappings[0]?.storage_kind !== 'managed'
+          || mappings[0].relative_root !== `projects/${projectId}` || mappings[0].state !== 'active') throw accountingUnavailable();
+        await transaction.query(`UPDATE "storage_root_mappings" SET "project_id"=NULL,"state"='retained',"updated_at"=clock_timestamp()
+          WHERE "owner_id"=$1 AND "project_id"=$2 AND "root_key"=$3`, [ownerId, projectId, rootKey]);
+        await transaction.query(`UPDATE "storage_resource_references" SET "resource_kind"='retained_root',"project_id"=NULL,"updated_at"=clock_timestamp()
+          WHERE "owner_id"=$1 AND "project_id"=$2 AND "root_key"=$3 AND "resource_kind"='project_file'`, [ownerId, projectId, rootKey]);
+      }
+      const deleted = await queryRows<{ readonly id: string }>(transaction,
+        'DELETE FROM "projects" WHERE "owner_id"=$1 AND "id"=$2 RETURNING "id"', [ownerId, projectId]);
+      if (deleted.length !== 1) throw accountingUnavailable();
+    });
+  }
+
+  /** Deletes a retained mapping only after the caller proved the managed root absent. */
+  public async deleteDemoRetainedRoot(
+    ownerId: string,
+    rootKey: string,
+    admissionId: string,
+    generation: string,
+    leaseToken: string
+  ): Promise<void> {
+    await this.inTransaction(async (transaction) => {
+      const account = await this.lockAccount(transaction, ownerId);
+      if (account.state !== 'ready') throw accountingUnavailable();
+      await lockStorageRootOwner(transaction, ownerId);
+      const cleanup = await queryRows<{ readonly generation: string }>(transaction,
+        `SELECT c."generation" FROM "demo_expiry_cleanups" c JOIN "demo_admissions" a ON a."id"=c."admission_id"
+         WHERE c."admission_id"=$1 AND c."generation"=$2 AND c."lease_token"=$3
+           AND c."lease_expires_at">clock_timestamp() AND c."phase"='purging' AND a."owner_id"=$4
+         FOR UPDATE OF c,a`, [admissionId, generation, leaseToken, ownerId]);
+      if (!cleanup[0]) throw accountingUnavailable();
+      const mapping = await queryRows<{ readonly locator_project_id: string; readonly storage_kind: string; readonly relative_root: string }>(transaction,
+        `SELECT "locator_project_id","storage_kind","relative_root" FROM "storage_root_mappings"
+         WHERE "owner_id"=$1 AND "root_key"=$2 AND "project_id" IS NULL AND "state"='retained' FOR UPDATE`, [ownerId, rootKey]);
+      if (mapping.length !== 1 || mapping[0]?.storage_kind !== 'managed'
+        || mapping[0].relative_root !== `projects/${mapping[0].locator_project_id}`) throw accountingUnavailable();
+      const blockers = await queryRows<{ readonly has_references: boolean; readonly has_reservations: boolean }>(transaction,
+        `SELECT EXISTS(SELECT 1 FROM "storage_resource_references" WHERE "owner_id"=$1 AND "root_key"=$2) AS "has_references",
+           EXISTS(SELECT 1 FROM "storage_filesystem_reservations" WHERE "owner_id"=$1 AND "root_key"=$2 AND "status" IN ('pending','unknown')) AS "has_reservations"`,
+        [ownerId, rootKey]);
+      if (blockers[0]?.has_references || blockers[0]?.has_reservations) throw accountingUnavailable();
+      await transaction.query("SELECT set_config('app.storage_root_removal_verified',$1,true)", [`${ownerId}:${rootKey}`]);
+      const deleted = await queryRows<{ readonly root_key: string }>(transaction,
+        `DELETE FROM "storage_root_mappings" WHERE "owner_id"=$1 AND "root_key"=$2 AND "state"='retained' AND "project_id" IS NULL RETURNING "root_key"`,
+        [ownerId, rootKey]);
+      if (deleted.length !== 1) throw accountingUnavailable();
+    });
+  }
+
+  /** Reconciles all remaining database-content charges and settled reservation rows before owner deletion. */
+  public async purgeDemoOwnedReferences(
+    ownerId: string,
+    admissionId: string,
+    generation: string,
+    leaseToken: string
+  ): Promise<void> {
+    await this.inTransaction(async (transaction) => {
+      const account = await this.lockAccount(transaction, ownerId);
+      if (account.state !== 'ready') throw accountingUnavailable();
+      await lockStorageRootOwner(transaction, ownerId);
+      const cleanup = await queryRows<{ readonly generation: string }>(transaction,
+        `SELECT c."generation" FROM "demo_expiry_cleanups" c JOIN "demo_admissions" a ON a."id"=c."admission_id"
+         WHERE c."admission_id"=$1 AND c."generation"=$2 AND c."lease_token"=$3
+           AND c."lease_expires_at">clock_timestamp() AND c."phase"='purging' AND a."owner_id"=$4
+         FOR UPDATE OF c,a`, [admissionId, generation, leaseToken, ownerId]);
+      if (!cleanup[0]) throw accountingUnavailable();
+      const unresolved = await queryRows<{ readonly id: string }>(transaction,
+        `SELECT "id" FROM "storage_filesystem_reservations" WHERE "owner_id"=$1 AND "status" IN ('pending','unknown') FOR UPDATE`, [ownerId]);
+      if (unresolved.length > 0) throw accountingUnavailable();
+      const unsafe = await queryRows<{ readonly has_external_references: boolean; readonly has_mappings: boolean }>(transaction,
+        `SELECT EXISTS(SELECT 1 FROM "storage_resource_references" WHERE "owner_id"=$1 AND "resource_kind"<>'database_content') AS "has_external_references",
+           EXISTS(SELECT 1 FROM "storage_root_mappings" WHERE "owner_id"=$1) AS "has_mappings"`, [ownerId]);
+      if (unsafe[0]?.has_external_references || unsafe[0]?.has_mappings) throw accountingUnavailable();
+      const references = await queryRows<{ readonly byte_count: string }>(transaction,
+        `SELECT "byte_count" FROM "storage_resource_references" WHERE "owner_id"=$1 AND "resource_kind"='database_content' FOR UPDATE`, [ownerId]);
+      const releasedBytes = references.reduce((sum, reference) => sum + BigInt(reference.byte_count), 0n);
+      if (releasedBytes > account.usedBytes) throw accountingUnavailable();
+      await transaction.query('DELETE FROM "storage_resource_references" WHERE "owner_id"=$1 AND "resource_kind"=\'database_content\'', [ownerId]);
+      await transaction.query(`UPDATE "storage_account_totals" SET "used_bytes"=$2,"updated_at"=clock_timestamp() WHERE "owner_id"=$1`,
+        [ownerId, (account.usedBytes - releasedBytes).toString()]);
+      await transaction.query(`DELETE FROM "storage_filesystem_reservation_references" WHERE "owner_id"=$1`, [ownerId]);
+      await transaction.query(`DELETE FROM "storage_filesystem_reservations" WHERE "owner_id"=$1 AND "status" IN ('settled','released')`, [ownerId]);
+    });
   }
 
   public async releaseFileOperationWithNoSideEffect(ownerId: string, operationId: string): Promise<void> {
