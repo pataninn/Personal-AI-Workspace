@@ -1,7 +1,18 @@
 import type { WorkspaceProjectScope } from '@/modules/files/domain/workspace-types';
+import type { StorageFileOperationScopeRequest, StorageQuotaTransaction, StorageTrustedFileScopeResolver } from '@/modules/storage-quotas/repositories/storage-quota-repository';
+
+export interface ProjectFileMutationAccess {
+  readonly ownerId: string;
+  readonly projectId: string;
+  readonly rootKey: string;
+  readonly scope: WorkspaceProjectScope;
+  readonly resolveTrustedScope: StorageTrustedFileScopeResolver;
+  recordActivity(): Promise<void>;
+}
 
 export interface IProjectFileAccess {
-  execute<T>(input: { readonly ownerId: string; readonly projectId: string; readonly writable: boolean }, action: (scope: WorkspaceProjectScope) => Promise<T>): Promise<T>;
+  execute<T>(input: { readonly ownerId: string; readonly projectId: string }, action: (scope: WorkspaceProjectScope) => Promise<T>): Promise<T>;
+  authorizeMutation(input: { readonly ownerId: string; readonly projectId: string }): Promise<ProjectFileMutationAccess>;
 }
 
 export interface IProjectFileGateway {

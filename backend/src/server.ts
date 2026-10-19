@@ -49,6 +49,7 @@ export async function startServer(): Promise<void> {
     closing = true;
     application.logger.info({ signal }, 'Shutting down application');
     await closeServer(server);
+    await application.stopMaintenance();
     if (application.dataSource.isInitialized) {
       await application.dataSource.destroy();
     }

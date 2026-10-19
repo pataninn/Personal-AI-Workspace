@@ -83,12 +83,15 @@ function createFixture(options: ParticipantFixtureOptions = {}) {
   const writes: Array<{ readonly sql: string; readonly parameters: readonly unknown[] }> = [];
   const orderVersions = new Map<string, number>([[SOURCE, 4], [DESTINATION, 8], ['inbox', 3]]);
   const query = jest.fn().mockImplementation(async (sql: string, parameters: readonly unknown[] = []) => {
-    if (sql.startsWith('SELECT "status" FROM "projects"')) {
+    if (sql.includes('FROM "projects"') && sql.includes('FOR UPDATE')) {
       const projectId = String(parameters[1]);
       projectLocks.push(projectId);
       const status = options.projectStatuses?.[projectId] ?? 'active';
-      return options.projectStatuses && !(projectId in options.projectStatuses) ? [] : [{ status }];
+      return options.projectStatuses && !(projectId in options.projectStatuses)
+        ? []
+        : [{ status, relative_root: `projects/${projectId}` }];
     }
+    if (sql.includes('FROM "project_removal_jobs"')) return [];
     if (sql.includes('FROM "project_task_order_states"') && sql.includes('FOR UPDATE')) {
       const key = sql.includes('"project_id" IS NULL') ? 'inbox' : String(parameters[1]);
       collectionLocks.push(key);
@@ -247,7 +250,10 @@ describe('task action-ledger transaction participant', () => {
     expect(applied.outcome).toMatchObject({ targetId: TASK, targetVersion: 2, sourceOrderVersion: 5, destinationOrderVersion: 4 });
     expect(fixture.projectLocks).toEqual([SOURCE]);
     expect(fixture.collectionLocks).toEqual(['inbox', SOURCE]);
-    expect(fixture.query).not.toHaveBeenCalledWith(expect.stringContaining('relative_root'), expect.anything());
+    const sourceProjectLock = fixture.query.mock.calls.find(([sql, parameters]) =>
+      String(sql).includes('SELECT "status", "relative_root" FROM "projects"')
+      && (parameters as readonly unknown[])[1] === SOURCE);
+    expect(sourceProjectLock?.[1]).toEqual([OWNER, SOURCE]);
     expect(fixture.writes.some(({ sql, parameters }) => sql.startsWith('UPDATE "project_tasks" SET "project_id"') && parameters[0] === null)).toBe(true);
     expect(fixture.writes.some(({ sql }) => sql.startsWith('INSERT INTO "project_task_events"'))).toBe(true);
   });

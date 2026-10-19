@@ -80,6 +80,7 @@ const appEnvironmentSchema = z.object({
   HERMES_BRIDGE_KEY_FILE: z.string().optional(),
   STAGING_ROOT: z.string().min(1).default('/var/lib/personal-ai/staging'),
   RECOVERY_ROOT: z.string().min(1).default('/var/lib/personal-ai/recovery'),
+  STORAGE_DISK_WARNING_FREE_BYTES: z.string().regex(/^[1-9][0-9]{0,38}$/u).optional(),
   STARTUP_CHECK_TIMEOUT_MS: z
     .string()
     .default('3000')
@@ -132,6 +133,7 @@ export interface AppConfig {
   readonly hermesBridgeKeyFile?: string;
   readonly stagingRoot: string;
   readonly recoveryRoot: string;
+  readonly storageDiskWarningFreeBytes?: bigint;
   readonly startupCheckTimeoutMs: number;
   readonly database: DatabaseConfig;
 }
@@ -345,6 +347,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     ...(parsed.data.HERMES_BRIDGE_KEY_FILE ? { hermesBridgeKeyFile: parsed.data.HERMES_BRIDGE_KEY_FILE } : {}),
     stagingRoot: parsed.data.STAGING_ROOT,
     recoveryRoot: parsed.data.RECOVERY_ROOT,
+    ...(parsed.data.STORAGE_DISK_WARNING_FREE_BYTES
+      ? { storageDiskWarningFreeBytes: BigInt(parsed.data.STORAGE_DISK_WARNING_FREE_BYTES) }
+      : {}),
     startupCheckTimeoutMs: parsed.data.STARTUP_CHECK_TIMEOUT_MS,
     database
   };

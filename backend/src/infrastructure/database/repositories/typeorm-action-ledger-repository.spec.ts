@@ -13,11 +13,16 @@ import type {
 } from '@/modules/action-ledger/domain/action-ledger-types';
 import { TypeOrmActionLedgerRepository } from '@/infrastructure/database/repositories/typeorm-action-ledger-repository';
 import type { ActionLedgerRow } from '@/infrastructure/database/repositories/action-ledger-persistence-mappers';
+import type { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_OWNER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const TARGET_ID = '22222222-2222-4222-8222-222222222222';
 const ORIGINAL_ACTION_ID = '44444444-4444-4444-8444-444444444444';
+
+const passThroughStorageAccounting = {
+  runMutation: async <T>(_transaction: unknown, _ownerId: string, mutation: () => Promise<T>): Promise<T> => mutation()
+} as unknown as TypeOrmStorageContentAccounting;
 
 interface FakeLedgerState {
   readonly committedTargets: string[];
@@ -264,7 +269,7 @@ describe('TypeOrmActionLedgerRepository', () => {
 
   it('commits the target mutation and receipt on the same transaction', async () => {
     const { dataSource, runner, state } = createFakeDatabase();
-    const repository = new TypeOrmActionLedgerRepository(dataSource);
+    const repository = new TypeOrmActionLedgerRepository(dataSource, undefined, passThroughStorageAccounting);
     const mutation = jest.fn(async (transaction: QueryRunner) => {
       await transaction.query('INSERT INTO "target_mutations" ("target_id") VALUES ($1)', [TARGET_ID]);
       return mutationResult();
@@ -288,7 +293,7 @@ describe('TypeOrmActionLedgerRepository', () => {
   it('rolls back the target mutation when receipt persistence fails', async () => {
     const { dataSource, state } = createFakeDatabase();
     state.failReceiptInsert = true;
-    const repository = new TypeOrmActionLedgerRepository(dataSource);
+    const repository = new TypeOrmActionLedgerRepository(dataSource, undefined, passThroughStorageAccounting);
 
     await expect(repository.executeAtomically(input, async (transaction) => {
       await transaction.query('INSERT INTO "target_mutations" ("target_id") VALUES ($1)', [TARGET_ID]);
@@ -302,7 +307,7 @@ describe('TypeOrmActionLedgerRepository', () => {
 
   it('rolls back a target mutation when its reversible receipt exceeds the persistence cap', async () => {
     const { dataSource, state } = createFakeDatabase();
-    const repository = new TypeOrmActionLedgerRepository(dataSource);
+    const repository = new TypeOrmActionLedgerRepository(dataSource, undefined, passThroughStorageAccounting);
 
     await expect(repository.executeAtomically(input, async (transaction) => {
       await transaction.query('INSERT INTO "target_mutations" ("target_id") VALUES ($1)', [TARGET_ID]);
@@ -320,7 +325,7 @@ describe('TypeOrmActionLedgerRepository', () => {
   it('rolls back and releases when commit fails before the transaction commits', async () => {
     const { dataSource, runner, state } = createFakeDatabase();
     state.failCommit = true;
-    const repository = new TypeOrmActionLedgerRepository(dataSource);
+    const repository = new TypeOrmActionLedgerRepository(dataSource, undefined, passThroughStorageAccounting);
 
     await expect(repository.executeAtomically(input, async (transaction) => {
       await transaction.query('INSERT INTO "target_mutations" ("target_id") VALUES ($1)', [TARGET_ID]);
@@ -337,7 +342,7 @@ describe('TypeOrmActionLedgerRepository', () => {
 
   it('rolls back a participant that returns a stale pre-version', async () => {
     const { dataSource, state } = createFakeDatabase();
-    const repository = new TypeOrmActionLedgerRepository(dataSource);
+    const repository = new TypeOrmActionLedgerRepository(dataSource, undefined, passThroughStorageAccounting);
 
     await expect(repository.executeAtomically(input, async (transaction) => {
       await transaction.query('INSERT INTO "target_mutations" ("target_id") VALUES ($1)', [TARGET_ID]);
@@ -351,7 +356,7 @@ describe('TypeOrmActionLedgerRepository', () => {
 
   it('replays an identical operation before invoking the mutation callback', async () => {
     const { dataSource, state } = createFakeDatabase();
-    const repository = new TypeOrmActionLedgerRepository(dataSource);
+    const repository = new TypeOrmActionLedgerRepository(dataSource, undefined, passThroughStorageAccounting);
     await repository.executeAtomically(input, async () => mutationResult());
     const mutation = jest.fn(async () => mutationResult());
 
@@ -365,7 +370,7 @@ describe('TypeOrmActionLedgerRepository', () => {
 
   it('serializes a concurrent same-key request and replays after the first transaction commits', async () => {
     const { dataSource, state } = createFakeDatabase();
-    const repository = new TypeOrmActionLedgerRepository(dataSource);
+    const repository = new TypeOrmActionLedgerRepository(dataSource, undefined, passThroughStorageAccounting);
     let signalMutationStarted: () => void = () => undefined;
     let releaseFirstMutation: () => void = () => undefined;
     const mutationStarted = new Promise<void>((resolve) => { signalMutationStarted = resolve; });
@@ -395,7 +400,7 @@ describe('TypeOrmActionLedgerRepository', () => {
 
   it('serializes different-key undo attempts on the original receipt row before invoking the second mutation', async () => {
     const { dataSource, state } = createFakeDatabase();
-    const repository = new TypeOrmActionLedgerRepository(dataSource);
+    const repository = new TypeOrmActionLedgerRepository(dataSource, undefined, passThroughStorageAccounting);
     const original = await repository.executeAtomically(input, async () => mutationResult());
     const undoInput = (operationKey: string): ActionLedgerExecutionInput => ({
       ...input,
@@ -440,7 +445,7 @@ describe('TypeOrmActionLedgerRepository', () => {
 
   it('conflicts on a reused key with a different fingerprint before mutation', async () => {
     const { dataSource, state } = createFakeDatabase();
-    const repository = new TypeOrmActionLedgerRepository(dataSource);
+    const repository = new TypeOrmActionLedgerRepository(dataSource, undefined, passThroughStorageAccounting);
     await repository.executeAtomically(input, async () => mutationResult());
     const mutation = jest.fn(async () => mutationResult());
 
@@ -452,7 +457,7 @@ describe('TypeOrmActionLedgerRepository', () => {
 
   it('does not return another owner’s operation record', async () => {
     const { dataSource } = createFakeDatabase();
-    const repository = new TypeOrmActionLedgerRepository(dataSource);
+    const repository = new TypeOrmActionLedgerRepository(dataSource, undefined, passThroughStorageAccounting);
     await repository.executeAtomically(input, async () => mutationResult());
 
     await expect(repository.findForOwner(OTHER_OWNER_ID, input.operationKey)).resolves.toBeNull();
@@ -460,7 +465,7 @@ describe('TypeOrmActionLedgerRepository', () => {
 
   it('requires an available same-owner undo record before invoking a compensating mutation', async () => {
     const { dataSource } = createFakeDatabase();
-    const repository = new TypeOrmActionLedgerRepository(dataSource);
+    const repository = new TypeOrmActionLedgerRepository(dataSource, undefined, passThroughStorageAccounting);
     const mutation = jest.fn(async () => mutationResult());
 
     await expect(repository.executeAtomically({
@@ -478,7 +483,7 @@ describe('TypeOrmActionLedgerRepository', () => {
 
   it('commits the compensating receipt and original undo status with the target reversal', async () => {
     const { dataSource } = createFakeDatabase();
-    const repository = new TypeOrmActionLedgerRepository(dataSource);
+    const repository = new TypeOrmActionLedgerRepository(dataSource, undefined, passThroughStorageAccounting);
     const original = await repository.executeAtomically(input, async () => mutationResult());
     const undoInput: ActionLedgerExecutionInput = {
       ...input,

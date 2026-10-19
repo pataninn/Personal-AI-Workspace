@@ -1,4 +1,7 @@
 import type { DataSource, QueryRunner } from 'typeorm';
+import { lockProjectWriteState } from '@/infrastructure/database/project-removal-write-barrier';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import { fixedContentScope, resultContentScope } from '@/infrastructure/database/storage-content-projections';
 
 import type { ActionLedgerMutationResult, ActionLedgerRecord, ActionLedgerReversibleFields } from '@/modules/action-ledger/domain/action-ledger-types';
 import { ActionLedgerTargetStateConflictError } from '@/modules/action-ledger/domain/action-ledger-errors';
@@ -266,14 +269,11 @@ async function withTransaction<T>(dataSource: DataSource, action: (queryRunner: 
 }
 
 async function lockActiveProject(queryRunner: QueryRunner, ownerId: string, projectId: string): Promise<void> {
-  const rows = asRows<ProjectRow>(await queryRunner.query(
-    `SELECT "status" FROM "projects" WHERE "owner_id" = $1 AND "id" = $2 FOR UPDATE`,
-    [ownerId, projectId]
-  ));
-  if (!rows[0]) {
+  const project = await lockProjectWriteState(queryRunner, ownerId, projectId);
+  if (!project) {
     throw new ProjectTaskNotFoundError();
   }
-  if (rows[0].status === 'archived') {
+  if (project.status === 'archived' || project.removalPending) {
     throw new ProjectTaskArchivedProjectError();
   }
 }
@@ -767,7 +767,14 @@ function makeTaskMutation(input: {
 }
 
 export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGlobalTaskQueryRepository, ITaskMutationParticipant<QueryRunner>, ITaskUndoParticipant<QueryRunner> {
-  public constructor(private readonly dataSource: DataSource) {}
+  public constructor(
+    private readonly dataSource: DataSource,
+    private readonly storageAccounting = new TypeOrmStorageContentAccounting(dataSource)
+  ) {}
+
+  private withAccountedTransaction<T>(ownerId: string, action: (queryRunner: QueryRunner) => Promise<T>, scope: import('@/infrastructure/database/storage-content-projections').StorageContentMutationScope<T>): Promise<T> {
+    return withTransaction(this.dataSource, (queryRunner) => this.storageAccounting.runMutation(queryRunner, ownerId, () => action(queryRunner), scope));
+  }
 
   /** Creates the task within the action-ledger transaction. */
   public async createInTransaction(queryRunner: QueryRunner, input: CreateTaskMutationInput): Promise<AppliedTaskMutation> {
@@ -1320,7 +1327,7 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
   }
 
   public async createTask(input: CreateProjectTaskRecord): Promise<CreateProjectTaskResult> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       await lockActiveProject(queryRunner, input.ownerId, input.projectId);
       const orderVersion = await lockOrderState(queryRunner, input.ownerId, input.projectId);
       const priorRows = asRows<{ readonly idempotency_fingerprint: string; readonly idempotency_snapshot: unknown }>(await queryRunner.query(
@@ -1348,11 +1355,11 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
       const snapshot = { task: serializeTask(task), orderVersion: nextOrderVersion };
       await queryRunner.query('UPDATE "project_tasks" SET "idempotency_snapshot" = $1::jsonb WHERE "id" = $2', [JSON.stringify(snapshot), task.id]);
       return { task, orderVersion: nextOrderVersion, replayed: false };
-    });
+    }, resultContentScope((result: CreateProjectTaskResult) => [{ entity: 'project_tasks', id: result.task.id }]));
   }
 
   public async updateTask(input: UpdateProjectTaskRecord): Promise<{ readonly task: ProjectTask; readonly orderVersion: number }> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       await lockActiveProject(queryRunner, input.ownerId, input.projectId);
       const current = await loadTask(queryRunner, input.ownerId, input.projectId, input.taskId, true);
       if (!current) {
@@ -1436,11 +1443,11 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
         });
       }
       return { task, orderVersion: await readOrderVersion(queryRunner, input.ownerId, input.projectId) };
-    });
+    }, fixedContentScope([{ entity: 'project_tasks', id: input.taskId }]));
   }
 
   public async deleteTask(input: { readonly ownerId: string; readonly projectId: string; readonly taskId: string; readonly expectedVersion: number }): Promise<{ readonly orderVersion: number }> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       await lockActiveProject(queryRunner, input.ownerId, input.projectId);
       await lockOrderState(queryRunner, input.ownerId, input.projectId);
       const current = await loadTask(queryRunner, input.ownerId, input.projectId, input.taskId, true);
@@ -1452,11 +1459,24 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
       }
       if (current.status !== 'archived') await compactTaskPositions(queryRunner, input.ownerId, input.projectId, current.position);
       return { orderVersion: await bumpOrderVersion(queryRunner, input.ownerId, input.projectId) };
+    }, {
+      before: async (transaction) => {
+        const rows = await transaction.query(
+          'SELECT "source_suggestion_id" FROM "project_tasks" WHERE "owner_id" = $1 AND "project_id" = $2 AND "id" = $3',
+          [input.ownerId, input.projectId, input.taskId]
+        ) as readonly { source_suggestion_id: string | null }[];
+        const suggestionId = rows[0]?.source_suggestion_id;
+        return [
+          { entity: 'project_tasks' as const, id: input.taskId },
+          ...(suggestionId ? [{ entity: 'project_task_suggestions' as const, id: suggestionId }] : [])
+        ];
+      },
+      after: async () => []
     });
   }
 
   public async reorderTask(input: ReorderProjectTaskRecord): Promise<ProjectTaskListSnapshot> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       await lockActiveProject(queryRunner, input.ownerId, input.projectId);
       const currentOrderVersion = await lockOrderState(queryRunner, input.ownerId, input.projectId);
       if (currentOrderVersion !== input.expectedOrderVersion) {
@@ -1494,7 +1514,7 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
       });
       const orderVersion = await bumpOrderVersion(queryRunner, input.ownerId, input.projectId);
       return loadTaskList(queryRunner, input.ownerId, input.projectId, 'all', orderVersion);
-    });
+    }, fixedContentScope([{ entity: 'project_tasks', id: input.taskId }]));
   }
 
   public async listSuggestions(ownerId: string, projectId: string, filter: { readonly status: 'all' | 'pending'; readonly conversationId?: string }): Promise<readonly ProjectTaskSuggestion[]> {
@@ -1514,7 +1534,7 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
   }
 
   public async resolveSuggestion(input: ResolveProjectTaskSuggestionRecord): Promise<ResolveProjectTaskSuggestionResult> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       await lockActiveProject(queryRunner, input.ownerId, input.projectId);
       if (input.decision === 'accepted') {
         await lockOrderState(queryRunner, input.ownerId, input.projectId);
@@ -1610,6 +1630,9 @@ export class TypeOrmProjectTaskRepository implements IProjectTaskRepository, IGl
         throw new ProjectTaskNotFoundError();
       }
       return { decision: 'accepted', task: linkedTask, taskSuggestion: suggestion, orderVersion };
-    });
+    }, resultContentScope((result: ResolveProjectTaskSuggestionResult) => [
+      { entity: 'project_task_suggestions', id: input.suggestionId },
+      ...(result.decision === 'accepted' ? [{ entity: 'project_tasks' as const, id: result.task.id }] : [])
+    ]));
   }
 }

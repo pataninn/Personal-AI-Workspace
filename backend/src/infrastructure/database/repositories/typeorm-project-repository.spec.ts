@@ -1,6 +1,7 @@
 import type { DataSource, QueryRunner } from 'typeorm';
 
 import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories/typeorm-project-repository';
+import type { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
 import { ActionLedgerTargetStateConflictError } from '@/modules/action-ledger/domain/action-ledger-errors';
 import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
 import type { ProjectStatus } from '@/modules/projects/domain/project-types';
@@ -9,6 +10,18 @@ const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const PROJECT_ID = '22222222-2222-4222-8222-222222222222';
 const CREATED_AT = '2026-10-01T01:02:03.000Z';
 const UPDATED_AT = '2026-10-02T01:02:03.000Z';
+
+const passThroughStorageAccounting = {
+  runMutation: async <T>(_transaction: unknown, _ownerId: string, mutation: () => Promise<T>): Promise<T> => mutation()
+} as unknown as TypeOrmStorageContentAccounting;
+
+function withProjectRemovalBarrier(query: jest.Mock, removalPending = false): jest.Mock {
+  return jest.fn(async (sql: string, parameters?: unknown[]): Promise<unknown> => {
+    if (sql.includes('SELECT "status", "relative_root" FROM "projects"')) return [{ status: 'active', relative_root: 'apps/website' }];
+    if (sql.includes('FROM "project_removal_jobs"')) return removalPending ? [{ project_id: PROJECT_ID }] : [];
+    return query(sql, parameters);
+  });
+}
 
 function projectRow(status: ProjectStatus): Record<string, unknown> {
   return {
@@ -34,7 +47,7 @@ function fixture(query: jest.Mock): {
   readonly release: jest.Mock;
 } {
   const queryRunner = {
-    query,
+    query: withProjectRemovalBarrier(query),
     connect: jest.fn().mockResolvedValue(undefined),
     startTransaction: jest.fn().mockResolvedValue(undefined),
     commitTransaction: jest.fn().mockResolvedValue(undefined),
@@ -43,7 +56,7 @@ function fixture(query: jest.Mock): {
   };
   // Only the QueryRunner operations used by this repository are needed in the fixture.
   const dataSource = { createQueryRunner: () => queryRunner } as unknown as DataSource;
-  return { repository: new TypeOrmProjectRepository(dataSource), ...queryRunner };
+  return { repository: new TypeOrmProjectRepository(dataSource, passThroughStorageAccounting), ...queryRunner };
 }
 
 describe('TypeOrmProjectRepository', () => {
@@ -63,7 +76,7 @@ describe('TypeOrmProjectRepository', () => {
     const project = await repository.create({ id: PROJECT_ID, ownerId: OWNER_ID, name: 'Planning', slug: 'planning', relativeRoot: null, storageKind: null, relativeRootKey: null, objective: 'Plan the launch' });
 
     expect(project).toMatchObject({ relativeRoot: null, objective: 'Plan the launch' });
-    expect(query.mock.calls[1]?.[0]).toContain('"relative_root_key" IS NOT NULL');
+    expect(query.mock.calls[1]?.[0]).toContain('FROM "storage_root_mappings"');
     expect(query.mock.calls[2]?.[0]).toContain('"relative_root_key", "storage_kind", "objective"');
     expect(query.mock.calls[2]?.[1]).toEqual([PROJECT_ID, OWNER_ID, 'Planning', 'planning', null, null, null, 'Plan the launch']);
     expect(commitTransaction).toHaveBeenCalledTimes(1);
@@ -73,7 +86,7 @@ describe('TypeOrmProjectRepository', () => {
   it.each<ProjectStatus>(['archived', 'active'])('returns a serializable project after changing status to %s', async (status) => {
     const query = jest.fn().mockResolvedValueOnce([]);
     if (status === 'active') {
-      query.mockResolvedValueOnce([{ relative_root: 'apps/website' }]).mockResolvedValueOnce([]);
+      query.mockResolvedValueOnce([{ relative_root: 'apps/website', storage_kind: 'legacy' }]).mockResolvedValueOnce([]);
     }
     query.mockResolvedValueOnce([[projectRow(status)], 1]);
     const { repository, commitTransaction, rollbackTransaction, release } = fixture(query);
@@ -86,6 +99,24 @@ describe('TypeOrmProjectRepository', () => {
     expect(commitTransaction).toHaveBeenCalledTimes(1);
     expect(rollbackTransaction).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledTimes(1);
+    if (status === 'active') {
+      const rootsQuery = query.mock.calls.find(([sql]: [string]) => sql.includes('"storage_kind" IS NOT DISTINCT FROM $3'));
+      expect(rootsQuery?.[1]).toEqual([OWNER_ID, PROJECT_ID, 'legacy']);
+    }
+  });
+
+  it('checks overlap only within the project storage mount when reactivating', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ relative_root: 'projects/22222222-2222-4222-8222-222222222222', storage_kind: 'managed' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([[{ ...projectRow('active'), relative_root: 'projects/22222222-2222-4222-8222-222222222222', relative_root_key: 'projects/22222222-2222-4222-8222-222222222222', storage_kind: 'managed' }], 1]);
+    const { repository } = fixture(query);
+
+    await expect(repository.updateStatus({ ownerId: OWNER_ID, projectId: PROJECT_ID, status: 'active', expectedVersion: 1 }))
+      .resolves.toMatchObject({ status: 'active', storageKind: 'managed' });
+    const rootsQuery = query.mock.calls.find(([sql]: [string]) => sql.includes('"storage_kind" IS NOT DISTINCT FROM $3'));
+    expect(rootsQuery?.[1]).toEqual([OWNER_ID, PROJECT_ID, 'managed']);
   });
 
   it('returns null when the versioned UPDATE affects no rows', async () => {
@@ -133,7 +164,7 @@ describe('TypeOrmProjectRepository', () => {
   it('creates a planning workspace on the supplied ledger transaction without opening a nested transaction', async () => {
     const row = { ...projectRow('active'), id: '33333333-3333-4333-8333-333333333333', relative_root: null, relative_root_key: null, storage_kind: null, objective: 'Prepare the release' };
     const query = jest.fn().mockResolvedValue([row]);
-    const runner = { query };
+    const runner = { query: withProjectRemovalBarrier(query) };
     const createQueryRunner = jest.fn();
     const repository = new TypeOrmProjectRepository({ createQueryRunner } as unknown as DataSource);
 
@@ -159,7 +190,7 @@ describe('TypeOrmProjectRepository', () => {
       .mockResolvedValueOnce([rootless])
       .mockResolvedValueOnce([{ relative_root: 'apps/site' }])
       .mockResolvedValueOnce([[attached], 1]);
-    const runner = { query };
+    const runner = { query: withProjectRemovalBarrier(query) };
     const createQueryRunner = jest.fn();
     const repository = new TypeOrmProjectRepository({ createQueryRunner } as unknown as DataSource);
 
@@ -188,7 +219,7 @@ describe('TypeOrmProjectRepository', () => {
   it('updates objective through the supplied transaction with an expected-version predicate', async () => {
     const updatedRow = { ...projectRow('active'), objective: 'New objective', version: 3 };
     const query = jest.fn().mockResolvedValue([[updatedRow], 1]);
-    const runner = { query };
+    const runner = { query: withProjectRemovalBarrier(query) };
     const createQueryRunner = jest.fn();
     const repository = new TypeOrmProjectRepository({ createQueryRunner } as unknown as DataSource);
 

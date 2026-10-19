@@ -100,6 +100,7 @@ describe('project use cases', () => {
 
     await expect(useCase.execute({ ownerId: 'owner-1', projectId: 'project-1', status: 'active', expectedVersion: 1 })).resolves.toMatchObject({ status: 'archived' });
     expect(workspace.validateProjectRoot).toHaveBeenCalledWith('apps/website');
+    expect(projects.listActiveRoots).toHaveBeenCalledWith('owner-1', 'legacy');
     expect(projects.updateStatus).toHaveBeenCalledWith(expect.objectContaining({ status: 'active', expectedVersion: 1 }));
   });
 

@@ -21,7 +21,7 @@ export interface UpdateProjectStatusRecord {
 export interface IProjectRepository {
   listByOwner(ownerId: string, includeArchived: boolean): Promise<readonly Project[]>;
   findByIdForOwner(ownerId: string, projectId: string): Promise<Project | null>;
-  listActiveRoots(ownerId: string): Promise<readonly string[]>;
+  listActiveRoots(ownerId: string, storageKind?: ProjectStorageKind | null): Promise<readonly string[]>;
   create(input: CreateProjectRecord): Promise<Project>;
   updateStatus(input: UpdateProjectStatusRecord): Promise<Project | null>;
 }

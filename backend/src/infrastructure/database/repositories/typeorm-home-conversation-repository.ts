@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { DataSource, QueryRunner } from 'typeorm';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import { homeConversationContentScope } from '@/infrastructure/database/storage-content-projections';
 
 import {
   HomeConversationNotFoundError,
@@ -194,7 +196,14 @@ async function boundedInitialDisclosureDraft(
 
 /** TypeORM adapter for durable Home conversations, turns, and messages. */
 export class TypeOrmHomeConversationRepository implements IHomeConversationRepository {
-  public constructor(private readonly dataSource: DataSource) {}
+  public constructor(
+    private readonly dataSource: DataSource,
+    private readonly storageAccounting = new TypeOrmStorageContentAccounting(dataSource)
+  ) {}
+
+  private withAccountedTransaction<T>(ownerId: string, action: (queryRunner: QueryRunner) => Promise<T>, scope: import('@/infrastructure/database/storage-content-projections').StorageContentMutationScope<T>): Promise<T> {
+    return withTransaction(this.dataSource, (queryRunner) => this.storageAccounting.runMutation(queryRunner, ownerId, () => action(queryRunner), scope));
+  }
 
   /** Lists conversations in one owner scope using stable activity pagination. */
   public async listForOwner(input: ListHomeConversationsInput): Promise<HomeConversationPage> {
@@ -241,7 +250,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
 
   /** Creates an owner-scoped conversation or replays the matching request. */
   public async create(input: CreateHomeConversationInput): Promise<PersistedHomeResource<HomeConversation>> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       const workspaceId = input.scope.kind === 'workspace' ? input.scope.workspaceId : null;
       await lockIntent(queryRunner, JSON.stringify(['conversation', input.ownerId, input.scope.kind, workspaceId, input.requestKey]));
       const existing = await this.findConversationRequest(queryRunner, input.ownerId, input.scope.kind, workspaceId, input.requestKey);
@@ -271,12 +280,25 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         payload: { scope: input.scope.kind }
       });
       return { resource: toHomeConversation({ ...row, last_event_sequence: lastEventSequence }), replayed: false };
-    });
+    }, homeConversationContentScope({
+      ownerId: input.ownerId,
+      conversationId: null,
+      conversationIdBefore: async (transaction) => {
+        const workspaceId = input.scope.kind === 'workspace' ? input.scope.workspaceId : null;
+        const rows = await transaction.query(
+          `SELECT "id" FROM "home_conversations" WHERE "owner_id" = $1 AND "scope" = $2
+             AND "workspace_id" IS NOT DISTINCT FROM $3 AND "create_request_key" = $4 LIMIT 1`,
+          [input.ownerId, input.scope.kind, workspaceId, input.requestKey]
+        ) as readonly { id: string }[];
+        return rows[0]?.id ?? null;
+      },
+      conversationIdFromResult: (result: PersistedHomeResource<HomeConversation>) => result.resource.id
+    }));
   }
 
   /** Creates a sequenced turn or replays its matching request. */
   public async createTurn(input: CreateHomeTurnInput): Promise<PersistedHomeResource<HomeTurn>> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       const conversation = await lockConversation(queryRunner, input.ownerId, input.conversationId);
       if (!conversation) {
         throw new HomeConversationNotFoundError();
@@ -315,12 +337,12 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         payload: { turnSequence: sequence, status: row.status }
       });
       return { resource: toHomeTurn(row), replayed: false };
-    });
+    }, homeConversationContentScope({ ownerId: input.ownerId, conversationId: input.conversationId, turnIdsFromResult: (result: PersistedHomeResource<HomeTurn>) => [result.resource.id] }));
   }
 
   /** Persists a turn and its first user message as one idempotent state change. */
   public async submitTurn(input: SubmitHomeTurnInput): Promise<HomeTurnSubmission> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       const conversation = await lockConversation(queryRunner, input.ownerId, input.conversationId);
       if (!conversation) throw new HomeConversationNotFoundError();
 
@@ -430,12 +452,12 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         ...(disclosure ? { disclosure, execution: executionForSubmission(turn, disclosure) } : { execution: executionForStatus(turn.status) }),
         replayed: false
       };
-    });
+    }, homeConversationContentScope({ ownerId: input.ownerId, conversationId: input.conversationId, turnIdsFromResult: (result: HomeTurnSubmission) => [result.turn.id] }));
   }
 
   /** Locks the turn and disclosure before applying a one-turn consent decision. */
   public async decideConsent(input: DecideHomeConsentInput): Promise<HomeConsentDecisionResult | null> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       if (!await lockConversation(queryRunner, input.ownerId, input.conversationId)) return null;
       const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
         `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
@@ -476,12 +498,12 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         currentTurn = await this.changeTurnStatus(queryRunner, input.ownerId, input.conversationId, turnRow, 'cancelled');
       }
       return { turn: currentTurn, disclosure: mappedDisclosure, replayed: false };
-    });
+    }, homeConversationContentScope({ ownerId: input.ownerId, conversationId: input.conversationId, turnIdsFromResult: (result: HomeConsentDecisionResult | null) => result ? [result.turn.id] : [] }));
   }
 
   /** Persists only safe metadata for a dynamic result and leaves the result in application memory. */
   public async createToolResultDisclosure(input: CreateHomeToolResultDisclosureInput): Promise<HomeConsentDisclosureResult | null> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       const conversation = await lockConversation(queryRunner, input.ownerId, input.conversationId);
       if (!conversation) return null;
       const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
@@ -534,12 +556,12 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         payload: consentEventPayload(disclosure)
       });
       return { disclosure, replayed: false };
-    });
+    }, homeConversationContentScope({ ownerId: input.ownerId, conversationId: input.conversationId, turnIdsFromResult: (result: HomeConsentDisclosureResult | null) => result ? [input.turnId] : [] }));
   }
 
   /** Applies a bridge start outcome only if the decision still owns this pending turn. */
   public async updateConsentDelivery(input: UpdateHomeConsentDeliveryInput): Promise<HomeTurn | null> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       if (!await lockConversation(queryRunner, input.ownerId, input.conversationId)) return null;
       const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
         `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
@@ -565,12 +587,12 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       return nextStatus && nextStatus !== current.status
         ? this.changeTurnStatus(queryRunner, input.ownerId, input.conversationId, current, nextStatus)
         : toHomeTurn(current);
-    });
+    }, homeConversationContentScope({ ownerId: input.ownerId, conversationId: input.conversationId, turnIdsFromResult: (result: HomeTurn | null) => result ? [result.id] : [] }));
   }
 
   /** Records dynamic tool-result delivery and fails the turn closed when delivery is uncertain. */
   public async updateToolResultDelivery(input: UpdateHomeToolResultDeliveryInput): Promise<HomeTurn | null> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       if (!await lockConversation(queryRunner, input.ownerId, input.conversationId)) return null;
       const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
         `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
@@ -595,7 +617,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         return this.changeTurnStatus(queryRunner, input.ownerId, input.conversationId, current, 'unknown');
       }
       return toHomeTurn(current);
-    });
+    }, homeConversationContentScope({ ownerId: input.ownerId, conversationId: input.conversationId, turnIdsFromResult: (result: HomeTurn | null) => result ? [result.id] : [] }));
   }
 
   /** Reads one disclosure through all four Home ownership keys. */
@@ -655,7 +677,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
 
   /** Persists cancellation intent under the conversation lock and replays repeated requests. */
   public async cancelTurn(input: CancelHomeTurnInput): Promise<PersistedHomeResource<HomeTurn> | null> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       const conversation = await lockConversation(queryRunner, input.ownerId, input.conversationId);
       if (!conversation) return null;
 
@@ -695,12 +717,12 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         payload: { status: updated.status }
       });
       return { resource: toHomeTurn(updated), replayed: false };
-    });
+    }, homeConversationContentScope({ ownerId: input.ownerId, conversationId: input.conversationId, turnIdsFromResult: (result: PersistedHomeResource<HomeTurn> | null) => result ? [result.resource.id] : [] }));
   }
 
   /** Updates a turn only within the supplied owner and conversation. */
   public async updateTurnStatus(input: UpdateHomeTurnStatusInput): Promise<HomeTurn | null> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       const conversation = await lockConversation(queryRunner, input.ownerId, input.conversationId);
       if (!conversation) {
         return null;
@@ -739,13 +761,13 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         payload: { status: row.status }
       });
       return toHomeTurn(row);
-    });
+    }, homeConversationContentScope({ ownerId: input.ownerId, conversationId: input.conversationId, turnIdsFromResult: (result: HomeTurn | null) => result ? [result.id] : [] }));
   }
 
   /** Commits the final assistant transcript entry and runtime status under one active-turn lock. */
   public async completeTurnWithAssistant(input: CompleteHomeTurnWithAssistantInput): Promise<HomeTurn | null> {
     if (Buffer.byteLength(input.content, 'utf8') > 262144) throw new HomeConversationEventInvalidError();
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       if (!await lockConversation(queryRunner, input.ownerId, input.conversationId)) return null;
       const rows: readonly HomeTurnRow[] = await queryRunner.query(
         `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "created_at", "updated_at"
@@ -758,12 +780,12 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
 
       if (input.content.length > 0) await this.insertAssistantMessage(queryRunner, input);
       return this.changeTurnStatus(queryRunner, input.ownerId, input.conversationId, current, input.status);
-    });
+    }, homeConversationContentScope({ ownerId: input.ownerId, conversationId: input.conversationId, turnIdsFromResult: (result: HomeTurn | null) => result ? [result.id] : [] }));
   }
 
   /** Appends a sequenced message or replays its matching request. */
   public async appendMessage(input: AppendHomeMessageInput): Promise<PersistedHomeResource<HomeMessage>> {
-    return withTransaction(this.dataSource, async (queryRunner) => {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       const conversation = await lockConversation(queryRunner, input.ownerId, input.conversationId);
       if (!conversation) {
         throw new HomeConversationNotFoundError();
@@ -809,7 +831,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         payload: { messageSequence: sequence, role: row.role }
       });
       return { resource: toHomeMessage(row), replayed: false };
-    });
+    }, homeConversationContentScope({ ownerId: input.ownerId, conversationId: input.conversationId, turnIdsFromResult: (result: PersistedHomeResource<HomeMessage>) => [input.turnId] }));
   }
 
   /** Lists messages from one owner-scoped conversation in sequence order. */

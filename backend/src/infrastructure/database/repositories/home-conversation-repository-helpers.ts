@@ -1,4 +1,5 @@
 import type { DataSource, QueryRunner } from 'typeorm';
+import { lockProjectWriteState } from '@/infrastructure/database/project-removal-write-barrier';
 
 import {
   HomeConversationNotFoundError,
@@ -32,11 +33,8 @@ export async function lockIntent(queryRunner: QueryRunner, intent: string): Prom
 
 /** Requires the selected workspace to be active, planning-only, and owned by the requested user. */
 export async function assertWorkspaceOwned(queryRunner: QueryRunner, ownerId: string, workspaceId: string): Promise<void> {
-  const rows: readonly { id: string }[] = await queryRunner.query(
-    'SELECT "id" FROM "projects" WHERE "owner_id" = $1 AND "id" = $2 AND "status" = \'active\' AND "relative_root" IS NULL LIMIT 1 FOR SHARE',
-    [ownerId, workspaceId]
-  );
-  if (!rows[0]) {
+  const workspace = await lockProjectWriteState(queryRunner, ownerId, workspaceId);
+  if (!workspace || workspace.status !== 'active' || workspace.relativeRoot !== null || workspace.removalPending) {
     throw new HomeConversationNotFoundError();
   }
 }

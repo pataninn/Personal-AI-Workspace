@@ -1,4 +1,7 @@
 import type { DataSource, QueryRunner } from 'typeorm';
+import { lockProjectWriteState } from '@/infrastructure/database/project-removal-write-barrier';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import { fixedContentScope, resultContentScope } from '@/infrastructure/database/storage-content-projections';
 
 import {
   ChangeSetAlreadyDecidedError,
@@ -63,33 +66,35 @@ interface FileHistoryRow {
 }
 
 export class TypeOrmProposedChangeSetRepository implements IProposedChangeSetRepository {
-  public constructor(private readonly dataSource: DataSource) {}
+  public constructor(
+    private readonly dataSource: DataSource,
+    private readonly storageAccounting = new TypeOrmStorageContentAccounting(dataSource)
+  ) {}
 
   public async create(input: CreateProposedChangeSetRecord): Promise<ProposedChangeSet> {
     const queryRunner = await this.startTransaction();
     try {
-      await assertPrincipalActive(queryRunner, input.ownerId);
-      await lockRun(queryRunner, input.runId);
-      const existing = await this.findByRun(queryRunner, input.ownerId, input.runId);
-      if (existing) {
-        if (existing.proposal_hash !== input.proposalHash) {
-          throw new ChangeSetConflictError('This run already has a different immutable change set.');
+      const result = await this.storageAccounting.runMutation(queryRunner, input.ownerId, async () => {
+        await assertPrincipalActive(queryRunner, input.ownerId);
+        await lockRun(queryRunner, input.runId);
+        const existing = await this.findByRun(queryRunner, input.ownerId, input.runId);
+        if (existing) {
+          if (existing.proposal_hash !== input.proposalHash) throw new ChangeSetConflictError('This run already has a different immutable change set.');
+          return toChangeSet(existing);
         }
-        await queryRunner.commitTransaction();
-        return toChangeSet(existing);
-      }
-      const rows: readonly ChangeSetRow[] = await queryRunner.query(
-        `INSERT INTO "ai_run_change_sets" ("owner_id", "project_id", "run_id", "proposal_hash", "operations", "operation_paths", "total_size_bytes", "total_line_count", "preview_limit_bytes", "preview_limit_lines", "fake_runtime", "backup_checkpoints", "safe_message")
-         VALUES ($1, $2, $3, $4, $5::jsonb, $6::text[], $7, $8, $9, $10, $11, $12::jsonb, $13)
-         RETURNING *`,
-        [input.ownerId, input.projectId, input.runId, input.proposalHash, JSON.stringify(input.operations), operationPaths(input.operations), input.totalSizeBytes, input.totalLineCount, input.previewLimitBytes, input.previewLimitLines, input.fakeRuntime, '[]', 'Review the proposed changes before applying them.']
-      );
-      const row = rows[0];
-      if (!row) {
-        throw new ChangeSetNotFoundError();
-      }
+        await assertProjectActive(queryRunner, input.ownerId, input.projectId);
+        const rows: readonly ChangeSetRow[] = await queryRunner.query(
+          `INSERT INTO "ai_run_change_sets" ("owner_id", "project_id", "run_id", "proposal_hash", "operations", "operation_paths", "total_size_bytes", "total_line_count", "preview_limit_bytes", "preview_limit_lines", "fake_runtime", "backup_checkpoints", "safe_message")
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6::text[], $7, $8, $9, $10, $11, $12::jsonb, $13)
+           RETURNING *`,
+          [input.ownerId, input.projectId, input.runId, input.proposalHash, JSON.stringify(input.operations), operationPaths(input.operations), input.totalSizeBytes, input.totalLineCount, input.previewLimitBytes, input.previewLimitLines, input.fakeRuntime, '[]', 'Review the proposed changes before applying them.']
+        );
+        const row = rows[0];
+        if (!row) throw new ChangeSetNotFoundError();
+        return toChangeSet(row);
+      }, resultContentScope((value: ProposedChangeSet) => [{ entity: 'ai_run_change_sets', id: value.id }]));
       await queryRunner.commitTransaction();
-      return toChangeSet(row);
+      return result;
     } catch (error: unknown) {
       await queryRunner.rollbackTransaction();
       throw error;
@@ -109,39 +114,31 @@ export class TypeOrmProposedChangeSetRepository implements IProposedChangeSetRep
   public async recordDecision(input: ChangeSetDecisionUpdate): Promise<ChangeSetDecisionResult> {
     const queryRunner = await this.startTransaction();
     try {
-      await assertPrincipalActive(queryRunner, input.ownerId);
-      const row = await this.findForUpdate(queryRunner, input.ownerId, input.runId);
-      if (!row) {
-        throw new ChangeSetNotFoundError();
-      }
-      if (row.proposal_hash !== input.proposalHash) {
-        throw new ChangeSetConflictError();
-      }
-      if (row.decision_idempotency_key) {
-        if (row.decision_idempotency_key !== input.idempotencyKey || row.decision_fingerprint !== input.requestFingerprint) {
-          throw new ChangeSetIdempotencyReusedError();
+      const result = await this.storageAccounting.runMutation(queryRunner, input.ownerId, async () => {
+        await assertPrincipalActive(queryRunner, input.ownerId);
+        const row = await this.findForUpdate(queryRunner, input.ownerId, input.runId);
+        if (!row) throw new ChangeSetNotFoundError();
+        if (row.proposal_hash !== input.proposalHash) throw new ChangeSetConflictError();
+        if (row.decision_idempotency_key) {
+          if (row.decision_idempotency_key !== input.idempotencyKey || row.decision_fingerprint !== input.requestFingerprint) throw new ChangeSetIdempotencyReusedError();
+          return { resource: toChangeSet(row), replayed: true };
         }
-        await queryRunner.commitTransaction();
-        return { resource: toChangeSet(row), replayed: true };
-      }
-      if (row.decision !== 'pending' || row.status !== 'awaiting_approval') {
-        throw new ChangeSetAlreadyDecidedError();
-      }
-      await assertProjectActive(queryRunner, input.ownerId, row.project_id);
-      const status = input.decision === 'approve' ? 'applying' : 'rejected';
-      const decision = input.decision === 'approve' ? 'approved' : 'rejected';
-      const safeMessage = input.decision === 'approve' ? 'Applying approved changes.' : 'Change set rejected. No project files were changed.';
-      const rows: readonly ChangeSetRow[] = await queryRunner.query(
-        `UPDATE "ai_run_change_sets" SET "status" = $1, "decision" = $2, "decision_idempotency_key" = $3, "decision_fingerprint" = $4, "safe_message" = $5, "updated_at" = now()
-         WHERE "owner_id" = $6 AND "run_id" = $7 RETURNING *`,
-        [status, decision, input.idempotencyKey, input.requestFingerprint, safeMessage, input.ownerId, input.runId]
-      );
-      const updated = returningRow(rows);
-      if (!updated) {
-        throw new ChangeSetNotFoundError();
-      }
+        if (row.decision !== 'pending' || row.status !== 'awaiting_approval') throw new ChangeSetAlreadyDecidedError();
+        await assertProjectActive(queryRunner, input.ownerId, row.project_id);
+        const status = input.decision === 'approve' ? 'applying' : 'rejected';
+        const decision = input.decision === 'approve' ? 'approved' : 'rejected';
+        const safeMessage = input.decision === 'approve' ? 'Applying approved changes.' : 'Change set rejected. No project files were changed.';
+        const rows: readonly ChangeSetRow[] = await queryRunner.query(
+          `UPDATE "ai_run_change_sets" SET "status" = $1, "decision" = $2, "decision_idempotency_key" = $3, "decision_fingerprint" = $4, "safe_message" = $5, "updated_at" = now()
+           WHERE "owner_id" = $6 AND "run_id" = $7 RETURNING *`,
+          [status, decision, input.idempotencyKey, input.requestFingerprint, safeMessage, input.ownerId, input.runId]
+        );
+        const updated = returningRow(rows);
+        if (!updated) throw new ChangeSetNotFoundError();
+        return { resource: toChangeSet(updated), replayed: false };
+      }, resultContentScope((value: ChangeSetDecisionResult) => [{ entity: 'ai_run_change_sets', id: value.resource.id }]));
       await queryRunner.commitTransaction();
-      return { resource: toChangeSet(updated), replayed: false };
+      return result;
     } catch (error: unknown) {
       if (queryRunner.isTransactionActive) {
         await queryRunner.rollbackTransaction();
@@ -153,13 +150,24 @@ export class TypeOrmProposedChangeSetRepository implements IProposedChangeSetRep
   }
 
   public async save(changeSet: ProposedChangeSet): Promise<void> {
-    const rows: readonly ChangeSetRow[] = await this.dataSource.query(
-      `UPDATE "ai_run_change_sets" SET "status" = $1, "decision" = $2, "operations" = $3::jsonb, "operation_paths" = $4::text[], "backup_checkpoints" = $5::jsonb, "result" = $6::jsonb, "safe_message" = $7, "updated_at" = now()
-       WHERE "owner_id" = $8 AND "run_id" = $9 AND "id" = $10 RETURNING *`,
-      [changeSet.status, changeSet.decision, JSON.stringify(changeSet.operations), operationPaths(changeSet.operations), JSON.stringify(changeSet.backupCheckpoints ?? []), changeSet.result ? JSON.stringify(changeSet.result) : null, changeSet.safeMessage, changeSet.ownerId, changeSet.runId, changeSet.id]
-    );
-    if (!rows[0]) {
-      throw new ChangeSetNotFoundError();
+    const queryRunner = await this.startTransaction();
+    try {
+      await this.storageAccounting.runMutation(queryRunner, changeSet.ownerId, async () => {
+        await assertProjectActive(queryRunner, changeSet.ownerId, changeSet.projectId);
+        const rows: readonly ChangeSetRow[] = await queryRunner.query(
+          `UPDATE "ai_run_change_sets" SET "status" = $1, "decision" = $2, "operations" = $3::jsonb, "operation_paths" = $4::text[], "backup_checkpoints" = $5::jsonb, "result" = $6::jsonb, "safe_message" = $7, "updated_at" = now()
+           WHERE "owner_id" = $8 AND "run_id" = $9 AND "id" = $10 RETURNING *`,
+          [changeSet.status, changeSet.decision, JSON.stringify(changeSet.operations), operationPaths(changeSet.operations), JSON.stringify(changeSet.backupCheckpoints ?? []), changeSet.result ? JSON.stringify(changeSet.result) : null, changeSet.safeMessage, changeSet.ownerId, changeSet.runId, changeSet.id]
+        );
+        if (!returningRow(rows)) throw new ChangeSetNotFoundError();
+        return undefined;
+      }, fixedContentScope([{ entity: 'ai_run_change_sets', id: changeSet.id }]));
+      await queryRunner.commitTransaction();
+    } catch (error: unknown) {
+      if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
     }
   }
 
@@ -261,8 +269,8 @@ async function assertPrincipalActive(queryRunner: QueryRunner, ownerId: string):
 }
 
 async function assertProjectActive(queryRunner: QueryRunner, ownerId: string, projectId: string): Promise<void> {
-  const rows: readonly { readonly status: 'active' | 'archived' }[] = await queryRunner.query('SELECT "status" FROM "projects" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1 FOR UPDATE', [ownerId, projectId]);
-  if (!rows[0] || rows[0].status === 'archived') {
+  const project = await lockProjectWriteState(queryRunner, ownerId, projectId);
+  if (!project || project.status === 'archived' || project.removalPending) {
     throw new ProjectArchivedError();
   }
 }

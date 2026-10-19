@@ -1,4 +1,7 @@
 import type { DataSource, QueryRunner } from 'typeorm';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import type { StorageContentIdentity, StorageContentMutationScope } from '@/infrastructure/database/storage-content-projections';
+import type { StorageQuotaTransaction } from '@/modules/storage-quotas/repositories/storage-quota-repository';
 
 import {
   ActionLedgerOperationKeyReusedError,
@@ -28,7 +31,8 @@ const ACTION_LEDGER_COLUMNS = `"id", "owner_id", "operation_key", "request_finge
 export class TypeOrmActionLedgerRepository implements IActionLedgerRepository<QueryRunner>, IActionLedgerUndoRepository<QueryRunner> {
   public constructor(
     private readonly dataSource: DataSource,
-    private readonly eventRecorder?: IActionLedgerEventRecorder<QueryRunner>
+    private readonly eventRecorder?: IActionLedgerEventRecorder<QueryRunner>,
+    private readonly storageAccounting = new TypeOrmStorageContentAccounting(dataSource)
   ) {}
 
   /** Replays or applies one owner-scoped operation with mutation and receipt in one transaction. */
@@ -38,7 +42,7 @@ export class TypeOrmActionLedgerRepository implements IActionLedgerRepository<Qu
     eventContext?: unknown
   ): Promise<PersistedActionLedgerRecord> {
     assertActionLedgerExecutionInput(input);
-    return this.withTransaction(async (queryRunner) => {
+    return this.withTransaction(input.ownerId, async (queryRunner) => {
       const principals: readonly { readonly id: string }[] = await queryRunner.query(
         'SELECT "id" FROM "users" WHERE "id" = $1 AND "is_active" = true AND ("expires_at" IS NULL OR "expires_at" > now()) FOR SHARE',
         [input.ownerId]
@@ -111,7 +115,7 @@ export class TypeOrmActionLedgerRepository implements IActionLedgerRepository<Qu
       }
 
       return { record, replayed: false };
-    });
+    }, actionContentScope(input, eventContext));
   }
 
   /** Reads an operation using both owner and key, never the key alone. */
@@ -157,12 +161,12 @@ export class TypeOrmActionLedgerRepository implements IActionLedgerRepository<Qu
     }
   }
 
-  private async withTransaction<T>(action: (queryRunner: QueryRunner) => Promise<T>): Promise<T> {
+  private async withTransaction<T>(ownerId: string, action: (queryRunner: QueryRunner) => Promise<T>, scope: StorageContentMutationScope<T>): Promise<T> {
     const queryRunner = this.dataSource.createQueryRunner();
     try {
       await queryRunner.connect();
       await queryRunner.startTransaction();
-      const result = await action(queryRunner);
+      const result = await this.storageAccounting.runMutation(queryRunner, ownerId, () => action(queryRunner), scope);
       await queryRunner.commitTransaction();
       return result;
     } catch (error: unknown) {
@@ -174,4 +178,64 @@ export class TypeOrmActionLedgerRepository implements IActionLedgerRepository<Qu
       await queryRunner.release();
     }
   }
+}
+
+function actionContentScope(
+  input: ActionLedgerExecutionInput,
+  eventContext: unknown
+): StorageContentMutationScope<PersistedActionLedgerRecord> {
+  let conversationId: string | null = null;
+  let previousEventSequence = 0;
+  const proposalItemId = getHomeProposalItemId(eventContext);
+  const targetIdentity: StorageContentIdentity = {
+    entity: input.targetKind === 'task' ? 'project_tasks' : 'projects',
+    id: input.targetId
+  };
+  return {
+    before: async (transaction) => {
+      if (input.turnId !== null) {
+        const turnRows = await transaction.query(
+          'SELECT "conversation_id" FROM "home_turns" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1',
+          [input.ownerId, input.turnId]
+        ) as readonly { conversation_id: string }[];
+        conversationId = turnRows[0]?.conversation_id ?? null;
+        if (conversationId) {
+          const eventRows = await transaction.query(
+            'SELECT "last_event_sequence" FROM "home_conversations" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1',
+            [input.ownerId, conversationId]
+          ) as readonly { last_event_sequence: number | string }[];
+          previousEventSequence = Number(eventRows[0]?.last_event_sequence ?? 0);
+        }
+      }
+      return [targetIdentity, ...(proposalItemId ? [{ entity: 'home_change_proposal_items' as const, id: proposalItemId }] : [])];
+    },
+    after: async (transaction, result) => {
+      const identities: StorageContentIdentity[] = [
+        targetIdentity,
+        { entity: 'action_ledger_records', id: result.record.id },
+        ...(proposalItemId ? [{ entity: 'home_change_proposal_items' as const, id: proposalItemId }] : [])
+      ];
+      if (input.turnId !== null && conversationId) {
+        const eventRows = await transaction.query(
+          'SELECT "last_event_sequence" FROM "home_conversations" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1',
+          [input.ownerId, conversationId]
+        ) as readonly { last_event_sequence: number | string }[];
+        const lastEventSequence = Number(eventRows[0]?.last_event_sequence ?? previousEventSequence);
+        const eventCount = lastEventSequence - previousEventSequence;
+        if (!Number.isSafeInteger(eventCount) || eventCount < 0 || eventCount > 100) {
+          throw new TypeError('An action-ledger mutation exceeded the bounded Home event accounting scope.');
+        }
+        for (let sequence = previousEventSequence + 1; sequence <= lastEventSequence; sequence += 1) {
+          identities.push({ entity: 'home_conversation_events', id: conversationId, sequence });
+        }
+      }
+      return identities;
+    }
+  };
+}
+
+function getHomeProposalItemId(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = (value as Record<string, unknown>).itemId;
+  return typeof candidate === 'string' ? candidate : null;
 }

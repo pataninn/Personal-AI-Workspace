@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { DataSource } from 'typeorm';
 
 import { createDataSource } from '@/infrastructure/database/data-source';
@@ -8,6 +11,12 @@ import { TypeOrmHomeChangeProposalRepository } from '@/infrastructure/database/r
 import { TypeOrmHomeConversationRepository } from '@/infrastructure/database/repositories/typeorm-home-conversation-repository';
 import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories/typeorm-project-repository';
 import { TypeOrmProjectTaskRepository } from '@/infrastructure/database/repositories/typeorm-project-task-repository';
+import { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
+import { TypeOrmStorageRootMappingRepository } from '@/infrastructure/database/repositories/typeorm-storage-root-mapping-repository';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import { StorageQuotaRootScanner, type TrustedStorageRoot } from '@/infrastructure/workspace/storage-quota-reconciliation';
+import type { StorageResourceReference } from '@/modules/storage-quotas/domain/storage-quota-types';
+import type { StorageRootMapping } from '@/modules/storage-quotas/repositories/storage-root-mapping-repository';
 import { WorkspaceBoundaryAdapter } from '@/infrastructure/workspace/workspace-boundary';
 import { ActionUndoUseCases } from '@/modules/home-assistant/use-cases/action-undo-use-cases';
 import { HomePlanningScopeConflictError } from '@/modules/home-assistant/domain/home-planning-errors';
@@ -47,6 +56,10 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
   let ledger: TypeOrmActionLedgerRepository;
   let changeProposals: HomeChangeProposalUseCases;
   let handler: HomePlanningToolRequestHandler;
+  let managedRoot: string;
+  let recoveryRoot: string;
+  let fileWorkspaceId: string;
+  let dotWorkspaceId: string;
 
   beforeAll(async () => {
     await dataSource.initialize();
@@ -57,6 +70,8 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
 
     await dataSource.query('DELETE FROM "home_change_proposal_items" WHERE "owner_id" = ANY($1::uuid[])', [[OWNER_ID, OTHER_OWNER_ID]]);
     await dataSource.query('DELETE FROM "users" WHERE "id" IN ($1, $2)', [OWNER_ID, OTHER_OWNER_ID]);
+    managedRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pai-home-parity-managed-'));
+    recoveryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pai-home-parity-recovery-'));
     await dataSource.query(
       `INSERT INTO "users" ("id", "scope_key", "identifier", "display_name", "password_hash") VALUES
        ($1, 'planning-parity-owner', 'planning-parity-owner', 'Planning Parity Owner', 'x'),
@@ -87,6 +102,9 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
       undo: new ActionUndoUseCases(ledger, tasks, projects),
       proposals: changeProposals
     });
+    fileWorkspaceId = await createWorkspace(OWNER_ID, 'file-backed');
+    dotWorkspaceId = await createWorkspace(OTHER_OWNER_ID, 'managed-workspace');
+    await reconcileMappedOwners(dataSource, [OWNER_ID, OTHER_OWNER_ID], managedRoot, recoveryRoot);
   }, 120_000);
 
   afterAll(async () => {
@@ -94,14 +112,15 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
       await dataSource.query('DROP TRIGGER IF EXISTS "home_parity_reject_action_receipt_trigger" ON "home_conversation_events"');
       await dataSource.query('DROP FUNCTION IF EXISTS "home_parity_reject_action_receipt"()');
       await dataSource.query('DELETE FROM "home_change_proposal_items" WHERE "owner_id" = ANY($1::uuid[])', [[OWNER_ID, OTHER_OWNER_ID]]);
+      await removeFixtureRootsAndMappings(dataSource, [OWNER_ID, OTHER_OWNER_ID], managedRoot);
       await dataSource.query('DELETE FROM "users" WHERE "id" IN ($1, $2)', [OWNER_ID, OTHER_OWNER_ID]);
       await dataSource.destroy();
     }
+    if (managedRoot) await fs.rm(managedRoot, { recursive: true, force: true });
+    if (recoveryRoot) await fs.rm(recoveryRoot, { recursive: true, force: true });
   });
 
   it('uses canonical task/workspace commands with assistant receipts, scoped ownership, replay and undo', async () => {
-    const fileWorkspaceId = await createWorkspace(OWNER_ID, 'file-backed');
-    const dotWorkspaceId = await createWorkspace(OTHER_OWNER_ID, 'managed-workspace');
     const ownerTurn = await createActiveHomeTurn(OWNER_ID, 'owner-command-parity');
     const otherTurn = await createActiveHomeTurn(OTHER_OWNER_ID, 'other-command-parity');
 
@@ -439,13 +458,20 @@ describeDatabase('Home planning canonical command parity PostgreSQL integration'
   async function createWorkspace(ownerId: string, slug: string): Promise<string> {
     const projectId = randomUUID();
     const relativeRoot = `projects/${projectId}`;
+    const rootKey = relativeRoot.toLocaleLowerCase('en-US');
+    await fs.mkdir(path.join(managedRoot, ownerId, ...relativeRoot.split('/')), { recursive: true });
     const rows: readonly { id: string }[] = await dataSource.query(
       `INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "status", "storage_kind")
        VALUES ($1, $2, $3, $4, $5, $6, 'active', 'managed') RETURNING "id"`,
-      [projectId, ownerId, slug, slug, relativeRoot, relativeRoot.toLocaleLowerCase('en-US')]
+      [projectId, ownerId, slug, slug, relativeRoot, rootKey]
     );
     const id = rows[0]?.id;
     if (!id) throw new Error('The isolated workspace fixture was not created.');
+    await dataSource.query(
+      `INSERT INTO "storage_root_mappings" ("owner_id", "project_id", "locator_project_id", "root_key", "storage_kind", "relative_root", "state")
+       VALUES ($1, $2, $2, $3, 'managed', $4, 'active')`,
+      [ownerId, id, rootKey, relativeRoot]
+    );
     return id;
   }
 });
@@ -476,4 +502,146 @@ function immediateData(resolution: HomePlanningToolResolution | null): {
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function reconcileMappedOwners(
+  dataSource: DataSource,
+  ownerIds: readonly string[],
+  managedRoot: string,
+  recoveryRoot: string
+): Promise<void> {
+  const quota = new TypeOrmStorageQuotaRepository(dataSource);
+  const accounting = new TypeOrmStorageContentAccounting(dataSource, quota);
+  const mappings = new TypeOrmStorageRootMappingRepository(dataSource);
+  const scanner = new StorageQuotaRootScanner();
+  for (const ownerId of ownerIds) {
+    const ownerMappings = await mappings.listMappings(ownerId);
+    const references = await scanDatabaseOwner(dataSource, accounting, ownerId);
+    const fileReferences = await scanner.scan([
+      ...await resolveFixtureRoots(dataSource, ownerId, ownerMappings, managedRoot),
+      emptyRecoveryRoot(ownerId, recoveryRoot)
+    ]);
+    await quota.reconcileReferences(ownerId, [...references, ...fileReferences]);
+  }
+}
+
+async function resolveFixtureRoots(
+  dataSource: DataSource,
+  ownerId: string,
+  mappings: readonly StorageRootMapping[],
+  managedRoot: string
+): Promise<readonly TrustedStorageRoot[]> {
+  const projects: readonly { id: string; relative_root: string; relative_root_key: string; storage_kind: 'legacy' | 'managed' | null }[] = await dataSource.query(
+    'SELECT "id", "relative_root", "relative_root_key", "storage_kind" FROM "projects" WHERE "owner_id" = $1 AND "relative_root" IS NOT NULL',
+    [ownerId]
+  );
+  if (projects.length !== mappings.length) throw new Error('Every rooted planning fixture must have an active root mapping.');
+  return mappings.map((mapping) => {
+    const project = projects.find((row) => row.id === mapping.projectId);
+    if (!project || mapping.ownerId !== ownerId || mapping.state !== 'active' || mapping.storageKind !== 'managed'
+      || mapping.relativeRoot !== project.relative_root || mapping.rootKey !== project.relative_root_key
+      || mapping.storageKind !== project.storage_kind) {
+      throw new Error('A planning fixture root mapping does not match its project row.');
+    }
+    return {
+      ownerId,
+      projectId: mapping.projectId,
+      rootKey: mapping.rootKey,
+      absolutePath: path.join(managedRoot, ownerId, ...mapping.relativeRoot.split('/')),
+      classifyFile: () => 'project_file'
+    };
+  });
+}
+
+function emptyRecoveryRoot(ownerId: string, recoveryRoot: string): TrustedStorageRoot {
+  return {
+    ownerId,
+    projectId: null,
+    rootKey: 'recovery-v1',
+    absolutePath: recoveryRoot,
+    classifyFile: () => 'recovery_file',
+    referenceForFile: () => null
+  };
+}
+
+async function scanDatabaseOwner(
+  dataSource: DataSource,
+  accounting: TypeOrmStorageContentAccounting,
+  ownerId: string
+): Promise<readonly StorageResourceReference[]> {
+  const runner = dataSource.createQueryRunner();
+  await runner.connect();
+  try {
+    await runner.startTransaction();
+    const references = await accounting.scanDatabaseContent(runner, ownerId);
+    await runner.commitTransaction();
+    return references;
+  } catch (error: unknown) {
+    if (runner.isTransactionActive) await runner.rollbackTransaction();
+    throw error;
+  } finally {
+    await runner.release();
+  }
+}
+
+async function removeFixtureRootsAndMappings(
+  dataSource: DataSource,
+  ownerIds: readonly string[],
+  managedRoot: string
+): Promise<void> {
+  await removeDirectoryAndVerify(managedRoot);
+  const runner = dataSource.createQueryRunner();
+  await runner.connect();
+  await runner.startTransaction();
+  try {
+    const reservations: readonly { count: string }[] = await runner.query(
+      'SELECT COUNT(*)::text AS "count" FROM "storage_filesystem_reservations" WHERE "owner_id" = ANY($1::uuid[])', [ownerIds]
+    );
+    if (Number(reservations[0]?.count ?? '0') > 0) throw new Error('Planning fixture roots still have quota reservations at cleanup.');
+    const mappings: readonly StorageRootMapping[] = await runner.query(
+      `SELECT "owner_id" AS "ownerId", "project_id" AS "projectId", "locator_project_id" AS "locatorProjectId",
+        "root_key" AS "rootKey", "storage_kind" AS "storageKind", "relative_root" AS "relativeRoot", "state"
+       FROM "storage_root_mappings" WHERE "owner_id" = ANY($1::uuid[]) ORDER BY "owner_id", "root_key"`,
+      [ownerIds]
+    );
+    const rootedProjects: readonly { readonly id: string; readonly owner_id: string; readonly relative_root: string; readonly relative_root_key: string }[] = await runner.query(
+      'SELECT "id", "owner_id", "relative_root", "relative_root_key" FROM "projects" WHERE "owner_id" = ANY($1::uuid[]) AND "relative_root" IS NOT NULL',
+      [ownerIds]
+    );
+    if (mappings.length !== rootedProjects.length || mappings.some((mapping) => {
+      const project = rootedProjects.find((row) => row.id === mapping.projectId);
+      return !project || mapping.state !== 'active' || mapping.ownerId !== project.owner_id || mapping.projectId !== mapping.locatorProjectId
+        || mapping.storageKind !== 'managed' || mapping.relativeRoot !== project.relative_root
+        || mapping.rootKey !== project.relative_root_key || mapping.relativeRoot !== `projects/${mapping.locatorProjectId}`;
+    })) {
+      throw new Error('Refusing to remove a planning root mapping that is not backed by this fixture’s managed project row.');
+    }
+    await runner.query('DELETE FROM "storage_resource_references" WHERE "owner_id" = ANY($1::uuid[])', [ownerIds]);
+    await runner.query(
+      `UPDATE "storage_root_mappings" SET "project_id" = NULL, "state" = 'retained'
+       WHERE "owner_id" = ANY($1::uuid[]) AND "state" = 'active'`, [ownerIds]
+    );
+    for (const mapping of mappings) {
+      await runner.query("SELECT set_config('app.storage_root_removal_verified', $1, true)", [`${mapping.ownerId}:${mapping.rootKey}`]);
+      await runner.query('DELETE FROM "storage_root_mappings" WHERE "owner_id" = $1 AND "root_key" = $2', [mapping.ownerId, mapping.rootKey]);
+    }
+    await runner.commitTransaction();
+  } catch (error: unknown) {
+    if (runner.isTransactionActive) await runner.rollbackTransaction();
+    throw error;
+  } finally {
+    await runner.release();
+  }
+}
+
+async function removeDirectoryAndVerify(directory: string): Promise<void> {
+  if (!directory) return;
+  await fs.rm(directory, { recursive: true, force: true });
+  try {
+    await fs.lstat(directory);
+  } catch (error: unknown) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return;
+    throw error;
+  }
+  throw new Error('A planning fixture root remained after its verified cleanup.');
 }

@@ -10,6 +10,7 @@ import type { Project } from '@/modules/projects/domain/project-types';
 import { InMemoryProposedChangeSetRepository } from '@/infrastructure/ai-runs/in-memory-change-set-repository';
 import { CollectProposedChangeSetUseCase, DecideProposedChangeSetUseCase, GetProposedChangeSetUseCase } from '@/modules/ai-runs/use-cases/change-set-use-cases';
 import { ChangeSetConflictError } from '@/modules/ai-runs/domain/change-errors';
+import { StorageQuotaError } from '@/modules/storage-quotas/domain/storage-quota-errors';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const PROJECT_ID = '22222222-2222-4222-8222-222222222222';
@@ -189,6 +190,24 @@ describe('proposed change-set use cases', () => {
     expect((await repository.findByRunForOwner(OWNER_ID, RUN_ID))?.status).toBe('needs_manual_review');
   });
 
+  it('records a clean quota denial as failed without marking the operation ambiguous', async () => {
+    const workspace = new WorkspaceFixture();
+    workspace.applyError = new StorageQuotaError('STORAGE_QUOTA_EXCEEDED', 'quota exceeded', 413, {
+      usedBytes: '100', reservedBytes: '0', limitBytes: '100', requestedGrowthBytes: '1'
+    });
+    const repository = new InMemoryProposedChangeSetRepository();
+    const collect = new CollectProposedChangeSetUseCase(new RunRepository(), new ProjectRepository(), workspace, repository);
+    const decision = new DecideProposedChangeSetUseCase(new RunRepository(), new ProjectRepository(), repository, workspace);
+    const changeSet = await collect.execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation: 'edit', path: FILE_PATH, content: 'updated\n' }], fakeRuntime: true });
+
+    await expect(decision.execute({ ownerId: OWNER_ID, runId: RUN_ID, proposalHash: changeSet.proposalHash, decision: 'approve', idempotencyKey: 'decision-quota' }))
+      .rejects.toMatchObject({ code: 'STORAGE_QUOTA_EXCEEDED', statusCode: 413 });
+    await expect(repository.findByRunForOwner(OWNER_ID, RUN_ID)).resolves.toMatchObject({
+      status: 'failed',
+      result: { persisted: true, appliedCount: 0, failedCount: 1, operations: [{ status: 'failed', backup: 'not_created' }] }
+    });
+  });
+
   it('drops raw proposed bytes after a terminal decision while retaining the safe preview/result', async () => {
     const workspace = new WorkspaceFixture();
     const repository = new InMemoryProposedChangeSetRepository();
@@ -262,6 +281,7 @@ class WorkspaceFixture implements IWorkspaceMutationGateway {
   public applied = false;
   public applyCalls = 0;
   public checkpointedBeforeMutation = false;
+  public applyError?: unknown;
   public snapshotContent = ORIGINAL;
   public applyOutcome: WorkspaceApplyResult = { outcome: 'applied', operations: [{ operationId: 'edit-src', operation: 'edit', path: FILE_PATH, status: 'applied', backup: 'created', safeMessage: 'Edited.' }] };
   public async inspect(_scope: WorkspaceMutationScope, relativePath: string): Promise<WorkspaceFileSnapshot> {
@@ -269,6 +289,7 @@ class WorkspaceFixture implements IWorkspaceMutationGateway {
   }
   public async applyChangeSet(_scope: WorkspaceMutationScope, operations: readonly ProposedChangeOperation[], _runId: string, _proposalHash: string, options?: WorkspaceMutationApplyOptions): Promise<WorkspaceApplyResult> {
     this.applyCalls += 1;
+    if (this.applyError !== undefined) throw this.applyError;
     await options?.recordBackupCheckpoint?.({ reference: 'private/checkpoint', operationId: operations[0]?.operationId ?? 'operation', path: FILE_PATH, sizeBytes: ORIGINAL.length, contentSha256: ORIGINAL_HASH, createdAt: new Date() });
     this.checkpointedBeforeMutation = true;
     this.applied = true;

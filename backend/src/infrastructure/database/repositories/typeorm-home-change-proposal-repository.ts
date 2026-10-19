@@ -1,4 +1,8 @@
 import type { DataSource, QueryRunner } from 'typeorm';
+import { lockProjectWriteState } from '@/infrastructure/database/project-removal-write-barrier';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import type { StorageContentIdentity, StorageContentMutationScope } from '@/infrastructure/database/storage-content-projections';
+import type { StorageQuotaTransaction } from '@/modules/storage-quotas/repositories/storage-quota-repository';
 
 import { HomeProposalCancelledError, HomeProposalDependencyConflictError, HomeProposalNotAcceptableError, HomeProposalNotEditableError, HomeProposalNotFoundError, HomeProposalRequestKeyReusedError, HomeProposalRevisionConflictError } from '@/modules/home-assistant/domain/home-planning-errors';
 import { HomeTurnNotActiveError, HomeTurnNotFoundError } from '@/modules/home-assistant/domain/home-conversation-errors';
@@ -132,10 +136,13 @@ function returnedRows<T>(result: unknown): readonly T[] {
 
 /** Persists proposal changes and their Home feed events with the conversation cursor transaction. */
 export class TypeOrmHomeChangeProposalRepository implements IHomeChangeProposalRepository {
-  public constructor(private readonly dataSource: DataSource) {}
+  public constructor(
+    private readonly dataSource: DataSource,
+    private readonly storageAccounting = new TypeOrmStorageContentAccounting(dataSource)
+  ) {}
 
   public async createDraft(input: CreateHomeProposalInput): Promise<{ readonly proposal: HomeChangeProposal; readonly replayed: boolean }> {
-    const replayed = await this.withTransaction(async (transaction) => {
+    const replayed = await this.withTransaction(input.ownerId, async (transaction) => {
       const principals: readonly { readonly id: string }[] = await transaction.query(
         'SELECT "id" FROM "users" WHERE "id" = $1 AND "is_active" = true AND ("expires_at" IS NULL OR "expires_at" > now()) FOR SHARE',
         [input.ownerId]
@@ -178,7 +185,7 @@ export class TypeOrmHomeChangeProposalRepository implements IHomeChangeProposalR
         payload: proposalEventPayload('review_required', 1, input.items.length)
       });
       return false;
-    });
+    }, proposalContentScope(input.ownerId, input.conversationId, input.id));
     const proposal = replayed
       ? await this.findRequest(input.ownerId, input.sourceTurnId, input.requestId)
       : await this.getForOwner(input.ownerId, input.conversationId, input.id);
@@ -429,16 +436,20 @@ export class TypeOrmHomeChangeProposalRepository implements IHomeChangeProposalR
   }
 
   private async withLockedProposal<T>(ownerId: string, conversationId: string, proposalId: string, action: (transaction: QueryRunner, proposal: ProposalRow) => Promise<T>): Promise<T> {
-    return this.withTransaction(async (transaction) => {
+    return this.withTransaction(ownerId, async (transaction) => {
       const conversation = await lockConversation(transaction, ownerId, conversationId);
       if (!conversation) throw new HomeProposalNotFoundError();
+      if (conversation.workspace_id) {
+        const workspace = await lockProjectWriteState(transaction, ownerId, conversation.workspace_id);
+        if (!workspace || workspace.status !== 'active' || workspace.removalPending) throw new HomeProposalNotFoundError();
+      }
       const rows: readonly ProposalRow[] = await transaction.query(
         `SELECT ${PROPOSAL_SELECT} FROM "home_change_proposals" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
         [ownerId, conversationId, proposalId]
       );
       if (!rows[0]) throw new HomeProposalNotFoundError();
       return action(transaction, rows[0]);
-    });
+    }, proposalContentScope(ownerId, conversationId, proposalId));
   }
 
   private async updateHeaderAfterEdit(transaction: QueryRunner, ownerId: string, conversationId: string, proposalId: string, commandBytes: number): Promise<{ revision: number; item_count: number }> {
@@ -451,12 +462,12 @@ export class TypeOrmHomeChangeProposalRepository implements IHomeChangeProposalR
     return { revision: Number(rows[0].revision), item_count: Number(rows[0].item_count) };
   }
 
-  private async withTransaction<T>(action: (transaction: QueryRunner) => Promise<T>): Promise<T> {
+  private async withTransaction<T>(ownerId: string, action: (transaction: QueryRunner) => Promise<T>, scope: StorageContentMutationScope<T>): Promise<T> {
     const transaction = this.dataSource.createQueryRunner();
     try {
       await transaction.connect();
       await transaction.startTransaction();
-      const result = await action(transaction);
+      const result = await this.storageAccounting.runMutation(transaction, ownerId, () => action(transaction), scope);
       await transaction.commitTransaction();
       return result;
     } catch (error: unknown) {
@@ -466,6 +477,48 @@ export class TypeOrmHomeChangeProposalRepository implements IHomeChangeProposalR
       await transaction.release();
     }
   }
+}
+
+function proposalContentScope<T>(ownerId: string, conversationId: string, proposalId: string): StorageContentMutationScope<T> {
+  let previousEventSequence = 0;
+  const loadItems = async (transaction: StorageQuotaTransaction): Promise<StorageContentIdentity[]> => {
+    const rows = await transaction.query(
+      'SELECT "id" FROM "home_change_proposal_items" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "proposal_id" = $3 ORDER BY "position" ASC',
+      [ownerId, conversationId, proposalId]
+    ) as readonly { id: string }[];
+    if (rows.length > 20) throw new TypeError('A Home proposal exceeded the bounded storage accounting scope.');
+    return rows.map((row) => ({ entity: 'home_change_proposal_items', id: row.id }));
+  };
+  const eventSequence = async (transaction: StorageQuotaTransaction): Promise<number> => {
+    const rows = await transaction.query(
+      'SELECT "last_event_sequence" FROM "home_conversations" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1',
+      [ownerId, conversationId]
+    ) as readonly { last_event_sequence: number | string }[];
+    if (!rows[0]) throw new TypeError('The Home proposal conversation was not found during storage accounting.');
+    return Number(rows[0].last_event_sequence);
+  };
+  return {
+    before: async (transaction) => {
+      previousEventSequence = await eventSequence(transaction);
+      return await loadItems(transaction);
+    },
+    after: async (transaction) => {
+      const items = await loadItems(transaction);
+      const lastSequence = await eventSequence(transaction);
+      const eventCount = lastSequence - previousEventSequence;
+      if (!Number.isSafeInteger(eventCount) || eventCount < 0 || eventCount > 100) {
+        throw new TypeError('A Home proposal mutation exceeded the bounded event accounting scope.');
+      }
+      return [
+        ...items,
+        ...Array.from({ length: eventCount }, (_value, index) => ({
+          entity: 'home_conversation_events' as const,
+          id: conversationId,
+          sequence: previousEventSequence + index + 1
+        }))
+      ];
+    }
+  };
 }
 
 function assertEditable(proposal: ProposalRow, expectedRevision: number): void {

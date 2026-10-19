@@ -30,7 +30,18 @@ function fakeFileSystem(entries: ReadonlyMap<string, WorkspaceStats>, identity =
       return entry;
     },
     readFile: async () => identity,
-    realpath: async (filePath) => filePath
+    realpath: async (filePath) => filePath,
+    readdir: async (directoryPath) => {
+      const prefix = `${directoryPath}/`;
+      const names = new Set<string>();
+      for (const filePath of entries.keys()) {
+        if (!filePath.startsWith(prefix)) continue;
+        const suffix = filePath.slice(prefix.length);
+        const firstSegment = suffix.split('/')[0];
+        if (firstSegment) names.add(firstSegment);
+      }
+      return [...names].sort();
+    }
   };
 }
 
@@ -254,5 +265,62 @@ describe('WorkspaceBoundaryAdapter', () => {
       .rejects.toBeInstanceOf(ProjectRootReparsePointError);
     await expect(adapter.resolveProjectRoot({ ownerId, projectId, storageKind: 'managed', relativeRoot: `projects/${projectId}/..` }))
       .rejects.toBeInstanceOf(WorkspaceStorageUnavailableError);
+  });
+
+  it('enumerates only canonical UUID owner and project directories under the verified managed mount', async () => {
+    const ownerId = '11111111-1111-4111-8111-111111111111';
+    const projectId = '22222222-2222-4222-8222-222222222222';
+    const entries = new Map<string, WorkspaceStats>([
+      ['/workspace', stats({ directory: true, dev: 1, ino: 1 })],
+      ['/workspace/.identity', stats({ file: true })],
+      ['/account-workspaces', stats({ directory: true, dev: 2, ino: 2 })],
+      ['/account-workspaces/.personal-ai-managed-storage-identity', stats({ file: true })],
+      [`/account-workspaces/${ownerId}`, stats({ directory: true, dev: 2, ino: 3 })],
+      [`/account-workspaces/${ownerId}/projects`, stats({ directory: true, dev: 2, ino: 4 })],
+      [`/account-workspaces/${ownerId}/projects/${projectId}`, stats({ directory: true, dev: 2, ino: 5 })]
+    ]);
+    const base = fakeFileSystem(entries);
+    const adapter = new WorkspaceBoundaryAdapter({
+      containerRoot: '/workspace', identityFile: '/workspace/.identity', expectedIdentity: 'host-marker',
+      managedContainerRoot: '/account-workspaces',
+      managedIdentityFile: '/account-workspaces/.personal-ai-managed-storage-identity',
+      managedExpectedIdentity: 'managed-marker',
+      fileSystem: { ...base, readFile: async (filePath) => filePath === '/workspace/.identity' ? 'host-marker' : 'managed-marker' }
+    });
+
+    await expect(adapter.inspectManagedNamespace()).resolves.toEqual({
+      configured: true,
+      unattributableEntries: false,
+      owners: [{ ownerId, unsafe: false, projectIds: [projectId] }]
+    });
+  });
+
+  it('marks malformed top-level entries globally untrusted and invalid or reparse child roots unsafe per owner', async () => {
+    const ownerId = '11111111-1111-4111-8111-111111111111';
+    const entries = new Map<string, WorkspaceStats>([
+      ['/workspace', stats({ directory: true, dev: 1, ino: 1 })],
+      ['/workspace/.identity', stats({ file: true })],
+      ['/account-workspaces', stats({ directory: true, dev: 2, ino: 2 })],
+      ['/account-workspaces/.personal-ai-managed-storage-identity', stats({ file: true })],
+      ['/account-workspaces/unowned-folder', stats({ directory: true })],
+      [`/account-workspaces/${ownerId}`, stats({ directory: true, dev: 2, ino: 3 })],
+      [`/account-workspaces/${ownerId}/projects`, stats({ directory: true, dev: 2, ino: 4 })],
+      [`/account-workspaces/${ownerId}/projects/not-a-project-id`, stats({ directory: true })],
+      [`/account-workspaces/${ownerId}/projects/33333333-3333-4333-8333-333333333333`, stats({ directory: true, symbolicLink: true })]
+    ]);
+    const base = fakeFileSystem(entries);
+    const adapter = new WorkspaceBoundaryAdapter({
+      containerRoot: '/workspace', identityFile: '/workspace/.identity', expectedIdentity: 'host-marker',
+      managedContainerRoot: '/account-workspaces',
+      managedIdentityFile: '/account-workspaces/.personal-ai-managed-storage-identity',
+      managedExpectedIdentity: 'managed-marker',
+      fileSystem: { ...base, readFile: async (filePath) => filePath === '/workspace/.identity' ? 'host-marker' : 'managed-marker' }
+    });
+
+    await expect(adapter.inspectManagedNamespace()).resolves.toEqual({
+      configured: true,
+      unattributableEntries: true,
+      owners: [{ ownerId, unsafe: true, projectIds: [] }]
+    });
   });
 });

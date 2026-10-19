@@ -1,6 +1,9 @@
 import type { DataSource } from 'typeorm';
 
 import { createDataSource } from '@/infrastructure/database/data-source';
+import { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
+import { TypeOrmStorageRootMappingRepository } from '@/infrastructure/database/repositories/typeorm-storage-root-mapping-repository';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
 import { HomeConsentRollbackBlockedError, HomeTurnNotActiveError } from '@/modules/home-assistant/domain/home-conversation-errors';
 import { AddHomeConsentDisclosures1710000024000 } from '@/infrastructure/database/migrations/1710000024000-add-home-consent-disclosures';
 import { TypeOrmHomeConversationRepository } from '@/infrastructure/database/repositories/typeorm-home-conversation-repository';
@@ -37,6 +40,7 @@ describeDatabase('Home consent persistence PostgreSQL integration', () => {
       [OWNER_ID, OTHER_OWNER_ID]
     );
     conversations = new TypeOrmHomeConversationRepository(dataSource);
+    await reconcileRootlessOwners(dataSource, [OWNER_ID, OTHER_OWNER_ID]);
   }, 120_000);
 
   afterAll(async () => {
@@ -210,9 +214,12 @@ describeDatabase('Home consent persistence PostgreSQL integration', () => {
     await lockHolder.connect();
     await lockHolder.startTransaction();
     try {
+      const lockHolderBackend: readonly { readonly pid: number | string }[] = await lockHolder.query('SELECT pg_backend_pid() AS "pid"');
+      const lockHolderPid = Number(lockHolderBackend[0]?.pid);
+      if (!Number.isSafeInteger(lockHolderPid) || lockHolderPid < 1) throw new Error('The Home consent race fixture could not identify its lock-holder backend.');
       await lockHolder.query('SELECT "id" FROM "home_conversations" WHERE "owner_id" = $1 AND "id" = $2 FOR UPDATE', [OWNER_ID, conversation.id]);
       cancelPromise = conversations.cancelTurn({ ownerId: OWNER_ID, conversationId: conversation.id, turnId: submission.turn.id });
-      await waitForConversationLockWaiters(dataSource, 1);
+      const cancellationBackendPid = await waitForBlockedBackend(dataSource, lockHolderPid, '%home_conversations%');
       disclosurePromise = conversations.createToolResultDisclosure({
         ownerId: OWNER_ID, conversationId: conversation.id, turnId: submission.turn.id,
         draft: {
@@ -221,7 +228,7 @@ describeDatabase('Home consent persistence PostgreSQL integration', () => {
           scope: { kind: 'home' }, categories: ['task_metadata'], itemCount: 1, byteLimit: 128
         }
       });
-      await waitForConversationLockWaiters(dataSource, 2);
+      await waitForBlockedBackend(dataSource, cancellationBackendPid, '%account_limits%');
       await lockHolder.commitTransaction();
 
       expect((await cancelPromise)?.resource.status).toBe('cancel_requested');
@@ -250,16 +257,58 @@ describeDatabase('Home consent persistence PostgreSQL integration', () => {
   }
 });
 
-async function waitForConversationLockWaiters(dataSource: DataSource, minimum: number): Promise<void> {
+async function waitForBlockedBackend(dataSource: DataSource, blockerPid: number, queryPattern: string): Promise<number> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
-    const rows: readonly { count: number | string }[] = await dataSource.query(`
-      SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
-      WHERE "datname" = current_database() AND "usename" = current_user
-        AND "wait_event_type" = 'Lock' AND "query" ILIKE '%home_conversations%'
-    `);
-    if (Number(rows[0]?.count ?? 0) >= minimum) return;
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    const rows: readonly { readonly pid: number | string }[] = await dataSource.query(`
+      SELECT "pid"::text AS "pid" FROM pg_stat_activity
+      WHERE "pid" <> pg_backend_pid() AND "datname" = current_database()
+        AND "wait_event_type" = 'Lock' AND $1::int = ANY(pg_blocking_pids("pid"))
+        AND "query" ILIKE $2
+      ORDER BY "pid" LIMIT 2
+    `, [blockerPid, queryPattern]);
+    if (rows.length === 1) {
+      const blockedPid = Number(rows[0]?.pid);
+      if (Number.isSafeInteger(blockedPid) && blockedPid > 0) return blockedPid;
+    }
+    if (rows.length > 1) throw new Error('More than one backend matched the expected Home consent race lock edge.');
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error(`Timed out waiting for ${minimum} Home conversation row-lock waiter(s).`);
+  throw new Error(`Timed out waiting for the expected Home consent race lock edge on ${queryPattern}.`);
+}
+
+async function reconcileRootlessOwners(dataSource: DataSource, ownerIds: readonly string[]): Promise<void> {
+  const quota = new TypeOrmStorageQuotaRepository(dataSource);
+  const accounting = new TypeOrmStorageContentAccounting(dataSource, quota);
+  const rootMappings = new TypeOrmStorageRootMappingRepository(dataSource);
+  for (const ownerId of ownerIds) {
+    const mappings = await rootMappings.listMappings(ownerId);
+    const roots: readonly { count: string }[] = await dataSource.query(
+      'SELECT COUNT(*)::text AS "count" FROM "projects" WHERE "owner_id" = $1 AND "relative_root" IS NOT NULL', [ownerId]
+    );
+    if (mappings.length > 0 || Number(roots[0]?.count ?? '0') > 0) {
+      throw new Error('The Home consent fixture unexpectedly contains a physical storage root.');
+    }
+    await quota.reconcileReferences(ownerId, await scanDatabaseOwner(dataSource, accounting, ownerId));
+  }
+}
+
+async function scanDatabaseOwner(
+  dataSource: DataSource,
+  accounting: TypeOrmStorageContentAccounting,
+  ownerId: string
+) {
+  const runner = dataSource.createQueryRunner();
+  await runner.connect();
+  try {
+    await runner.startTransaction();
+    const references = await accounting.scanDatabaseContent(runner, ownerId);
+    await runner.commitTransaction();
+    return references;
+  } catch (error: unknown) {
+    if (runner.isTransactionActive) await runner.rollbackTransaction();
+    throw error;
+  } finally {
+    await runner.release();
+  }
 }

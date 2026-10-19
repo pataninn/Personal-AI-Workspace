@@ -32,6 +32,7 @@ import { WorkspaceRelativePath } from '@/modules/files/domain/workspace-path';
 import { isProtectedFileName } from '@/modules/files/domain/workspace-policy';
 import { containsCredentialLikeValue } from '@/shared/egress/redaction';
 import type { IPrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
+import { StorageQuotaError } from '@/modules/storage-quotas/domain/storage-quota-errors';
 
 export interface CollectChangeSetInput {
   readonly ownerId: string;
@@ -265,7 +266,6 @@ export class DecideProposedChangeSetUseCase {
     try {
       applied = await this.workspace.applyChangeSet(scope, changeSet.operations, changeSet.runId, changeSet.proposalHash, {
         ...(this.principalAuthorization ? { assertPrincipalActive: () => this.principalAuthorization!.assertActive(changeSet.ownerId) } : {}),
-        ...(this.principalAuthorization ? { withActivePrincipal: <T>(action: (assertStillActive: () => Promise<void>) => Promise<T>) => this.principalAuthorization!.withActivePrincipal(changeSet.ownerId, action) } : {}),
         recordBackupCheckpoint: async (checkpoint) => {
           const checkpoints = [...(changeSet.backupCheckpoints ?? []), checkpoint];
           const checkpointed: ProposedChangeSet = { ...changeSet, backupCheckpoints: checkpoints, updatedAt: new Date() };
@@ -273,7 +273,27 @@ export class DecideProposedChangeSetUseCase {
           changeSet = checkpointed;
         }
       });
-    } catch {
+    } catch (error: unknown) {
+      if (error instanceof StorageQuotaError && (error.code === 'STORAGE_QUOTA_EXCEEDED' || error.code === 'STORAGE_ACCOUNTING_UNAVAILABLE')) {
+        const failed = withResult(withStatus(changeSet, 'failed', 'The approved changes were not applied because storage could not admit them.'), {
+          persisted: true,
+          operations: changeSet.operations.map((operation) => ({
+            operationId: operation.operationId,
+            operation: operation.operation,
+            path: operation.path,
+            ...(operation.destinationPath ? { destinationPath: operation.destinationPath } : {}),
+            status: 'failed' as const,
+            backup: operation.backupRequired ? 'not_created' as const : 'not_required' as const,
+            safeMessage: 'The file change was not applied because storage quota or accounting readiness prevented it.'
+          })),
+          appliedCount: 0,
+          skippedCount: 0,
+          failedCount: changeSet.operations.length,
+          backupCount: 0
+        });
+        await this.changeSets.save(failed);
+        throw error;
+      }
       return this.saveManualReview(changeSet);
     }
     if (applied.outcome === 'stale') {

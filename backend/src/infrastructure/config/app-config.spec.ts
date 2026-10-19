@@ -26,6 +26,15 @@ describe('loadConfig', () => {
     expect(config.nimModel).toBe(EXPECTED_NIM_MODEL);
     expect(config.agentRuntimeMode).toBe('direct');
     expect(config.sessionSecret).toBe('a'.repeat(32));
+    expect(config.storageDiskWarningFreeBytes).toBeUndefined();
+  });
+
+  it('accepts only a positive decimal process-visible disk warning threshold', () => {
+    expect(loadConfig({ ...validEnvironment, STORAGE_DISK_WARNING_FREE_BYTES: '536870912' }).storageDiskWarningFreeBytes)
+      .toBe(536_870_912n);
+    for (const invalid of ['0', '-1', '1.5', ' 10', '01', 'x']) {
+      expect(() => loadConfig({ ...validEnvironment, STORAGE_DISK_WARNING_FREE_BYTES: invalid })).toThrow(ConfigurationError);
+    }
   });
 
   it('accepts direct mode without deferred OpenShell settings', () => {

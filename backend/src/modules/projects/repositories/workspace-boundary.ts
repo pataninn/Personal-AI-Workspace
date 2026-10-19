@@ -15,6 +15,18 @@ export interface ProjectRootScope {
   readonly relativeRoot: string;
 }
 
+export interface ManagedOwnerDirectoryInventory {
+  readonly ownerId: string;
+  readonly unsafe: boolean;
+  readonly projectIds: readonly string[];
+}
+
+export interface ManagedNamespaceInventory {
+  readonly configured: boolean;
+  readonly unattributableEntries: boolean;
+  readonly owners: readonly ManagedOwnerDirectoryInventory[];
+}
+
 export interface IWorkspaceBoundary {
   getSnapshot(): Promise<WorkspaceBoundarySnapshot>;
   assertReady(): Promise<void>;
@@ -23,4 +35,5 @@ export interface IWorkspaceBoundary {
   createManagedProjectRoot?(ownerId: string, projectId: string): Promise<string>;
   resolveProjectRoot?(scope: ProjectRootScope): Promise<ResolvedProjectRoot>;
   getManagedSnapshot?(): Promise<WorkspaceBoundarySnapshot>;
+  inspectManagedNamespace?(): Promise<ManagedNamespaceInventory>;
 }

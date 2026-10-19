@@ -39,6 +39,9 @@
       "name": "Home conversations"
     },
     {
+      "name": "Account storage"
+    },
+    {
       "name": "Authentication"
     }
   ],
@@ -71,6 +74,149 @@
           "200": { "description": "Current principal and CSRF value.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AuthSessionEnvelope" } } } },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/account/storage": {
+      "get": {
+        "tags": [
+          "Account storage"
+        ],
+        "summary": "Read storage accounting for the authenticated account",
+        "operationId": "getAccountStorageUsage",
+        "description": "Returns exact logical byte totals for the signed-in principal only. During reconciliation or when accounting is unavailable, the route still returns 200 with the configured limit and null unverified totals; it never reports an unverified zero.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-scoped storage usage. Examples cover ready, unlimited, zero-limit, over-limit, and unverified accounting states.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountStorageUsageEnvelope"
+                },
+                "examples": {
+                  "ready": {
+                    "value": {
+                      "data": {
+                        "storage": {
+                          "state": "ready",
+                          "unit": "bytes",
+                          "unitSystem": "decimal-si",
+                          "usedBytes": "1234",
+                          "reservedBytes": "200",
+                          "limitBytes": "5000000000",
+                          "availableBytes": "4999998566",
+                          "overLimit": false,
+                          "asOf": "2026-10-19T00:00:00.000Z"
+                        }
+                      },
+                      "error": null
+                    }
+                  },
+                  "unlimited": {
+                    "value": {
+                      "data": {
+                        "storage": {
+                          "state": "ready",
+                          "unit": "bytes",
+                          "unitSystem": "decimal-si",
+                          "usedBytes": "1234",
+                          "reservedBytes": "200",
+                          "limitBytes": null,
+                          "availableBytes": null,
+                          "overLimit": false,
+                          "asOf": "2026-10-19T00:00:00.000Z"
+                        }
+                      },
+                      "error": null
+                    }
+                  },
+                  "zeroLimit": {
+                    "value": {
+                      "data": {
+                        "storage": {
+                          "state": "ready",
+                          "unit": "bytes",
+                          "unitSystem": "decimal-si",
+                          "usedBytes": "0",
+                          "reservedBytes": "0",
+                          "limitBytes": "0",
+                          "availableBytes": "0",
+                          "overLimit": false,
+                          "asOf": "2026-10-19T00:00:00.000Z"
+                        }
+                      },
+                      "error": null
+                    }
+                  },
+                  "overLimit": {
+                    "value": {
+                      "data": {
+                        "storage": {
+                          "state": "ready",
+                          "unit": "bytes",
+                          "unitSystem": "decimal-si",
+                          "usedBytes": "6000000000",
+                          "reservedBytes": "0",
+                          "limitBytes": "5000000000",
+                          "availableBytes": "0",
+                          "overLimit": true,
+                          "asOf": "2026-10-19T00:00:00.000Z"
+                        }
+                      },
+                      "error": null
+                    }
+                  },
+                  "reconciling": {
+                    "value": {
+                      "data": {
+                        "storage": {
+                          "state": "reconciling",
+                          "unit": "bytes",
+                          "unitSystem": "decimal-si",
+                          "usedBytes": null,
+                          "reservedBytes": null,
+                          "limitBytes": "5000000000",
+                          "availableBytes": null,
+                          "overLimit": null,
+                          "asOf": null
+                        }
+                      },
+                      "error": null
+                    }
+                  },
+                  "unavailable": {
+                    "value": {
+                      "data": {
+                        "storage": {
+                          "state": "unavailable",
+                          "unit": "bytes",
+                          "unitSystem": "decimal-si",
+                          "usedBytes": null,
+                          "reservedBytes": null,
+                          "limitBytes": null,
+                          "availableBytes": null,
+                          "overLimit": null,
+                          "asOf": null
+                        }
+                      },
+                      "error": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
         }
       }
     },
@@ -127,7 +273,9 @@
           "403": { "$ref": "#/components/responses/MutationForbidden" },
           "404": { "description": "Workspace is missing, foreign, archived, or file-backed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
           "409": { "description": "Idempotency key was reused with different input.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -186,7 +334,9 @@
           "403": { "$ref": "#/components/responses/MutationForbidden" },
           "404": { "$ref": "#/components/responses/ConversationNotFound" },
           "409": { "description": "Idempotency key was reused with different input.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -228,7 +378,8 @@
           "403": { "$ref": "#/components/responses/MutationForbidden" },
           "404": { "$ref": "#/components/responses/ConversationNotFound" },
           "409": { "description": "Turn is terminal and cannot be cancelled.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         }
       }
     },
@@ -252,7 +403,9 @@
           "403": { "$ref": "#/components/responses/MutationForbidden" },
           "404": { "$ref": "#/components/responses/ConversationNotFound" },
           "409": { "description": "Disclosure decision is stale or conflicts with the stored decision.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -357,7 +510,9 @@
           "403": { "$ref": "#/components/responses/MutationForbidden" },
           "404": { "$ref": "#/components/responses/ProposalNotFound" },
           "409": { "$ref": "#/components/responses/ProposalConflict" },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       },
       "delete": {
@@ -380,7 +535,8 @@
           "403": { "$ref": "#/components/responses/MutationForbidden" },
           "404": { "$ref": "#/components/responses/ProposalNotFound" },
           "409": { "$ref": "#/components/responses/ProposalConflict" },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         }
       }
     },
@@ -405,7 +561,9 @@
           "403": { "$ref": "#/components/responses/MutationForbidden" },
           "404": { "$ref": "#/components/responses/ProposalNotFound" },
           "409": { "$ref": "#/components/responses/ProposalConflict" },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -429,7 +587,9 @@
           "403": { "$ref": "#/components/responses/MutationForbidden" },
           "404": { "$ref": "#/components/responses/ProposalNotFound" },
           "409": { "$ref": "#/components/responses/ProposalConflict" },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -453,7 +613,8 @@
           "403": { "$ref": "#/components/responses/MutationForbidden" },
           "404": { "$ref": "#/components/responses/ProposalNotFound" },
           "409": { "$ref": "#/components/responses/ProposalConflict" },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         }
       }
     },
@@ -498,7 +659,9 @@
           "403": { "$ref": "#/components/responses/MutationForbidden" },
           "404": { "description": "The action receipt is missing or is not owned by the caller.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
           "409": { "description": "The receipt is stale, unavailable, already undone, or the key was reused.", "content": { "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/ActionUndoConflictEnvelope" }, { "$ref": "#/components/schemas/ErrorEnvelope" }] } } } },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -548,7 +711,9 @@
           "403": { "$ref": "#/components/responses/MutationForbidden" },
           "404": { "$ref": "#/components/responses/ProjectTaskNotFound" },
           "409": { "$ref": "#/components/responses/ProjectTaskCreateConflict" },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -609,7 +774,9 @@
           "404": { "$ref": "#/components/responses/ProjectTaskNotFound" },
           "409": { "$ref": "#/components/responses/ProjectTaskUpdateConflict" },
           "428": { "$ref": "#/components/responses/ProjectTaskPreconditionRequired" },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -635,7 +802,9 @@
           "404": { "$ref": "#/components/responses/ProjectTaskNotFound" },
           "409": { "$ref": "#/components/responses/ProjectTaskOrderConflict" },
           "428": { "$ref": "#/components/responses/ProjectTaskPreconditionRequired" },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -661,7 +830,8 @@
           "404": { "$ref": "#/components/responses/ProjectTaskNotFound" },
           "409": { "$ref": "#/components/responses/ProjectTaskUpdateConflict" },
           "428": { "$ref": "#/components/responses/ProjectTaskPreconditionRequired" },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         }
       }
     },
@@ -697,7 +867,8 @@
           "403": { "$ref": "#/components/responses/MutationForbidden" },
           "409": { "$ref": "#/components/responses/MutationConflict" },
           "500": { "$ref": "#/components/responses/InternalError" },
-          "503": { "$ref": "#/components/responses/WorkspaceUnavailable" }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         },
         "parameters": [
           { "$ref": "#/components/parameters/OriginHeader" },
@@ -756,7 +927,9 @@
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "403": { "$ref": "#/components/responses/MutationForbidden" },
           "409": { "$ref": "#/components/responses/MutationConflict" },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         },
         "parameters": [
           { "$ref": "#/components/parameters/OriginHeader" },
@@ -780,7 +953,9 @@
           "403": { "$ref": "#/components/responses/MutationForbidden" },
           "404": { "$ref": "#/components/responses/ProjectNotFound" },
           "409": { "$ref": "#/components/responses/MutationConflict" },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "500": { "$ref": "#/components/responses/InternalError" },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         },
         "parameters": [
           { "$ref": "#/components/parameters/OriginHeader" },
@@ -1115,9 +1290,8 @@
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
-          "503": {
-            "$ref": "#/components/responses/WorkspaceUnavailable"
-          }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         },
         "description": "Sending authorizes provider transmission for this request and saved project context. Recent conversation history from the same project is included by default. Validated workspace file changes are applied automatically before successful completion, without a per-change approval prompt. File history and recovery snapshots retain the results. Retries with the same idempotency key return the existing run."
       }
@@ -1251,9 +1425,8 @@
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
-          "503": {
-            "$ref": "#/components/responses/WorkspaceUnavailable"
-          }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -1399,9 +1572,8 @@
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
-          "503": {
-            "$ref": "#/components/responses/WorkspaceUnavailable"
-          }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -1558,9 +1730,8 @@
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
-          "503": {
-            "$ref": "#/components/responses/WorkspaceUnavailable"
-          }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -1938,9 +2109,8 @@
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
-          "503": {
-            "$ref": "#/components/responses/RuntimeUnavailable"
-          }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -2048,9 +2218,8 @@
           "409": {
             "$ref": "#/components/responses/ChangeSetConflict"
           },
-          "503": {
-            "$ref": "#/components/responses/ChangeSetReviewRequired"
-          }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -2207,9 +2376,8 @@
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
-          "503": {
-            "$ref": "#/components/responses/RuntimeUnavailable"
-          }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -2293,9 +2461,7 @@
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
-          "503": {
-            "$ref": "#/components/responses/CommandReviewRequired"
-          }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         }
       }
     },
@@ -2375,7 +2541,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
-          }
+          },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -2456,9 +2624,7 @@
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
-          "503": {
-            "$ref": "#/components/responses/CommandReviewRequired"
-          }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         }
       }
     },
@@ -2603,7 +2769,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
-          }
+          },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -2673,7 +2841,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
-          }
+          },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       },
       "delete": {
@@ -2719,7 +2889,8 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
-          }
+          },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         }
       }
     },
@@ -2789,7 +2960,8 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
-          }
+          },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         }
       }
     },
@@ -3021,26 +3193,8 @@
               }
             }
           },
-          "409": {
-            "description": "Resource changed or an active/unresolved operation blocks this action.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "File exceeds configured size limit.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
+          "409": { "$ref": "#/components/responses/StorageFileConflict" },
+          "413": { "$ref": "#/components/responses/StorageWriteTooLarge" },
           "500": {
             "description": "Internal error.",
             "content": {
@@ -3051,16 +3205,7 @@
               }
             }
           },
-          "503": {
-            "description": "Resource unavailable or cleanup incomplete.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         },
         "parameters": [
           {
@@ -3135,16 +3280,7 @@
               }
             }
           },
-          "409": {
-            "description": "Resource changed or an active/unresolved operation blocks this action.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
+          "409": { "$ref": "#/components/responses/StorageFileConflict" },
           "500": {
             "description": "Internal error.",
             "content": {
@@ -3155,16 +3291,7 @@
               }
             }
           },
-          "503": {
-            "description": "Resource unavailable or cleanup incomplete.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         },
         "parameters": [
           {
@@ -3380,7 +3507,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
-          }
+          },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -3469,7 +3598,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
-          }
+          },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       },
       "delete": {
@@ -3563,16 +3694,7 @@
               }
             }
           },
-          "503": {
-            "description": "Resource unavailable or cleanup incomplete.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         },
         "parameters": [
           {
@@ -3669,7 +3791,8 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
-          }
+          },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         }
       }
     },
@@ -3807,7 +3930,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
-          }
+          },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
+          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
         }
       }
     },
@@ -3949,16 +4074,7 @@
               }
             }
           },
-          "409": {
-            "description": "Resource changed or an active/unresolved operation blocks this action.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
+          "409": { "$ref": "#/components/responses/StorageFileConflict" },
           "500": {
             "description": "Internal error.",
             "content": {
@@ -3969,16 +4085,7 @@
               }
             }
           },
-          "503": {
-            "description": "Resource unavailable or cleanup incomplete.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         },
         "parameters": [
           {
@@ -4101,26 +4208,8 @@
               }
             }
           },
-          "409": {
-            "description": "Resource changed or an active/unresolved operation blocks this action.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Maximum upload size is 8 MiB.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
+          "409": { "$ref": "#/components/responses/StorageFileConflict" },
+          "413": { "$ref": "#/components/responses/StorageWriteTooLarge" },
           "500": {
             "description": "Internal error.",
             "content": {
@@ -4131,16 +4220,7 @@
               }
             }
           },
-          "503": {
-            "description": "Resource unavailable or cleanup incomplete.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         },
         "parameters": [
           {
@@ -5031,6 +5111,159 @@
           }
         }
       },
+      "StorageQuotaExceeded": {
+        "description": "Positive content growth would exceed the configured storage limit. Safe byte-count details are decimal strings; no path or content is returned.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "examples": {
+              "quotaExceeded": {
+                "value": {
+                  "data": null,
+                  "error": {
+                    "code": "STORAGE_QUOTA_EXCEEDED",
+                    "message": "The storage quota does not allow this increase.",
+                    "details": [
+                      {
+                        "field": "usedBytes",
+                        "message": "4999999000"
+                      },
+                      {
+                        "field": "reservedBytes",
+                        "message": "0"
+                      },
+                      {
+                        "field": "limitBytes",
+                        "message": "5000000000"
+                      },
+                      {
+                        "field": "requestedGrowthBytes",
+                        "message": "2000"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "StorageWriteTooLarge": {
+        "description": "Either a source payload cap was exceeded (FILE_TOO_LARGE) or positive content growth exceeds the storage limit (STORAGE_QUOTA_EXCEEDED). Quota byte-count details are decimal strings.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "examples": {
+              "fileTooLarge": {
+                "value": {
+                  "data": null,
+                  "error": {
+                    "code": "FILE_TOO_LARGE",
+                    "message": "The file exceeds the configured size limit."
+                  }
+                }
+              },
+              "quotaExceeded": {
+                "value": {
+                  "data": null,
+                  "error": {
+                    "code": "STORAGE_QUOTA_EXCEEDED",
+                    "message": "The storage quota does not allow this increase.",
+                    "details": [
+                      {
+                        "field": "usedBytes",
+                        "message": "4999999000"
+                      },
+                      {
+                        "field": "reservedBytes",
+                        "message": "0"
+                      },
+                      {
+                        "field": "limitBytes",
+                        "message": "5000000000"
+                      },
+                      {
+                        "field": "requestedGrowthBytes",
+                        "message": "2000"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "StorageWriteUnavailable": {
+        "description": "This status may also carry an existing route-specific workspace, runtime, or review error. An accounting-unready state may return 503 on affected writes, including state-only and delete routes. When accounting is ready, being over limit alone does not block a zero or negative byte delta such as a shrink or deletion. Reconciliation-pending errors disclose only an opaque operation ID, never a host path.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "examples": {
+              "accountingUnavailable": {
+                "value": {
+                  "data": null,
+                  "error": {
+                    "code": "STORAGE_ACCOUNTING_UNAVAILABLE",
+                    "message": "Storage accounting is not ready for this account."
+                  }
+                }
+              },
+              "reconciliationPending": {
+                "value": {
+                  "data": null,
+                  "error": {
+                    "code": "STORAGE_RECONCILIATION_PENDING",
+                    "message": "The file operation outcome is pending reconciliation.",
+                    "details": [
+                      {
+                        "field": "operationId",
+                        "message": "opaque-operation-id"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "StorageFileConflict": {
+        "description": "A file/resource version conflict or filesystem operation conflict occurred. Storage errors use STORAGE_OPERATION_CONFLICT or STORAGE_FILE_STATE_CHANGED and disclose no host path.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "examples": {
+              "operationConflict": {
+                "value": {
+                  "data": null,
+                  "error": {
+                    "code": "STORAGE_OPERATION_CONFLICT",
+                    "message": "The operation key was already used for a different file mutation."
+                  }
+                }
+              },
+              "fileStateChanged": {
+                "value": {
+                  "data": null,
+                  "error": {
+                    "code": "STORAGE_FILE_STATE_CHANGED",
+                    "message": "The stored file state changed before the operation could be applied."
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "InternalError": {
         "description": "Unexpected server failure.",
         "content": {
@@ -5421,6 +5654,103 @@
             "$ref": "#/components/schemas/ApiError"
           }
         },
+        "additionalProperties": false
+      },
+      "AccountStorageUsage": {
+        "type": "object",
+        "description": "Owner-scoped logical storage usage. When state is reconciling or unavailable, unverified totals and asOf are null while the configured limit remains visible.",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "reconciling",
+              "unavailable"
+            ]
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "bytes"
+            ]
+          },
+          "unitSystem": {
+            "type": "string",
+            "enum": [
+              "decimal-si"
+            ]
+          },
+          "usedBytes": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "nullable": true,
+            "description": "Exact non-negative base-10 byte count, or null while unverified."
+          },
+          "reservedBytes": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "nullable": true,
+            "description": "Exact non-negative base-10 byte count, or null while unverified."
+          },
+          "limitBytes": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "nullable": true,
+            "description": "Null means unlimited; zero disallows positive growth."
+          },
+          "availableBytes": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "nullable": true,
+            "description": "Null means unlimited or unverified; otherwise max(limit minus used minus reserved, zero)."
+          },
+          "overLimit": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "asOf": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "required": [
+          "state",
+          "unit",
+          "unitSystem",
+          "usedBytes",
+          "reservedBytes",
+          "limitBytes",
+          "availableBytes",
+          "overLimit",
+          "asOf"
+        ],
+        "additionalProperties": false
+      },
+      "AccountStorageUsageEnvelope": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "storage": {
+                "$ref": "#/components/schemas/AccountStorageUsage"
+              }
+            },
+            "required": [
+              "storage"
+            ],
+            "additionalProperties": false
+          },
+          "error": {
+            "type": "object",
+            "nullable": true
+          }
+        },
+        "required": [
+          "data",
+          "error"
+        ],
         "additionalProperties": false
       },
       "Conversation": {

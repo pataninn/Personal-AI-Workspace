@@ -32,6 +32,8 @@ import { createActionUndoRouter, type ActionUndoRouterDependencies } from '@/mod
 import { createHomeConversationRouter, type HomeConversationRouterDependencies } from '@/modules/home-assistant/controllers/home-conversation-router';
 import { createHomeProposalRouter, type HomeProposalRouterDependencies } from '@/modules/home-assistant/controllers/home-proposal-router';
 import { HomeConversationDomainError } from '@/modules/home-assistant/domain/home-conversation-errors';
+import { createAccountStorageRouter, type AccountStorageRouterDependencies } from '@/modules/storage-quotas/controllers/account-storage-router';
+import { StorageQuotaError } from '@/modules/storage-quotas/domain/storage-quota-errors';
 
 export interface CreateAppOptions {
   readonly logger: AppLogger;
@@ -51,6 +53,7 @@ export interface CreateAppOptions {
   readonly actionUndo?: ActionUndoRouterDependencies;
   readonly homeConversations?: HomeConversationRouterDependencies;
   readonly homeProposals?: HomeProposalRouterDependencies;
+  readonly accountStorage?: AccountStorageRouterDependencies;
 }
 
 const requestIdMiddleware: RequestHandler = (request, response, next) => {
@@ -129,6 +132,10 @@ function toAppError(error: unknown): AppError | null {
   if (error instanceof HomeConversationDomainError) {
     return new AppError(error.code, error.statusCode, error.message);
   }
+  if (error instanceof StorageQuotaError) {
+    const details = Object.entries(error.details).map(([field, value]) => ({ field, message: String(value) }));
+    return new AppError(error.code, error.statusCode, error.message, details);
+  }
   if (isMalformedJsonError(error)) {
     return new AppError('VALIDATION_ERROR', 400, 'The request body is not valid JSON.');
   }
@@ -192,6 +199,9 @@ export function createApp(options: CreateAppOptions): Express {
   }
   if (options.homeProposals) {
     app.use('/api/v1', createHomeProposalRouter(options.homeProposals));
+  }
+  if (options.accountStorage) {
+    app.use('/api/v1', createAccountStorageRouter(options.accountStorage));
   }
   if (options.workspace) {
     app.use('/api/v1/projects/:projectId/files', createWorkspaceRouter(options.workspace));

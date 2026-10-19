@@ -9,7 +9,14 @@ import {
   WorkspaceStorageUnavailableError
 } from '@/modules/projects/domain/project-errors';
 import { normalizeProjectRoot } from '@/modules/projects/domain/project-root-policy';
-import type { IWorkspaceBoundary, ProjectRootScope, ResolvedProjectRoot, WorkspaceBoundarySnapshot } from '@/modules/projects/repositories/workspace-boundary';
+import type {
+  IWorkspaceBoundary,
+  ManagedNamespaceInventory,
+  ManagedOwnerDirectoryInventory,
+  ProjectRootScope,
+  ResolvedProjectRoot,
+  WorkspaceBoundarySnapshot
+} from '@/modules/projects/repositories/workspace-boundary';
 
 export interface WorkspaceStats {
   isDirectory(): boolean;
@@ -25,13 +32,15 @@ export interface WorkspaceFileSystem {
   mkdir?(filePath: string): Promise<void>;
   readFile(filePath: string): Promise<string>;
   realpath(filePath: string): Promise<string>;
+  readdir?(directoryPath: string): Promise<readonly string[]>;
 }
 
 const defaultFileSystem: WorkspaceFileSystem = {
   lstat: (filePath) => nodeFs.lstat(filePath),
   mkdir: async (filePath) => { await nodeFs.mkdir(filePath); },
   readFile: (filePath) => nodeFs.readFile(filePath, 'utf8'),
-  realpath: (filePath) => nodeFs.realpath(filePath)
+  realpath: (filePath) => nodeFs.realpath(filePath),
+  readdir: async (directoryPath) => await nodeFs.readdir(directoryPath)
 };
 
 export interface WorkspaceBoundaryOptions {
@@ -87,6 +96,31 @@ export class WorkspaceBoundaryAdapter implements IWorkspaceBoundary {
     } catch (error: unknown) {
       return { status: 'unavailable', code: error instanceof Error ? error.name : 'WORKSPACE_STORAGE_UNAVAILABLE' };
     }
+  }
+
+  public async inspectManagedNamespace(): Promise<ManagedNamespaceInventory> {
+    if (!this.options.managedContainerRoot || !this.options.managedIdentityFile || !this.options.managedExpectedIdentity?.trim()) {
+      return { configured: false, unattributableEntries: false, owners: [] };
+    }
+    const root = await this.verifyManagedRoot();
+    if (!this.fileSystem.readdir) throw new WorkspaceStorageUnavailableError();
+    let entries: readonly string[];
+    try {
+      entries = await this.fileSystem.readdir(root);
+    } catch {
+      throw new WorkspaceStorageUnavailableError();
+    }
+    const owners: ManagedOwnerDirectoryInventory[] = [];
+    let unattributableEntries = false;
+    for (const entry of entries) {
+      if (entry === path.posix.basename(this.options.managedIdentityFile)) continue;
+      if (!isCanonicalUuid(entry)) {
+        unattributableEntries = true;
+        continue;
+      }
+      owners.push(await this.inspectManagedOwnerDirectory(root, entry));
+    }
+    return { configured: true, unattributableEntries, owners };
   }
 
   public async createManagedProjectRoot(ownerId: string, projectId: string): Promise<string> {
@@ -272,6 +306,57 @@ export class WorkspaceBoundaryAdapter implements IWorkspaceBoundary {
     return resolved;
   }
 
+  private async inspectManagedOwnerDirectory(root: string, ownerId: string): Promise<ManagedOwnerDirectoryInventory> {
+    const ownerPath = path.posix.join(root, ownerId);
+    try {
+      await this.assertCanonicalManagedDirectory(root, ownerPath);
+    } catch {
+      return { ownerId, unsafe: true, projectIds: [] };
+    }
+    const projectsPath = path.posix.join(ownerPath, 'projects');
+    let projectsStats: WorkspaceStats;
+    try {
+      projectsStats = await this.fileSystem.lstat(projectsPath);
+    } catch (error: unknown) {
+      if (hasFileSystemCode(error, 'ENOENT')) return { ownerId, unsafe: false, projectIds: [] };
+      return { ownerId, unsafe: true, projectIds: [] };
+    }
+    try {
+      await this.assertCanonicalManagedDirectory(ownerPath, projectsPath, projectsStats);
+      if (!this.fileSystem.readdir) return { ownerId, unsafe: true, projectIds: [] };
+      const projectEntries = await this.fileSystem.readdir(projectsPath);
+      const projectIds: string[] = [];
+      let unsafe = false;
+      for (const projectId of projectEntries) {
+        if (!isCanonicalUuid(projectId)) {
+          unsafe = true;
+          continue;
+        }
+        try {
+          await this.assertCanonicalManagedDirectory(projectsPath, path.posix.join(projectsPath, projectId));
+          projectIds.push(projectId);
+        } catch {
+          unsafe = true;
+        }
+      }
+      return { ownerId, unsafe, projectIds };
+    } catch {
+      return { ownerId, unsafe: true, projectIds: [] };
+    }
+  }
+
+  private async assertCanonicalManagedDirectory(parent: string, target: string, stats?: WorkspaceStats): Promise<void> {
+    const targetStats = stats ?? await this.fileSystem.lstat(target);
+    if (!targetStats.isDirectory() || isReparsePoint(targetStats)) throw new WorkspaceStorageUnavailableError();
+    const [canonicalParent, canonicalTarget] = await Promise.all([
+      this.fileSystem.realpath(parent),
+      this.fileSystem.realpath(target)
+    ]);
+    if (canonicalParent !== parent || canonicalTarget !== target || !isContained(parent, target)) {
+      throw new WorkspaceStorageUnavailableError();
+    }
+  }
+
   private async assertDirectoryWithoutReparse(filePath: string): Promise<void> {
     let stats: WorkspaceStats;
     try {
@@ -290,6 +375,10 @@ export class WorkspaceBoundaryAdapter implements IWorkspaceBoundary {
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
+}
+
+function isCanonicalUuid(value: string): boolean {
+  return value === value.toLowerCase() && isUuid(value);
 }
 
 function sameDirectoryIdentity(left: WorkspaceStats, right: WorkspaceStats): boolean {

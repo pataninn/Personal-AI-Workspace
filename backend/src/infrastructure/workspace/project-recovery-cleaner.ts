@@ -34,10 +34,14 @@ export class ProjectRecoveryCleaner implements IProjectRecoveryCleaner {
     const moved: string[] = [];
     try {
       for (const [index, entry] of directories.entries()) {
-        if (await exists(entry.original)) {
+        const hasOriginal = await exists(entry.original);
+        if (hasOriginal) {
           await fs.rename(entry.original, entry.quarantine);
           const runId = runIds[index];
           if (runId) moved.push(runId);
+          if (await exists(entry.original) || !(await exists(entry.quarantine))) throw new ProjectRecoveryCleanupError();
+        } else if (await exists(entry.quarantine)) {
+          throw new ProjectRecoveryCleanupError();
         }
       }
     } catch (error: unknown) {
@@ -53,6 +57,7 @@ export class ProjectRecoveryCleaner implements IProjectRecoveryCleaner {
         if (!(await exists(entry.quarantine))) continue;
         if (await exists(entry.original)) throw new ProjectRecoveryCleanupError();
         await fs.rename(entry.quarantine, entry.original);
+        if (!(await exists(entry.original)) || await exists(entry.quarantine)) throw new ProjectRecoveryCleanupError();
       }
     } catch (error: unknown) { throw new ProjectRecoveryCleanupError(); }
   }
@@ -61,8 +66,10 @@ export class ProjectRecoveryCleaner implements IProjectRecoveryCleaner {
     try {
       const entries = await this.validatedPaths(runIds);
       for (const entry of entries) {
-        // Validation resolves the absolute target and rejects links before recursive removal.
+        // Run IDs come from the durable removal job; both names may exist after a crash.
         await fs.rm(entry.quarantine, { recursive: true, force: true });
+        await fs.rm(entry.original, { recursive: true, force: true });
+        if (await exists(entry.quarantine) || await exists(entry.original)) throw new ProjectRecoveryCleanupError();
       }
     } catch (error: unknown) { throw new ProjectRecoveryCleanupError(); }
   }

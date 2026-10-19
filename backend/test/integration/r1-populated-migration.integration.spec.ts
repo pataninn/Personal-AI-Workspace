@@ -1,12 +1,21 @@
 import type { DataSource } from 'typeorm';
 import { DataSource as TypeOrmDataSource } from 'typeorm';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 import { createDataSource } from '@/infrastructure/database/data-source';
 import { TypeOrmSessionRepository, TypeOrmUserRepository } from '@/infrastructure/database/repositories/typeorm-auth-repositories';
 import { TypeOrmAiRunRepository } from '@/infrastructure/database/repositories/typeorm-ai-run-repository';
 import { TypeOrmConversationRepository } from '@/infrastructure/database/repositories/typeorm-conversation-repository';
 import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories/typeorm-project-repository';
+import { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
+import { TypeOrmStorageRootMappingRepository } from '@/infrastructure/database/repositories/typeorm-storage-root-mapping-repository';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
 import { TypeOrmTaskSuggestionRepository } from '@/infrastructure/database/repositories/task-suggestion-completion-writer';
+import { StorageQuotaStartupReconciler } from '@/infrastructure/startup/storage-quota-startup-reconciler';
+import { StorageQuotaRootScanner } from '@/infrastructure/workspace/storage-quota-reconciliation';
+import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspace-boundary';
 import { InMemoryRunEventPublisher } from '@/infrastructure/ai-runs/in-memory-run-event-publisher';
 import { HomeProposalRollbackBlockedError } from '@/modules/home-assistant/domain/home-planning-errors';
 import { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
@@ -17,8 +26,8 @@ import type { IAgentRuntime, RuntimeInferenceEvent } from '@/modules/ai-runs/rep
 
 const OWNER_ID = '4a105f66-6666-4666-8666-666666666666';
 const OTHER_USER_ID = '4a105f66-6666-4666-8666-666666666668';
-const SESSION_ID = '4a105f66-6666-4666-8666-666666666667';
 const EXPIRING_DEMO_ID = '4a105f66-6666-4666-8666-666666666669';
+const SESSION_ID = '4a105f66-6666-4666-8666-666666666667';
 const LEGACY_SESSION_TOKEN = 'r1-preserved-legacy-session-token-0001';
 const PROJECT_ID = '4a105f77-7777-4777-8777-777777777777';
 const TASK_ID = '4a105f88-8888-4888-8888-888888888888';
@@ -29,8 +38,9 @@ const PROPOSAL_ITEM_ID = '4a105fcc-cccc-4ccc-8ccc-cccccccccccc';
 const PROPOSAL_TARGET_ID = '4a105fdd-dddd-4ddd-8ddd-dddddddddddd';
 const COMPLETION_CONVERSATION_ID = '4a105fee-eeee-4eee-8eee-eeeeeeeeeeee';
 const EXPIRY_CONVERSATION_ID = '4a105ff0-eeee-4eee-8eee-eeeeeeeeeeee';
-const EXPIRY_PROJECT_ID = '4a105f77-7777-4777-8777-777777777778';
+const EXPIRY_PROJECT_ID = '4a105ff1-eeee-4eee-8eee-eeeeeeeeeeee';
 const MIGRATION_DATABASE = 'home_history_task_5_1_migration_test';
+const ROLLBACK_DATABASE = 'home_history_task_5_1_rollback_test';
 const LEGACY_MIGRATION_COUNT = 18;
 interface PgClient {
   connect(): Promise<void>;
@@ -56,8 +66,13 @@ if (databaseUrl) {
 describeDatabase('R1 populated database migration regression', () => {
   let migrationUrl: string;
   let dataSource: DataSource | undefined;
+  let rollbackDataSource: DataSource | undefined;
   let createdDatabase = false;
+  let rollbackDatabaseCreated = false;
   let migrationsFromOwnershipBoundary = 0;
+  let workspaceRoot: string | undefined;
+  let managedRoot: string | undefined;
+  let recoveryRoot: string | undefined;
   let legacyTask: { readonly id: string; readonly title: string; readonly deadline: string | null; readonly importance: string; readonly subtasks: unknown };
 
   beforeAll(async () => {
@@ -124,7 +139,6 @@ describeDatabase('R1 populated database migration regression', () => {
     expect(migrationRows).toHaveLength(dataSource.migrations.length);
     const ownershipBoundaryIndex = migrationRows.findIndex((migration) => migration.name === 'EnforceProjectOwnershipBoundaries1710000027000');
     expect(ownershipBoundaryIndex).toBeGreaterThanOrEqual(0);
-    migrationsFromOwnershipBoundary = migrationRows.length - ownershipBoundaryIndex;
     const migratedOwner: readonly { id: string; scope_key: string; display_name: string; identifier: string; account_kind: string; role: string; password_hash: string }[] = await dataSource.query(
       'SELECT "id", "scope_key", "display_name", "identifier", "account_kind", "role", "password_hash" FROM "users" WHERE "id" = $1',
       [OWNER_ID]
@@ -177,19 +191,95 @@ describeDatabase('R1 populated database migration regression', () => {
     );
     expect(retainedTasks).toHaveLength(1);
     legacyTask = retainedTasks[0]!;
+
+    workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'pai-r1-migration-workspace-'));
+    managedRoot = await mkdtemp(path.join(os.tmpdir(), 'pai-r1-migration-managed-'));
+    recoveryRoot = await mkdtemp(path.join(os.tmpdir(), 'pai-r1-migration-recovery-'));
+    await mkdir(path.join(workspaceRoot, 'legacy-project'), { recursive: true });
+    await mkdir(path.join(managedRoot, EXPIRING_DEMO_ID, 'projects', EXPIRY_PROJECT_ID), { recursive: true });
+    await dataSource.query(`
+      INSERT INTO "users" ("id", "scope_key", "display_name", "password_hash", "identifier", "account_kind", "role", "expires_at")
+      VALUES ($1, $2, 'R1 expiring demo', NULL, NULL, 'demo', 'user', now() + interval '1 day')
+    `, [EXPIRING_DEMO_ID, `demo:${EXPIRING_DEMO_ID}`]);
+    await dataSource.query(`
+      INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind")
+      VALUES ($1, $2, 'R1 demo project', 'r1-expiring-demo-project', $3, lower($3), 'managed')
+    `, [EXPIRY_PROJECT_ID, EXPIRING_DEMO_ID, `projects/${EXPIRY_PROJECT_ID}`]);
+    await dataSource.query(`
+      INSERT INTO "storage_root_mappings" ("owner_id", "project_id", "locator_project_id", "root_key", "storage_kind", "relative_root", "state")
+      VALUES ($1, $2, $2, lower($3), 'managed', $3, 'active')
+    `, [EXPIRING_DEMO_ID, EXPIRY_PROJECT_ID, `projects/${EXPIRY_PROJECT_ID}`]);
+    const storageReconciliation = await new StorageQuotaStartupReconciler(
+      dataSource,
+      new TypeOrmStorageQuotaRepository(dataSource),
+      new TypeOrmStorageRootMappingRepository(dataSource),
+      new TypeOrmStorageContentAccounting(dataSource),
+      migrationWorkspaceBoundary(workspaceRoot, managedRoot),
+      recoveryRoot,
+      new StorageQuotaRootScanner()
+    ).reconcile();
+    expect(storageReconciliation.readyOwnerIds).toEqual(expect.arrayContaining([OWNER_ID, OTHER_USER_ID, EXPIRING_DEMO_ID]));
+    expect(storageReconciliation.unavailableOwnerIds).toEqual([]);
+
+    const rollbackClient = new Client({ connectionString: databaseUrl });
+    try {
+      await rollbackClient.connect();
+      const rollbackIdentity = await rollbackClient.query<{ readonly database: string; readonly user: string; readonly canCreateDatabase: boolean; readonly databaseExists: boolean }>(`
+        SELECT current_database() AS "database", current_user AS "user",
+          (SELECT "rolcreatedb" FROM "pg_roles" WHERE "rolname" = current_user) AS "canCreateDatabase",
+          EXISTS (SELECT 1 FROM "pg_database" WHERE "datname" = $1) AS "databaseExists"
+      `, [ROLLBACK_DATABASE]);
+      if (rollbackIdentity.rows[0]?.database !== 'home_history_test' || rollbackIdentity.rows[0]?.user !== 'home_test'
+        || rollbackIdentity.rows[0]?.canCreateDatabase !== true || rollbackIdentity.rows[0]?.databaseExists) {
+        throw new Error('The guarded R1 rollback database could not be safely created.');
+      }
+      await rollbackClient.query(`CREATE DATABASE "${ROLLBACK_DATABASE}" OWNER "home_test"`);
+      rollbackDatabaseCreated = true;
+    } finally {
+      await rollbackClient.end();
+    }
+    const rollbackUrl = new URL(databaseUrl);
+    rollbackUrl.pathname = `/${ROLLBACK_DATABASE}`;
+    const rollbackOptions = createDataSource({ url: rollbackUrl.toString() }).options;
+    const legacyRollbackSource = new TypeOrmDataSource({
+      ...rollbackOptions,
+      migrations: configuredMigrations.slice(0, LEGACY_MIGRATION_COUNT)
+    });
+    await legacyRollbackSource.initialize();
+    try {
+      expect(await legacyRollbackSource.runMigrations({ transaction: 'all' })).toHaveLength(LEGACY_MIGRATION_COUNT);
+      await seedLegacyProjectAndTask(legacyRollbackSource);
+    } finally {
+      await legacyRollbackSource.destroy();
+    }
+    rollbackDataSource = new TypeOrmDataSource({
+      ...rollbackOptions,
+      migrations: configuredMigrations.slice(0, ownershipBoundaryIndex + 1)
+    });
+    await rollbackDataSource.initialize();
+    await rollbackDataSource.runMigrations({ transaction: 'all' });
+    const rollbackMigrationRows: readonly { readonly name: string }[] = await rollbackDataSource.query(
+      'SELECT "name" FROM "migrations" ORDER BY "timestamp"'
+    );
+    const rollbackOwnershipIndex = rollbackMigrationRows.findIndex((migration) => migration.name === 'EnforceProjectOwnershipBoundaries1710000027000');
+    expect(rollbackOwnershipIndex).toBe(rollbackMigrationRows.length - 1);
+    migrationsFromOwnershipBoundary = rollbackMigrationRows.length - rollbackOwnershipIndex;
   }, 120_000);
 
   afterAll(async () => {
     if (dataSource?.isInitialized) await dataSource.destroy();
-    if (!createdDatabase || !databaseUrl) return;
-    const baseClient = new Client({ connectionString: databaseUrl });
-    try {
-      await baseClient.connect();
-      await baseClient.query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`, [MIGRATION_DATABASE]);
-      await baseClient.query(`DROP DATABASE "${MIGRATION_DATABASE}"`);
+    if (rollbackDataSource?.isInitialized) await rollbackDataSource.destroy();
+    if (workspaceRoot) await rm(workspaceRoot, { recursive: true, force: true });
+    if (managedRoot) await rm(managedRoot, { recursive: true, force: true });
+    if (recoveryRoot) await rm(recoveryRoot, { recursive: true, force: true });
+    if (!databaseUrl) return;
+    if (createdDatabase) {
+      await dropGuardedDatabase(MIGRATION_DATABASE);
       createdDatabase = false;
-    } finally {
-      await baseClient.end();
+    }
+    if (rollbackDatabaseCreated) {
+      await dropGuardedDatabase(ROLLBACK_DATABASE);
+      rollbackDatabaseCreated = false;
     }
   }, 30_000);
 
@@ -222,15 +312,6 @@ describeDatabase('R1 populated database migration regression', () => {
     await dataSource.query('UPDATE "users" SET "role" = \'admin\', "is_active" = true, "expires_at" = NULL WHERE "id" = $1', [OTHER_USER_ID]);
     await dataSource.query('UPDATE "users" SET "is_active" = true, "expires_at" = NULL WHERE "id" = $1', [OWNER_ID]);
     try {
-    await dataSource.query(`
-      INSERT INTO "users" ("id", "scope_key", "display_name", "identifier", "account_kind", "role", "password_hash", "is_active", "expires_at")
-      VALUES ($1, 'account:expiring-demo', 'Expiring demo', NULL, 'demo', 'user', NULL, true, now() + interval '1 day')
-    `, [EXPIRING_DEMO_ID]);
-    await dataSource.query(`
-      INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind")
-      VALUES ($1, $2, 'Expiring demo project', 'expiring-demo-project', $3, $3, 'managed')
-    `, [EXPIRY_PROJECT_ID, EXPIRING_DEMO_ID, `projects/${EXPIRY_PROJECT_ID}`]);
-
     const baseWriter = new TypeOrmTaskSuggestionRepository(dataSource);
     let enteredWriter!: () => void;
     let releaseWriter!: () => void;
@@ -268,9 +349,34 @@ describeDatabase('R1 populated database migration regression', () => {
     await expect(dataSource.query('SELECT "title" FROM "project_task_suggestions" WHERE "run_id" = $1', [completionRunId]))
       .resolves.toEqual([{ title: 'Permitted suggestion' }]);
 
-    await dataSource.query('UPDATE "users" SET "is_active" = true, "expires_at" = NULL WHERE "id" = $1', [OWNER_ID]);
     const expiryRuns = new TypeOrmAiRunRepository(dataSource);
-    const expiryRunId = await createReadyRun(dataSource, expiryRuns, EXPIRY_CONVERSATION_ID, 'ready', EXPIRING_DEMO_ID, EXPIRY_PROJECT_ID, 'managed');
+    const expiryOwnership: readonly {
+      readonly account_kind: string;
+      readonly role: string;
+      readonly expires_at: Date;
+      readonly owner_id: string;
+      readonly relative_root: string;
+      readonly storage_kind: string;
+    }[] = await dataSource.query(`
+      SELECT u."account_kind", u."role", u."expires_at", p."owner_id", p."relative_root", p."storage_kind"
+      FROM "users" u JOIN "projects" p ON p."owner_id" = u."id"
+      WHERE u."id" = $1 AND p."id" = $2
+    `, [EXPIRING_DEMO_ID, EXPIRY_PROJECT_ID]);
+    expect(expiryOwnership).toHaveLength(1);
+    expect(expiryOwnership[0]).toMatchObject({
+      account_kind: 'demo', role: 'user', owner_id: EXPIRING_DEMO_ID,
+      relative_root: `projects/${EXPIRY_PROJECT_ID}`, storage_kind: 'managed'
+    });
+    expect(expiryOwnership[0]?.expires_at.getTime()).toBeGreaterThan(Date.now());
+    const expiryRunId = await createReadyRun(
+      dataSource, expiryRuns, EXPIRY_CONVERSATION_ID, 'ready', EXPIRING_DEMO_ID, EXPIRY_PROJECT_ID, 'managed'
+    );
+    const expiryRunOwnership: readonly { readonly owner_id: string; readonly project_id: string; readonly storage_kind: string }[] = await dataSource.query(
+      'SELECT "owner_id", "project_id", "storage_kind" FROM "ai_runs" WHERE "id" = $1', [expiryRunId]
+    );
+    expect(expiryRunOwnership).toEqual([{
+      owner_id: EXPIRING_DEMO_ID, project_id: EXPIRY_PROJECT_ID, storage_kind: 'managed'
+    }]);
     let runtimeStarted!: () => void;
     let releaseRuntime!: () => void;
     const runtimeReady = new Promise<void>((resolve) => { runtimeStarted = resolve; });
@@ -309,6 +415,7 @@ describeDatabase('R1 populated database migration regression', () => {
       await start.execute({ ownerId: EXPIRING_DEMO_ID, runId: expiryRunId, idempotencyKey: 'expiry-race-start' });
       await runtimeReady;
       await dataSource.query('UPDATE "users" SET "expires_at" = now() - interval \'1 second\' WHERE "id" = $1', [EXPIRING_DEMO_ID]);
+      // The database expiry is committed before the paused runtime yields any late proposal or content.
       await expect(principalAuthorization.isActive(EXPIRING_DEMO_ID)).resolves.toBe(false);
     } finally {
       releaseRuntime();
@@ -329,13 +436,14 @@ describeDatabase('R1 populated database migration regression', () => {
     expect(expiredRun[0]).toEqual({ status: 'cancelled', cleanup: 'complete' });
     await dataSource.query('UPDATE "users" SET "role" = \'user\' WHERE "id" = $1', [OTHER_USER_ID]);
     } finally {
-      await dataSource.query('DELETE FROM "projects" WHERE "id" = $1', [EXPIRY_PROJECT_ID]);
-      await dataSource.query('DELETE FROM "users" WHERE "id" = $1', [EXPIRING_DEMO_ID]);
+      await dataSource.query('UPDATE "users" SET "expires_at" = now() + interval \'1 day\' WHERE "id" = $1', [EXPIRING_DEMO_ID]);
+      await dataSource.query('UPDATE "users" SET "role" = \'user\' WHERE "id" = $1', [OTHER_USER_ID]);
     }
   }, 60_000);
 
   it('preserves legacy data, then verifies safe rollback of ownership, identity, and proposal migrations', async () => {
-    if (!dataSource) throw new Error('The isolated migration database was not initialized.');
+    const rollback = rollbackDataSource;
+    if (!rollback) throw new Error('The isolated rollback database was not initialized.');
     expect(legacyTask).toMatchObject({
       id: TASK_ID,
       title: 'R1 legacy task retained',
@@ -343,7 +451,7 @@ describeDatabase('R1 populated database migration regression', () => {
       importance: 'high',
       subtasks: [{ id: 'legacy-subtask', title: 'Keep checklist', completed: false }]
     });
-    const tables: readonly { readonly inboxOrder: string | null; readonly homeEvents: string | null; readonly proposals: string | null }[] = await dataSource.query(`
+    const tables: readonly { readonly inboxOrder: string | null; readonly homeEvents: string | null; readonly proposals: string | null }[] = await rollback.query(`
       SELECT to_regclass('public.project_task_order_states')::text AS "inboxOrder",
         to_regclass('public.home_conversation_events')::text AS "homeEvents",
         to_regclass('public.home_change_proposals')::text AS "proposals"
@@ -351,34 +459,34 @@ describeDatabase('R1 populated database migration regression', () => {
     expect(tables[0]).toEqual({ inboxOrder: 'project_task_order_states', homeEvents: 'home_conversation_events', proposals: 'home_change_proposals' });
 
     for (let index = 0; index < migrationsFromOwnershipBoundary; index += 1) {
-      await dataSource.undoLastMigration({ transaction: 'all' });
+      await rollback.undoLastMigration({ transaction: 'all' });
     }
-    const storageKindColumns: readonly { readonly storage_kind: string | null }[] = await dataSource.query(`
+    const storageKindColumns: readonly { readonly storage_kind: string | null }[] = await rollback.query(`
       SELECT column_name AS "storage_kind" FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'projects' AND column_name = 'storage_kind'
     `);
     expect(storageKindColumns).toHaveLength(0);
-    await dataSource.undoLastMigration({ transaction: 'all' });
-    const identityColumns: readonly { readonly identifier: string | null }[] = await dataSource.query(`
+    await rollback.undoLastMigration({ transaction: 'all' });
+    const identityColumns: readonly { readonly identifier: string | null }[] = await rollback.query(`
       SELECT column_name AS "identifier" FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'identifier'
     `);
     expect(identityColumns).toHaveLength(0);
-    const latestAfterIdentityRollback: readonly { readonly name: string }[] = await dataSource.query('SELECT "name" FROM "migrations" ORDER BY "timestamp" DESC LIMIT 1');
+    const latestAfterIdentityRollback: readonly { readonly name: string }[] = await rollback.query('SELECT "name" FROM "migrations" ORDER BY "timestamp" DESC LIMIT 1');
     expect(latestAfterIdentityRollback[0]?.name).toBe('CreateHomeChangeProposals1710000025000');
 
-    await seedProposalRollbackFixture(dataSource);
-    await expect(dataSource.undoLastMigration({ transaction: 'all' })).rejects.toBeInstanceOf(HomeProposalRollbackBlockedError);
-    const rollbackEvidence: readonly { readonly proposalCount: string; readonly proposalEventCount: string; readonly migrationPresent: boolean }[] = await dataSource.query(`
+    await seedProposalRollbackFixture(rollback);
+    await expect(rollback.undoLastMigration({ transaction: 'all' })).rejects.toBeInstanceOf(HomeProposalRollbackBlockedError);
+    const rollbackEvidence: readonly { readonly proposalCount: string; readonly proposalEventCount: string; readonly migrationPresent: boolean }[] = await rollback.query(`
       SELECT (SELECT COUNT(*)::text FROM "home_change_proposals") AS "proposalCount",
         (SELECT COUNT(*)::text FROM "home_conversation_events" WHERE "event_type" LIKE 'proposal.%') AS "proposalEventCount",
         EXISTS (SELECT 1 FROM "migrations" WHERE "name" = 'CreateHomeChangeProposals1710000025000') AS "migrationPresent"
     `);
     expect(rollbackEvidence[0]).toEqual({ proposalCount: '1', proposalEventCount: '1', migrationPresent: true });
 
-    await dataSource.query('DELETE FROM "home_conversations" WHERE "id" = $1', [CONVERSATION_ID]);
-    await expect(dataSource.undoLastMigration({ transaction: 'all' })).resolves.toBeUndefined();
-    const postRollback: readonly { readonly proposalTable: string | null; readonly retainedTaskCount: string; readonly projectCount: string }[] = await dataSource.query(`
+    await rollback.query('DELETE FROM "home_conversations" WHERE "id" = $1', [CONVERSATION_ID]);
+    await expect(rollback.undoLastMigration({ transaction: 'all' })).resolves.toBeUndefined();
+    const postRollback: readonly { readonly proposalTable: string | null; readonly retainedTaskCount: string; readonly projectCount: string }[] = await rollback.query(`
       SELECT to_regclass('public.home_change_proposals')::text AS "proposalTable",
         (SELECT COUNT(*)::text FROM "project_tasks" WHERE "id" = $1) AS "retainedTaskCount",
         (SELECT COUNT(*)::text FROM "projects" WHERE "id" = $2) AS "projectCount"
@@ -402,6 +510,65 @@ async function seedLegacyProjectAndTask(dataSource: DataSource): Promise<void> {
     INSERT INTO "project_tasks" ("id", "owner_id", "project_id", "title", "details", "status", "position", "importance", "deadline", "subtasks")
     VALUES ($1, $2, $3, 'R1 legacy task retained', 'legacy details', 'todo', 0, 'high', '2026-10-20', $4::jsonb)
   `, [TASK_ID, OWNER_ID, PROJECT_ID, JSON.stringify([{ id: 'legacy-subtask', title: 'Keep checklist', completed: false }])]);
+}
+
+async function dropGuardedDatabase(databaseName: string): Promise<void> {
+  if (!databaseUrl) throw new Error('The guarded migration base database URL is required.');
+  const baseClient = new Client({ connectionString: databaseUrl });
+  try {
+    await baseClient.connect();
+    const identity = await baseClient.query<{
+      readonly database: string;
+      readonly user: string;
+      readonly owner: string | null;
+      readonly exists: boolean;
+    }>(`
+      SELECT current_database() AS "database", current_user AS "user",
+        (SELECT pg_get_userbyid("datdba") FROM "pg_database" WHERE "datname" = $1) AS "owner",
+        EXISTS (SELECT 1 FROM "pg_database" WHERE "datname" = $1) AS "exists"
+    `, [databaseName]);
+    if (identity.rows[0]?.database !== 'home_history_test' || identity.rows[0]?.user !== 'home_test'
+      || (identity.rows[0]?.exists && identity.rows[0]?.owner !== 'home_test')) {
+      throw new Error('Refusing to remove an R1 migration database because its guarded identity changed.');
+    }
+    if (!identity.rows[0]?.exists) return;
+    await baseClient.query(
+      'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()', [databaseName]
+    );
+    await baseClient.query(`DROP DATABASE "${databaseName}"`);
+  } finally {
+    await baseClient.end();
+  }
+}
+
+function migrationWorkspaceBoundary(workspaceRoot: string, managedRoot: string): IWorkspaceBoundary {
+  const resolvedRoot = path.resolve(workspaceRoot);
+  const resolvedManagedRoot = path.resolve(managedRoot);
+  return {
+    getSnapshot: async () => ({ status: 'ready' }),
+    assertReady: async () => undefined,
+    validateProjectRoot: async (relativeRoot) => relativeRoot,
+    resolveProjectRoot: async ({ ownerId, projectId, storageKind, relativeRoot }) => {
+      if (storageKind === 'managed') {
+        if (!projectId || relativeRoot !== `projects/${projectId}`) throw new Error('The R1 managed fixture locator is invalid.');
+        const canonicalProjectRoot = path.resolve(resolvedManagedRoot, ownerId, ...relativeRoot.split('/'));
+        if (!canonicalProjectRoot.startsWith(`${resolvedManagedRoot}${path.sep}`)) {
+          throw new Error('The R1 managed fixture root is outside its temporary mount.');
+        }
+        return { canonicalRoot: resolvedManagedRoot, canonicalProjectRoot };
+      }
+      const canonicalProjectRoot = relativeRoot === '.' ? resolvedRoot : path.resolve(resolvedRoot, relativeRoot);
+      if (relativeRoot !== '.' && !canonicalProjectRoot.startsWith(`${resolvedRoot}${path.sep}`)) {
+        throw new Error('The R1 legacy fixture root is outside its temporary workspace.');
+      }
+      return { canonicalRoot: resolvedRoot, canonicalProjectRoot };
+    },
+    inspectManagedNamespace: async () => ({
+      configured: true,
+      unattributableEntries: false,
+      owners: [{ ownerId: EXPIRING_DEMO_ID, unsafe: false, projectIds: [EXPIRY_PROJECT_ID] }]
+    })
+  };
 }
 
 function testManifest(): EgressManifest {

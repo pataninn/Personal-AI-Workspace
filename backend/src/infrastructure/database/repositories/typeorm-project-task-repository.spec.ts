@@ -1,6 +1,7 @@
 import type { DataSource, QueryRunner } from 'typeorm';
 
 import { TypeOrmProjectTaskRepository } from '@/infrastructure/database/repositories/typeorm-project-task-repository';
+import type { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
 import { ActionLedgerTargetStateConflictError } from '@/modules/action-ledger/domain/action-ledger-errors';
 import type { ActionLedgerRecord } from '@/modules/action-ledger/domain/action-ledger-types';
 import { ProjectTaskVersionConflictError } from '@/modules/tasks/domain/project-task-errors';
@@ -13,6 +14,10 @@ const SUGGESTION = '55555555-5555-4555-8555-555555555555';
 const RUN = '66666666-6666-4666-8666-666666666666';
 const CONVERSATION = '77777777-7777-4777-8777-777777777777';
 const CHILD = { id: '44444444-4444-4444-8444-444444444444', title: 'Review', completed: false };
+
+const passThroughStorageAccounting = {
+  runMutation: async <T>(_transaction: unknown, _ownerId: string, mutation: () => Promise<T>): Promise<T> => mutation()
+} as unknown as TypeOrmStorageContentAccounting;
 
 function fixture(currentStatus: ProjectTaskStatus, children: readonly ProjectTaskSubtask[]) {
   let reads = 0;
@@ -31,7 +36,7 @@ function fixture(currentStatus: ProjectTaskStatus, children: readonly ProjectTas
   });
   const runner = { query, connect: jest.fn(), startTransaction: jest.fn(), commitTransaction: jest.fn(), rollbackTransaction: jest.fn(), release: jest.fn(), isTransactionActive: true };
   const dataSource = { createQueryRunner: () => runner as unknown as QueryRunner } as DataSource;
-  return { repository: new TypeOrmProjectTaskRepository(dataSource), query, runner };
+  return { repository: new TypeOrmProjectTaskRepository(dataSource, passThroughStorageAccounting), query, runner };
 }
 
 function row(status: ProjectTaskStatus, subtasks: readonly ProjectTaskSubtask[], version: number) {
@@ -140,7 +145,7 @@ describe('task checklist persistence boundary', () => {
       isTransactionActive: true
     };
     const dataSource = { createQueryRunner: () => runner as unknown as QueryRunner } as DataSource;
-    const repository = new TypeOrmProjectTaskRepository(dataSource);
+    const repository = new TypeOrmProjectTaskRepository(dataSource, passThroughStorageAccounting);
 
     const result = await repository.resolveSuggestion({
       ownerId: OWNER,
@@ -201,7 +206,7 @@ describe('task checklist persistence boundary', () => {
       isTransactionActive: true
     };
     const dataSource = { createQueryRunner: () => runner as unknown as QueryRunner } as DataSource;
-    const repository = new TypeOrmProjectTaskRepository(dataSource);
+    const repository = new TypeOrmProjectTaskRepository(dataSource, passThroughStorageAccounting);
 
     const result = await repository.resolveSuggestion({
       ownerId: OWNER,

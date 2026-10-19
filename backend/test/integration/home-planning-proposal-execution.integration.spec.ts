@@ -1,6 +1,9 @@
 import type { DataSource } from 'typeorm';
 
 import { createDataSource } from '@/infrastructure/database/data-source';
+import { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
+import { TypeOrmStorageRootMappingRepository } from '@/infrastructure/database/repositories/typeorm-storage-root-mapping-repository';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
 import { TypeOrmActionLedgerRepository } from '@/infrastructure/database/repositories/typeorm-action-ledger-repository';
 import { TypeOrmHomeActionEventRecorder } from '@/infrastructure/database/repositories/typeorm-home-action-event-recorder';
 import { TypeOrmHomeChangeProposalRepository } from '@/infrastructure/database/repositories/typeorm-home-change-proposal-repository';
@@ -121,6 +124,7 @@ describeDatabase('Home accepted proposal PostgreSQL integration', () => {
       undo: new ActionUndoUseCases(ledger, tasks, projects),
       proposals: proposalUseCases
     });
+    await reconcileRootlessOwner(dataSource, OWNER_ID);
   }, 120_000);
 
   let lostCompletionResponse = false;
@@ -386,3 +390,37 @@ describeDatabase('Home accepted proposal PostgreSQL integration', () => {
     expect(updateReceipts[0]?.target_id).toBe(taskId);
   }, 120_000);
 });
+
+async function reconcileRootlessOwner(dataSource: DataSource, ownerId: string): Promise<void> {
+  const mappings = await new TypeOrmStorageRootMappingRepository(dataSource).listMappings(ownerId);
+  const rootedProjects: readonly { count: string }[] = await dataSource.query(
+    'SELECT COUNT(*)::text AS "count" FROM "projects" WHERE "owner_id" = $1 AND "relative_root" IS NOT NULL', [ownerId]
+  );
+  if (mappings.length > 0 || Number(rootedProjects[0]?.count ?? '0') > 0) {
+    throw new Error('The Home proposal fixture unexpectedly contains a physical storage root.');
+  }
+
+  const quota = new TypeOrmStorageQuotaRepository(dataSource);
+  const references = await scanDatabaseOwner(dataSource, new TypeOrmStorageContentAccounting(dataSource, quota), ownerId);
+  await quota.reconcileReferences(ownerId, references);
+}
+
+async function scanDatabaseOwner(
+  dataSource: DataSource,
+  accounting: TypeOrmStorageContentAccounting,
+  ownerId: string
+) {
+  const runner = dataSource.createQueryRunner();
+  await runner.connect();
+  try {
+    await runner.startTransaction();
+    const references = await accounting.scanDatabaseContent(runner, ownerId);
+    await runner.commitTransaction();
+    return references;
+  } catch (error: unknown) {
+    if (runner.isTransactionActive) await runner.rollbackTransaction();
+    throw error;
+  } finally {
+    await runner.release();
+  }
+}

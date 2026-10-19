@@ -72,6 +72,9 @@ import { MarkItDownDocumentConverter } from '@/infrastructure/files/markitdown-d
 import { DEFAULT_WORKSPACE_INSPECTION_POLICY } from '@/modules/files/domain/workspace-policy';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { runStartupChecks } from '@/infrastructure/startup/startup-checks';
+import { startPeriodicMaintenance, type PeriodicMaintenanceHandle } from '@/infrastructure/startup/periodic-maintenance';
+import { StorageQuotaStartupReconciler } from '@/infrastructure/startup/storage-quota-startup-reconciler';
+import { PhysicalStorageSpaceMonitor } from '@/infrastructure/startup/physical-storage-space-monitor';
 import { GetReadinessUseCase } from '@/modules/health';
 import { BootstrapLocalUserUseCase, clearSessionCookie, GetSessionUseCase, LoginUseCase, LogoutUseCase } from '@/modules/auth';
 import { PrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
@@ -86,6 +89,11 @@ import { CreateProjectFactUseCase, DeleteProjectFactUseCase, ListProjectFactsUse
 import { CountInboxTasksUseCase, CreateProjectTaskUseCase, DeleteProjectTaskUseCase, GetGlobalTaskUseCase, ListGlobalTasksUseCase, ListProjectTaskSuggestionsUseCase, ListProjectTasksUseCase, ReorderProjectTaskUseCase, ResolveProjectTaskSuggestionUseCase, TaskMutationUseCases, UpdateProjectTaskUseCase } from '@/modules/tasks';
 import { GetAiRunActivityUseCase, ListAiRunActivityUseCase } from '@/modules/ai-runs/use-cases/activity-use-cases';
 import { ListProjectFileHistoryUseCase } from '@/modules/ai-runs/use-cases/file-history-use-cases';
+import { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
+import { TypeOrmStorageRootMappingRepository } from '@/infrastructure/database/repositories/typeorm-storage-root-mapping-repository';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import { StorageQuotaFileMutation } from '@/infrastructure/workspace/storage-quota-file-mutation';
+import { GetStorageUsage } from '@/modules/storage-quotas/use-cases/get-storage-usage';
 
 export interface Application {
   readonly app: Express;
@@ -93,7 +101,10 @@ export interface Application {
   readonly dataSource: DataSource;
   readonly logger: AppLogger;
   readonly readiness: InMemoryReadinessState;
+  stopMaintenance(): Promise<void>;
 }
+
+const STORAGE_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;
 
 export async function createApplication(
   environment: NodeJS.ProcessEnv = process.env
@@ -102,6 +113,7 @@ export async function createApplication(
   const logger = createLogger(config.logLevel);
   const dataSource = createDataSource(config.database);
   const readiness = new InMemoryReadinessState();
+  let maintenanceHandle: PeriodicMaintenanceHandle | undefined;
   const providerCallCreditAdmission = new ProviderCallCreditAdmission(new TypeOrmCreditLedgerRepository(dataSource));
   const modelProvider = config.agentRuntimeMode === 'direct'
     ? await createModelProvider(config, environment, providerCallCreditAdmission)
@@ -124,20 +136,31 @@ export async function createApplication(
       ...(modelProvider ? { providerCheck: () => modelProvider.checkAvailability() } : {}),
       ...(config.agentRuntimeMode === 'hermes' ? { providerCheck: async () => { await createHermesBridge(config).call('probe', undefined, undefined, { providerProfile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint }); } } : {})
     });
+    const storageQuotaRepository = new TypeOrmStorageQuotaRepository(dataSource);
+    const storageRootMappingRepository = new TypeOrmStorageRootMappingRepository(dataSource);
+    const storageContentAccounting = new TypeOrmStorageContentAccounting(dataSource, storageQuotaRepository);
+    const storageFileMutation = new StorageQuotaFileMutation(storageQuotaRepository);
     const userRepository = new TypeOrmUserRepository(dataSource);
+    const localUserPassword = config.localUserPassword ?? await readSecretFile(config.localUserPasswordFile);
+    if (localUserPassword) {
+      await new BootstrapLocalUserUseCase(userRepository, new BcryptPasswordHasher()).execute({
+        password: localUserPassword,
+        displayName: config.localUserDisplayName
+      });
+    }
     const clock = new SystemClock();
     const principalAuthorization = new PrincipalAuthorization(userRepository, clock);
     const sessionRepository = new TypeOrmSessionRepository(dataSource);
-    const projectRepository = new TypeOrmProjectRepository(dataSource);
-    const homeConversationRepository = new TypeOrmHomeConversationRepository(dataSource);
-    const homeChangeProposalRepository = new TypeOrmHomeChangeProposalRepository(dataSource);
-    const actionLedgerRepository = new TypeOrmActionLedgerRepository(dataSource, new TypeOrmHomeActionEventRecorder());
-    const projectFactRepository = new TypeOrmProjectFactRepository(dataSource);
-    const projectTaskRepository = new TypeOrmProjectTaskRepository(dataSource);
+    const projectRepository = new TypeOrmProjectRepository(dataSource, storageContentAccounting);
+    const homeConversationRepository = new TypeOrmHomeConversationRepository(dataSource, storageContentAccounting);
+    const homeChangeProposalRepository = new TypeOrmHomeChangeProposalRepository(dataSource, storageContentAccounting);
+    const actionLedgerRepository = new TypeOrmActionLedgerRepository(dataSource, new TypeOrmHomeActionEventRecorder(), storageContentAccounting);
+    const projectFactRepository = new TypeOrmProjectFactRepository(dataSource, storageContentAccounting);
+    const projectTaskRepository = new TypeOrmProjectTaskRepository(dataSource, storageContentAccounting);
     const taskMutationUseCases = new TaskMutationUseCases(actionLedgerRepository, projectTaskRepository, projectTaskRepository);
     const taskSuggestionRepository = new TypeOrmTaskSuggestionRepository(dataSource);
-    const conversationRepository = new TypeOrmConversationRepository(dataSource);
-    const aiRunRepository = new TypeOrmAiRunRepository(dataSource, taskSuggestionRepository);
+    const conversationRepository = new TypeOrmConversationRepository(dataSource, storageContentAccounting);
+    const aiRunRepository = new TypeOrmAiRunRepository(dataSource, taskSuggestionRepository, storageContentAccounting);
     const recoveredRunCount = await new RecoverInterruptedAiRunsUseCase(aiRunRepository).execute();
     if (recoveredRunCount > 0) {
       logger.warn({ recoveredRunCount }, 'Interrupted AI runs require manual review after startup.');
@@ -146,23 +169,42 @@ export async function createApplication(
     if (recoveredHomeTurnCount > 0) {
       logger.warn({ recoveredHomeTurnCount }, 'Interrupted Home turns were marked for review after startup.');
     }
-    const projectRemovalRepository = new TypeOrmProjectRemovalRepository(dataSource, new ProjectRecoveryCleaner(config.recoveryRoot));
+    const projectRemovalRepository = new TypeOrmProjectRemovalRepository(
+      dataSource,
+      new ProjectRecoveryCleaner(config.recoveryRoot),
+      storageContentAccounting,
+      storageQuotaRepository,
+      storageRootMappingRepository
+    );
     await projectRemovalRepository.cleanupPending();
-    readiness.markReady();
-    const providerPermissionRepository = new TypeOrmProviderPermissionRepository(dataSource);
-    const commandRepository = new TypeOrmSandboxCommandRepository(dataSource);
-    const changeSetRepository = new TypeOrmProposedChangeSetRepository(dataSource);
     const workspaceBoundary = new WorkspaceBoundaryAdapter({
       containerRoot: config.workspaceRoot,
       identityFile: config.workspaceIdentityFile,
-        expectedIdentity: config.workspaceIdentity,
-        legacyOwnerId: () => userRepository.findBootstrapOwnerId(),
-        ...(config.accountWorkspacesIdentity ? {
-          managedContainerRoot: '/account-workspaces',
-          managedIdentityFile: '/account-workspaces/.personal-ai-managed-storage-identity',
-          managedExpectedIdentity: config.accountWorkspacesIdentity
-        } : {})
+      expectedIdentity: config.workspaceIdentity,
+      legacyOwnerId: () => userRepository.findBootstrapOwnerId(),
+      ...(config.accountWorkspacesIdentity ? {
+        managedContainerRoot: '/account-workspaces',
+        managedIdentityFile: '/account-workspaces/.personal-ai-managed-storage-identity',
+        managedExpectedIdentity: config.accountWorkspacesIdentity
+      } : {})
     });
+    const storageReconciliation = await new StorageQuotaStartupReconciler(
+      dataSource,
+      storageQuotaRepository,
+      storageRootMappingRepository,
+      storageContentAccounting,
+      workspaceBoundary,
+      config.recoveryRoot
+    ).reconcile();
+    if (storageReconciliation.unavailableOwnerIds.length > 0) {
+      logger.warn(
+        { unavailableOwnerCount: storageReconciliation.unavailableOwnerIds.length },
+        'Storage accounting remains unavailable for accounts whose retained content could not be verified.'
+      );
+    }
+    const providerPermissionRepository = new TypeOrmProviderPermissionRepository(dataSource);
+    const commandRepository = new TypeOrmSandboxCommandRepository(dataSource, storageContentAccounting);
+    const changeSetRepository = new TypeOrmProposedChangeSetRepository(dataSource, storageContentAccounting);
     const workspacePlanning = new WorkspacePlanningUseCases(projectRepository, projectRepository, actionLedgerRepository, workspaceBoundary);
     const workspaceGateway = new WorkspaceGatewayAdapter({
       containerRoot: config.workspaceRoot,
@@ -172,7 +214,9 @@ export async function createApplication(
     const workspaceMutationGateway = new WorkspaceMutationGatewayAdapter({
       containerRoot: config.workspaceRoot,
       workspaceBoundary,
-      recoveryRoot: config.recoveryRoot
+      recoveryRoot: config.recoveryRoot,
+      storageMutations: storageFileMutation,
+      rootMappings: storageRootMappingRepository
     });
     const taskTools = new HermesProjectTaskTools({ runs: aiRunRepository, principalAuthorization, list: new ListProjectTasksUseCase(projectRepository, projectTaskRepository), create: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases), update: new UpdateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases) });
     const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository, logger, taskTools);
@@ -209,19 +253,12 @@ export async function createApplication(
     const proposeSandboxCommand = new ProposeSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger);
     const collectProposedChangeSet = new CollectProposedChangeSetUseCase(aiRunRepository, projectRepository, workspaceMutationGateway, changeSetRepository);
     const decideProposedChangeSet = new DecideProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository, workspaceMutationGateway, chatContextRepository, principalAuthorization);
-    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, proposeSandboxCommand, projectRepository, collectProposedChangeSet, providerPermissionRepository, decideProposedChangeSet, principalAuthorization);
+    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, proposeSandboxCommand, projectRepository, collectProposedChangeSet, providerPermissionRepository, decideProposedChangeSet, principalAuthorization, stagingGateway);
     const decideEgress = new DecideEgressUseCase(aiRunRepository, projectRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot, projectFactRepository, providerPermissionRepository);
     const sendChatMessage = new SendChatMessageUseCase(projectChatContext, projectFactRepository, createAiRun, decideEgress);
-    const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository, commandRepository);
+    const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository, commandRepository, stagingGateway);
     const passwordHasher = new BcryptPasswordHasher();
     const tokenProvider = new OpaqueTokenProvider(config.sessionSecret);
-    const localUserPassword = config.localUserPassword ?? await readSecretFile(config.localUserPasswordFile);
-    if (localUserPassword) {
-      await new BootstrapLocalUserUseCase(userRepository, passwordHasher).execute({
-        password: localUserPassword,
-        displayName: config.localUserDisplayName
-      });
-    }
     const login = new LoginUseCase(
       userRepository,
       sessionRepository,
@@ -231,8 +268,7 @@ export async function createApplication(
       { sessionLifetimeMs: config.sessionLifetimeMs }
     );
     const getSession = new GetSessionUseCase(sessionRepository, tokenProvider, clock);
-    return {
-      app: createApp({
+    const app = createApp({
         logger,
         readiness: new GetReadinessUseCase(readiness),
         appVersion: config.appVersion,
@@ -293,9 +329,14 @@ export async function createApplication(
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },
+        accountStorage: {
+          getSession,
+          getStorageUsage: new GetStorageUsage(storageQuotaRepository),
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
         workspace: {
           appOrigin: config.appOrigin,
-          fileActions: new ProjectFileActions(new TypeOrmProjectFileAccess(dataSource), new ProjectFileGateway({ containerRoot: config.workspaceRoot, workspaceBoundary }), new MarkItDownDocumentConverter()),
+          fileActions: new ProjectFileActions(new TypeOrmProjectFileAccess(dataSource, storageRootMappingRepository), new ProjectFileGateway({ containerRoot: config.workspaceRoot, workspaceBoundary }), new MarkItDownDocumentConverter(), storageFileMutation),
           getSession,
           listWorkspaceFiles: new ListWorkspaceFilesUseCase(projectRepository, workspaceGateway),
           treeWorkspaceFiles: new TreeWorkspaceFilesUseCase(projectRepository, workspaceGateway),
@@ -377,13 +418,46 @@ export async function createApplication(
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         }
-      }),
+      });
+    const physicalStorageMonitor = new PhysicalStorageSpaceMonitor({
+      roots: [
+        {
+          volume: 'legacy_workspace', path: config.workspaceRoot,
+          isTrusted: async () => (await workspaceBoundary.getSnapshot()).status === 'ready'
+        },
+        ...(config.accountWorkspacesIdentity ? [{
+          volume: 'managed_workspaces' as const,
+          path: '/account-workspaces',
+          isTrusted: async () => (await workspaceBoundary.getManagedSnapshot()).status === 'ready'
+        }] : []),
+        { volume: 'recovery', path: config.recoveryRoot }
+      ],
+      ...(config.storageDiskWarningFreeBytes !== undefined ? { warningFreeBytes: config.storageDiskWarningFreeBytes } : {}),
+      logger
+    });
+    maintenanceHandle = await startPeriodicMaintenance({
+      task: { run: async () => {
+        const [cleanedStagingCount] = await Promise.all([
+          stagingGateway?.cleanupExpired() ?? Promise.resolve(0),
+          physicalStorageMonitor.observe()
+        ]);
+        return cleanedStagingCount;
+      } },
+      logger,
+      intervalMs: STORAGE_MAINTENANCE_INTERVAL_MS,
+      operationName: 'storage maintenance'
+    });
+    readiness.markReady();
+    return {
+      app,
       config,
       dataSource,
       logger,
-      readiness
+      readiness,
+      stopMaintenance: async () => await maintenanceHandle?.stop()
     };
   } catch (error: unknown) {
+    if (maintenanceHandle) await maintenanceHandle.stop();
     if (error instanceof StartupChecksError) {
       readiness.markFailed(error.failures);
       logger.error({ failures: error.failures }, 'Startup checks failed');

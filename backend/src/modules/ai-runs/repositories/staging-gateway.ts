@@ -15,4 +15,6 @@ export interface StageResult {
 export interface IStagingGateway {
   stage(input: StageInput): Promise<StageResult>;
   cleanup(stagingReference: string): Promise<void>;
+  assertFresh(stagingReference: string): Promise<void>;
+  cleanupExpired(): Promise<number>;
 }

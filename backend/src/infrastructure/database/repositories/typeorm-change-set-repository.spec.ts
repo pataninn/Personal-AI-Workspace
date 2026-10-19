@@ -1,6 +1,11 @@
 import type { DataSource, QueryRunner } from 'typeorm';
 
 import { TypeOrmProposedChangeSetRepository } from '@/infrastructure/database/repositories/typeorm-change-set-repository';
+import type { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+
+const passThroughStorageAccounting = {
+  runMutation: async <T>(_transaction: unknown, _ownerId: string, mutation: () => Promise<T>): Promise<T> => mutation()
+} as unknown as TypeOrmStorageContentAccounting;
 
 describe('TypeOrmProposedChangeSetRepository', () => {
   it('lists bounded owner and project scoped file history without loading raw JSON content or counting rows', async () => {
@@ -36,11 +41,16 @@ describe('TypeOrmProposedChangeSetRepository', () => {
       created_at: new Date(), updated_at: new Date()
     };
     const updated = { ...pending, status: 'applying', decision: 'approved' };
-    const query = jest.fn()
-      .mockResolvedValueOnce([{ id: ownerId }])
-      .mockResolvedValueOnce([pending])
-      .mockResolvedValueOnce([{ status: 'active' }])
-      .mockResolvedValueOnce([[updated], 1]);
+    const responses = [
+      [{ id: ownerId }],
+      [pending],
+      [[updated], 1]
+    ];
+    const query = jest.fn(async (sql: string, _parameters?: unknown[]): Promise<unknown> => {
+      if (sql.includes('FROM "projects"') && sql.includes('FOR UPDATE')) return [{ status: 'active', relative_root: null }];
+      if (sql.includes('FROM "project_removal_jobs"')) return [];
+      return responses.shift() ?? [];
+    });
     const queryRunner = {
       connect: jest.fn().mockResolvedValue(undefined),
       startTransaction: jest.fn().mockResolvedValue(undefined),
@@ -49,7 +59,7 @@ describe('TypeOrmProposedChangeSetRepository', () => {
       rollbackTransaction: jest.fn().mockResolvedValue(undefined),
       release: jest.fn().mockResolvedValue(undefined)
     } as unknown as QueryRunner;
-    const repository = new TypeOrmProposedChangeSetRepository({ createQueryRunner: () => queryRunner } as unknown as DataSource);
+    const repository = new TypeOrmProposedChangeSetRepository({ createQueryRunner: () => queryRunner } as unknown as DataSource, passThroughStorageAccounting);
 
     const result = await repository.recordDecision({
       ownerId, runId, proposalHash: pending.proposal_hash, decision: 'approve',
@@ -60,6 +70,7 @@ describe('TypeOrmProposedChangeSetRepository', () => {
     expect(result.resource.projectId).toBe(pending.project_id);
     expect(result.resource.status).toBe('applying');
     expect(query.mock.calls[0]?.[0]).toContain('"expires_at" > now()) FOR SHARE');
+    expect(query.mock.calls.find(([sql]) => String(sql).includes('FROM "project_removal_jobs"'))?.[1]).toEqual([ownerId, pending.project_id]);
     expect(queryRunner.commitTransaction).toHaveBeenCalledTimes(1);
   });
 });

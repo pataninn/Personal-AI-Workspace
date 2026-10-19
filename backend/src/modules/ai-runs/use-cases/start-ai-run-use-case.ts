@@ -1,4 +1,4 @@
-import { AiRunProviderPermissionRevokedError, AiRunStateConflictError } from '@/modules/ai-runs/domain/ai-run-errors';
+import { AiRunProviderPermissionRevokedError, AiRunStagingFailedError, AiRunStateConflictError } from '@/modules/ai-runs/domain/ai-run-errors';
 import { safeProviderFailureMessage } from '@/modules/ai-runs/domain/model-provider-errors';
 import { ChangeSetDomainError, ChangeSetReviewRequiredError } from '@/modules/ai-runs/domain/change-errors';
 import { safeChangeSetCollectionFailureMessage } from '@/modules/ai-runs/domain/change-set-failure-message';
@@ -16,6 +16,7 @@ import type { RuntimeChangeProposal, ProposedChangeSet } from '@/modules/ai-runs
 import type { TaskSuggestionDraft } from '@/modules/ai-runs/domain/task-suggestion-draft';
 import type { IProviderPermissionRepository } from '@/modules/ai-runs/repositories/provider-permission-repository';
 import type { IPrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
+import type { IStagingGateway } from '@/modules/ai-runs/repositories/staging-gateway';
 
 export interface RuntimeCommandProposalPort {
   execute(input: {
@@ -55,7 +56,8 @@ export class StartAiRunUseCase {
     private readonly changeSetProposals?: RuntimeChangeSetProposalPort,
     private readonly providerPermissionRepository?: IProviderPermissionRepository,
     private readonly automaticChanges?: { executeAutomatically(input: { readonly ownerId: string; readonly runId: string }): Promise<Pick<ProposedChangeSet, 'status' | 'safeMessage' | 'result'> | null> },
-    private readonly principalAuthorization?: IPrincipalAuthorization
+    private readonly principalAuthorization?: IPrincipalAuthorization,
+    private readonly stagingGateway?: Pick<IStagingGateway, 'cleanup' | 'assertFresh'>
   ) {}
 
   public async execute(input: StartAiRunInput): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> {
@@ -66,6 +68,10 @@ export class StartAiRunUseCase {
       await assertActiveAiRunProject(this.aiRunRepository, this.projectRepository, input.ownerId, input.runId);
     }
     const current = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
+    if (current?.status === 'ready' && current.runtimeReference?.startsWith('run-')) {
+      if (!this.stagingGateway) throw new AiRunStagingFailedError('unknown');
+      await this.stagingGateway.assertFresh(current.runtimeReference);
+    }
     if (current?.providerPermissionId && this.providerPermissionRepository) {
       const permission = await this.providerPermissionRepository.findActiveById({ ownerId: input.ownerId, projectId: current.projectId, permissionId: current.providerPermissionId });
       if (!permission || permission.providerProfile !== current.manifest.providerProfile || permission.model !== current.manifest.model) {
@@ -107,6 +113,7 @@ export class StartAiRunUseCase {
       await this.run(run);
     } catch {
       await this.markReview(run.id, run.ownerId, 'The assistant run stopped before its outcome could be confirmed. Refresh run status before retrying.');
+      await this.destroySafely(run);
     }
   }
 
@@ -123,10 +130,12 @@ export class StartAiRunUseCase {
       return;
     }
     if (!await this.publishStatus(running, 'run.started')) {
+      await this.destroySafely(running);
       return;
     }
     if (!this.agentRuntime.startRun) {
       await this.finish(running, 'failed', 'The assistant could not start this run. The configured runtime is unavailable.');
+      await this.destroySafely(running);
       return;
     }
     let assistantText = '';
@@ -397,9 +406,8 @@ export class StartAiRunUseCase {
       updated = { ...updated, assistantMessageId: message.resource.id };
       await this.aiRunRepository.save(updated);
     }
-    if (updated?.status === status) {
-      this.publishTerminal(updated);
-    }
+    // The terminal event is published by destroySafely only after runtime and
+    // staging cleanup are confirmed, so clients never see a false clean end.
   }
 
   private async completeLegacy(run: AiRun, status: 'succeeded' | 'failed' | 'blocked' | 'review_required', safeMessage: string, assistantText: string): Promise<AiRun> {
@@ -444,14 +452,33 @@ export class StartAiRunUseCase {
   private async destroySafely(run: AiRun): Promise<void> {
     try {
       await this.agentRuntime.destroy(run.id);
+      if (run.runtimeReference) {
+        if (!this.stagingGateway) {
+          if (run.runtimeReference.startsWith('run-')) throw new AiRunStagingFailedError('unknown');
+        } else {
+          await this.stagingGateway.cleanup(run.runtimeReference);
+        }
+      }
       const current = await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
       if (current?.status === 'cancel_requested') {
         await this.finishCancellation(current);
+      } else if (current && ['succeeded', 'failed', 'blocked', 'review_required'].includes(current.status)) {
+        this.publishTerminal(current);
       }
     } catch {
       const current = await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
-      if (current && current.status !== 'rejected' && current.status !== 'review_required') {
-        await this.markReview(run.id, run.ownerId, 'Run cleanup could not be confirmed. Refresh run status before retrying.');
+      if (current?.status === 'review_required') {
+        this.publishTerminal(current);
+      } else if (current && current.status !== 'rejected') {
+        const safeMessage = 'Run cleanup could not be confirmed. Refresh run status before retrying.';
+        const reviewed = await this.aiRunRepository.markReviewRequired?.(run.ownerId, run.id, safeMessage);
+        if (reviewed?.status === 'review_required' && reviewed.cleanup === 'unknown') {
+          this.publishTerminal(reviewed);
+        } else {
+          const fallback: AiRun = { ...current, status: 'review_required', phase: 'review', cleanup: 'unknown', safeMessage, updatedAt: new Date() };
+          await this.aiRunRepository.save(fallback);
+          this.publishTerminal(fallback);
+        }
       }
     }
   }

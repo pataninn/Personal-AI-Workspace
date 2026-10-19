@@ -61,6 +61,21 @@ function createRepository(handler: QueryHandler): {
 } {
   let lastEventSequence = 0;
   const query = jest.fn(async (statement: string, parameters: unknown[] = []) => {
+    if (statement.includes('FROM "users"') && statement.includes('FOR SHARE')) {
+      return [{ id: String(parameters[0]) }];
+    }
+    if (statement.startsWith('INSERT INTO "account_limits"')) return [];
+    if (statement.includes('FROM "account_limits"') && statement.includes('FOR UPDATE')) {
+      return [{ storage_limit_bytes: null }];
+    }
+    if (statement.startsWith('INSERT INTO "storage_account_totals"')) return [];
+    if (statement.includes('FROM "storage_account_totals"') && statement.includes('FOR UPDATE')) {
+      return [{ used_bytes: '0', reserved_bytes: '0', accounting_state: 'ready' }];
+    }
+    if (statement.startsWith('SELECT "last_event_sequence", "workspace_id" FROM "home_conversations"')
+      || statement.startsWith('SELECT "last_event_sequence" FROM "home_conversations"')) {
+      return [{ last_event_sequence: lastEventSequence, workspace_id: null }];
+    }
     if (statement.includes('SET "last_event_sequence"')) {
       lastEventSequence += 1;
       return [{ last_event_sequence: lastEventSequence }];
@@ -159,7 +174,9 @@ describe('TypeOrmHomeConversationRepository', () => {
     await expect(repository.createTurn({ ownerId: 'other-owner', conversationId: CONVERSATION_ID, requestKey: 'key', requestFingerprint: 'fp' }))
       .rejects.toBeInstanceOf(HomeConversationNotFoundError);
 
-    expect(query.mock.calls[0]?.[1]).toEqual(['other-owner', CONVERSATION_ID]);
+    const conversationLookup = query.mock.calls.find(([statement]) =>
+      String(statement).includes('FROM "home_conversations"') && String(statement).includes('FOR UPDATE'));
+    expect(conversationLookup?.[1]).toEqual(['other-owner', CONVERSATION_ID]);
     expect(query.mock.calls.some(([statement]) => String(statement).includes('INSERT INTO "home_turns"'))).toBe(false);
   });
 

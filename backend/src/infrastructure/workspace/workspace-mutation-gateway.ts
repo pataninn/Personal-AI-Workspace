@@ -3,7 +3,7 @@ import { promises as nodeFs } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 
-import { ChangeSetDomainError, ChangeSetValidationError } from '@/modules/ai-runs/domain/change-errors';
+import { ChangeSetBlockedError, ChangeSetDomainError, ChangeSetValidationError } from '@/modules/ai-runs/domain/change-errors';
 import { CHANGE_SET_LIMITS, isDestructiveOperation } from '@/modules/ai-runs/domain/change-policy';
 import type { BackupCheckpoint, ChangeBackupStatus, ChangeOperationKind, ProposedChangeOperation } from '@/modules/ai-runs/domain/change-types';
 import type {
@@ -19,6 +19,17 @@ import { WorkspaceRelativePath } from '@/modules/files/domain/workspace-path';
 import { decodeUtf8 } from '@/infrastructure/workspace/workspace-text';
 import { WorkspaceBinaryFileError } from '@/modules/files/domain/workspace-errors';
 import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
+import { StorageQuotaError, accountingUnavailable } from '@/modules/storage-quotas/domain/storage-quota-errors';
+import { storageFileOperationFingerprint } from '@/modules/storage-quotas/domain/storage-file-operation-fingerprint';
+import type {
+  StorageFileOperationCommand,
+  StorageFileReferencePlan,
+  StorageTrustedFileScope,
+  StorageVerifiedFileChange
+} from '@/modules/storage-quotas/domain/storage-quota-types';
+import type { StorageFileOperationScopeRequest, StorageQuotaTransaction, StorageTrustedFileScopeResolver } from '@/modules/storage-quotas/repositories/storage-quota-repository';
+import type { IStorageRootMappingRepository, StorageRootMapping } from '@/modules/storage-quotas/repositories/storage-root-mapping-repository';
+import { StorageQuotaFileMutation, StorageQuotaKnownOutcomeError, StorageQuotaNoSideEffectError } from '@/infrastructure/workspace/storage-quota-file-mutation';
 
 interface MutationStats {
   readonly size: number;
@@ -54,6 +65,8 @@ export interface WorkspaceMutationGatewayOptions {
   readonly containerRoot: string;
   readonly workspaceBoundary: IWorkspaceBoundary;
   readonly recoveryRoot: string;
+  readonly storageMutations: StorageQuotaFileMutation;
+  readonly rootMappings: IStorageRootMappingRepository;
   readonly fileSystem?: MutationFileSystem;
 }
 
@@ -105,6 +118,14 @@ class MutationOperationError extends Error {
   }
 }
 
+/** Indicates an operation failed, but every claimed file was restored successfully. */
+class RestoredMutationFailure extends Error {
+  public constructor(public readonly originalError: unknown) {
+    super('The file operation failed and its claimed files were restored.');
+    this.name = 'RestoredMutationFailure';
+  }
+}
+
 export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGateway {
   private readonly fileSystem: MutationFileSystem;
 
@@ -122,6 +143,18 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     return this.readSnapshot(normalizedPath, target.absolutePath, target.stats);
   }
 
+  private async findActiveMapping(scope: WorkspaceMutationScope): Promise<StorageRootMapping> {
+    const mappings = await this.options.rootMappings.listMappings(scope.ownerId);
+    const matches = mappings.filter((mapping) => mapping.projectId === scope.projectId && mapping.state === 'active');
+    const mapping = matches[0];
+    if (matches.length !== 1 || !mapping || mapping.ownerId !== scope.ownerId
+      || mapping.storageKind !== scope.storageKind || mapping.relativeRoot !== scope.relativeRoot
+      || mapping.locatorProjectId !== scope.projectId) {
+      throw accountingUnavailable();
+    }
+    return mapping;
+  }
+
   public async applyChangeSet(
     scope: WorkspaceMutationScope,
     operations: readonly ProposedChangeOperation[],
@@ -130,6 +163,7 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     options: WorkspaceMutationApplyOptions = {}
   ): Promise<WorkspaceApplyResult> {
     this.validateExactPreconditions(operations);
+    const mapping = await this.findActiveMapping(scope);
     const context = await this.resolveContext(scope);
     let prepared: readonly PreparedOperation[];
     try {
@@ -155,7 +189,7 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     const results: WorkspaceApplyResult['operations'][number][] = [];
     for (const item of prepared) {
       try {
-        results.push(await this.applyOne(context, item, runId, proposalHash, options));
+        results.push(await this.applyOne(scope, mapping, context, item, runId, proposalHash, options));
       } catch (error: unknown) {
         if (error instanceof MutationConflictError) {
           results.push(this.failureResult(item.operation, 'skipped', 'The change set became stale before this operation could run.', error.backupStatus));
@@ -165,6 +199,21 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
             conflict: { path: error.relativePath, reason: error.reason },
             operations: results
           };
+        }
+        if (error instanceof StorageQuotaError) {
+          const needsReview = error.code === 'STORAGE_RECONCILIATION_PENDING';
+          if (!needsReview && results.length === 0) throw error;
+          const backup: ChangeBackupStatus = needsReview && backupBeforeOperation(item.operation) !== 'not_required'
+            ? 'unknown'
+            : backupBeforeOperation(item.operation);
+          results.push(this.failureResult(
+            item.operation,
+            needsReview ? 'needs_manual_review' : 'failed',
+            needsReview ? 'The file operation outcome could not be confirmed.' : 'The file operation was not applied because storage accounting could not admit it.',
+            backup
+          ));
+          results.push(...remainingResults(prepared, prepared.indexOf(item), 'skipped'));
+          return { outcome: needsReview ? 'needs_manual_review' : 'failed', operations: results };
         }
         const ambiguous = error instanceof MutationOperationError && error.ambiguous
           || error instanceof AmbiguousMutationError
@@ -295,6 +344,8 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
   }
 
   private async applyOne(
+    scope: WorkspaceMutationScope,
+    mapping: StorageRootMapping,
     context: { readonly projectRoot: string; readonly canonicalRoot: string },
     prepared: PreparedOperation,
     runId: string,
@@ -307,46 +358,277 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     const latestDestination = operation.destinationPath ? await this.recheck(context, operation.destinationPath) : missingSnapshot(operation.path);
     this.assertPrecondition(operation, latestSource, latestDestination);
     const backupRequired = isDestructiveOperation(operation.operation, latestDestination.exists);
-    const backup = backupRequired ? await this.createBackups(context, operation, latestSource, latestDestination, runId, proposalHash, options) : { status: 'not_required' as const };
-    try {
-      await options.assertPrincipalActive?.();
-      if (operation.operation === 'rename') {
-        await this.renameFile(context, operation.path, operation.destinationPath ?? '', operation.expectedSourceHash, operation.expectedDestinationHash, operation.operationId, latestSource.sizeBytes, options);
-      } else {
-        await this.withActivePrincipal(options, async (assertStillActive) => {
-          await assertStillActive();
-          if (operation.operation === 'delete') {
-            await this.deleteFile(context, operation.path, operation.expectedSourceHash, operation.operationId, assertStillActive);
-          } else if (operation.operation === 'overwrite') {
-            await this.overwriteFile(context, operation.path, operation.content ?? '', operation.expectedSourceHash, operation.operationId, assertStillActive);
-          } else {
-            await this.writeFile(context, operation.path, operation.content ?? '', operation.operation === 'create' ? undefined : operation.expectedSourceHash, assertStillActive);
+    const plans = this.planFileChanges(scope, mapping.rootKey, operation, latestSource, latestDestination, backupRequired, runId, proposalHash);
+    const command = createStorageCommand(scope.ownerId, scope.projectId, mapping.rootKey, operation.path, runId, operation.operationId, plans);
+    const resolver = this.createTrustedScopeResolver(scope, mapping);
+    const mutation = await this.options.storageMutations.execute(command, resolver, async (trustedScope) => {
+      let trustedContext: { readonly projectRoot: string; readonly canonicalRoot: string };
+      try {
+        const trustedProjectScope = this.trustedProjectScope(trustedScope, scope, mapping);
+        trustedContext = await this.resolveContext(trustedProjectScope);
+        await options.assertPrincipalActive?.();
+        const currentSource = await this.recheck(trustedContext, operation.path);
+        const currentDestination = operation.destinationPath
+          ? await this.recheck(trustedContext, operation.destinationPath)
+          : missingSnapshot(operation.path);
+        this.assertPrecondition(operation, currentSource, currentDestination);
+      } catch (error: unknown) {
+        throw new StorageQuotaNoSideEffectError(error);
+      }
+
+      let backup: { readonly status: 'created'; readonly reference?: string; readonly checkpoints: readonly BackupCheckpoint[] }
+        | { readonly status: 'not_required'; readonly checkpoints: readonly BackupCheckpoint[] };
+      try {
+        backup = backupRequired
+          ? await this.createBackups(trustedContext, operation, latestSource, latestDestination, runId, proposalHash, options)
+          : { status: 'not_required', checkpoints: [] };
+      } catch (error: unknown) {
+        if (error instanceof StorageQuotaNoSideEffectError) throw error;
+        let observed: readonly StorageVerifiedFileChange[];
+        try { observed = await this.observeFileChanges(trustedContext, plans); } catch {
+          throw new MutationOperationError(backupRequired ? 'unknown' : 'not_required', true);
+        }
+        if (this.matchesExpectedState(plans, observed, 'prior')) throw new StorageQuotaNoSideEffectError(error);
+        if (error instanceof MutationConflictError) {
+          throw new StorageQuotaKnownOutcomeError(
+            new MutationConflictError(error.relativePath, error.reason, observed.some((change) => change.kind === 'recovery_file' && change.bytes !== null) ? 'created' : 'failed'),
+            observed
+          );
+        }
+        const status: ChangeBackupStatus = observed.some((change) => change.kind === 'recovery_file' && change.bytes !== null)
+          ? 'created'
+          : backupRequired ? 'failed' : 'not_required';
+        throw new StorageQuotaKnownOutcomeError(new MutationOperationError(status, false), observed);
+      }
+      try {
+        await options.assertPrincipalActive?.();
+        if (operation.operation === 'rename') {
+          await this.renameFile(trustedContext, operation.path, operation.destinationPath ?? '', operation.expectedSourceHash, operation.expectedDestinationHash, operation.operationId, latestSource.sizeBytes, options);
+        } else {
+          await this.withFreshPrincipalChecks(options, async (assertStillActive) => {
+            await assertStillActive();
+            if (operation.operation === 'delete') {
+              await this.deleteFile(trustedContext, operation.path, operation.expectedSourceHash, operation.operationId, assertStillActive);
+            } else if (operation.operation === 'overwrite') {
+              await this.overwriteFile(trustedContext, operation.path, operation.content ?? '', operation.expectedSourceHash, operation.operationId, assertStillActive);
+            } else {
+              await this.writeFile(trustedContext, operation.path, operation.content ?? '', operation.operation === 'create' ? undefined : operation.expectedSourceHash, assertStillActive);
+            }
+          });
+        }
+      } catch (error: unknown) {
+        if (error instanceof MutationConflictError) {
+          const conflict = new MutationConflictError(error.relativePath, error.reason, backup.status);
+          let observed: readonly StorageVerifiedFileChange[];
+          try { observed = await this.observeFileChanges(trustedContext, plans); } catch {
+            throw new MutationOperationError(backup.status, true);
           }
-        });
+          if (this.matchesExpectedState(plans, observed, 'prior')) throw new StorageQuotaNoSideEffectError(conflict);
+          throw new StorageQuotaKnownOutcomeError(conflict, observed);
+        }
+        if (error instanceof RestoredMutationFailure) {
+          const observed = await this.observeFileChanges(trustedContext, plans);
+          if (this.matchesExpectedState(plans, observed, 'prior')) throw new StorageQuotaNoSideEffectError(error.originalError);
+          const original = error.originalError instanceof MutationConflictError
+            ? new MutationConflictError(error.originalError.relativePath, error.originalError.reason, backup.status)
+            : new MutationOperationError(backup.status, false);
+          throw new StorageQuotaKnownOutcomeError(original, observed);
+        }
+        if (error instanceof UnauthenticatedError || error instanceof ChangeSetDomainError) {
+          let observed: readonly StorageVerifiedFileChange[];
+          try {
+            observed = await this.observeFileChanges(trustedContext, plans);
+          } catch {
+            throw new MutationOperationError(backup.status, true);
+          }
+          if (this.matchesExpectedState(plans, observed, 'prior')) throw new StorageQuotaNoSideEffectError(error);
+          throw new StorageQuotaKnownOutcomeError(new MutationOperationError(backup.status, false), observed);
+        }
+        throw new MutationOperationError(backup.status, error instanceof AmbiguousMutationError);
       }
-    } catch (error: unknown) {
-      if (error instanceof MutationConflictError) {
-        throw new MutationConflictError(error.relativePath, error.reason, backup.status);
-      }
-      throw new MutationOperationError(backup.status, error instanceof AmbiguousMutationError);
-    }
-    return {
-      operationId: operation.operationId,
-      operation: operation.operation,
-      path: operation.path,
-      ...(operation.destinationPath ? { destinationPath: operation.destinationPath } : {}),
-      status: 'applied',
-      backup: backup.status,
-      ...(backup.status === 'created' && backup.reference ? { backupReference: backup.reference } : {}),
-      safeMessage: messageFor(operation.operation, backup.status)
-    };
+
+      const actualChanges = await this.verifyFileChanges(trustedContext, plans, backup.checkpoints);
+      return {
+        result: operationResult(operation, backup.status, backup.checkpoints[0]?.reference),
+        changes: actualChanges
+      };
+    });
+    if (mutation.state === 'applied') return mutation.result;
+    const backupStatus: ChangeBackupStatus = mutation.changes.some((change) => change.kind === 'recovery_file') ? 'created' : 'not_required';
+    const backupReference = mutation.changes.find((change) => change.kind === 'recovery_file')?.relativeKey;
+    return operationResult(operation, backupStatus, backupReference);
   }
 
-  private async withActivePrincipal<T>(options: WorkspaceMutationApplyOptions, action: (assertStillActive: () => Promise<void>) => Promise<T>): Promise<T> {
-    if (options.withActivePrincipal) return options.withActivePrincipal(action);
+  private async withFreshPrincipalChecks<T>(options: WorkspaceMutationApplyOptions, action: (assertStillActive: () => Promise<void>) => Promise<T>): Promise<T> {
     const assertStillActive = options.assertPrincipalActive ?? (async () => undefined);
     await assertStillActive();
     return action(assertStillActive);
+  }
+
+  private createTrustedScopeResolver(scope: WorkspaceMutationScope, mapping: StorageRootMapping): StorageTrustedFileScopeResolver {
+    return async (transaction: StorageQuotaTransaction, request: StorageFileOperationScopeRequest): Promise<StorageTrustedFileScope> => {
+      try {
+        if (request.ownerId !== scope.ownerId || request.projectId !== scope.projectId
+          || request.rootKeys.length !== 1 || request.rootKeys[0] !== mapping.rootKey) throw accountingUnavailable();
+        const trusted = await this.options.rootMappings.resolveTrustedScope(transaction, request);
+        this.trustedProjectScope(trusted, scope, mapping);
+        const projects = await transaction.query(
+          'SELECT "status" FROM "projects" WHERE "owner_id" = $1 AND "id" = $2', [scope.ownerId, scope.projectId]
+        ) as { readonly status: string }[];
+        if (projects[0]?.status !== 'active') throw new ChangeSetBlockedError('The project is unavailable for file changes.');
+        const jobs = await transaction.query(
+          'SELECT "project_id" FROM "project_removal_jobs" WHERE "owner_id" = $1 AND "project_id" = $2 LIMIT 1',
+          [scope.ownerId, scope.projectId]
+        ) as readonly { readonly project_id: string }[];
+        if (jobs.length > 0) throw new ChangeSetBlockedError('The project is being removed.');
+        return trusted;
+      } catch (error: unknown) {
+        if (error instanceof ChangeSetDomainError || error instanceof StorageQuotaError) throw error;
+        throw accountingUnavailable();
+      }
+    };
+  }
+
+  private trustedProjectScope(
+    trusted: StorageTrustedFileScope,
+    scope: WorkspaceMutationScope,
+    mapping: StorageRootMapping
+  ): WorkspaceMutationScope {
+    const root = trusted.roots.find((item) => item.rootKey === mapping.rootKey);
+    if (trusted.ownerId !== scope.ownerId || trusted.projectId !== scope.projectId || trusted.roots.length !== 1 || !root
+      || root.ownerId !== mapping.ownerId || root.projectId !== mapping.projectId || root.locatorProjectId !== mapping.locatorProjectId
+      || root.storageKind !== mapping.storageKind || root.relativeRoot !== mapping.relativeRoot) throw accountingUnavailable();
+    return {
+      ownerId: root.ownerId,
+      projectId: scope.projectId,
+      storageKind: root.storageKind,
+      relativeRoot: root.relativeRoot
+    };
+  }
+
+  private planFileChanges(
+    scope: WorkspaceMutationScope,
+    rootKey: string,
+    operation: ProposedChangeOperation,
+    source: WorkspaceFileSnapshot,
+    destination: WorkspaceFileSnapshot,
+    backupRequired: boolean,
+    runId: string,
+    proposalHash: string
+  ): readonly StorageFileReferencePlan[] {
+    const intendedBytes = operation.operation === 'delete' || operation.operation === 'rename'
+      ? null
+      : BigInt(Buffer.byteLength(operation.content ?? '', 'utf8'));
+    const intendedSha256 = intendedBytes === null ? null : hashContent(operation.content ?? '');
+    const plans: StorageFileReferencePlan[] = [projectFilePlan(scope.projectId, rootKey, operation.path, source, intendedBytes, intendedSha256)];
+    if (operation.operation === 'rename' && operation.destinationPath) {
+      plans.push(projectFilePlan(scope.projectId, rootKey, operation.destinationPath, destination, BigInt(source.sizeBytes), source.hash ?? null));
+    }
+    if (backupRequired && source.exists) {
+      plans.push(recoveryFilePlan(scope.projectId, runId, proposalHash, operation.operationId, operation.path, source));
+    }
+    if (backupRequired && operation.operation === 'rename' && destination.exists && operation.destinationPath) {
+      plans.push(recoveryFilePlan(scope.projectId, runId, proposalHash, operation.operationId, operation.destinationPath, destination));
+    }
+    return plans;
+  }
+
+  private async verifyFileChanges(
+    context: { readonly projectRoot: string; readonly canonicalRoot: string },
+    plans: readonly StorageFileReferencePlan[],
+    checkpoints: readonly BackupCheckpoint[]
+  ): Promise<readonly StorageVerifiedFileChange[]> {
+    const changes: StorageVerifiedFileChange[] = [];
+    for (const plan of plans) {
+      if (plan.kind === 'recovery_file') {
+        const backupPath = path.resolve(this.options.recoveryRoot, ...plan.relativeKey.split('/'));
+        await this.assertRecoveryPath(backupPath, false);
+        const stats = await this.fileSystem.lstat(backupPath);
+        assertSafeStats(stats);
+        if (!stats.isFile()) throw new AmbiguousMutationError('The recovery snapshot could not be verified.');
+        const bytes = await this.fileSystem.readFile(backupPath);
+        const digest = createHash('sha256').update(bytes).digest('hex');
+        const checkpoint = checkpoints.find((item) => item.reference === plan.relativeKey);
+        if (!checkpoint || BigInt(bytes.length) !== plan.intendedBytes || digest !== plan.intendedSha256
+          || checkpoint.sizeBytes !== bytes.length || checkpoint.contentSha256 !== digest) {
+          throw new AmbiguousMutationError('The recovery snapshot could not be verified.');
+        }
+      } else {
+        const snapshot = await this.recheck(context, plan.relativeKey);
+        if (plan.intendedBytes === null) {
+          if (snapshot.exists) throw new AmbiguousMutationError('A removed file is still present.');
+        } else if (!snapshot.exists || snapshot.isDirectory || BigInt(snapshot.sizeBytes) !== plan.intendedBytes || snapshot.hash !== plan.intendedSha256) {
+          throw new AmbiguousMutationError('The changed file could not be verified.');
+        }
+      }
+      changes.push({
+        kind: plan.kind,
+        resourceKey: plan.resourceKey,
+        copyKey: plan.copyKey,
+        projectId: plan.projectId,
+        rootKey: plan.rootKey,
+        relativeKey: plan.relativeKey,
+        bytes: plan.intendedBytes,
+        sha256: plan.intendedSha256
+      });
+    }
+    return changes;
+  }
+
+  /** Reads every planned location, including absent files, without trusting intended values. */
+  private async observeFileChanges(
+    context: { readonly projectRoot: string; readonly canonicalRoot: string },
+    plans: readonly StorageFileReferencePlan[]
+  ): Promise<readonly StorageVerifiedFileChange[]> {
+    const changes: StorageVerifiedFileChange[] = [];
+    for (const plan of plans) {
+      let bytes: bigint | null = null;
+      let sha256: string | null = null;
+      if (plan.kind === 'recovery_file') {
+        const filePath = path.resolve(this.options.recoveryRoot, ...plan.relativeKey.split('/'));
+        await this.assertRecoveryPath(filePath, true);
+        let stats: MutationStats;
+        try { stats = await this.fileSystem.lstat(filePath); } catch (error: unknown) {
+          if (!isMissing(error)) throw error;
+          changes.push(verifiedChange(plan, null, null));
+          continue;
+        }
+        assertSafeStats(stats);
+        if (!stats.isFile() || !Number.isSafeInteger(stats.size) || stats.size < 0) throw new AmbiguousMutationError('The recovery snapshot is not a measurable regular file.');
+        const content = await this.fileSystem.readFile(filePath);
+        const afterRead = await this.fileSystem.lstat(filePath);
+        assertSafeStats(afterRead);
+        if (!afterRead.isFile() || afterRead.size !== stats.size || content.length !== stats.size) throw new AmbiguousMutationError('The recovery snapshot changed while being measured.');
+        const repeated = await this.fileSystem.readFile(filePath);
+        if (!repeated.equals(content)) throw new AmbiguousMutationError('The recovery snapshot changed while being measured.');
+        bytes = BigInt(content.length);
+        sha256 = createHash('sha256').update(content).digest('hex');
+      } else {
+        const snapshot = await this.recheck(context, plan.relativeKey);
+        if (snapshot.exists) {
+          if (snapshot.isDirectory || snapshot.hash === undefined) throw new AmbiguousMutationError('A planned file location is not a measurable regular file.');
+          bytes = BigInt(snapshot.sizeBytes);
+          sha256 = snapshot.hash;
+        }
+      }
+      changes.push(verifiedChange(plan, bytes, sha256));
+    }
+    return changes;
+  }
+
+  private matchesExpectedState(
+    plans: readonly StorageFileReferencePlan[],
+    changes: readonly StorageVerifiedFileChange[],
+    state: 'prior' | 'intended'
+  ): boolean {
+    if (plans.length !== changes.length) return false;
+    return plans.every((plan) => {
+      const change = changes.find((item) => samePlannedLocation(plan, item));
+      if (!change || change.projectId !== plan.projectId || change.rootKey !== plan.rootKey || change.relativeKey !== plan.relativeKey) return false;
+      const expectedBytes = state === 'prior' ? plan.expectedPriorBytes : plan.intendedBytes;
+      const expectedHash = state === 'prior' ? plan.expectedPriorSha256 : plan.intendedSha256;
+      return change.bytes === expectedBytes && change.sha256 === expectedHash;
+    });
   }
 
   private async recheck(context: { readonly projectRoot: string; readonly canonicalRoot: string }, relativePath: string): Promise<WorkspaceFileSnapshot> {
@@ -361,14 +643,14 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     runId: string,
     proposalHash: string,
     options: WorkspaceMutationApplyOptions
-  ): Promise<{ readonly status: 'created'; readonly reference?: string }> {
+  ): Promise<{ readonly status: 'created'; readonly reference?: string; readonly checkpoints: readonly BackupCheckpoint[] }> {
     const checkpoints: BackupCheckpoint[] = [];
     try {
       if (source.exists) {
-        checkpoints.push(await this.withActivePrincipal(options, (assertStillActive) => this.writeBackup(context, runId, proposalHash, operation.operationId, operation.path, source.content, source.hash, assertStillActive)));
+        checkpoints.push(await this.withFreshPrincipalChecks(options, (assertStillActive) => this.writeBackup(context, runId, proposalHash, operation.operationId, operation.path, source.content, source.hash, assertStillActive)));
       }
       if (operation.operation === 'rename' && destination.exists) {
-        checkpoints.push(await this.withActivePrincipal(options, (assertStillActive) => this.writeBackup(context, runId, proposalHash, operation.operationId, operation.destinationPath ?? operation.path, destination.content, destination.hash, assertStillActive)));
+        checkpoints.push(await this.withFreshPrincipalChecks(options, (assertStillActive) => this.writeBackup(context, runId, proposalHash, operation.operationId, operation.destinationPath ?? operation.path, destination.content, destination.hash, assertStillActive)));
       }
       for (const checkpoint of checkpoints) {
         try {
@@ -377,8 +659,12 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
           throw new AmbiguousMutationError('The recovery checkpoint could not be persisted before mutation.');
         }
       }
-      return { status: 'created', ...(checkpoints[0]?.reference ? { reference: checkpoints[0].reference } : {}) };
+      return { status: 'created', ...(checkpoints[0]?.reference ? { reference: checkpoints[0].reference } : {}), checkpoints };
     } catch (error: unknown) {
+      if (checkpoints.length === 0 && (error instanceof UnauthenticatedError || error instanceof ChangeSetDomainError
+        || (error instanceof BackupMutationError && !error.ambiguous))) {
+        throw new StorageQuotaNoSideEffectError(error);
+      }
       if (error instanceof UnauthenticatedError) throw error;
       if (error instanceof MutationConflictError) {
         if (checkpoints.length > 0) {
@@ -417,8 +703,7 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
     }
     const backupDirectory = path.resolve(this.options.recoveryRoot, `run-${runId}`, proposalHash, operationId);
     await this.fileSystem.mkdir(backupDirectory, { recursive: true });
-    const safeName = relativePath.replaceAll('/', '__');
-    const backupPath = path.resolve(backupDirectory, `${safeName}.bak`);
+    const backupPath = path.resolve(backupDirectory, backupFileName(relativePath));
     await this.assertRecoveryPath(backupPath, true);
     await assertStillActive();
     const handle = await this.fileSystem.open(backupPath, 'wx');
@@ -460,7 +745,7 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
       if (error instanceof ChangeSetDomainError || error instanceof MutationConflictError || error instanceof UnauthenticatedError) {
         throw error;
       }
-      throw new AmbiguousMutationError('The overwrite outcome could not be confirmed.');
+      throw new RestoredMutationFailure(error);
     }
   }
 
@@ -530,7 +815,7 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
       if (error instanceof ChangeSetDomainError || error instanceof MutationConflictError || error instanceof UnauthenticatedError) {
         throw error;
       }
-      throw new AmbiguousMutationError('The delete outcome could not be confirmed.');
+      throw new RestoredMutationFailure(error);
     }
   }
 
@@ -561,7 +846,7 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
         throw new AmbiguousMutationError('The claim checkpoint could not be persisted before mutation.');
       }
     }
-    await this.withActivePrincipal(options, async (assertStillActive) => {
+    await this.withFreshPrincipalChecks(options, async (assertStillActive) => {
       await assertStillActive();
       const sourceClaim = await this.claimAndValidate(context, normalizedSource, expectedSourceHash, { operationId, quarantinePath });
       let destinationClaim: ClaimedFile | undefined;
@@ -599,6 +884,7 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
         if (error instanceof ChangeSetDomainError || error instanceof MutationConflictError || error instanceof UnauthenticatedError) {
           throw error;
         }
+        if (!promoted) throw new RestoredMutationFailure(error);
         throw new AmbiguousMutationError('The rename outcome could not be confirmed.');
       }
     });
@@ -862,6 +1148,123 @@ export class WorkspaceMutationGatewayAdapter implements IWorkspaceMutationGatewa
 
 function remainingResults(prepared: readonly PreparedOperation[], completedIndex: number, status: 'skipped'): WorkspaceApplyResult['operations'] {
   return prepared.slice(completedIndex + 1).map((item) => ({ operationId: item.operation.operationId, operation: item.operation.operation, path: item.operation.path, ...(item.operation.destinationPath ? { destinationPath: item.operation.destinationPath } : {}), status, backup: backupBeforeOperation(item.operation), safeMessage: 'The change set did not continue after an earlier failure.' }));
+}
+
+function projectFilePlan(
+  projectId: string,
+  rootKey: string,
+  relativeKey: string,
+  prior: WorkspaceFileSnapshot,
+  intendedBytes: bigint | null,
+  intendedSha256: string | null
+): StorageFileReferencePlan {
+  return {
+    kind: 'project_file',
+    resourceKey: rootKey,
+    copyKey: relativeKey,
+    projectId,
+    rootKey,
+    relativeKey,
+    expectedPriorBytes: prior.exists ? BigInt(prior.sizeBytes) : null,
+    expectedPriorSha256: prior.exists ? requireSnapshotHash(prior) : null,
+    intendedBytes,
+    intendedSha256
+  };
+}
+
+function verifiedChange(plan: StorageFileReferencePlan, bytes: bigint | null, sha256: string | null): StorageVerifiedFileChange {
+  return {
+    kind: plan.kind,
+    resourceKey: plan.resourceKey,
+    copyKey: plan.copyKey,
+    projectId: plan.projectId,
+    rootKey: plan.rootKey,
+    relativeKey: plan.relativeKey,
+    bytes,
+    sha256
+  };
+}
+
+function samePlannedLocation(plan: StorageFileReferencePlan, change: StorageVerifiedFileChange): boolean {
+  return plan.kind === change.kind && plan.resourceKey === change.resourceKey && plan.copyKey === change.copyKey;
+}
+
+function recoveryFilePlan(
+  projectId: string,
+  runId: string,
+  proposalHash: string,
+  operationId: string,
+  originalRelativePath: string,
+  snapshot: WorkspaceFileSnapshot
+): StorageFileReferencePlan {
+  const relativeKey = recoveryRelativeKey(runId, proposalHash, operationId, originalRelativePath);
+  return {
+    kind: 'recovery_file',
+    resourceKey: runId,
+    copyKey: relativeKey,
+    projectId,
+    rootKey: 'recovery-v1',
+    relativeKey,
+    expectedPriorBytes: null,
+    expectedPriorSha256: null,
+    intendedBytes: BigInt(snapshot.sizeBytes),
+    intendedSha256: requireSnapshotHash(snapshot)
+  };
+}
+
+function createStorageCommand(
+  ownerId: string,
+  projectId: string,
+  rootKey: string,
+  targetKey: string,
+  runId: string,
+  operationId: string,
+  changes: readonly StorageFileReferencePlan[]
+): StorageFileOperationCommand {
+  const identity = {
+    ownerId,
+    operationKey: `change-set:${runId}:${operationId}`,
+    projectId,
+    rootKey,
+    targetKey,
+    changes
+  };
+  if (identity.operationKey.length > 128) throw new ChangeSetValidationError([{ field: 'operationId', message: 'The file operation identity is too long.' }]);
+  return { ...identity, fingerprint: storageFileOperationFingerprint(identity) };
+}
+
+function operationResult(
+  operation: ProposedChangeOperation,
+  backup: ChangeBackupStatus,
+  backupReference?: string
+): WorkspaceApplyResult['operations'][number] {
+  return {
+    operationId: operation.operationId,
+    operation: operation.operation,
+    path: operation.path,
+    ...(operation.destinationPath ? { destinationPath: operation.destinationPath } : {}),
+    status: 'applied',
+    backup,
+    ...(backup === 'created' && backupReference ? { backupReference } : {}),
+    safeMessage: messageFor(operation.operation, backup)
+  };
+}
+
+function recoveryRelativeKey(runId: string, proposalHash: string, operationId: string, originalRelativePath: string): string {
+  return `run-${runId}/${proposalHash}/${operationId}/${createHash('sha256').update(originalRelativePath, 'utf8').digest('hex')}.bak`;
+}
+
+function backupFileName(originalRelativePath: string): string {
+  return `${createHash('sha256').update(originalRelativePath, 'utf8').digest('hex')}.bak`;
+}
+
+function requireSnapshotHash(snapshot: WorkspaceFileSnapshot): string {
+  if (!isSha256(snapshot.hash)) throw new ChangeSetValidationError([{ field: 'path', message: 'A stable file hash is required before a change can be applied.' }]);
+  return snapshot.hash;
+}
+
+function hashContent(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
 function backupBeforeOperation(operation: ProposedChangeOperation): ChangeBackupStatus {

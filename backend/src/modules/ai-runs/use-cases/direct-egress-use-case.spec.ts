@@ -52,6 +52,8 @@ class RejectingStagingGateway implements IStagingGateway {
     throw new Error('direct provider must not stage');
   }
   public async cleanup(): Promise<void> { return Promise.resolve(); }
+  public async assertFresh(): Promise<void> { return Promise.resolve(); }
+  public async cleanupExpired(): Promise<number> { return 0; }
 }
 
 function makeManifest(): EgressManifest {

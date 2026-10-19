@@ -125,6 +125,8 @@ class StagingFixture implements IStagingGateway {
     return { stagingReference: `fake://${input.runId}`, itemCount: input.files.length + 1 };
   }
   public async cleanup(): Promise<void> { return undefined; }
+  public async assertFresh(): Promise<void> { return undefined; }
+  public async cleanupExpired(): Promise<number> { return 0; }
 }
 
 describe('AI run use cases', () => {

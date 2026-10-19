@@ -7,7 +7,9 @@ import { InMemoryProviderPermissionRepository } from '@/infrastructure/ai-runs/i
 import { FakeAgentRuntime } from '@/infrastructure/sandbox/fake-agent-runtime';
 import { CancelAiRunUseCase } from '@/modules/ai-runs/use-cases/cancel-ai-run-use-case';
 import { ChangeSetReviewRequiredError } from '@/modules/ai-runs/domain/change-errors';
+import { AiRunCancellationReviewRequiredError, AiRunStagingFailedError } from '@/modules/ai-runs/domain/ai-run-errors';
 import { StartAiRunUseCase, type RuntimeCommandProposalPort } from '@/modules/ai-runs/use-cases/start-ai-run-use-case';
+import type { IStagingGateway } from '@/modules/ai-runs/repositories/staging-gateway';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const PROJECT_ID = '22222222-2222-4222-8222-222222222222';
@@ -74,6 +76,128 @@ async function waitForStatus(repository: InMemoryAiRunRepository, runId: string,
 }
 
 describe('StartAiRunUseCase', () => {
+  it('checks a prepared local staging reference before starting it and cleans only after runtime destruction', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const conversations = conversationRepository();
+    const runtime = new FakeAgentRuntime();
+    const run = await readyRun(repository);
+    await repository.save({ ...run, runtimeReference: `run-${run.id}` });
+    const order: string[] = [];
+    jest.spyOn(runtime, 'destroy').mockImplementation(async () => { order.push('destroy'); });
+    const stagingGateway: Pick<IStagingGateway, 'assertFresh' | 'cleanup'> = {
+      assertFresh: jest.fn(async () => { order.push('freshness'); }),
+      cleanup: jest.fn(async () => { order.push('cleanup'); })
+    };
+    const start = new StartAiRunUseCase(repository, conversations, runtime, new InMemoryRunEventPublisher(), undefined, undefined, undefined, undefined, undefined, undefined, stagingGateway);
+
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-staging-cleanup-order' });
+    await waitForStatus(repository, run.id, 'succeeded');
+    for (let attempt = 0; attempt < 100 && !order.includes('cleanup'); attempt += 1) await new Promise<void>((resolve) => setTimeout(resolve, 2));
+
+    expect(order).toEqual(['freshness', 'destroy', 'cleanup']);
+    expect(stagingGateway.cleanup).toHaveBeenCalledWith(`run-${run.id}`);
+  });
+
+  it('does not start an expired prepared snapshot and reports staging cleanup as confirmed absent', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const run = await readyRun(repository);
+    await repository.save({ ...run, runtimeReference: `run-${run.id}` });
+    const stagingGateway: Pick<IStagingGateway, 'assertFresh' | 'cleanup'> = {
+      assertFresh: jest.fn().mockRejectedValue(new AiRunStagingFailedError('complete')),
+      cleanup: jest.fn()
+    };
+    const start = new StartAiRunUseCase(repository, conversationRepository(), runtime, new InMemoryRunEventPublisher(), undefined, undefined, undefined, undefined, undefined, undefined, stagingGateway);
+
+    await expect(start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-expired-staging' })).rejects.toMatchObject({ code: 'STAGING_FAILED', cleanup: 'complete' });
+    expect(runtime.startedRuns).toEqual([]);
+    expect(await repository.findByIdForOwner(OWNER_ID, run.id)).toMatchObject({ status: 'ready' });
+  });
+
+  it('does not start a local prepared snapshot when cleanup and freshness support are not wired', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const run = await readyRun(repository);
+    await repository.save({ ...run, runtimeReference: `run-${run.id}` });
+    const start = new StartAiRunUseCase(repository, conversationRepository(), runtime, new InMemoryRunEventPublisher());
+
+    await expect(start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-staging-port-missing' }))
+      .rejects.toMatchObject({ code: 'STAGING_FAILED', cleanup: 'unknown' });
+    expect(runtime.startedRuns).toEqual([]);
+  });
+
+  it('retains staging and makes a completed run reviewable when post-run cleanup is uncertain', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const events = new InMemoryRunEventPublisher();
+    const published: string[] = [];
+    const run = await readyRun(repository);
+    await repository.save({ ...run, runtimeReference: `run-${run.id}` });
+    events.subscribe(run.id, (event) => { published.push(event.type); });
+    const stagingGateway: Pick<IStagingGateway, 'assertFresh' | 'cleanup'> = {
+      assertFresh: jest.fn(),
+      cleanup: jest.fn().mockRejectedValue(new AiRunStagingFailedError('unknown'))
+    };
+    const start = new StartAiRunUseCase(repository, conversationRepository(), runtime, events, undefined, undefined, undefined, undefined, undefined, undefined, stagingGateway);
+
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-uncertain-staging-cleanup' });
+    const reviewed = await waitForStatus(repository, run.id, 'review_required');
+
+    expect(reviewed.cleanup).toBe('unknown');
+    expect(runtime.destroyedRuns).toContain(run.id);
+    expect(stagingGateway.cleanup).toHaveBeenCalledWith(`run-${run.id}`);
+    expect(published).not.toContain('run.completed');
+    expect(published).toContain('run.needs_manual_review');
+  });
+
+  it('destroys a prepared runtime before cleaning staging on ready-run cancellation', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const events = new InMemoryRunEventPublisher();
+    const run = await readyRun(repository);
+    const order: string[] = [];
+    jest.spyOn(runtime, 'destroy').mockImplementation(async () => { order.push('destroy'); });
+    const stagingGateway: Pick<IStagingGateway, 'cleanup'> = {
+      cleanup: jest.fn(async () => { order.push('cleanup'); })
+    };
+    const cancel = new CancelAiRunUseCase(repository, runtime, events, undefined, undefined, stagingGateway);
+
+    const cancelled = await cancel.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'cancel-prepared-staging' });
+
+    expect(cancelled.status).toBe('cancelled');
+    expect(order).toEqual(['destroy', 'cleanup']);
+    expect(stagingGateway.cleanup).toHaveBeenCalledWith(run.runtimeReference);
+  });
+
+  it('keeps a prepared cancellation in review and retains staging when runtime destruction is unknown', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const events = new InMemoryRunEventPublisher();
+    const run = await readyRun(repository);
+    jest.spyOn(runtime, 'destroy').mockRejectedValue(new Error('destroy is uncertain'));
+    const stagingGateway: Pick<IStagingGateway, 'cleanup'> = { cleanup: jest.fn() };
+    const cancel = new CancelAiRunUseCase(repository, runtime, events, undefined, undefined, stagingGateway);
+
+    await expect(cancel.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'cancel-uncertain-prepared-runtime' }))
+      .rejects.toBeInstanceOf(AiRunCancellationReviewRequiredError);
+    expect(await repository.findByIdForOwner(OWNER_ID, run.id)).toMatchObject({ status: 'review_required', cleanup: 'unknown' });
+    expect(stagingGateway.cleanup).not.toHaveBeenCalled();
+  });
+
+  it('marks staging cleanup unknown when a prepared cancellation destroys runtime but cannot remove its snapshot', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const events = new InMemoryRunEventPublisher();
+    const run = await readyRun(repository);
+    const stagingGateway: Pick<IStagingGateway, 'cleanup'> = { cleanup: jest.fn().mockRejectedValue(new AiRunStagingFailedError('unknown')) };
+    const cancel = new CancelAiRunUseCase(repository, runtime, events, undefined, undefined, stagingGateway);
+
+    await expect(cancel.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'cancel-staging-cleanup-unknown' }))
+      .rejects.toBeInstanceOf(AiRunCancellationReviewRequiredError);
+    expect(runtime.destroyedRuns).toContain(run.id);
+    expect(await repository.findByIdForOwner(OWNER_ID, run.id)).toMatchObject({ status: 'review_required', cleanup: 'unknown' });
+  });
+
   it('keeps an uncertain file-apply outcome in review rather than claiming success', async () => {
     const repository = new InMemoryAiRunRepository();
     const run = await readyRun(repository);

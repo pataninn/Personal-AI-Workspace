@@ -1,8 +1,11 @@
 import type { DataSource, QueryRunner } from 'typeorm';
+import { lockProjectWriteState } from '@/infrastructure/database/project-removal-write-barrier';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import { fixedContentScope } from '@/infrastructure/database/storage-content-projections';
 
 import type { ActionLedgerMutationResult, ActionLedgerRecord, ActionLedgerReversibleFieldName } from '@/modules/action-ledger/domain/action-ledger-types';
 import { ActionLedgerTargetStateConflictError } from '@/modules/action-ledger/domain/action-ledger-errors';
-import { ProjectNameConflictError, ProjectRootOverlapError } from '@/modules/projects/domain/project-errors';
+import { ProjectArchivedError, ProjectNameConflictError, ProjectRootOverlapError } from '@/modules/projects/domain/project-errors';
 import { projectRootOverlapKey, projectRootsOverlap } from '@/modules/projects/domain/project-root-policy';
 import type { Project, ProjectStatus } from '@/modules/projects/domain/project-types';
 import type {
@@ -110,16 +113,19 @@ async function lockOwner(queryRunner: QueryRunner, ownerId: string): Promise<voi
   await queryRunner.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`projects:${ownerId}`]);
 }
 
-async function findActiveRoots(queryRunner: QueryRunner, ownerId: string): Promise<readonly string[]> {
-  const rows: readonly { relative_root: string }[] = await queryRunner.query(
-    'SELECT "relative_root_key" AS "relative_root" FROM "projects" WHERE "owner_id" = $1 AND "status" = \'active\' AND "relative_root_key" IS NOT NULL',
+async function findReservedRoots(queryRunner: QueryRunner, ownerId: string): Promise<readonly { readonly relative_root: string; readonly storage_kind: Project['storageKind'] }[]> {
+  const rows: readonly { relative_root: string; storage_kind: Project['storageKind'] }[] = await queryRunner.query(
+    'SELECT "root_key" AS "relative_root", "storage_kind" FROM "storage_root_mappings" WHERE "owner_id" = $1 ORDER BY "root_key" FOR UPDATE',
     [ownerId]
   );
-  return rows.map((row) => row.relative_root);
+  return rows;
 }
 
 export class TypeOrmProjectRepository implements IProjectRepository, IProjectWorkspaceRepository<QueryRunner>, IWorkspaceUndoParticipant<QueryRunner> {
-  public constructor(private readonly dataSource: DataSource) {}
+  public constructor(
+    private readonly dataSource: DataSource,
+    private readonly storageAccounting = new TypeOrmStorageContentAccounting(dataSource)
+  ) {}
 
   public async listByOwner(ownerId: string, includeArchived: boolean): Promise<readonly Project[]> {
     const statusFilter = includeArchived ? '' : ' AND "status" = \'active\'';
@@ -140,10 +146,12 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
     return rows[0] ? toProject(rows[0]) : null;
   }
 
-  public async listActiveRoots(ownerId: string): Promise<readonly string[]> {
+  public async listActiveRoots(ownerId: string, storageKind?: Project['storageKind']): Promise<readonly string[]> {
+    const kindFilter = storageKind === undefined ? '' : ' AND "storage_kind" IS NOT DISTINCT FROM $2';
+    const parameters = storageKind === undefined ? [ownerId] : [ownerId, storageKind];
     const rows: readonly { relative_root: string }[] = await this.dataSource.query(
-      'SELECT "relative_root_key" AS "relative_root" FROM "projects" WHERE "owner_id" = $1 AND "status" = \'active\' AND "relative_root_key" IS NOT NULL',
-      [ownerId]
+      `SELECT "relative_root_key" AS "relative_root" FROM "projects" WHERE "owner_id" = $1 AND "status" = 'active' AND "relative_root_key" IS NOT NULL${kindFilter}`,
+      parameters
     );
     return rows.map((row) => row.relative_root);
   }
@@ -202,6 +210,9 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
   }
 
   public async updateObjective(transaction: QueryRunner, input: UpdateProjectObjectiveRecord): Promise<Project | null> {
+    const project = await lockProjectWriteState(transaction, input.ownerId, input.projectId);
+    if (!project) return null;
+    if (project.removalPending) throw new ProjectArchivedError();
     const [rows]: readonly [readonly ProjectRow[], number] = await transaction.query(
       `UPDATE "projects" SET "objective" = $1, "version" = "version" + 1, "updated_at" = now()
        WHERE "owner_id" = $2 AND "id" = $3 AND "version" = $4
@@ -213,13 +224,23 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
 
   public async attachInitialRoot(transaction: QueryRunner, input: AttachProjectRootRecord): Promise<Project | null> {
     try {
+      const project = await lockProjectWriteState(transaction, input.ownerId, input.projectId);
+      if (!project) return null;
+      if (project.removalPending) throw new ProjectArchivedError();
       const [rows]: readonly [readonly ProjectRow[], number] = await transaction.query(
         `UPDATE "projects" SET "relative_root" = $1, "relative_root_key" = $2, "storage_kind" = $3, "version" = "version" + 1, "updated_at" = now()
          WHERE "owner_id" = $4 AND "id" = $5 AND "version" = $6 AND "relative_root" IS NULL
          RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"`,
         [input.relativeRoot, input.relativeRootKey, input.storageKind, input.ownerId, input.projectId, input.expectedVersion]
       );
-      return rows[0] ? toProject(rows[0]) : null;
+      const row = rows[0];
+      if (!row) return null;
+      await transaction.query(
+        `INSERT INTO "storage_root_mappings" ("owner_id", "project_id", "locator_project_id", "root_key", "storage_kind", "relative_root", "state")
+         VALUES ($1, $2, $2, $3, $4, $5, 'active')`,
+        [input.ownerId, input.projectId, input.relativeRootKey, input.storageKind, input.relativeRoot]
+      );
+      return toProject(row);
     } catch (error: unknown) {
       if (isUniqueViolation(error)) throw new ProjectRootOverlapError();
       throw error;
@@ -244,6 +265,8 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
     await lockOwner(transaction, ownerId);
     const current = await this.findByIdForOwnerForUpdate(transaction, ownerId, original.targetId);
     if (!current) throw new ActionLedgerTargetStateConflictError('target_missing');
+    const removalState = await lockProjectWriteState(transaction, ownerId, current.id);
+    if (removalState?.removalPending) throw new ActionLedgerTargetStateConflictError('archived_workspace');
     if (current.status !== 'active') throw new ActionLedgerTargetStateConflictError('archived_workspace');
     if (current.version !== original.postVersion) throw new ActionLedgerTargetStateConflictError('changed');
 
@@ -386,24 +409,33 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
     await queryRunner.connect();
     await queryRunner.startTransaction();
     try {
-      await lockOwner(queryRunner, input.ownerId);
-      const roots = await findActiveRoots(queryRunner, input.ownerId);
-      const relativeRoot = input.relativeRoot;
-      if (relativeRoot !== null && roots.some((root) => projectRootsOverlap(relativeRoot, root))) {
-        throw new ProjectRootOverlapError();
-      }
-      const rows: readonly ProjectRow[] = await queryRunner.query(
-        `INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective")
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"`,
-        [input.id, input.ownerId, input.name, input.slug, input.relativeRoot, input.relativeRoot === null ? null : input.relativeRootKey ?? projectRootOverlapKey(input.relativeRoot), input.storageKind, input.objective]
-      );
-      const row = rows[0];
-      if (!row) {
-        throw new Error('The project could not be created.');
-      }
+      const project = await this.storageAccounting.runMutation(queryRunner, input.ownerId, async () => {
+        await lockOwner(queryRunner, input.ownerId);
+        const roots = await findReservedRoots(queryRunner, input.ownerId);
+        const relativeRoot = input.relativeRoot;
+        if (relativeRoot !== null && roots.some((root) => root.storage_kind === input.storageKind && projectRootsOverlap(relativeRoot, root.relative_root))) {
+          throw new ProjectRootOverlapError();
+        }
+        const relativeRootKey = relativeRoot === null ? null : input.relativeRootKey ?? projectRootOverlapKey(relativeRoot);
+        const rows: readonly ProjectRow[] = await queryRunner.query(
+          `INSERT INTO "projects" ("id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective")
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"`,
+          [input.id, input.ownerId, input.name, input.slug, relativeRoot, relativeRootKey, input.storageKind, input.objective]
+        );
+        const row = rows[0];
+        if (!row) throw new Error('The project could not be created.');
+        if (relativeRoot !== null && row.relative_root_key !== null && row.storage_kind !== null) {
+          await queryRunner.query(
+            `INSERT INTO "storage_root_mappings" ("owner_id", "project_id", "locator_project_id", "root_key", "storage_kind", "relative_root", "state")
+             VALUES ($1, $2, $2, $3, $4, $5, 'active')`,
+            [input.ownerId, input.id, row.relative_root_key, row.storage_kind, row.relative_root]
+          );
+        }
+        return toProject(row);
+      }, fixedContentScope([{ entity: 'projects', id: input.id }]));
       await queryRunner.commitTransaction();
-      return toProject(row);
+      return project;
     } catch (error: unknown) {
       await queryRunner.rollbackTransaction();
       if (isUniqueViolation(error)) {
@@ -421,14 +453,18 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
     await queryRunner.startTransaction();
     try {
       await lockOwner(queryRunner, input.ownerId);
+      const projectState = await lockProjectWriteState(queryRunner, input.ownerId, input.projectId);
+      if (projectState?.removalPending) throw new ProjectArchivedError();
       if (input.status === 'active') {
         const current = await queryRunner.query(
-          'SELECT "relative_root_key" AS "relative_root" FROM "projects" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1',
+          'SELECT "relative_root_key" AS "relative_root", "storage_kind" FROM "projects" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1',
           [input.ownerId, input.projectId]
-        ) as readonly { relative_root: string | null }[];
+        ) as readonly { relative_root: string | null; storage_kind: Project['storageKind'] }[];
         const roots = await queryRunner.query(
-          'SELECT "relative_root_key" AS "relative_root" FROM "projects" WHERE "owner_id" = $1 AND "status" = \'active\' AND "id" <> $2 AND "relative_root_key" IS NOT NULL',
-          [input.ownerId, input.projectId]
+          `SELECT "relative_root_key" AS "relative_root" FROM "projects"
+           WHERE "owner_id" = $1 AND "status" = 'active' AND "id" <> $2
+             AND "relative_root_key" IS NOT NULL AND "storage_kind" IS NOT DISTINCT FROM $3`,
+          [input.ownerId, input.projectId, current[0]?.storage_kind ?? null]
         ) as readonly { relative_root: string | null }[];
         const candidate = current[0]?.relative_root;
         if (candidate !== null && candidate !== undefined && roots.some((row) => row.relative_root !== null && projectRootsOverlap(candidate, row.relative_root))) {

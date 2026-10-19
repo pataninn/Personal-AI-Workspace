@@ -271,6 +271,19 @@ production host. Never point the managed mount at the legacy root or rely on an 
 default. New projects use server-generated account/project directories below the
 managed mount; clients never submit a path.
 
+### Physical storage observation
+
+The backend samples process-visible free capacity with Node's `statfs` at startup
+and during the existing hourly maintenance pass. It checks only the verified
+legacy workspace, the managed mount when configured, and the canonical recovery
+directory. `STORAGE_DISK_WARNING_FREE_BYTES` is an optional positive decimal byte
+threshold. When configured, the backend emits path-free structured warnings when
+an observed root crosses below it, and records when observation becomes unavailable
+or recovers. With no threshold, there is no low-space warning. This observation
+does not change account quotas, readiness, or write admission, and it does not
+prove the host bind source or persistent-volume capacity. Task 8.1 must verify the
+actual mounts and select an operational threshold before deployment.
+
 When preparing an AI run, use <strong>Choose context</strong> to browse or search project
 files. Search ranks phrase and term matches deterministically, reports when its bounded
 scan may be incomplete, and never selects results automatically. Search snippets are

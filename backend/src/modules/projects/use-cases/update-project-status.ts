@@ -44,7 +44,7 @@ export class UpdateProjectStatusUseCase {
     if (status === 'active' && existing.status !== 'active' && existing.relativeRoot !== null) {
       const normalizedRoot = normalizeProjectRoot(existing.relativeRoot);
       const validatedRoot = await this.workspaceBoundary.validateProjectRoot(normalizedRoot);
-      const activeRoots = await this.projectRepository.listActiveRoots(input.ownerId);
+      const activeRoots = await this.projectRepository.listActiveRoots(input.ownerId, existing.storageKind);
       assertProjectRootDoesNotOverlap(validatedRoot, activeRoots);
     }
     const updated = await this.projectRepository.updateStatus({

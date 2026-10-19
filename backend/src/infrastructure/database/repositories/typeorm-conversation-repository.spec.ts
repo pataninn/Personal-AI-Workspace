@@ -1,10 +1,12 @@
 import type { DataSource, QueryRunner } from 'typeorm';
 
 import { TypeOrmConversationRepository } from '@/infrastructure/database/repositories/typeorm-conversation-repository';
+import type { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
 
 const OWNER_ID = 'user-1';
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const CONVERSATION_ID = '44444444-4444-4444-8444-000000000001';
+const IDEMPOTENCY_ID = '66666666-6666-4666-8666-000000000001';
 const NOW = new Date('2026-09-12T12:00:00.000Z');
 
 const conversationRow = {
@@ -27,16 +29,22 @@ const messageRow = {
   created_at: NOW
 };
 
+const passThroughStorageAccounting = {
+  runMutation: async <T>(_transaction: unknown, _ownerId: string, mutation: () => Promise<T>): Promise<T> => mutation()
+} as unknown as TypeOrmStorageContentAccounting;
+
 function queryRunnerFixture(): { readonly dataSource: DataSource; readonly queryRunner: QueryRunner; readonly query: jest.Mock } {
-  const query = jest.fn()
-    .mockResolvedValueOnce([{ status: 'active' }])
-    .mockResolvedValueOnce([])
-    .mockResolvedValueOnce([])
-    .mockResolvedValueOnce([conversationRow])
-    .mockResolvedValueOnce([{ sequence: 2 }])
-    .mockResolvedValueOnce([messageRow])
-    .mockResolvedValueOnce([])
-    .mockResolvedValueOnce([]);
+  const query = jest.fn(async (sql: string): Promise<unknown> => {
+    if (sql.includes('FROM "projects"') && sql.includes('FOR UPDATE')) return [{ status: 'active', relative_root: null }];
+    if (sql.includes('FROM "project_removal_jobs"')) return [];
+    if (sql.includes('pg_advisory_xact_lock')) return [];
+    if (sql.includes('FROM "conversation_idempotency_keys"')) return [];
+    if (sql.includes('FROM "conversations"') && sql.includes('FOR UPDATE')) return [conversationRow];
+    if (sql.includes('COALESCE(MAX("sequence")')) return [{ sequence: 2 }];
+    if (sql.startsWith('INSERT INTO "messages"')) return [messageRow];
+    if (sql.startsWith('INSERT INTO "conversation_idempotency_keys"')) return [{ id: IDEMPOTENCY_ID }];
+    return [];
+  });
   const queryRunner = {
     query,
     connect: jest.fn().mockResolvedValue(undefined),
@@ -52,7 +60,7 @@ function queryRunnerFixture(): { readonly dataSource: DataSource; readonly query
 describe('TypeOrmConversationRepository sequencing locks', () => {
   it('locks the project and conversation rows before allocating a sequence', async () => {
     const { dataSource, queryRunner, query } = queryRunnerFixture();
-    const repository = new TypeOrmConversationRepository(dataSource);
+    const repository = new TypeOrmConversationRepository(dataSource, passThroughStorageAccounting);
 
     const result = await repository.addUserMessage({
       ownerId: OWNER_ID,
@@ -69,15 +77,16 @@ describe('TypeOrmConversationRepository sequencing locks', () => {
     expect(queryRunner.rollbackTransaction).not.toHaveBeenCalled();
     expect(queryRunner.release).toHaveBeenCalledTimes(1);
     expect(query.mock.calls[0]?.[0]).toContain('FOR UPDATE');
-    expect(query.mock.calls[1]?.[0]).toContain('pg_advisory_xact_lock');
-    expect(query.mock.calls[3]?.[0]).toContain('FOR UPDATE');
-    expect(query.mock.calls[4]?.[0]).toContain('COALESCE(MAX');
-    expect(query.mock.calls[4]?.[0]).not.toContain('FOR UPDATE');
+    expect(query.mock.calls[1]?.[0]).toContain('project_removal_jobs');
+    expect(query.mock.calls[2]?.[0]).toContain('pg_advisory_xact_lock');
+    expect(query.mock.calls[4]?.[0]).toContain('FOR UPDATE');
+    expect(query.mock.calls[5]?.[0]).toContain('COALESCE(MAX');
+    expect(query.mock.calls[5]?.[0]).not.toContain('FOR UPDATE');
   });
 
   it('uses the run-scoped idempotency key even when the request text repeats', async () => {
     const { dataSource, queryRunner, query } = queryRunnerFixture();
-    const repository = new TypeOrmConversationRepository(dataSource);
+    const repository = new TypeOrmConversationRepository(dataSource, passThroughStorageAccounting);
 
     const result = await repository.addRunUserMessage({
       ownerId: OWNER_ID,
