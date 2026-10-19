@@ -1,10 +1,12 @@
 import { HomeConversationInputInvalidError, HomeConversationNotFoundError, HomeTurnNotFoundError } from '@/modules/home-assistant/domain/home-conversation-errors';
-import { buildHomePlanningContext, HOME_PLANNING_CONTEXT_LIMITS } from '@/modules/home-assistant/domain/home-planning-context';
+import { buildHomePlanningContext, HOME_PLANNING_CONTEXT_LIMITS, type HomePlanningContext, type HomePlanningContextMessage, type HomePlanningProjectFactSnapshot } from '@/modules/home-assistant/domain/home-planning-context';
 import type { HomeConversation, HomeConversationScope, HomeTurn, HomeTurnExecution, HomeTurnSubmission } from '@/modules/home-assistant/domain/home-conversation-types';
 import type { AssertAssistantExecutionInput, AssistantExecutionAuthorization, AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
 import { AssistantExecutionUnavailableError } from '@/modules/assistant-policy/domain/assistant-execution-errors';
+import { ASSISTANT_POLICY_PROFILES } from '@/modules/assistant-policy/domain/assistant-scope-policy';
 import type { IHomeConversationRepository } from '@/modules/home-assistant/repositories/home-conversation-repository';
 import type { HomePlanningProvider, IHomePlanningRuntime } from '@/modules/home-assistant/repositories/home-planning-runtime';
+import type { IHomeProjectMemoryContextReader } from '@/modules/home-assistant/repositories/home-project-memory-context-reader';
 import { assertHomeIdempotencyKey, homeRequestFingerprint } from '@/modules/home-assistant/use-cases/home-conversation-command-helpers';
 import { redactEgressText } from '@/shared/egress/redaction';
 
@@ -34,7 +36,8 @@ export class SubmitHomeTurnUseCase {
   public constructor(
     private readonly conversations: IHomeConversationRepository,
     private readonly runtimeConfiguration?: HomeTurnRuntimeConfiguration,
-    private readonly policyConfiguration?: HomeExecutionPolicyConfiguration
+    private readonly policyConfiguration?: HomeExecutionPolicyConfiguration,
+    private readonly projectMemory?: IHomeProjectMemoryContextReader
   ) {}
 
   public async execute(input: SubmitHomeTurnCommand): Promise<HomeTurnSubmission> {
@@ -65,6 +68,7 @@ export class SubmitHomeTurnUseCase {
     const conversation = await this.conversations.findForOwner(input.ownerId, input.conversationId);
     if (!conversation) throw new HomeConversationNotFoundError();
     const authorization = await assertConversationPolicy(policy, input.ownerId, conversation);
+    const projectFactsPermitted = permitsProjectFacts(authorization, conversation);
     const revisions = requiredRevisions(conversation.scope, authorization);
     const submission = await this.conversations.submitTurn({
       ownerId: input.ownerId,
@@ -81,7 +85,8 @@ export class SubmitHomeTurnUseCase {
       return this.replayWithoutRestart(input.ownerId, input.conversationId, submission, runtime);
     }
 
-    let prompt: string;
+    let priorMessages: readonly HomePlanningContextMessage[] = [];
+    let planningContext: HomePlanningContext;
     try {
       const history = await this.conversations.listMessagesForOwner({
         ownerId: input.ownerId,
@@ -91,7 +96,15 @@ export class SubmitHomeTurnUseCase {
         transcriptOnly: true
       });
       if (!history) throw new HomeConversationNotFoundError();
-      prompt = buildHomePlanningContext({ currentMessage: submission.message.content, priorMessages: history.messages }).prompt;
+      priorMessages = history.messages;
+      const selectedProjectFacts = projectFactsPermitted
+        ? await this.readSelectedProjectFacts(input.ownerId, conversation)
+        : [];
+      planningContext = buildHomePlanningContext({
+        currentMessage: submission.message.content,
+        priorMessages,
+        selectedProjectFacts
+      });
     } catch {
       return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE');
     }
@@ -102,7 +115,10 @@ export class SubmitHomeTurnUseCase {
       return resultWithTurn(submission, beforeSend, executionForTurn(beforeSend));
     }
     try {
-      await assertConversationPolicy(policy, input.ownerId, conversation, revisions);
+      const currentAuthorization = await assertConversationPolicy(policy, input.ownerId, conversation, revisions);
+      if (projectFactsPermitted && !permitsProjectFacts(currentAuthorization, conversation)) {
+        return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'ASSISTANT_EXECUTION_UNAVAILABLE');
+      }
     } catch {
       return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'ASSISTANT_EXECUTION_UNAVAILABLE');
     }
@@ -117,9 +133,25 @@ export class SubmitHomeTurnUseCase {
       return resultWithTurn(submission, authorizedTurn, executionForTurn(authorizedTurn));
     }
 
+    if (conversation.scope.kind === 'workspace' && projectFactsPermitted) {
+      try {
+        const latestSelectedProjectFacts = await this.readSelectedProjectFacts(input.ownerId, conversation);
+        const latestContext = buildHomePlanningContext({
+          currentMessage: submission.message.content,
+          priorMessages,
+          selectedProjectFacts: latestSelectedProjectFacts
+        });
+        if (!sameProjectMemorySnapshot(planningContext.selectedProjectFacts, latestContext.selectedProjectFacts)) {
+          return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE');
+        }
+      } catch {
+        return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE');
+      }
+    }
+
     let outcome: 'accepted' | 'unavailable' | 'unknown';
     try {
-      outcome = (await runtime.start({ turnId: submission.turn.id, prompt, provider: runtimeConfiguration.provider })).outcome;
+      outcome = (await runtime.start({ turnId: submission.turn.id, prompt: planningContext.prompt, provider: runtimeConfiguration.provider })).outcome;
     } catch {
       outcome = 'unknown';
     }
@@ -160,6 +192,12 @@ export class SubmitHomeTurnUseCase {
     return this.conversations.findTurnForOwner(ownerId, conversationId, turnId);
   }
 
+  private async readSelectedProjectFacts(ownerId: string, conversation: HomeConversation): Promise<readonly HomePlanningProjectFactSnapshot[]> {
+    if (conversation.scope.kind === 'home') return [];
+    if (!this.projectMemory) throw new Error('Workspace memory context is unavailable.');
+    return this.projectMemory.readSelectedFacts(ownerId, conversation.scope.workspaceId);
+  }
+
   private async finishKnownNoSend(ownerId: string, conversationId: string, submission: HomeTurnSubmission, code: string): Promise<HomeTurnSubmission> {
     const current = await this.findCurrentTurn(ownerId, conversationId, submission.turn.id);
     if (!current) throw new HomeTurnNotFoundError();
@@ -179,6 +217,26 @@ export class SubmitHomeTurnUseCase {
     if (!turn) throw new HomeTurnNotFoundError();
     return turn;
   }
+}
+
+function permitsProjectFacts(authorization: AssistantExecutionAuthorization, conversation: HomeConversation): boolean {
+  const scope = conversation.scope;
+  if (scope.kind !== 'workspace') return false;
+  const workspacePolicy = authorization.policies.find((candidate) => candidate.scopeKind === 'project'
+    && candidate.ownerId === conversation.ownerId && candidate.projectId === scope.workspaceId);
+  if (!workspacePolicy || !workspacePolicy.enabled || workspacePolicy.revokedAt !== null) return false;
+  return ASSISTANT_POLICY_PROFILES[workspacePolicy.policyProfile].contextCategories.includes('project_facts');
+}
+
+function sameProjectMemorySnapshot(
+  first: HomePlanningContext['selectedProjectFacts'],
+  second: HomePlanningContext['selectedProjectFacts']
+): boolean {
+  return first.length === second.length && first.every((fact, index) => {
+    const current = second[index];
+    return current !== undefined && fact.id === current.id && fact.version === current.version
+      && fact.title === current.title && fact.content === current.content;
+  });
 }
 
 async function supportsPolicyExecution(runtime: IHomePlanningRuntime, policy: HomeExecutionPolicyConfiguration): Promise<boolean> {

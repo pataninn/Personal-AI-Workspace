@@ -17,7 +17,7 @@ export function ProjectFactDeleteDialog({ fact, deleting, error, conflict, onOpe
     <AlertDialogRoot open={open} onOpenChange={(nextOpen) => !deleting && onOpenChange(nextOpen)}>
       <AlertDialogContent data-testid="project-fact-delete-dialog" aria-busy={deleting || undefined}>
         <AlertDialogTitle>Delete this fact?</AlertDialogTitle>
-        <AlertDialogDescription>{fact ? <>This removes “{fact.title}” from active project memory. It will not be available for future context selection.</> : null}</AlertDialogDescription>
+        <AlertDialogDescription>{fact ? <>This removes “{fact.title}” from active project memory and future context selection. It does not change past messages or provider requests already sent.</> : null}</AlertDialogDescription>
         {fact ? <div className="project-fact-delete-preview"><strong>{fact.title}</strong><p className="memory-fact-value">{preview(fact.content)}</p></div> : null}
         {conflict ? <Alert tone="warning" data-testid="project-fact-delete-conflict">This fact changed while the delete dialog was open. Review the latest value above before confirming deletion.</Alert> : null}
         {error ? <Alert tone="error" data-testid="project-fact-delete-error" role="alert">{error}</Alert> : null}

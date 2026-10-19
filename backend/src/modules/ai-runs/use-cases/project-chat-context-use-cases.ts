@@ -2,6 +2,7 @@ import { ProjectNotFoundError } from '@/modules/projects/domain/project-errors';
 import { requireProjectFileScope } from '@/modules/projects/domain/project-file-root';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { IProjectFactRepository } from '@/modules/memory/repositories/project-fact-repository';
+import type { ProjectFact } from '@/modules/memory/domain/project-fact';
 import { ProjectFactNotFoundError } from '@/modules/memory/domain/project-fact-errors';
 import type { IWorkspaceGateway } from '@/modules/files/repositories/workspace-gateway';
 import { validateContextFactIds, validateContextPaths } from '@/modules/ai-runs/domain/ai-run-validation';
@@ -21,9 +22,19 @@ export class ProjectChatContextUseCases {
   public async get(ownerId: string, projectId: string): Promise<ProjectChatContext> {
     const project = await this.projects.findByIdForOwner(ownerId, projectId);
     if (!project) throw new ProjectNotFoundError();
-    const scope = requireProjectFileScope(project);
     const context = await this.contexts.get(ownerId, projectId);
     const facts = await this.facts.findActiveByIds(ownerId, projectId, context.factIds);
+    if (project.relativeRoot === null || project.storageKind === null) {
+      return {
+        ...context,
+        relativePaths: [],
+        factIds: facts.map((fact) => fact.id),
+        excludedPaths: [],
+        availablePaths: [],
+        fileSelectionLimited: false
+      };
+    }
+    const scope = requireProjectFileScope(project);
     const inventory = await discoverProjectContextFiles(this.workspace, scope, context.relativePaths);
     const excludedPaths = context.excludedPaths ?? [];
     const eligible = inventory.paths.filter((path) => !excludedPaths.includes(path));
@@ -31,15 +42,29 @@ export class ProjectChatContextUseCases {
       relativePaths: eligible.slice(0, 100), fileSelectionLimited: inventory.limited || eligible.length > 100 };
   }
 
+  /** Reads only the current selected active facts, without inspecting project files. */
+  public async getSelectedFacts(ownerId: string, projectId: string): Promise<readonly ProjectFact[]> {
+    const project = await this.projects.findByIdForOwner(ownerId, projectId);
+    if (!project || project.status === 'archived') throw new ProjectNotFoundError();
+    const context = await this.contexts.get(ownerId, projectId);
+    const facts = await this.facts.findActiveByIds(ownerId, projectId, context.factIds);
+    const factsById = new Map(facts.map((fact) => [fact.id, fact]));
+    return [...new Set(context.factIds)].flatMap((factId) => {
+      const fact = factsById.get(factId);
+      return fact ? [fact] : [];
+    });
+  }
+
   public async update(ownerId: string, projectId: string, changes: Partial<ProjectChatContext>): Promise<ProjectChatContext> {
     const project = await this.projects.findByIdForOwner(ownerId, projectId);
     if (!project || project.status === 'archived') throw new ProjectNotFoundError();
-    const scope = requireProjectFileScope(project);
+    if (changes.excludedPaths !== undefined && changes.relativePaths === undefined) requireProjectFileScope(project);
     if (changes.factIds !== undefined) {
       const ids = validateContextFactIds(changes.factIds);
       if ((await this.facts.findActiveByIds(ownerId, projectId, ids)).length !== ids.length) throw new ProjectFactNotFoundError();
     }
     if (changes.relativePaths !== undefined) {
+      const scope = requireProjectFileScope(project);
       for (const path of validateContextPaths(changes.relativePaths)) {
         await this.workspace.readText(scope, { path });
       }

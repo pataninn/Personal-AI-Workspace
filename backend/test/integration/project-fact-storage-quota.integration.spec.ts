@@ -1,13 +1,18 @@
 import type { DataSource } from 'typeorm';
 
 import { createDataSource } from '@/infrastructure/database/data-source';
+import { TypeOrmProjectChatContextRepository } from '@/infrastructure/database/repositories/typeorm-project-chat-context-repository';
 import { TypeOrmProjectFactRepository } from '@/infrastructure/database/repositories/typeorm-project-fact-repository';
+import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories/typeorm-project-repository';
 import { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
 import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import type { IWorkspaceGateway } from '@/modules/files/repositories/workspace-gateway';
+import { ProjectChatContextUseCases } from '@/modules/ai-runs/use-cases/project-chat-context-use-cases';
 
 const DATABASE_NAME = 'home_history_task_3_2_fact_test';
 const OWNER_ID = '3a320000-0000-4000-8000-000000000101';
 const PROJECT_ID = '3a320000-0000-4000-8000-000000000102';
+const FOREIGN_OWNER_ID = '3a320000-0000-4000-8000-000000000103';
 const databaseUrl = process.env.HOME_CONVERSATION_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
 
@@ -202,6 +207,63 @@ describeDatabase('Project fact storage quota PostgreSQL integration', () => {
     expect(retainedFact).toHaveLength(1);
     expect(retainedFact[0]).toMatchObject({ title: 'a', content: 'b' });
     expect(retainedFact[0]?.deleted_at).not.toBeNull();
+  });
+
+  it('persists planning-only selection and reads only current active owner facts without opening file capabilities', async () => {
+    const source = requiredDataSource();
+    await setStorageLimit(source, 1_000_000n);
+    const projects = new TypeOrmProjectRepository(source);
+    const contexts = new TypeOrmProjectChatContextRepository(source);
+    const workspace: jest.Mocked<IWorkspaceGateway> = {
+      list: jest.fn(async (..._args: Parameters<IWorkspaceGateway['list']>) => { throw new Error('File inventory must not be read for planning-only context.'); }),
+      tree: jest.fn(async (..._args: Parameters<IWorkspaceGateway['tree']>) => { throw new Error('File inventory must not be read for planning-only context.'); }),
+      readText: jest.fn(async (..._args: Parameters<IWorkspaceGateway['readText']>) => { throw new Error('File contents must not be read for planning-only context.'); }),
+      searchText: jest.fn(async (..._args: Parameters<IWorkspaceGateway['searchText']>) => { throw new Error('File contents must not be read for planning-only context.'); })
+    };
+    const context = new ProjectChatContextUseCases(projects, contexts, factRepository, workspace);
+    const created = await factRepository.create({
+      ownerId: OWNER_ID,
+      projectId: PROJECT_ID,
+      key: 'preferred language',
+      title: 'Preferred language',
+      content: 'Use TypeScript.'
+    });
+
+    const saved = await context.update(OWNER_ID, PROJECT_ID, { factIds: [created.id], includeProjectConversations: false });
+    expect(saved).toMatchObject({ factIds: [created.id], includeProjectConversations: false, relativePaths: [], excludedPaths: [], availablePaths: [] });
+    await expect(contexts.get(OWNER_ID, PROJECT_ID)).resolves.toMatchObject({ factIds: [created.id], includeProjectConversations: false });
+    await expect(context.getSelectedFacts(OWNER_ID, PROJECT_ID)).resolves.toMatchObject([
+      { id: created.id, version: 1, title: 'Preferred language', content: 'Use TypeScript.' }
+    ]);
+
+    const edited = await factRepository.update({
+      ownerId: OWNER_ID,
+      projectId: PROJECT_ID,
+      factId: created.id,
+      key: created.key,
+      title: 'Preferred language',
+      content: 'Use strict TypeScript.',
+      expectedVersion: created.version
+    });
+    if (!edited) throw new Error('The expected fact version should be updated.');
+    await expect(context.getSelectedFacts(OWNER_ID, PROJECT_ID)).resolves.toMatchObject([
+      { id: created.id, version: 2, content: 'Use strict TypeScript.' }
+    ]);
+
+    await context.update(OWNER_ID, PROJECT_ID, { factIds: [] });
+    await expect(context.getSelectedFacts(OWNER_ID, PROJECT_ID)).resolves.toEqual([]);
+    await context.update(OWNER_ID, PROJECT_ID, { factIds: [created.id] });
+    await expect(factRepository.softDelete({ ownerId: OWNER_ID, projectId: PROJECT_ID, factId: created.id, expectedVersion: edited.version })).resolves.toBe(true);
+    await expect(context.getSelectedFacts(OWNER_ID, PROJECT_ID)).resolves.toEqual([]);
+    await expect(context.get(OWNER_ID, PROJECT_ID)).resolves.toMatchObject({ factIds: [] });
+
+    await expect(context.getSelectedFacts(FOREIGN_OWNER_ID, PROJECT_ID)).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' });
+    await expect(context.update(OWNER_ID, PROJECT_ID, { relativePaths: ['notes.md'] })).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED' });
+    await expect(context.update(OWNER_ID, PROJECT_ID, { excludedPaths: ['notes.md'] })).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED' });
+    expect(workspace.list).not.toHaveBeenCalled();
+    expect(workspace.tree).not.toHaveBeenCalled();
+    expect(workspace.readText).not.toHaveBeenCalled();
+    expect(workspace.searchText).not.toHaveBeenCalled();
   });
 
   function requiredDataSource(): DataSource {

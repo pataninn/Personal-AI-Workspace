@@ -9,8 +9,9 @@ import { userSessionReducer } from '@/entities/user-session';
 import type { ProjectFact } from '@/entities/project-fact';
 import { ApiClientError } from '@/shared/api';
 import { ProjectMemoryManager } from '@/features/project-memory/ui/ProjectMemoryManager';
-const { getContextMock, updateContextMock } = vi.hoisted(() => ({ getContextMock: vi.fn(), updateContextMock: vi.fn() }));
+const { getContextMock, updateContextMock, getPolicyMock } = vi.hoisted(() => ({ getContextMock: vi.fn(), updateContextMock: vi.fn(), getPolicyMock: vi.fn() }));
 vi.mock('@/entities/project/api/project-chat-context-api', () => ({ getProjectChatContext: getContextMock, updateProjectChatContext: updateContextMock }));
+vi.mock('@/entities/assistant-policy', async (importOriginal) => ({ ...await importOriginal<typeof import('@/entities/assistant-policy')>(), getAssistantExecutionPolicy: getPolicyMock }));
 
 const { listFactsMock, createFactMock, updateFactMock, verifyFactMock, deleteFactMock } = vi.hoisted(() => ({
   listFactsMock: vi.fn(),
@@ -51,6 +52,20 @@ const session = {
   errorCode: null
 };
 
+const assistantPolicy = {
+  scope: { kind: 'workspace', label: 'Personal AI' },
+  policy: {
+    enabled: true,
+    revision: '7',
+    provider: { name: 'Nebius Token Factory', model: 'Nemotron Example' },
+    included: { categories: ['project_facts'], items: [] },
+    exclusionsEnforced: true,
+    capabilities: ['workspace_file_read']
+  },
+  fileAccess: true,
+  readiness: { state: 'ready' }
+};
+
 function renderManager(archived = false, fileAccess = true): void {
   const store = configureStore({ reducer: { userSession: userSessionReducer }, preloadedState: { userSession: session } });
   render(<Provider store={store}><MemoryRouter><ProjectMemoryManager projectId={PROJECT_ID} projectName="Personal AI" archived={archived} fileAccess={fileAccess} /></MemoryRouter></Provider>);
@@ -60,6 +75,7 @@ describe('ProjectMemoryManager', () => {
   beforeEach(() => {
     getContextMock.mockReset().mockResolvedValue({ relativePaths: ['README.md'], factIds: [], includeProjectConversations: true });
     updateContextMock.mockReset().mockImplementation(async (_project, changes) => ({ relativePaths: ['README.md'], factIds: [], includeProjectConversations: true, ...changes }));
+    getPolicyMock.mockReset().mockResolvedValue(assistantPolicy);
     listFactsMock.mockReset().mockResolvedValue([]);
     createFactMock.mockReset();
     updateFactMock.mockReset();
@@ -71,22 +87,28 @@ describe('ProjectMemoryManager', () => {
     listFactsMock.mockResolvedValue([baseFact]);
     renderManager();
     const user = userEvent.setup();
-    const checkbox = await screen.findByRole('checkbox', { name: `Use ${baseFact.title} in all chats` });
+    const checkbox = await screen.findByRole('checkbox', { name: 'Include in future AI context' });
     await waitFor(() => expect(checkbox).toBeEnabled());
     await user.click(checkbox);
     await waitFor(() => expect(updateContextMock).toHaveBeenCalledWith(PROJECT_ID, { factIds: [FACT_ID] }, 'csrf-token'));
     expect(checkbox).toBeChecked();
   });
 
-  it('keeps rootless project facts available without loading chat context or showing chat-selection controls', async () => {
+  it('keeps rootless project facts selectable without enabling file context', async () => {
     listFactsMock.mockResolvedValueOnce([]).mockResolvedValue([baseFact]);
     createFactMock.mockResolvedValue(baseFact);
+    getPolicyMock.mockResolvedValue({ ...assistantPolicy, fileAccess: false });
     renderManager(false, false);
     const user = userEvent.setup();
 
     expect(await screen.findByTestId('project-memory-empty')).toHaveTextContent('Add a fact to keep useful project information together.');
-    expect(screen.getByText('Chat context selection is unavailable in planning workspaces. Saved facts remain available to review and edit.')).toBeInTheDocument();
-    expect(getContextMock).not.toHaveBeenCalled();
+    expect(screen.getByText('Files and file context remain unavailable in this planning-only workspace. You can still manage its saved project facts.')).toBeInTheDocument();
+    const policySummary = screen.getByRole('region', { name: 'Assistant policy summary' });
+    expect(policySummary).toHaveTextContent('Workspace data is stored on the operator-managed deployment');
+    expect(policySummary).toHaveTextContent('Files and file tools are unavailable in this workspace. Task and planning assistance remain available where enabled.');
+    expect(policySummary).toHaveTextContent('Selected project facts');
+    expect(policySummary).not.toHaveTextContent('Read selected workspace files');
+    await waitFor(() => expect(getContextMock).toHaveBeenCalledWith(PROJECT_ID));
     await user.click(screen.getByTestId('project-memory-empty-add'));
     await user.type(screen.getByRole('textbox', { name: 'Fact name' }), baseFact.title);
     await user.type(screen.getByRole('textbox', { name: 'What should the assistant know?' }), baseFact.content);
@@ -94,24 +116,29 @@ describe('ProjectMemoryManager', () => {
 
     await waitFor(() => expect(createFactMock).toHaveBeenCalledWith(PROJECT_ID, { title: baseFact.title, content: baseFact.content }, 'csrf-token'));
     expect(await screen.findByText(baseFact.title)).toBeInTheDocument();
-    expect(screen.queryByRole('checkbox', { name: `Use ${baseFact.title} in all chats` })).not.toBeInTheDocument();
-    expect(getContextMock).not.toHaveBeenCalled();
+    const checkbox = await screen.findByRole('checkbox', { name: 'Include in future AI context' });
+    await user.click(checkbox);
+    await waitFor(() => expect(updateContextMock).toHaveBeenCalledWith(PROJECT_ID, { factIds: [FACT_ID] }, 'csrf-token'));
+    expect(checkbox).toBeChecked();
   });
 
-  it('shows a tick while saving and restores the saved selection if the request fails', async () => {
+  it('retains a draft after a failed save and shows the reconciled saved selection', async () => {
     listFactsMock.mockResolvedValue([baseFact]);
     let rejectSave: (error: Error) => void = () => { throw new Error('Save did not start'); };
     updateContextMock.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSave = reject; }));
     renderManager();
-    const checkbox = await screen.findByRole('checkbox', { name: `Use ${baseFact.title} in all chats` });
+    const checkbox = await screen.findByRole('checkbox', { name: 'Include in future AI context' });
     await waitFor(() => expect(checkbox).toBeEnabled());
     await userEvent.setup().click(checkbox);
     expect(checkbox).toBeChecked();
     expect(checkbox).toBeDisabled();
     await act(async () => { rejectSave(new Error('Unavailable')); });
-    await waitFor(() => expect(checkbox).not.toBeChecked());
+    await waitFor(() => expect(checkbox).toBeChecked());
     expect(checkbox).toBeEnabled();
-    expect(screen.getByRole('alert')).toHaveTextContent('Your previous selection is still in use');
+    expect(screen.getByRole('alert')).toHaveTextContent('The current saved selection was reloaded');
+    expect(screen.getByRole('region', { name: 'Memory selection draft' })).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Use saved selection' }));
+    expect(checkbox).not.toBeChecked();
   });
 
   it('creates a fact through an explicitly submitted form and refreshes server state', async () => {

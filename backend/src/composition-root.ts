@@ -385,7 +385,10 @@ export async function createApplication(
             mode: config.agentRuntimeMode,
             provider: homePlanningProvider,
             ...(homePlanningRuntime ? { runtime: homePlanningRuntime } : {})
-          }, { executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel }),
+          }, { executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel }, {
+            readSelectedFacts: async (ownerId, projectId) => (await projectChatContext.getSelectedFacts(ownerId, projectId))
+              .map(({ id, version, title, content }) => ({ id, version, title, content }))
+          }),
           decideConsent: new DecideHomeConsentUseCase(homeConversationRepository, homePlanningRuntime, homePlanningProvider, homeToolResultConsentGate),
           getTurn: new GetHomeTurnUseCase(homeConversationRepository, homePlanningRuntime, homeToolResultConsentGate, homePlanningToolHandler, { executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel }),
           cancelTurn: new CancelHomeTurnUseCase(homeConversationRepository, homePlanningRuntime),
