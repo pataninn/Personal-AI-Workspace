@@ -426,3 +426,13 @@ command is development-only and is not used by production builds. Use
 
 The normal frontend <code>pnpm dev</code> command still needs the real backend API; the
 mock is enabled only by <code>preview:dev</code>.
+
+## Durable automation worker
+
+Run the API and the scheduler as separate backend processes with the same database
+and application environment. After building the backend, start the API with
+<code>pnpm --filter personal-ai-workspace-backend start</code> and keep a worker
+running with <code>pnpm --filter personal-ai-workspace-backend start:worker</code>.
+The worker does not bind an HTTP port; it polls and claims due occurrences through
+PostgreSQL. For local development, use
+<code>pnpm --filter personal-ai-workspace-backend dev:worker</code>.

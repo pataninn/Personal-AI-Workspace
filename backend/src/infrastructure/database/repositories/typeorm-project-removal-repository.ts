@@ -7,7 +7,7 @@ import type { IStorageRootMappingRepository } from '@/modules/storage-quotas/rep
 import type { StorageQuotaTransaction } from '@/modules/storage-quotas/repositories/storage-quota-repository';
 import { accountingUnavailable } from '@/modules/storage-quotas/domain/storage-quota-errors';
 import { ProjectNotFoundError, ProjectRecoveryCleanupError, ProjectRemovalBusyError, ProjectRemovalCleanupPendingError, ProjectVersionConflictError } from '@/modules/projects/domain/project-errors';
-import type { IProjectRecoveryCleaner, IProjectRecoveryQuarantine, IProjectRemovalRepository, RemoveProjectRecord } from '@/modules/projects/repositories/project-removal-repository';
+import type { IProjectRecoveryCleaner, IProjectRecoveryQuarantine, IProjectRemovalRepository, ProjectAutomationCancellation, ProjectAutomationTurnReference, RemoveProjectRecord } from '@/modules/projects/repositories/project-removal-repository';
 
 interface RunState {
   readonly id: string;
@@ -33,6 +33,7 @@ interface RemovalPlan {
   readonly projectId: string;
   readonly rootKey: string | null;
   readonly runIds: readonly string[];
+  readonly automationTurns: readonly ProjectAutomationTurnReference[];
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -84,6 +85,32 @@ async function lockDependents(runner: StorageQuotaTransaction, input: RemoveProj
     || commands.some((row) => ['awaiting_approval', 'running', 'cancel_requested', 'review_required'].includes(row.status))) {
     throw new ProjectRemovalBusyError();
   }
+}
+
+async function fenceWorkspaceAutomations(
+  runner: StorageQuotaTransaction,
+  input: { readonly ownerId: string; readonly projectId: string }
+): Promise<readonly ProjectAutomationTurnReference[]> {
+  await runner.query(`UPDATE "automation_schedules" SET "enabled"=false,"revision"="revision"+1,
+    "next_due_at"=NULL,"updated_at"=clock_timestamp()
+    WHERE "owner_id"=$1 AND "workspace_id"=$2 AND "enabled"=true`, [input.ownerId, input.projectId]);
+  const active = queryRows<{ readonly occurrence_id: string; readonly conversation_id: string; readonly turn_id: string | null }>(await runner.query(`
+    SELECT o."id" AS "occurrence_id",o."conversation_id",o."home_turn_id" AS "turn_id"
+    FROM "automation_occurrences" o JOIN "automation_schedules" s ON s."owner_id"=o."owner_id" AND s."id"=o."schedule_id"
+    WHERE o."owner_id"=$1 AND s."workspace_id"=$2
+      AND o."status" IN ('queued','claimed','dispatching','running','cancel_requested','interrupted_unknown')
+    ORDER BY s."id",o."intended_for_utc",o."id" FOR UPDATE OF o NOWAIT
+  `, [input.ownerId, input.projectId]));
+  await runner.query(`UPDATE "automation_occurrences" o SET
+    "status"=CASE WHEN o."home_turn_id" IS NULL THEN 'cancelled' ELSE 'cancel_requested' END,
+    "failure_code"='WORKSPACE_REMOVAL',"lease_token"=NULL,"lease_expires_at"=NULL,"updated_at"=clock_timestamp()
+    FROM "automation_schedules" s WHERE o."owner_id"=$1 AND o."schedule_id"=s."id"
+      AND s."owner_id"=$1 AND s."workspace_id"=$2
+      AND o."status" IN ('queued','claimed','dispatching','running','cancel_requested','interrupted_unknown')`, [input.ownerId, input.projectId]);
+  return active.flatMap((row) => row.turn_id ? [{
+    ownerId: input.ownerId, projectId: input.projectId, occurrenceId: row.occurrence_id,
+    conversationId: row.conversation_id, turnId: row.turn_id
+  }] : []);
 }
 
 async function lockRootAndReservations(
@@ -205,8 +232,11 @@ export class TypeOrmProjectRemovalRepository implements IProjectRemovalRepositor
   ) {}
 
   /** Persists a removal barrier before filesystem quarantine and releases only verified recovery copies. */
-  public async remove(input: RemoveProjectRecord): Promise<void> {
+  public async remove(input: RemoveProjectRecord, cancelAutomationTurn?: ProjectAutomationCancellation): Promise<void> {
     const plan = await this.createRemovalJob(input);
+    if (plan.automationTurns.length > 0 && !cancelAutomationTurn) throw new ProjectRemovalBusyError();
+    if (cancelAutomationTurn) await this.cancelAutomationTurns(plan.automationTurns, cancelAutomationTurn);
+    if (await this.hasActiveWorkspaceAutomations(input.ownerId, input.projectId)) throw new ProjectRemovalBusyError();
     let quarantine: IProjectRecoveryQuarantine;
     try {
       quarantine = await this.recoveryCleaner.quarantine(plan.runIds);
@@ -224,11 +254,11 @@ export class TypeOrmProjectRemovalRepository implements IProjectRemovalRepositor
   }
 
   /** Repairs committed jobs before the application accepts project writes. */
-  public async cleanupPending(): Promise<number> {
+  public async cleanupPending(cancelAutomationTurn?: ProjectAutomationCancellation): Promise<number> {
     const jobs = queryRows<RemovalJob>(await this.dataSource.query(
       'SELECT "owner_id", "project_id", "storage_root_key", "run_ids" FROM "project_removal_jobs" ORDER BY "created_at"'
     ));
-    for (const job of jobs) await this.completeJob(job);
+    for (const job of jobs) await this.completeJob(job, cancelAutomationTurn);
     return jobs.length;
   }
 
@@ -250,12 +280,13 @@ export class TypeOrmProjectRemovalRepository implements IProjectRemovalRepositor
           if (existing.length > 0) throw new ProjectRemovalBusyError();
           const runIds = await lockRuns(runner, input);
           await lockDependents(runner, input);
+          const automationTurns = await fenceWorkspaceAutomations(runner, input);
           if (project.relative_root_key !== rootKey) throw accountingUnavailable();
           await runner.query(
             'INSERT INTO "project_removal_jobs" ("owner_id", "project_id", "storage_root_key", "run_ids") VALUES ($1, $2, $3, $4::jsonb)',
             [input.ownerId, input.projectId, rootKey, JSON.stringify(runIds)]
           );
-          return { result: { ownerId: input.ownerId, projectId: input.projectId, rootKey, runIds }, references: [] };
+          return { result: { ownerId: input.ownerId, projectId: input.projectId, rootKey, runIds, automationTurns }, references: [] };
         },
         { beforeReferences: async () => { rootKey = await lockRootAndReservations(runner, input); } }
       );
@@ -325,13 +356,16 @@ export class TypeOrmProjectRemovalRepository implements IProjectRemovalRepositor
     }
   }
 
-  private async completeJob(job: RemovalJob): Promise<void> {
+  private async completeJob(job: RemovalJob, cancelAutomationTurn?: ProjectAutomationCancellation): Promise<void> {
     const runIds = parseRunIds(job.run_ids);
     const projects = queryRows<{ readonly id: string; readonly relative_root_key: string | null }>(await this.dataSource.query(
       'SELECT "id", "relative_root_key" FROM "projects" WHERE "owner_id" = $1 AND "id" = $2', [job.owner_id, job.project_id]
     ));
     if (projects.length > 0) {
       if (projects[0]?.relative_root_key !== job.storage_root_key) throw accountingUnavailable();
+      const turns = await this.findWorkspaceAutomationTurns(job.owner_id, job.project_id);
+      if (turns.length > 0 && cancelAutomationTurn) await this.cancelAutomationTurns(turns, cancelAutomationTurn);
+      if (await this.hasActiveWorkspaceAutomations(job.owner_id, job.project_id)) return;
       await this.recoveryCleaner.restore(runIds);
       await this.deleteJob(job.owner_id, job.project_id);
       return;
@@ -340,6 +374,45 @@ export class TypeOrmProjectRemovalRepository implements IProjectRemovalRepositor
     await this.recoveryCleaner.purge(runIds);
     await this.storageQuotaRepository.releaseRecoveryReferencesAfterVerifiedPurge(job.owner_id, job.project_id, runIds);
     await this.deleteJob(job.owner_id, job.project_id);
+  }
+
+  private async findWorkspaceAutomationTurns(ownerId: string, projectId: string): Promise<readonly ProjectAutomationTurnReference[]> {
+    return queryRows<{ readonly occurrence_id: string; readonly conversation_id: string; readonly turn_id: string | null }>(await this.dataSource.query(`
+      SELECT o."id" AS "occurrence_id",o."conversation_id",o."home_turn_id" AS "turn_id"
+      FROM "automation_occurrences" o JOIN "automation_schedules" s ON s."owner_id"=o."owner_id" AND s."id"=o."schedule_id"
+      WHERE o."owner_id"=$1 AND s."workspace_id"=$2
+        AND o."status" IN ('cancel_requested','interrupted_unknown','running','dispatching','claimed')
+      ORDER BY s."id",o."intended_for_utc",o."id"
+    `, [ownerId, projectId])).flatMap((row) => row.turn_id ? [{
+      ownerId, projectId, occurrenceId: row.occurrence_id, conversationId: row.conversation_id, turnId: row.turn_id
+    }] : []);
+  }
+
+  private async cancelAutomationTurns(turns: readonly ProjectAutomationTurnReference[], cancel: ProjectAutomationCancellation): Promise<void> {
+    for (const turn of turns) {
+      let status = 'unknown';
+      try { status = await cancel(turn); } catch { /* persisted cancellation intent remains a barrier */ }
+      const occurrenceStatus = status === 'completed' || status === 'partial' ? 'succeeded'
+        : status === 'failed' ? 'failed' : status === 'unsupported' ? 'skipped'
+          : status === 'cancelled' ? 'cancelled' : 'interrupted_unknown';
+      await this.dataSource.query(`UPDATE "automation_occurrences" SET "status"=$3,
+        "failure_code"=CASE WHEN $3 IN ('succeeded','failed','skipped','cancelled') THEN NULL ELSE 'CANCELLATION_UNCONFIRMED' END,
+        "claim_generation"="claim_generation"+CASE WHEN $3='interrupted_unknown' THEN 1 ELSE 0 END,
+        "lease_token"=CASE WHEN $3='interrupted_unknown' THEN gen_random_uuid() ELSE NULL END,
+        "lease_expires_at"=CASE WHEN $3='interrupted_unknown' THEN clock_timestamp()+interval '2 minutes' ELSE NULL END,
+        "updated_at"=clock_timestamp()
+        WHERE "owner_id"=$1 AND "id"=$2 AND "status" IN ('cancel_requested','interrupted_unknown')`, [turn.ownerId, turn.occurrenceId, occurrenceStatus]);
+    }
+  }
+
+  private async hasActiveWorkspaceAutomations(ownerId: string, projectId: string): Promise<boolean> {
+    const rows = queryRows<{ readonly blocked: boolean }>(await this.dataSource.query(`
+      SELECT EXISTS(SELECT 1 FROM "automation_occurrences" o
+        JOIN "automation_schedules" s ON s."owner_id"=o."owner_id" AND s."id"=o."schedule_id"
+        WHERE o."owner_id"=$1 AND s."workspace_id"=$2
+          AND o."status" IN ('queued','claimed','dispatching','running','cancel_requested','interrupted_unknown')) AS "blocked"
+    `, [ownerId, projectId]));
+    return rows[0]?.blocked ?? true;
   }
 
   private async assertRetainedRoot(job: RemovalJob): Promise<void> {

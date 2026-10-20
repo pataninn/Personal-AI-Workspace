@@ -40,6 +40,7 @@ export interface HomeTurnRow {
   readonly home_policy_revision?: string | null;
   readonly workspace_policy_revision?: string | null;
   readonly skill_invocation_id?: string | null;
+  readonly automation_occurrence_id?: string | null;
   readonly created_at: Timestamp;
   readonly updated_at: Timestamp;
 }
@@ -120,6 +121,7 @@ export function toHomeTurn(row: HomeTurnRow): HomeTurn {
     homePolicyRevision: row.home_policy_revision ?? null,
     workspacePolicyRevision: row.workspace_policy_revision ?? null,
     skillInvocationId: row.skill_invocation_id ?? null,
+    automationOccurrenceId: row.automation_occurrence_id ?? null,
     createdAt: toDate(row.created_at),
     updatedAt: toDate(row.updated_at)
   };

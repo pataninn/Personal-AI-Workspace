@@ -90,6 +90,7 @@ function fixture(options: { readonly status?: string; readonly cleanup?: string;
   const rootMappings = { retainProjectRoot: jest.fn().mockResolvedValue({ rootKey: ROOT_KEY }) };
   const dataSourceQuery = jest.fn().mockImplementation(async (sql: string) => {
     if (sql.startsWith('DELETE FROM "project_removal_jobs"')) { jobInserted = false; events.push('job-delete'); return []; }
+    if (sql.includes('AS "blocked"')) return [{ blocked: false }];
     return [];
   });
   const dataSource = {
@@ -173,6 +174,7 @@ describe('TypeOrmProjectRemovalRepository', () => {
     setup.dataSourceQuery.mockImplementation(async (sql: string) => {
       if (sql.startsWith('SELECT "owner_id"')) return [{ owner_id: OWNER_ID, project_id: PROJECT_ID, storage_root_key: ROOT_KEY, run_ids: [RUN_ID] }];
       if (sql.startsWith('SELECT "id", "relative_root_key"')) return [{ id: PROJECT_ID, relative_root_key: ROOT_KEY }];
+      if (sql.includes('AS "blocked"')) return [{ blocked: false }];
       if (sql.startsWith('DELETE FROM')) { setup.events.push('job-delete'); return []; }
       return [];
     });
@@ -187,6 +189,7 @@ describe('TypeOrmProjectRemovalRepository', () => {
     setup.dataSourceQuery.mockImplementation(async (sql: string) => {
       if (sql.startsWith('SELECT "owner_id"')) return [{ owner_id: OWNER_ID, project_id: PROJECT_ID, storage_root_key: ROOT_KEY, run_ids: [RUN_ID] }];
       if (sql.startsWith('SELECT "id", "relative_root_key"')) return [];
+      if (sql.includes('AS "blocked"')) return [{ blocked: false }];
       if (sql.includes('FROM "storage_root_mappings"')) return [{ root_key: ROOT_KEY }];
       if (sql.startsWith('DELETE FROM')) { setup.events.push('job-delete'); return []; }
       return [];

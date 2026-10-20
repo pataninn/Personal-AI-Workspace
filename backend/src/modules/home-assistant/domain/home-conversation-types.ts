@@ -35,6 +35,8 @@ export interface HomeTurn {
   readonly workspacePolicyRevision: string | null;
   /** Trusted server-created skill binding; null for ordinary Home turns. */
   readonly skillInvocationId?: string | null;
+  /** Internal scheduler occurrence binding; omitted for ordinary Home turns and from response DTOs. */
+  readonly automationOccurrenceId?: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }

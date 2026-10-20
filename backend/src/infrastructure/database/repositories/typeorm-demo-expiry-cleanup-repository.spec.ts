@@ -47,7 +47,7 @@ describe('TypeOrmDemoExpiryCleanupRepository', () => {
     const roots = { listMappings: jest.fn() } as unknown as IStorageRootMappingRepository;
     const quota = unused<TypeOrmStorageQuotaRepository>();
     const repository = new TypeOrmDemoExpiryCleanupRepository(dataSource, workspace, recovery, roots, quota);
-    const cancellation: DemoExpiryCancellationPort = { cancelRun: jest.fn(), cancelCommand: jest.fn() };
+    const cancellation: DemoExpiryCancellationPort = { cancelRun: jest.fn(), cancelCommand: jest.fn(), cancelAutomationTurn: jest.fn() };
 
     await expect(repository.runBatch(cancellation, 2)).resolves.toBe(0);
 

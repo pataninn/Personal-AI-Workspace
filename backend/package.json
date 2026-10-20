@@ -8,6 +8,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
+    "start:worker": "node dist/automations-worker.js",
+    "dev:worker": "tsx src/automations-worker.ts",
     "test": "jest --runInBand --passWithNoTests",
     "test:integration": "jest --config jest.integration.config.cjs --runInBand --passWithNoTests",
     "migration:run": "tsx src/infrastructure/database/migrate.ts",

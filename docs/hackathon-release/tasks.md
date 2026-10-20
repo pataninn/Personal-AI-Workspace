@@ -2,12 +2,12 @@
 
 **Goal:** Deliver all requested UX, automatic tools, task editing/deletion, HTTPS, private demo and account controls, plus visible memory, reusable skills, data export, and always-on briefings.
 **Created:** 2026-10-19
-**Last Updated:** 2026-10-19
+**Last Updated:** 2026-10-20
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Sixteen tasks delivered: 1.1, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 4.1, 4.2, 4.3, 5.1, 5.2, 6.1, 6.2. Latest verified delivery `84b983b145eb2b9b9968e292360862d16f14c50d`. Task5.3 QA1 found a pending-delete exit gap; targeted repair active. Task7.1 scheduler guarded PostgreSQL proof is active. Task6.3 UI spec and architecture decisions are complete; developer contract and implementation active.
+**Status:** Execution resumed2026-10-20. Seventeen tasks delivered; latest verified `a327237c0d3e667a36a77f9f4dee71a281ea2b75`. Task6.3 skill interface and Task7.1 scheduler/cleanup work resumed from preserved checkpoints. Task6.4 architecture preparation may proceed independently; implementation waits for dependencies. No deployment started.
 
-**Current execution boundary (user update):** User requested stopping after the current task. Finish Task5.3 editor QA and scoped local commit, then stop. Tasks6.3/7.1 are checkpointed with unfinished work preserved; no further tasks, deployment8.x or acceptance9.x begin. Earlier through7.3 scope remains queued for a later resume.
+**Current execution boundary (user update):** User resumed the goal2026-10-20. Complete all remaining tasks through7.3 including5.4, independently verify and locally commit them, then stop for user review before deployment8.x or acceptance9.x. No push authorized.
 
 ## Plan Summary
 
@@ -592,7 +592,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 5.3 â€” Open task details editable with Save and dirty-exit protection
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 4.3, 5.2
 **Risk:** High: lost drafts and stale updates
@@ -607,21 +607,21 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-5-3-direct-task-editor/artifacts/`
-- `Current status:` Independent QA cycle2 PASS; QA1 pending-delete gap resolved/history retained. Tester independently reran15/15 focused route tests; both frontend types PASS. Previous2/2route-stub browser/build evidence is explicitly pre-repair. All requested editor behavior verified within documented scope. Scoped local commit/root audit pending; stop after delivery.
+- `Current status:` Delivered at `a327237c0d3e667a36a77f9f4dee71a281ea2b75` after independent QA cycle2 PASS; QA1 pending-delete gap resolved/history retained. Independent route15/15 and both staged-isolated frontend types PASS. Earlier2/2route-stub browser/build evidence remains explicitly pre-repair. Root verified exact25paths (14source/test+10taskdocs+globaltracker), correct branch, empty index and preserved unrelated work. User-requested stop follows this delivery.
 
 **Description:** Replace view/edit toggling with a controlled editable task form and delete-only action.
 
 **Subtasks:**
 
-- [ ] Track normalized dirty state and disable no-op Save; save once with expected version.
-- [ ] Warn only on dirty close/task switch/route exit; wire native hard-exit handling; Cancel discards.
-- [ ] Preserve drafts on validation/network/conflict errors and handle externally deleted tasks.
+- [x] Track normalized dirty state and disable no-op Save; save once with expected version.
+- [x] Warn only on dirty close/task switch/route exit; wire native hard-exit handling; Cancel discards.
+- [x] Preserve drafts on validation/network/conflict errors and handle externally deleted tasks.
 
 **Definition of Done:**
 
-- [ ] Pristine navigation never warns; changed forms warn; successful save clears dirty state; stale data is not overwritten; no archive control remains.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Pristine navigation never warns; changed forms warn; successful save clears dirty state; stale data is not overwritten; no archive control remains.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
 
 **Upstream Outputs Needed:** Architecture sections 4.2; Task 1.1 ui-spec.md and relevant task contracts; completed dependency outputs.
 
@@ -746,11 +746,11 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ---
 
-### Task 6.3 â€” Expose editable skills and a working Plan my day flow
+### Task 6.3 — Expose editable skills and a working Plan my day flow
 
 **Status:** `[~]`
 **Agents:** designer-ui-ux, developer, tester
-**Depends on:** 6.2
+**Depends on:** 6.2, 7.1 (shared managed-workspace eligibility predicate; delivery serialized)
 **Risk:** Medium: usable output and permissions
 **Contract:** `.codex/docs/hackathon-release/task-6-3-skills-interface/contract.md` (planned; developer owns the contract gate)
 
@@ -763,7 +763,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-6-3-skills-interface/artifacts/`
-- `Current status:` Checkpointed for user-requested stop. UI spec/preflight/contract complete; four backend summary-projection files drafted. Home wiring and frontend skills/publisher/results remain unfinished. No6.3checks run; NOT Ready for QA. See dev-summary.md.
+- `Current status:` OfficialQAcycle2 PASS; QA1evidencegap/historyretained. DeterministicrealPGcase1PASS/2skips twiceafterSQLJSONnumericfix, savedcompletedassistantresult/exactfactrevisionlabel/foreigndenial, freshguards clean. EarlierUIpre-reviewrepairs/tests/build/mockbrowserproof accepted. Scopedcommit waits7.1delivery forsharedmanagedpredicate; no6.3hashyet.
 
 **Description:** Build skill list/detail/editor and invocation states with a useful saved plan based on tasks, deadlines, and memory.
 
@@ -786,7 +786,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 6.4 â€” Add bounded portable workspace export and usage settings
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 3.2, 6.2, 7.1
 **Risk:** High: cross-owner downloads and retention
@@ -801,7 +801,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-6-4-workspace-export/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Architecture preflight, UI specification and developer contract preparation complete. Contract defines bounded portable JSON, authenticated expiring download, idempotency and cleanup/path/size fences. No export code/tests; implementation waits delivered7.1 and coordinated next migration slot.
 
 **Description:** Export an owned mutable workspace's permitted files and structured data, and show credit/storage usage in settings.
 
@@ -841,7 +841,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-7-1-durable-scheduler/artifacts/`
-- `Current status:` Checkpointed for user-requested stop. Final scheduler PostgreSQL4/4 PASS includes fresh child-worker poll1/invoke0 reconciliation and repository-connection fencing. Filtered cleanup remains FAIL: cancelled occurrence but purging/storage barrier. Wrapper quoting failure and subsequent successful fresh independent postguard are recorded; fixture databases absent. NOT Ready for QA; remaining work preserved.
+- `Current status:` IndependentQAcycle1 PASS. Tester reranDST/worker2suites8testsPASS and reusedaccurateschedulerPG4/4/freshchildrestart/cleanup1PASS3skips/lifecycle4suites8/types/build proof. No functional/security blockers; Lowclaim-index debt and cohesivefilelengthguideline exception logged. Exact48source/runtime+9taskdocs+globaltracker commit preparation next; nohashyet.
 
 **Description:** Add PostgreSQL schedule/occurrence/lease persistence and independent worker execution using the shared runtime authorization path.
 
@@ -864,7 +864,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 7.2 â€” Produce and persist useful daily briefings
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** developer, tester
 **Depends on:** 7.1
 **Risk:** High: context accuracy and billed failures
@@ -879,7 +879,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-7-2-briefing-workflow/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` Architecture and developer contract preparation complete; no7.2code/tests. Implement bounded actual task-source refs separately from immutable invocation fingerprint and existing Home bridge per-call admission/usage receipt/owner-scoped ledger projection. Inference stays fail-closed until implemented/proven. Implementation waits delivered7.1.
 
 **Description:** Invoke the Daily briefing skill with current tasks/deadlines/notes/memory and save a dated result via existing conversations.
 
@@ -902,7 +902,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 7.3 â€” Add schedule controls, Run now, and run history
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 7.2
 **Risk:** Medium: misleading schedule state
@@ -917,7 +917,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-7-3-automation-interface/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` UI specification and developer contract preparation complete against current7.1/7.2DTOs. No UI code/tests yet; implementation waits delivered7.2. One-workspace schedules, Run now/pause/history/Home result links and in-app notice defined.
 
 **Description:** Expose daily time/timezone/workspace selection, pause, Run now, and history/results using existing workspace navigation.
 
@@ -1108,15 +1108,15 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | 4.3 â€” Unify task deletion and remove archive behavior | `[x]` | PASS; `9b4a05dbfbad66535695d6d4b70731c9a62c5c6d`; Low OpenAPI prose debt |
 | 5.1 â€” Move Home assistant into a floating Ask panel | `[x]` | PASS; `1d22db9fe9f3fb67ac05eddf199952dadf2a5fb3` |
 | 5.2 â€” Replace Inbox emphasis with Add task and View all | `[x]` | PASS; `fdb200dc23eb83a1047f138ccdd8f7316f3855b1` |
-| 5.3 â€” Open task details editable with Save and dirty-exit protection | `[~]` | QA2 PASS; scoped local commit/root audit pending, then stop |
+| 5.3 — Open task details editable with Save and dirty-exit protection | `[x]` | Delivered `a327237c0d3e667a36a77f9f4dee71a281ea2b75`; QA2 PASS; stopped after delivery |
 | 5.4 â€” Audit spacing, responsiveness, and accessibility across release screens | `[ ]` | Pending |
 | 6.1 â€” Make memory and selected context visibly control future runs | `[x]` | PASS; `633cbeecd934ddd0e1042441158f91ca5e98435e`; accepted Low selector debt |
 | 6.2 â€” Persist editable user skills with bounded invocation | `[x]` | PASS; `ddc2a355f6f3886048433cea7a6a28de08891261`; Low title-length debt |
-| 6.3 â€” Expose editable skills and a working Plan my day flow | `[~]` | Checkpointed incomplete; contract and draft summary projection, no checks |
-| 6.4 â€” Add bounded portable workspace export and usage settings | `[ ]` | Pending |
-| 7.1 â€” Implement durable daily schedules and job claiming | `[~]` | Checkpointed incomplete; scheduler4/4 PASS, cleanup storage failure unresolved |
-| 7.2 â€” Produce and persist useful daily briefings | `[ ]` | Pending |
-| 7.3 â€” Add schedule controls, Run now, and run history | `[ ]` | Pending |
+| 6.3 â€” Expose editable skills and a working Plan my day flow | `[~]` | QA2PASS; scopedcommit waits7.1delivery/sharedpredicate |
+| 6.4 â€” Add bounded portable workspace export and usage settings | `[~]` | Architecture/UI/contract complete; implementation waits7.1 |
+| 7.1 â€” Implement durable daily schedules and job claiming | `[~]` | QA1PASS; exact58path scopedlocalcommit pending |
+| 7.2 â€” Produce and persist useful daily briefings | `[~]` | Architecture/contract complete; implementation waits7.1 |
+| 7.3 â€” Add schedule controls, Run now, and run history | `[~]` | UI spec/contract complete; implementation waits7.2 |
 | 8.1 â€” Prepare persistent host, proxy, worker, and migration deployment | `[ ]` | Pending |
 | 8.2 â€” Verify trusted HTTPS and real NVIDIA inference on public topology | `[ ]` | Pending |
 | 9.1 â€” Validate security, concurrency, restart, and complete user journeys | `[ ]` | Pending |
@@ -1124,7 +1124,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Blocked Items and implementation-time inputs
 
-Sixteen tasks are delivered as listed in Plan Summary. Remaining through the review boundary: 5.3, 5.4, 6.3, 6.4, 7.1, 7.2, 7.3. Current subagents use GPT-6 Luna with maximum reasoning. Preserve existing work; finish functional scope with focused checks, then stop before deployment8.x and acceptance9.x for user review.
+Seventeen tasks are delivered as listed in Plan Summary. Goal resumed2026-10-20. Remaining through7.3:5.4,6.3,6.4,7.1,7.2,7.3. Use Luna/max specialists and focused checks; finish working scope, then stop for review before deployment8.x/acceptance9.x.
 
 - Task 8.1/8.2 needs the real deployment host/domain and DNS/certificate access. Do not claim the local self-signed setup fixes public browser trust.
 - Credit enforcement requires actual provider pricing and a way to bound/meter all Hermes calls. Public AI access stays disabled if that cannot be established.
@@ -1134,6 +1134,10 @@ Sixteen tasks are delivered as listed in Plan Summary. Remaining through the rev
 - Existing repository Git status was unavailable under sandbox ownership checks during planning. No global Git configuration was changed; implementation should establish the current working-tree baseline using an appropriately scoped read.
 
 ## Tech Debt Log
+
+- Task7.1 accepted coding-guideline exception: the cohesive TypeORM automation repository is514lines, above the300-line guideline. Keep it together for this release; split only if separate responsibilities emerge. No functional or security check is waived.
+
+- Task7.1 accepted Low performance debt: claimBatch reconciles durable interrupted_unknown occurrences, but migration0038 partial claim index omits that status. Current bounded8-item loop is correct; if unknown history grows, extend the claim/reconciliation index and inspect its query plan. No duplicate-dispatch, billing, ownership or cleanup safeguard is waived.
 
 - Task3.6 accepted Low evidence debt: mobile and keyboard-only admin/Usage browser journeys were not exercised. Desktop route-stub smoke, semantic source review, focused API/DB checks and typechecks passed; no claim of mobile/keyboard-only browser validation. Refine/check these later under the user priority for functional completion. Campaign identity High finding is repaired, not waived.
 

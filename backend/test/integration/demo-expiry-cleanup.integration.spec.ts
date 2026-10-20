@@ -26,6 +26,14 @@ const SHOWCASE_VERSION_ID = 'd3550000-0000-4000-8000-000000000401';
 const CREDIT_SOURCE_ONE = 'd3550000-0000-4000-8000-000000000501';
 const CREDIT_SOURCE_TWO = 'd3550000-0000-4000-8000-000000000502';
 const CREDIT_CAMPAIGN_ID = 'task-3-5-credit-retention-fixture';
+const SCHEDULER_WORKSPACE_ID = 'd3550000-0000-4000-8000-000000000601';
+const SCHEDULER_SKILL_ID = 'd3550000-0000-4000-8000-000000000602';
+const SCHEDULER_REVISION_ID = 'd3550000-0000-4000-8000-000000000603';
+const SCHEDULER_CONVERSATION_ID = 'd3550000-0000-4000-8000-000000000604';
+const SCHEDULER_TURN_ID = 'd3550000-0000-4000-8000-000000000605';
+const SCHEDULER_INVOCATION_ID = 'd3550000-0000-4000-8000-000000000606';
+const SCHEDULER_ID = 'd3550000-0000-4000-8000-000000000607';
+const SCHEDULER_OCCURRENCE_ID = 'd3550000-0000-4000-8000-000000000608';
 const IDEMPOTENCY_KEY = Buffer.alloc(32, 0x35).toString('base64url');
 const REQUEST_DIGEST = digestIdempotencyKey(IDEMPOTENCY_KEY);
 const databaseUrl = process.env.HOME_CONVERSATION_TEST_DATABASE_URL;
@@ -124,7 +132,7 @@ describeDatabase('Task 3.5 demo expiry cleanup with PostgreSQL and managed stora
 
     quota = new TypeOrmStorageQuotaRepository(dataSource);
     roots = new TypeOrmStorageRootMappingRepository(dataSource);
-    cancellation = { cancelRun: jest.fn(), cancelCommand: jest.fn() };
+    cancellation = { cancelRun: jest.fn(), cancelCommand: jest.fn(), cancelAutomationTurn: jest.fn() };
   }, 120_000);
 
   beforeEach(async () => {
@@ -355,6 +363,148 @@ describeDatabase('Task 3.5 demo expiry cleanup with PostgreSQL and managed stora
     await expect(source.query('SELECT "status","failure_code","owner_id" FROM "demo_admissions" WHERE "id"=$1', [DEMO_ADMISSION_ID]))
       .resolves.toEqual([{ status: 'failed', failure_code: 'expired', owner_id: null }]);
     await expect(source.query('SELECT "id" FROM "showcase_versions" WHERE "id"=$1', [SHOWCASE_VERSION_ID])).resolves.toHaveLength(1);
+  });
+
+  it('Task 7.1 scheduler: cancels outside locks, blocks on unknown, then purges without changing settled credits', async () => {
+    const source = requiredDataSource();
+    await source.query(`UPDATE "credit_runtime_policy" SET "inference_paused"=false,"demo_daily_limit_units"=1000000,
+      "demo_campaign_limit_units"=1000000,"demo_campaign_id"=$1,"demo_max_concurrent_calls"=4 WHERE "id"=1`, [CREDIT_CAMPAIGN_ID]);
+    await seedDemo(source, { copy: false, expiresAt: new Date(Date.now() + 60_000) });
+    await source.query(`UPDATE "account_limits" SET "daily_credit_limit_units"=1000000,"lifetime_credit_limit_units"=1000000,
+      "demo_credit_limits_configured"=true WHERE "owner_id"=$1`, [DEMO_OWNER_ID]);
+    await source.query(`INSERT INTO "projects" ("id","owner_id","name","slug","relative_root","relative_root_key")
+      VALUES ($1,$2,'Scheduled workspace','scheduled-workspace',NULL,NULL)`, [SCHEDULER_WORKSPACE_ID, DEMO_OWNER_ID]);
+    await source.transaction(async (manager) => {
+      await manager.query('INSERT INTO "skills" ("id","owner_id","workspace_id","current_version") VALUES ($1,$2,$3,1)',
+        [SCHEDULER_SKILL_ID, DEMO_OWNER_ID, SCHEDULER_WORKSPACE_ID]);
+      await manager.query(`INSERT INTO "skill_revisions" ("id","owner_id","skill_id","version","title","instructions","enabled","declared_tools")
+        VALUES ($1,$2,$3,1,'Briefing reader','Read only the scheduled workspace.',true,'["home_task_read"]'::jsonb)`,
+      [SCHEDULER_REVISION_ID, DEMO_OWNER_ID, SCHEDULER_SKILL_ID]);
+    });
+    await source.query(`INSERT INTO "home_conversations" ("id","owner_id","scope","workspace_id","title","create_request_key","create_request_fingerprint")
+      VALUES ($1,$2,'workspace',$3,'Scheduled briefing','scheduler-expiry-conversation','1')`,
+    [SCHEDULER_CONVERSATION_ID, DEMO_OWNER_ID, SCHEDULER_WORKSPACE_ID]);
+    await source.query(`INSERT INTO "automation_schedules" ("id","owner_id","workspace_id","conversation_id","skill_id","skill_revision_id",
+      "skill_version","local_time","time_zone","enabled","revision","next_due_at","create_key_digest","request_fingerprint")
+      VALUES ($1,$2,$3,$4,$5,$6,1,'08:30','UTC',true,1,clock_timestamp()+interval '1 day',repeat('a',64),repeat('b',64))`,
+    [SCHEDULER_ID, DEMO_OWNER_ID, SCHEDULER_WORKSPACE_ID, SCHEDULER_CONVERSATION_ID, SCHEDULER_SKILL_ID, SCHEDULER_REVISION_ID]);
+    await source.query(`INSERT INTO "skill_invocations" ("id","owner_id","conversation_id","skill_id","skill_revision_id","skill_version",
+      "request_key_digest","request_fingerprint","state") VALUES ($1,$2,$3,$4,$5,1,repeat('c',64),repeat('d',64),'accepted')`,
+    [SCHEDULER_INVOCATION_ID, DEMO_OWNER_ID, SCHEDULER_CONVERSATION_ID, SCHEDULER_SKILL_ID, SCHEDULER_REVISION_ID]);
+    await source.query(`INSERT INTO "automation_occurrences" ("id","owner_id","schedule_id","conversation_id","kind","intended_for_utc",
+      "local_date","status","schedule_revision","skill_version","skill_revision_id","request_key_digest","request_fingerprint","skill_invocation_id")
+      VALUES ($1,$2,$3,$4,'scheduled',clock_timestamp()-interval '1 minute',current_date,'running',1,1,$5,repeat('e',64),repeat('f',64),$6)`,
+    [SCHEDULER_OCCURRENCE_ID, DEMO_OWNER_ID, SCHEDULER_ID, SCHEDULER_CONVERSATION_ID, SCHEDULER_REVISION_ID, SCHEDULER_INVOCATION_ID]);
+    await source.query(`INSERT INTO "home_turns" ("id","owner_id","conversation_id","sequence","request_key","request_fingerprint","status",
+      "skill_invocation_id","automation_occurrence_id") VALUES ($1,$2,$3,1,'scheduler-expiry-turn','1','running',$4,$5)`,
+    [SCHEDULER_TURN_ID, DEMO_OWNER_ID, SCHEDULER_CONVERSATION_ID, SCHEDULER_INVOCATION_ID, SCHEDULER_OCCURRENCE_ID]);
+    await source.query('UPDATE "automation_occurrences" SET "home_turn_id"=$2 WHERE "id"=$1', [SCHEDULER_OCCURRENCE_ID, SCHEDULER_TURN_ID]);
+
+    const credit = new TypeOrmCreditLedgerRepository(source);
+    const settled = await credit.reserveProviderCall(creditCommand(DEMO_OWNER_ID, CREDIT_SOURCE_ONE, 'scheduler-settled-call'));
+    await expect(credit.settleProviderCall({ reservationId: settled.reservationId, usage: { promptTokens: 3, completionTokens: 2 } }))
+      .resolves.toMatchObject({ outcome: 'settled' });
+    const ledgerBefore: readonly Record<string, unknown>[] = await source.query(`SELECT "id","owner_id","status","reserved_units","actual_input_tokens",
+      "actual_output_tokens","charged_units" FROM "credit_provider_call_reservations" WHERE "id"=$1`, [settled.reservationId]);
+    const dailyBefore = await source.query('SELECT "window_start","window_end","settled_units","reserved_units" FROM "credit_demo_daily_windows" ORDER BY "window_start"');
+    const campaignBefore = await source.query('SELECT "campaign_id","settled_units","reserved_units" FROM "credit_demo_campaign_usage" ORDER BY "campaign_id"');
+    await source.query('UPDATE "users" SET "expires_at"=clock_timestamp()-interval \'1 second\' WHERE "id"=$1', [DEMO_OWNER_ID]);
+    await source.query('UPDATE "demo_admissions" SET "expires_at"=clock_timestamp()-interval \'1 second\' WHERE "id"=$1', [DEMO_ADMISSION_ID]);
+
+    let cancellationCount = 0;
+    cancellation = {
+      cancelRun: jest.fn(),
+      cancelCommand: jest.fn(),
+      cancelAutomationTurn: jest.fn(async ({ conversationId, turnId }) => {
+        const acquired = await source.transaction(async (manager) => await manager.query(
+          'SELECT "id" FROM "automation_schedules" WHERE "id"=$1 FOR UPDATE NOWAIT', [SCHEDULER_ID]
+        ));
+        expect(acquired).toHaveLength(1);
+        cancellationCount += 1;
+        const status = cancellationCount === 1 ? 'unknown' : 'cancelled';
+        await source.query('UPDATE "home_turns" SET "status"=$2 WHERE "id"=$1 AND "conversation_id"=$3', [turnId, status, conversationId]);
+        return { status };
+      })
+    };
+
+    await expect(createCleanupRepository().runBatch(cancellation, 2)).resolves.toBe(0);
+    await expect(source.query('SELECT "status" FROM "automation_occurrences" WHERE "id"=$1', [SCHEDULER_OCCURRENCE_ID]))
+      .resolves.toEqual([{ status: 'interrupted_unknown' }]);
+    await expect(source.query('SELECT "id" FROM "users" WHERE "id"=$1', [DEMO_OWNER_ID])).resolves.toHaveLength(1);
+    await expect(source.query('SELECT "failure_code" FROM "demo_expiry_cleanups" WHERE "admission_id"=$1', [DEMO_ADMISSION_ID]))
+      .resolves.toEqual([{ failure_code: 'unknown_effect' }]);
+    expect(cancellationCount).toBe(1);
+
+    await source.query('UPDATE "demo_expiry_cleanups" SET "next_attempt_at"=clock_timestamp() WHERE "admission_id"=$1', [DEMO_ADMISSION_ID]);
+    const purgeTrace: string[] = [];
+    const captureStage = async <T>(stage: string, operation: () => Promise<T>): Promise<T> => {
+      purgeTrace.push(`${stage}:start`);
+      try {
+        const result = await operation();
+        purgeTrace.push(`${stage}:ok`);
+        return result;
+      } catch (error: unknown) {
+        const failure = typeof error === 'object' && error !== null ? error as {
+          readonly name?: unknown; readonly code?: unknown; readonly constraint?: unknown; readonly table?: unknown;
+          readonly driverError?: { readonly code?: unknown; readonly constraint?: unknown; readonly table?: unknown };
+        } : {};
+        const driverError = failure.driverError;
+        purgeTrace.push(`${stage}:error:${JSON.stringify({
+          name: typeof failure.name === 'string' ? failure.name : undefined,
+          code: typeof driverError?.code === 'string' ? driverError.code : typeof failure.code === 'string' ? failure.code : undefined,
+          constraint: typeof driverError?.constraint === 'string' ? driverError.constraint
+            : typeof failure.constraint === 'string' ? failure.constraint : undefined,
+          table: typeof driverError?.table === 'string' ? driverError.table : typeof failure.table === 'string' ? failure.table : undefined
+        })}`);
+        throw error;
+      }
+    };
+    const inspectNamespace = workspace.inspectManagedNamespace.bind(workspace);
+    const listMappings = roots.listMappings.bind(roots);
+    const retireProject = quota.retireDemoProjectRoot.bind(quota);
+    const purgeContent = quota.purgeDemoOwnedReferences.bind(quota);
+    const inspectSpy = jest.spyOn(workspace, 'inspectManagedNamespace').mockImplementation(async () =>
+      await captureStage('workspace.inspectManagedNamespace', inspectNamespace));
+    const mappingsSpy = jest.spyOn(roots, 'listMappings').mockImplementation(async (ownerId) =>
+      await captureStage('roots.listMappings', () => listMappings(ownerId)));
+    const retireSpy = jest.spyOn(quota, 'retireDemoProjectRoot').mockImplementation(async (...args) =>
+      await captureStage('quota.retireDemoProjectRoot', () => retireProject(...args)));
+    const purgeSpy = jest.spyOn(quota, 'purgeDemoOwnedReferences').mockImplementation(async (...args) =>
+      await captureStage('quota.purgeDemoOwnedReferences', () => purgeContent(...args)));
+    let secondRun: number;
+    try {
+      secondRun = await createCleanupRepository().runBatch(cancellation, 2);
+    } finally {
+      inspectSpy.mockRestore();
+      mappingsSpy.mockRestore();
+      retireSpy.mockRestore();
+      purgeSpy.mockRestore();
+    }
+    if (secondRun !== 1) {
+      const cleanupState = await source.query('SELECT "phase","failure_code","attempts" FROM "demo_expiry_cleanups" WHERE "admission_id"=$1', [DEMO_ADMISSION_ID]);
+      const occurrenceState = await source.query('SELECT "status","failure_code" FROM "automation_occurrences" WHERE "id"=$1', [SCHEDULER_OCCURRENCE_ID]);
+      const purgeState = await source.query(`SELECT
+        (SELECT count(*)::int FROM "projects" WHERE "owner_id"=$1) AS "projects",
+        (SELECT count(*)::int FROM "storage_root_mappings" WHERE "owner_id"=$1) AS "rootMappings",
+        (SELECT count(*)::int FROM "storage_resource_references" WHERE "owner_id"=$1) AS "contentReferences",
+        (SELECT count(*)::int FROM "storage_filesystem_reservations" WHERE "owner_id"=$1) AS "filesystemReservations",
+        (SELECT "used_bytes"::text FROM "storage_account_totals" WHERE "owner_id"=$1) AS "usedBytes",
+        (SELECT "reserved_bytes"::text FROM "storage_account_totals" WHERE "owner_id"=$1) AS "reservedBytes",
+        (SELECT "accounting_state" FROM "storage_account_totals" WHERE "owner_id"=$1) AS "accountingState",
+        (SELECT string_agg("status",',' ORDER BY "status") FROM "credit_provider_call_reservations" WHERE "owner_id"=$1) AS "creditStatuses"`, [DEMO_OWNER_ID]);
+      throw new Error(`Scheduler cleanup retry did not complete: ${JSON.stringify({ cleanupState, occurrenceState, purgeState, purgeTrace })}`);
+    }
+    expect(cancellationCount).toBeGreaterThanOrEqual(2);
+    await expect(source.query('SELECT "id" FROM "users" WHERE "id"=$1', [DEMO_OWNER_ID])).resolves.toHaveLength(0);
+    await expect(source.query('SELECT "id" FROM "automation_schedules" WHERE "id"=$1', [SCHEDULER_ID])).resolves.toHaveLength(0);
+    await expect(source.query('SELECT "id" FROM "automation_occurrences" WHERE "id"=$1', [SCHEDULER_OCCURRENCE_ID])).resolves.toHaveLength(0);
+    await expect(source.query(`SELECT "id","owner_id","status","reserved_units","actual_input_tokens","actual_output_tokens","charged_units"
+      FROM "credit_provider_call_reservations" WHERE "id"=$1`, [settled.reservationId]))
+      .resolves.toEqual(ledgerBefore.map((row) => ({ ...row, owner_id: null })));
+    await expect(source.query('SELECT "window_start","window_end","settled_units","reserved_units" FROM "credit_demo_daily_windows" ORDER BY "window_start"'))
+      .resolves.toEqual(dailyBefore);
+    await expect(source.query('SELECT "campaign_id","settled_units","reserved_units" FROM "credit_demo_campaign_usage" ORDER BY "campaign_id"'))
+      .resolves.toEqual(campaignBefore);
   });
 
   function requiredDataSource(): DataSource {

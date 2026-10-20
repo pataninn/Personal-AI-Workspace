@@ -26,12 +26,13 @@ const homeTurn: HomeTurn = {
 function setup(options: {
   readonly capabilities?: readonly AssistantExecutionAuthorization['effectiveCapabilities'][number][];
   readonly scope?: HomeConversation['scope'];
+  readonly relativeRoot?: string | null;
   readonly skillInvocation?: SkillInvocation | null;
   readonly boundInvocationSourceMissing?: boolean;
   readonly missingSkillInvocationRepository?: boolean;
 } = {}) {
   const conversation = { ...homeConversation, scope: options.scope ?? homeConversation.scope };
-  const project = { id: PROJECT, ownerId: OWNER, name: 'Roadmap', slug: 'roadmap', relativeRoot: null, storageKind: 'managed' as const, objective: null, status: 'active' as const, version: 1, createdAt: NOW, updatedAt: NOW };
+  const project = { id: PROJECT, ownerId: OWNER, name: 'Roadmap', slug: 'roadmap', relativeRoot: options.relativeRoot ?? null, storageKind: 'managed' as const, objective: null, status: 'active' as const, version: 1, createdAt: NOW, updatedAt: NOW };
   const assertActive = jest.fn(async () => undefined);
   const conversations = {
     findForOwner: jest.fn(async () => conversation),
@@ -161,6 +162,19 @@ describe('HomePlanningToolRequestHandler', () => {
     expect(assertHome).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER, projectId: PROJECT, homePolicyRevision: '7' }));
     expect(result).toMatchObject({ kind: 'immediate', authorizationProjectId: PROJECT, result: { outcome: 'shared' } });
     expect(JSON.stringify(result?.kind === 'immediate' ? result.result : result)).not.toContain('authorizationProjectId');
+  });
+
+  it('allows an active file-backed workspace conversation to read only its own tasks', async () => {
+    const scope = { kind: 'workspace' as const, workspaceId: PROJECT };
+    const { handler, listTasks, assertHome } = setup({ scope, relativeRoot: 'workspaces/roadmap' });
+
+    const result = await handler.resolve(request('home_list_tasks', { limit: 1 }, scope));
+
+    expect(result).toMatchObject({ kind: 'immediate', result: { outcome: 'shared', data: { items: [] } } });
+    expect(listTasks.execute).toHaveBeenCalledWith(expect.objectContaining({
+      ownerId: OWNER, filters: expect.objectContaining({ workspaceId: PROJECT, inboxOnly: false })
+    }));
+    expect(assertHome).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER, projectId: PROJECT, workspacePolicyRevision: '9' }));
   });
 
   it('allows a Home turn to undo an owned workspace action only after checking that workspace policy', async () => {

@@ -74,6 +74,7 @@ import { DEFAULT_WORKSPACE_INSPECTION_POLICY } from '@/modules/files/domain/work
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { runStartupChecks } from '@/infrastructure/startup/startup-checks';
 import { startPeriodicMaintenance, type PeriodicMaintenanceHandle } from '@/infrastructure/startup/periodic-maintenance';
+import { startApplicationMaintenance, type ApplicationLifecycleMode } from '@/infrastructure/startup/application-lifecycle';
 import { StorageQuotaStartupReconciler } from '@/infrastructure/startup/storage-quota-startup-reconciler';
 import { PhysicalStorageSpaceMonitor } from '@/infrastructure/startup/physical-storage-space-monitor';
 import { GetReadinessUseCase } from '@/modules/health';
@@ -107,10 +108,19 @@ import { TypeOrmShowcaseRepository } from '@/infrastructure/database/repositorie
 import { TypeOrmDemoShowcaseCopyManager } from '@/infrastructure/database/repositories/typeorm-demo-showcase-copy-manager';
 import { TypeOrmSkillRepository } from '@/infrastructure/database/repositories/typeorm-skill-repository';
 import { TypeOrmSkillInvocationRepository } from '@/infrastructure/database/repositories/typeorm-skill-invocation-repository';
+import { TypeOrmAutomationRepository } from '@/infrastructure/database/repositories/typeorm-automation-repository';
 import { BuildShowcasePreviewUseCase, PublishShowcaseUseCase } from '@/modules/showcases/use-cases/showcase-use-cases';
 import { CreateSkillUseCase, DeleteSkillUseCase, GetSkillUseCase, InvokeSkillUseCase, ListSkillsUseCase, UpdateSkillUseCase } from '@/modules/skills';
 import { AdminPortalUseCases } from '@/modules/admin-portal';
 import { TypeOrmAdminPortalRepository } from '@/infrastructure/database/repositories/typeorm-admin-portal-repository';
+import {
+  CreateAutomationScheduleUseCase,
+  ListAutomationOccurrencesUseCase,
+  ListAutomationSchedulesUseCase,
+  RunAutomationNowUseCase,
+  UpdateAutomationScheduleUseCase
+} from '@/modules/automations/use-cases/automation-use-cases';
+import { AutomationWorker } from '@/modules/automations/use-cases/automation-worker';
 
 export interface Application {
   readonly app: Express;
@@ -122,15 +132,18 @@ export interface Application {
 }
 
 const STORAGE_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;
+const AUTOMATION_WORK_INTERVAL_MS = 15 * 1000;
 
 export async function createApplication(
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
+  lifecycle: ApplicationLifecycleMode = 'api'
 ): Promise<Application> {
   const config = loadConfig(environment);
   const logger = createLogger(config.logLevel);
   const dataSource = createDataSource(config.database);
   const readiness = new InMemoryReadinessState();
   let maintenanceHandle: PeriodicMaintenanceHandle | undefined;
+  let automationMaintenanceHandle: PeriodicMaintenanceHandle | undefined;
   const providerCallCreditAdmission = new ProviderCallCreditAdmission(new TypeOrmCreditLedgerRepository(dataSource));
   const modelProvider = config.agentRuntimeMode === 'direct'
     ? await createModelProvider(config, environment, providerCallCreditAdmission)
@@ -163,6 +176,7 @@ export async function createApplication(
     const storageContentAccounting = new TypeOrmStorageContentAccounting(dataSource, storageQuotaRepository);
     const skillRepository = new TypeOrmSkillRepository(dataSource, storageContentAccounting);
     const skillInvocationRepository = new TypeOrmSkillInvocationRepository(dataSource);
+    const automationRepository = new TypeOrmAutomationRepository(dataSource);
     const storageFileMutation = new StorageQuotaFileMutation(storageQuotaRepository);
     const demoAdmissionRepository = new TypeOrmDemoAdmissionRepository(dataSource);
     const userRepository = new TypeOrmUserRepository(dataSource);
@@ -202,7 +216,6 @@ export async function createApplication(
       storageQuotaRepository,
       storageRootMappingRepository
     );
-    await projectRemovalRepository.cleanupPending();
     const workspaceBoundary = new WorkspaceBoundaryAdapter({
       containerRoot: config.workspaceRoot,
       identityFile: config.workspaceIdentityFile,
@@ -304,6 +317,11 @@ export async function createApplication(
       readSelectedFacts: async (ownerId, projectId) => (await projectChatContext.getSelectedFacts(ownerId, projectId))
         .map(({ id, version, title, content }) => ({ id, version, title, content }))
     });
+    const cancelHomeTurn = new CancelHomeTurnUseCase(homeConversationRepository, homePlanningRuntime);
+    const getHomeTurn = new GetHomeTurnUseCase(homeConversationRepository, homePlanningRuntime, homeToolResultConsentGate, homePlanningToolHandler, {
+      executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel
+    });
+    const invokeSkill = new InvokeSkillUseCase(skillRepository, skillInvocationRepository, homeConversationRepository, submitHomeTurn);
     const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel, projectFactRepository, assistantExecutionPolicy);
     const proposeSandboxCommand = new ProposeSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger, assistantExecutionPolicy);
     const decideSandboxCommand = new DecideSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger, assistantExecutionPolicy);
@@ -314,7 +332,7 @@ export async function createApplication(
     const sendChatMessage = new SendChatMessageUseCase(projectChatContext, projectFactRepository, createAiRun, decideEgress, startAiRun);
     const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository, commandRepository, stagingGateway);
     const cancelSandboxCommand = new CancelSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger);
-    const cleanupExpiredDemos = new CleanupExpiredDemosUseCase(demoExpiryCleanupRepository, cancelAiRun, cancelSandboxCommand);
+    const cleanupExpiredDemos = new CleanupExpiredDemosUseCase(demoExpiryCleanupRepository, cancelAiRun, cancelSandboxCommand, cancelHomeTurn);
     const passwordHasher = new BcryptPasswordHasher();
     const tokenProvider = new OpaqueTokenProvider(config.sessionSecret);
     const login = new LoginUseCase(
@@ -379,7 +397,17 @@ export async function createApplication(
           createSkill: new CreateSkillUseCase(projectRepository, skillRepository),
           updateSkill: new UpdateSkillUseCase(projectRepository, skillRepository),
           deleteSkill: new DeleteSkillUseCase(skillRepository),
-          invokeSkill: new InvokeSkillUseCase(skillRepository, skillInvocationRepository, homeConversationRepository, submitHomeTurn),
+          invokeSkill,
+          appOrigin: config.appOrigin,
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
+        automations: {
+          getSession,
+          createSchedule: new CreateAutomationScheduleUseCase(automationRepository, new CreateHomeConversationUseCase(homeConversationRepository), projectRepository, skillRepository, principalAuthorization, clock),
+          listSchedules: new ListAutomationSchedulesUseCase(automationRepository),
+          updateSchedule: new UpdateAutomationScheduleUseCase(automationRepository, projectRepository, skillRepository, principalAuthorization, cancelHomeTurn, clock),
+          runNow: new RunAutomationNowUseCase(automationRepository, principalAuthorization),
+          listOccurrences: new ListAutomationOccurrencesUseCase(automationRepository),
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },
@@ -400,7 +428,7 @@ export async function createApplication(
           rateLimiter: new InMemoryLoginRateLimiter()
         },
         projects: {
-          deleteProject: new DeleteProjectUseCase(projectRemovalRepository),
+          deleteProject: new DeleteProjectUseCase(projectRemovalRepository, cancelHomeTurn),
           getOverview: new GetProjectOverviewUseCase(new TypeOrmProjectOverviewRepository(dataSource)),
           getSession,
           createProject: new CreateProjectUseCase(projectRepository, workspaceBoundary),
@@ -429,8 +457,8 @@ export async function createApplication(
           listTurns: new ListHomeTurnsUseCase(homeConversationRepository),
           submitTurn: submitHomeTurn,
           decideConsent: new DecideHomeConsentUseCase(homeConversationRepository, homePlanningRuntime, homePlanningProvider, homeToolResultConsentGate),
-          getTurn: new GetHomeTurnUseCase(homeConversationRepository, homePlanningRuntime, homeToolResultConsentGate, homePlanningToolHandler, { executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel }),
-          cancelTurn: new CancelHomeTurnUseCase(homeConversationRepository, homePlanningRuntime),
+          getTurn: getHomeTurn,
+          cancelTurn: cancelHomeTurn,
           listMessages: new ListHomeMessagesUseCase(homeConversationRepository),
           listEvents: new ListHomeEventsUseCase(homeConversationRepository),
           appOrigin: config.appOrigin,
@@ -555,21 +583,39 @@ export async function createApplication(
       ...(config.storageDiskWarningFreeBytes !== undefined ? { warningFreeBytes: config.storageDiskWarningFreeBytes } : {}),
       logger
     });
-    maintenanceHandle = await startPeriodicMaintenance({
-      task: { run: async () => {
-        const [cleanedStagingCount] = await Promise.all([
-          stagingGateway?.cleanupExpired() ?? Promise.resolve(0),
-          physicalStorageMonitor.observe()
-        ]);
-        try { await projectRemovalRepository.cleanupPending(); } catch { /* durable removal jobs remain demo-cleanup barriers */ }
-        try { await cleanupExpiredDemos.execute(); } catch {
-          logger.warn({ operation: 'demo expiry cleanup' }, 'Demo expiry maintenance remains pending and will retry.');
-        }
-        return cleanedStagingCount;
-      } },
-      logger,
-      intervalMs: STORAGE_MAINTENANCE_INTERVAL_MS,
-      operationName: 'storage maintenance'
+    await startApplicationMaintenance(lifecycle, {
+      startApiMaintenance: async () => {
+        maintenanceHandle = await startPeriodicMaintenance({
+          task: { run: async () => {
+            const [cleanedStagingCount] = await Promise.all([
+              stagingGateway?.cleanupExpired() ?? Promise.resolve(0),
+              physicalStorageMonitor.observe()
+            ]);
+            try {
+              await projectRemovalRepository.cleanupPending(async (turn) => {
+                const result = await cancelHomeTurn.execute({ ownerId: turn.ownerId, conversationId: turn.conversationId, turnId: turn.turnId });
+                return result.resource.status;
+              });
+            } catch { /* durable removal jobs remain demo-cleanup barriers */ }
+            try { await cleanupExpiredDemos.execute(); } catch {
+              logger.warn({ operation: 'demo expiry cleanup' }, 'Demo expiry maintenance remains pending and will retry.');
+            }
+            return cleanedStagingCount;
+          } },
+          logger,
+          intervalMs: STORAGE_MAINTENANCE_INTERVAL_MS,
+          operationName: 'storage maintenance'
+        });
+      },
+      startAutomationWorker: async () => {
+        const automationWorker = new AutomationWorker(automationRepository, invokeSkill, getHomeTurn, cancelHomeTurn);
+        automationMaintenanceHandle = await startPeriodicMaintenance({
+          task: { run: async () => await automationWorker.runOnce() },
+          logger,
+          intervalMs: AUTOMATION_WORK_INTERVAL_MS,
+          operationName: 'automation worker'
+        });
+      }
     });
     readiness.markReady();
     return {
@@ -578,10 +624,13 @@ export async function createApplication(
       dataSource,
       logger,
       readiness,
-      stopMaintenance: async () => await maintenanceHandle?.stop()
+      stopMaintenance: async () => {
+        await Promise.all([maintenanceHandle?.stop(), automationMaintenanceHandle?.stop()]);
+      }
     };
   } catch (error: unknown) {
     if (maintenanceHandle) await maintenanceHandle.stop();
+    if (automationMaintenanceHandle) await automationMaintenanceHandle.stop();
     if (error instanceof StartupChecksError) {
       readiness.markFailed(error.failures);
       logger.error({ failures: error.failures }, 'Startup checks failed');

@@ -232,7 +232,7 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
 
   private async assertWorkspace(ownerId: string, scope: HomeConversationScope, workspaceId: string): Promise<Project> {
     const project = await this.dependencies.workspaces.reuse({ ownerId, projectId: workspaceId });
-    if (project.status !== 'active' || (scope.kind === 'workspace' && (scope.workspaceId !== workspaceId || project.relativeRoot !== null))) {
+    if (project.status !== 'active' || (scope.kind === 'workspace' && scope.workspaceId !== workspaceId)) {
       throw new HomePlanningScopeConflictError();
     }
     return project;

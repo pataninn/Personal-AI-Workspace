@@ -45,6 +45,39 @@ describe('TypeOrmStorageQuotaRepository', () => {
     expect(transaction.query).not.toHaveBeenCalledWith(expect.stringContaining('BEGIN'), expect.anything());
   });
 
+  it('reads a TypeORM DELETE tuple as rows and keeps a plain multi-row SELECT intact', async () => {
+    const runner = fakeQueryRunner(async (sql) => {
+      if (sql.includes('SELECT "storage_limit_bytes"')) return [{ storage_limit_bytes: '100' }];
+      if (sql.includes('SELECT "used_bytes"')) return [{ used_bytes: '0', reserved_bytes: '0', accounting_state: 'ready' }];
+      if (sql.includes('FROM "demo_expiry_cleanups"')) return [{ generation: 'generation-1' }];
+      if (sql.includes('FROM "storage_filesystem_reservations"')) return [];
+      if (sql.includes('SELECT "root_key" FROM "storage_root_mappings"')) {
+        return [{ root_key: 'one' }, { root_key: 'two' }];
+      }
+      return [];
+    });
+    const repository = new TypeOrmStorageQuotaRepository({ createQueryRunner: jest.fn(() => runner) } as unknown as DataSource);
+
+    await expect(repository.retireDemoProjectRoot(OWNER_ID, 'project-1', null, 'admission-1', 'generation-1', 'lease-1'))
+      .rejects.toMatchObject({ code: 'STORAGE_ACCOUNTING_UNAVAILABLE' });
+    expect(runner.query.mock.calls.some(([sql]) => String(sql).includes('DELETE FROM "projects"'))).toBe(false);
+
+    const deleteRunner = fakeQueryRunner(async (sql) => {
+      if (sql.includes('SELECT "storage_limit_bytes"')) return [{ storage_limit_bytes: '100' }];
+      if (sql.includes('SELECT "used_bytes"')) return [{ used_bytes: '0', reserved_bytes: '0', accounting_state: 'ready' }];
+      if (sql.includes('FROM "demo_expiry_cleanups"')) return [{ generation: 'generation-1' }];
+      if (sql.includes('FROM "storage_filesystem_reservations"')) return [];
+      if (sql.includes('SELECT "root_key" FROM "storage_root_mappings"')) return [];
+      if (sql.includes('DELETE FROM "projects"')) return [[{ id: 'project-1' }], 1];
+      return [];
+    });
+    const deleteRepository = new TypeOrmStorageQuotaRepository({ createQueryRunner: jest.fn(() => deleteRunner) } as unknown as DataSource);
+
+    await expect(deleteRepository.retireDemoProjectRoot(OWNER_ID, 'project-1', null, 'admission-1', 'generation-1', 'lease-1'))
+      .resolves.toBeUndefined();
+    expect(deleteRunner.commitTransaction).toHaveBeenCalledTimes(1);
+  });
+
   it('rolls back the quota savepoint when the pre-reference lock hook fails', async () => {
     const transaction = fakeQueryRunner(async (sql) => {
       if (sql.includes('FROM "users"')) return [{ id: OWNER_ID }];

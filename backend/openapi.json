@@ -55,9 +55,112 @@
     },
     {
       "name": "Skill definitions"
+    },
+    {
+      "name": "Automations"
     }
   ],
   "paths": {
+    "/api/v1/automations/schedules": {
+      "get": {
+        "tags": ["Automations"],
+        "summary": "List the current owner's schedules",
+        "operationId": "listAutomationSchedules",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Owner-scoped schedules without prompt or context contents.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AutomationScheduleListEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "post": {
+        "tags": ["Automations"],
+        "summary": "Create a workspace-scoped daily schedule",
+        "operationId": "createAutomationSchedule",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9._~-]+$" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AutomationCreateRequest" } } } },
+        "responses": {
+          "201": { "description": "Created, or replayed the same idempotent schedule.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AutomationScheduleEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "The workspace or skill is unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "The idempotency key was reused with different input.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "422": { "description": "Scheduled skills must be read-only.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/automations/schedules/{scheduleId}": {
+      "parameters": [{ "name": "scheduleId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } }],
+      "patch": {
+        "tags": ["Automations"],
+        "summary": "Revise or pause an existing schedule",
+        "operationId": "updateAutomationSchedule",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/OriginHeader" }, { "$ref": "#/components/parameters/CsrfHeader" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AutomationUpdateRequest" } } } },
+        "responses": {
+          "200": { "description": "Updated schedule revision.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AutomationScheduleEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "The schedule or its workspace is unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "The schedule revision is stale or has unresolved work.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/automations/schedules/{scheduleId}/runs": {
+      "parameters": [{ "name": "scheduleId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } }],
+      "post": {
+        "tags": ["Automations"],
+        "summary": "Queue or replay an immediate schedule occurrence",
+        "operationId": "runAutomationNow",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9._~-]+$" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false } } } },
+        "responses": {
+          "202": { "description": "Durable occurrence queued.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AutomationOccurrenceEnvelope" } } } },
+          "200": { "description": "Idempotent replay of the same occurrence.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AutomationOccurrenceEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "The schedule or its workspace is unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "A conflicting schedule revision or unresolved occurrence exists.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/automations/schedules/{scheduleId}/occurrences": {
+      "parameters": [{ "name": "scheduleId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } }],
+      "get": {
+        "tags": ["Automations"],
+        "summary": "List bounded schedule run history",
+        "operationId": "listAutomationOccurrences",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 } },
+          { "name": "before", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 256 } }
+        ],
+        "responses": {
+          "200": { "description": "A bounded page of metadata; narrative remains in the bound Home conversation.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AutomationOccurrenceListEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "description": "The schedule is unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "tags": ["Authentication"],
@@ -11152,6 +11255,94 @@
           "replayed": { "type": "boolean" }
         }, "required": ["proposal", "execution", "replayed"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
         "required": ["data", "error"], "additionalProperties": false
+      },
+      "AutomationSchedule": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "workspaceId": { "$ref": "#/components/schemas/Uuid" },
+          "conversationId": { "$ref": "#/components/schemas/Uuid" },
+          "skillId": { "$ref": "#/components/schemas/Uuid" },
+          "skillVersion": { "type": "integer", "minimum": 1 },
+          "localTime": { "type": "string", "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$" },
+          "timeZone": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "enabled": { "type": "boolean" },
+          "revision": { "type": "integer", "minimum": 1 },
+          "nextDueAt": { "type": "string", "format": "date-time", "nullable": true },
+          "lastRunStatus": { "type": "string", "enum": ["queued", "claimed", "dispatching", "running", "succeeded", "failed", "cancel_requested", "cancelled", "interrupted_unknown", "skipped"], "nullable": true },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "workspaceId", "conversationId", "skillId", "skillVersion", "localTime", "timeZone", "enabled", "revision", "nextDueAt", "lastRunStatus", "createdAt", "updatedAt"],
+        "additionalProperties": false
+      },
+      "AutomationOccurrence": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "kind": { "type": "string", "enum": ["scheduled", "manual"] },
+          "intendedFor": { "type": "string", "format": "date-time" },
+          "status": { "type": "string", "enum": ["queued", "claimed", "dispatching", "running", "succeeded", "failed", "cancel_requested", "cancelled", "interrupted_unknown", "skipped"] },
+          "scheduleRevision": { "type": "integer", "minimum": 1 },
+          "skillVersion": { "type": "integer", "minimum": 1 },
+          "homeTurnId": { "$ref": "#/components/schemas/Uuid", "nullable": true },
+          "failureCode": { "type": "string", "maxLength": 64, "nullable": true },
+          "attemptCount": { "type": "integer", "minimum": 0, "maximum": 3 },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "kind", "intendedFor", "status", "scheduleRevision", "skillVersion", "homeTurnId", "failureCode", "attemptCount", "createdAt", "updatedAt"],
+        "additionalProperties": false
+      },
+      "AutomationCreateRequest": {
+        "type": "object",
+        "properties": {
+          "workspaceId": { "$ref": "#/components/schemas/Uuid" },
+          "skillId": { "$ref": "#/components/schemas/Uuid" },
+          "skillVersion": { "type": "integer", "minimum": 1 },
+          "localTime": { "type": "string", "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$" },
+          "timeZone": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "required": ["workspaceId", "skillId", "skillVersion", "localTime", "timeZone"],
+        "additionalProperties": false
+      },
+      "AutomationUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "expectedRevision": { "type": "integer", "minimum": 1 },
+          "skillId": { "$ref": "#/components/schemas/Uuid" },
+          "skillVersion": { "type": "integer", "minimum": 1 },
+          "localTime": { "type": "string", "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$" },
+          "timeZone": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "enabled": { "type": "boolean" }
+        },
+        "required": ["expectedRevision"],
+        "minProperties": 2,
+        "additionalProperties": false
+      },
+      "AutomationScheduleEnvelope": {
+        "type": "object",
+        "properties": { "data": { "type": "object", "properties": { "schedule": { "$ref": "#/components/schemas/AutomationSchedule" } }, "required": ["schedule"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "AutomationScheduleListEnvelope": {
+        "type": "object",
+        "properties": { "data": { "type": "object", "properties": { "schedules": { "type": "array", "items": { "$ref": "#/components/schemas/AutomationSchedule" } } }, "required": ["schedules"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "AutomationOccurrenceEnvelope": {
+        "type": "object",
+        "properties": { "data": { "type": "object", "properties": { "occurrence": { "$ref": "#/components/schemas/AutomationOccurrence" } }, "required": ["occurrence"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "AutomationOccurrenceListEnvelope": {
+        "type": "object",
+        "properties": { "data": { "type": "object", "properties": { "occurrences": { "type": "array", "items": { "$ref": "#/components/schemas/AutomationOccurrence" } }, "nextCursor": { "type": "string", "nullable": true } }, "required": ["occurrences", "nextCursor"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
+        "required": ["data", "error"],
+        "additionalProperties": false
       }
     }
   }

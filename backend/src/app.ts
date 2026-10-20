@@ -42,6 +42,7 @@ import { SESSION_COOKIE_NAME } from '@/modules/auth/controllers/request-auth';
 import { createShowcaseRouter, type ShowcaseRouterDependencies } from '@/modules/showcases/controllers/showcase-router';
 import { createSkillRouter, type SkillRouterDependencies } from '@/modules/skills';
 import { createAdminPortalRouter, type AdminPortalRouterDependencies } from '@/modules/admin-portal';
+import { createAutomationRouter, type AutomationRouterDependencies } from '@/modules/automations/controllers/automation-router';
 
 export interface CreateAppOptions {
   readonly logger: AppLogger;
@@ -65,6 +66,7 @@ export interface CreateAppOptions {
   readonly demoAdmission?: DemoAdmissionRouterDependencies;
   readonly showcases?: ShowcaseRouterDependencies;
   readonly skills?: SkillRouterDependencies;
+  readonly automations?: AutomationRouterDependencies;
   readonly adminPortal?: AdminPortalRouterDependencies;
   readonly assistantExecutionPolicy?: AssistantExecutionPolicyRouterDependencies;
   readonly demoCopyGate?: { readonly getSession: Pick<GetSessionUseCase, 'execute'>; readonly isReady: (ownerId: string) => Promise<boolean> };
@@ -216,6 +218,7 @@ export function createApp(options: CreateAppOptions): Express {
   }
   if (options.showcases) app.use('/api/v1', createShowcaseRouter(options.showcases));
   if (options.skills) app.use('/api/v1/skills', createSkillRouter(options.skills));
+  if (options.automations) app.use('/api/v1/automations', createAutomationRouter(options.automations));
   if (options.adminPortal) app.use('/api/v1', createAdminPortalRouter(options.adminPortal));
   if (options.demoAdmission) {
     app.use('/api/v1/demo', createDemoAdmissionRouter(options.demoAdmission));

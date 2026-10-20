@@ -38,7 +38,7 @@ function closeServer(server: ApplicationServer): Promise<void> {
 }
 
 export async function startServer(): Promise<void> {
-  const application = await createApplication();
+  const application = await createApplication(process.env, 'api');
   const server = createListener(application);
   let closing = false;
 

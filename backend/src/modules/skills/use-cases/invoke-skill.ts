@@ -7,6 +7,13 @@ import type { SkillContextRevision, SkillInvocation, SkillInvocationResult, Skil
 import { validateSkillVersion } from '@/modules/skills/domain/skill-validation';
 import type { ISkillInvocationRepository } from '@/modules/skills/repositories/skill-invocation-repository';
 import type { ISkillRepository } from '@/modules/skills/repositories/skill-repository';
+import type { HomeAutomationFence } from '@/modules/home-assistant/repositories/home-conversation-repository';
+
+export interface TrustedAutomationInvocation {
+  readonly fence: HomeAutomationFence;
+  isCurrent(): Promise<boolean>;
+  heartbeat(): Promise<boolean>;
+}
 
 export interface InvokeSkillInput {
   readonly ownerId: string;
@@ -15,6 +22,8 @@ export interface InvokeSkillInput {
   readonly expectedVersion: unknown;
   readonly requestKey: unknown;
   readonly request: unknown;
+  /** Internal worker-only guard; HTTP routers construct the input without this field. */
+  readonly automation?: TrustedAutomationInvocation;
 }
 
 export function skillInvocationFingerprint(input: {
@@ -81,6 +90,7 @@ export class InvokeSkillUseCase {
       skillId: skill.id,
       skillRevisionId: skill.revisionId,
       skillVersion: skill.version,
+      ...(input.automation ? { automationFence: input.automation.fence, heartbeat: input.automation.heartbeat } : {}),
       claim: async (contextRevisions) => {
         const invocation = await this.invocations.claim({
           ownerId: input.ownerId,
@@ -104,7 +114,8 @@ export class InvokeSkillUseCase {
       },
       isCurrent: async () => {
         const current = await this.skills.findActiveById(input.ownerId, skill.id);
-        return current !== null && current.enabled && current.version === skill.version && current.revisionId === skill.revisionId;
+        return current !== null && current.enabled && current.version === skill.version && current.revisionId === skill.revisionId
+          && (!input.automation || await input.automation.isCurrent());
       },
       updateState: async (state) => {
         if (!claimedInvocation) throw new Error('A skill invocation must be claimed before its state changes.');
@@ -146,6 +157,7 @@ export class InvokeSkillUseCase {
       skillId: existing.skillId,
       skillRevisionId: existing.skillRevisionId,
       skillVersion: existing.skillVersion,
+      ...(input.automation ? { automationFence: input.automation.fence, heartbeat: input.automation.heartbeat } : {}),
       claim: async (contextRevisions) => await this.invocations.claim({
         ownerId: input.ownerId,
         conversationId: input.conversationId,
@@ -165,7 +177,8 @@ export class InvokeSkillUseCase {
       }),
       isCurrent: async () => {
         const latest = await this.skills.findActiveById(input.ownerId, existing.skillId);
-        return latest !== null && latest.enabled && latest.version === existing.skillVersion && latest.revisionId === existing.skillRevisionId;
+        return latest !== null && latest.enabled && latest.version === existing.skillVersion && latest.revisionId === existing.skillRevisionId
+          && (!input.automation || await input.automation.isCurrent());
       },
       updateState: async (state) => { await this.invocations.updateState(input.ownerId, existing.id, state); }
     };

@@ -6,6 +6,7 @@ export interface DemoExpiryCancellationPort {
     readonly commandId: string;
     readonly idempotencyKey: string;
   }): Promise<unknown>;
+  cancelAutomationTurn(input: { readonly ownerId: string; readonly conversationId: string; readonly turnId: string }): Promise<{ readonly status: string }>;
 }
 
 export interface IDemoExpiryCleanupRepository {

@@ -14,10 +14,15 @@ const PROVIDER = 'nvidia-hosted-nim';
 const MODEL = 'nvidia/nemotron-3-super-120b-a12b';
 const NOW = new Date('2026-10-16T00:00:00.000Z');
 
-function makeTurn(status: HomeTurn['status'], revisions: { home: string | null; workspace: string | null } = { home: '4', workspace: null }): HomeTurn {
+function makeTurn(
+  status: HomeTurn['status'],
+  revisions: { home: string | null; workspace: string | null } = { home: '4', workspace: null },
+  automationOccurrenceId?: string
+): HomeTurn {
   return {
     id: TURN, ownerId: OWNER, conversationId: CONVERSATION, sequence: 1, requestKey: 'submit-1', status,
-    homePolicyRevision: revisions.home, workspacePolicyRevision: revisions.workspace, createdAt: NOW, updatedAt: NOW
+    homePolicyRevision: revisions.home, workspacePolicyRevision: revisions.workspace, createdAt: NOW, updatedAt: NOW,
+    ...(automationOccurrenceId ? { automationOccurrenceId } : {})
   };
 }
 
@@ -36,11 +41,13 @@ function setup(options: {
   readonly assertFailsAt?: number;
   readonly sendAccepted?: boolean;
   readonly cancelConfirmed?: boolean;
+  readonly initialStatus?: HomeTurn['status'];
+  readonly automationOccurrenceId?: string;
 } = {}) {
-  let status: HomeTurn['status'] = 'running';
+  let status: HomeTurn['status'] = options.initialStatus ?? 'running';
   const revisions = options.revisions ?? { home: '4', workspace: null };
   const conversation = makeConversation(options.scope);
-  const currentTurn = () => makeTurn(status, revisions);
+  const currentTurn = () => makeTurn(status, revisions, options.automationOccurrenceId);
   const conversations = {
     findForOwner: jest.fn(async () => conversation),
     findTurnForOwner: jest.fn(async () => currentTurn()),
@@ -135,6 +142,25 @@ describe('GetHomeTurnUseCase', () => {
     expect(runtime.sendToolResult).toHaveBeenCalledWith({ turnId: TURN, requestId: 'request-1', result: { outcome: 'shared', data: { items: [] } } });
     expect(executionPolicy.assertHome).toHaveBeenCalledTimes(4);
     expect(result.status).toBe('completed');
+  });
+
+  it('does not execute a new tool request while reconciling an unknown scheduled turn', async () => {
+    const occurrenceId = '77777777-7777-4777-8777-777777777777';
+    const event = { sequence: 1, type: 'home.tool.requested' as const, requestId: 'tool-after-unknown', sessionId: 'session-1', name: 'home_list_tasks', args: { limit: 1 } };
+    const { useCase, runtime, handler, conversations } = setup({
+      events: [event], initialStatus: 'unknown', automationOccurrenceId: occurrenceId,
+      scope: { kind: 'workspace', workspaceId: PROJECT }, revisions: { home: '4', workspace: '9' },
+      handlerResult: { kind: 'immediate', result: { outcome: 'shared', data: { items: [] } } }
+    });
+
+    const result = await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN, automationGuard: {
+      fence: { occurrenceId, leaseToken: 'lease-token', generation: 1 }, isCurrent: async () => true
+    } });
+
+    expect(handler.resolve).not.toHaveBeenCalled();
+    expect(runtime.sendToolResult).not.toHaveBeenCalled();
+    expect(conversations.completeTurnWithAssistant).not.toHaveBeenCalled();
+    expect(result.status).toBe('unknown');
   });
 
   it('continues with the bounded version-conflict result after current policy checks', async () => {

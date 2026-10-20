@@ -14,6 +14,8 @@ interface CleanupManifest {
   readonly commands: readonly { readonly id: string; readonly runId: string }[];
   readonly reservations: readonly { readonly id: string; readonly rootKey: string; readonly status: string }[];
   readonly roots: readonly StorageRootMapping[];
+  readonly scheduleIds: readonly string[];
+  readonly automationTurns: readonly { readonly scheduleId: string; readonly occurrenceId: string; readonly conversationId: string; readonly turnId: string | null }[];
   readonly copy: { readonly admissionId: string; readonly projectId: string; readonly hasManagedRoot: boolean } | null;
 }
 
@@ -57,8 +59,11 @@ function parseManifest(value: CleanupManifest | string): CleanupManifest {
   const parsed = typeof value === 'string' ? JSON.parse(value) as CleanupManifest : value;
   if (!parsed || typeof parsed.ownerId !== 'string' || !Array.isArray(parsed.projectIds)
     || !Array.isArray(parsed.runs) || !Array.isArray(parsed.commands) || !Array.isArray(parsed.reservations)
-    || !Array.isArray(parsed.roots)) throw new Error('The persisted demo cleanup manifest is invalid.');
-  return parsed;
+    || !Array.isArray(parsed.roots) || parsed.scheduleIds !== undefined && !Array.isArray(parsed.scheduleIds)
+    || parsed.automationTurns !== undefined && !Array.isArray(parsed.automationTurns)) {
+    throw new Error('The persisted demo cleanup manifest is invalid.');
+  }
+  return { ...parsed, scheduleIds: parsed.scheduleIds ?? [], automationTurns: parsed.automationTurns ?? [] };
 }
 
 const ACTIVE_RUNS = "('pending_approval','staging','ready','queued','running','waiting_approval','cancel_requested')";
@@ -125,6 +130,20 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
         const owner = rows<{ readonly id: string }>(await manager.query(
           `SELECT "id" FROM "users" WHERE "id"=$1 AND "account_kind"='demo' FOR UPDATE`, [due.owner_id]))[0];
         if (!owner) return false;
+        const schedules = rows<{ readonly id: string }>(await manager.query(
+          `SELECT "id" FROM "automation_schedules" WHERE "owner_id"=$1 ORDER BY "id" FOR UPDATE`, [due.owner_id]));
+        await manager.query(`UPDATE "automation_schedules" SET "enabled"=false,"revision"="revision"+1,
+          "next_due_at"=NULL,"updated_at"=clock_timestamp() WHERE "owner_id"=$1 AND "enabled"=true`, [due.owner_id]);
+        const automationTurns = rows<{ readonly schedule_id: string; readonly occurrence_id: string; readonly conversation_id: string; readonly turn_id: string | null }>(await manager.query(`
+          SELECT o."schedule_id",o."id" AS "occurrence_id",o."conversation_id",o."home_turn_id" AS "turn_id"
+          FROM "automation_occurrences" o WHERE o."owner_id"=$1 AND o."status" IN
+            ('queued','claimed','dispatching','running','cancel_requested','interrupted_unknown')
+          ORDER BY o."schedule_id",o."intended_for_utc",o."id" FOR UPDATE OF o
+        `, [due.owner_id]));
+        await manager.query(`UPDATE "automation_occurrences" SET
+          "status"=CASE WHEN "home_turn_id" IS NULL THEN 'cancelled' ELSE 'cancel_requested' END,
+          "failure_code"='DEMO_EXPIRY',"lease_token"=NULL,"lease_expires_at"=NULL,"updated_at"=clock_timestamp()
+          WHERE "owner_id"=$1 AND "status" IN ('queued','claimed','dispatching','running','cancel_requested','interrupted_unknown')`, [due.owner_id]);
         const copy = rows<CopyRow>(await manager.query(`
           SELECT "target_project_id","phase","workspace_mode" FROM "demo_showcase_copies"
           WHERE "admission_id"=$1 AND "owner_id"=$2 FOR UPDATE
@@ -149,6 +168,10 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
           runs: runs.map((run) => ({ id: run.id, projectId: run.project_id })),
           commands: commands.map((command) => ({ id: command.id, runId: command.run_id })),
           reservations: reservations.map((reservation) => ({ id: reservation.id, rootKey: reservation.root_key, status: reservation.status })),
+          scheduleIds: schedules.map((schedule) => schedule.id),
+          automationTurns: automationTurns.map((row) => ({
+            scheduleId: row.schedule_id, occurrenceId: row.occurrence_id, conversationId: row.conversation_id, turnId: row.turn_id
+          })),
           roots: roots.map((root) => ({
             ownerId: root.owner_id, projectId: root.project_id, locatorProjectId: root.locator_project_id,
             rootKey: root.root_key, storageKind: root.storage_kind, relativeRoot: root.relative_root, state: root.state
@@ -213,12 +236,33 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
           idempotencyKey: `demo-expiry-${command.id}` });
       } catch { /* persisted state below is the barrier */ }
     }
+    for (const automation of manifest.automationTurns) {
+      if (!automation.turnId) continue;
+      let status = 'unknown';
+      try {
+        const result = await cancellation.cancelAutomationTurn({
+          ownerId: manifest.ownerId, conversationId: automation.conversationId, turnId: automation.turnId
+        });
+        status = result.status;
+      } catch { /* the persisted cancel request remains the cleanup barrier */ }
+      const occurrenceStatus = status === 'completed' || status === 'partial' ? 'succeeded'
+        : status === 'failed' ? 'failed' : status === 'unsupported' ? 'skipped'
+          : status === 'cancelled' ? 'cancelled' : 'interrupted_unknown';
+      await this.dataSource.query(`UPDATE "automation_occurrences" SET "status"=$3,
+        "failure_code"=CASE WHEN $3 IN ('succeeded','failed','skipped','cancelled') THEN NULL ELSE 'CANCELLATION_UNCONFIRMED' END,
+        "claim_generation"="claim_generation"+CASE WHEN $3='interrupted_unknown' THEN 1 ELSE 0 END,
+        "lease_token"=CASE WHEN $3='interrupted_unknown' THEN gen_random_uuid() ELSE NULL END,
+        "lease_expires_at"=CASE WHEN $3='interrupted_unknown' THEN clock_timestamp()+interval '2 minutes' ELSE NULL END,
+        "updated_at"=clock_timestamp()
+        WHERE "owner_id"=$1 AND "id"=$2 AND "status" IN ('cancel_requested','interrupted_unknown')`, [manifest.ownerId, automation.occurrenceId, occurrenceStatus]);
+    }
   }
 
   private async getBarrier(ownerId: string): Promise<'busy' | 'unknown_effect' | null> {
     const result = rows<{ readonly active_run: boolean; readonly uncertain_provider: boolean; readonly active_command: boolean;
       readonly unresolved_reservation: boolean; readonly unresolved_root_effect: boolean; readonly removal_job: boolean;
-      readonly active_credit_reservation: boolean; readonly uncertain_credit_reservation: boolean }>(await this.dataSource.query(`
+      readonly active_credit_reservation: boolean; readonly uncertain_credit_reservation: boolean;
+      readonly active_automation: boolean; readonly uncertain_automation: boolean }>(await this.dataSource.query(`
       SELECT EXISTS(SELECT 1 FROM "ai_runs" WHERE "owner_id"=$1 AND ("status" IN ${ACTIVE_RUNS} OR "status"='review_required')) AS "active_run",
         EXISTS(SELECT 1 FROM "ai_runs" WHERE "owner_id"=$1 AND "provider_transmission"='unknown') AS "uncertain_provider",
         EXISTS(SELECT 1 FROM "sandbox_commands" WHERE "owner_id"=$1 AND ("status" IN ${ACTIVE_COMMANDS} OR "status"='review_required')) AS "active_command",
@@ -227,12 +271,14 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
           WHERE a."owner_id"=$1 AND r."outcome" IN ('pending','unknown')) AS "unresolved_root_effect",
         EXISTS(SELECT 1 FROM "credit_provider_call_reservations" WHERE "owner_id"=$1 AND "status"='in_flight') AS "active_credit_reservation",
         EXISTS(SELECT 1 FROM "credit_provider_call_reservations" WHERE "owner_id"=$1 AND "status"='unknown') AS "uncertain_credit_reservation",
+        EXISTS(SELECT 1 FROM "automation_occurrences" WHERE "owner_id"=$1 AND "status" IN ('queued','claimed','dispatching','running','cancel_requested')) AS "active_automation",
+        EXISTS(SELECT 1 FROM "automation_occurrences" WHERE "owner_id"=$1 AND "status"='interrupted_unknown') AS "uncertain_automation",
         EXISTS(SELECT 1 FROM "project_removal_jobs" WHERE "owner_id"=$1) AS "removal_job"
     `, [ownerId]))[0];
     if (!result) return 'busy';
     if (result.uncertain_provider || result.unresolved_root_effect || result.unresolved_reservation
-      || result.uncertain_credit_reservation) return 'unknown_effect';
-    if (result.active_run || result.active_command || result.removal_job || result.active_credit_reservation) return 'busy';
+      || result.uncertain_credit_reservation || result.uncertain_automation) return 'unknown_effect';
+    if (result.active_run || result.active_command || result.removal_job || result.active_credit_reservation || result.active_automation) return 'busy';
     return null;
   }
 

@@ -5,6 +5,7 @@ import type { AssertAssistantExecutionInput, AssistantExecutionAuthorization, As
 import { AssistantExecutionUnavailableError } from '@/modules/assistant-policy/domain/assistant-execution-errors';
 import { ASSISTANT_POLICY_PROFILES } from '@/modules/assistant-policy/domain/assistant-scope-policy';
 import type { IHomeConversationRepository } from '@/modules/home-assistant/repositories/home-conversation-repository';
+import type { HomeAutomationFence } from '@/modules/home-assistant/repositories/home-conversation-repository';
 import type { HomePlanningProvider, IHomePlanningRuntime } from '@/modules/home-assistant/repositories/home-planning-runtime';
 import type { IHomeProjectMemoryContextReader } from '@/modules/home-assistant/repositories/home-project-memory-context-reader';
 import { assertHomeIdempotencyKey, homeRequestFingerprint } from '@/modules/home-assistant/use-cases/home-conversation-command-helpers';
@@ -38,8 +39,10 @@ export interface TrustedSkillInvocationBinding {
   readonly skillId: string;
   readonly skillRevisionId: string;
   readonly skillVersion: number;
+  readonly automationFence?: HomeAutomationFence;
   claim(contextRevisions: readonly SkillContextRevision[]): Promise<{ readonly id: string }>;
   isCurrent(): Promise<boolean>;
+  heartbeat?(): Promise<boolean>;
   updateState(state: SkillInvocationState): Promise<void>;
 }
 
@@ -76,6 +79,7 @@ export class SubmitHomeTurnUseCase {
           initialStatus: 'unsupported'
         });
       }
+      if (!await input.skillInvocation.isCurrent()) throw new HomeConversationInputInvalidError('The skill or scheduled occurrence is no longer current.');
       const invocation = await input.skillInvocation.claim([]);
       const submission = await this.conversations.submitTurn({
         ownerId: input.ownerId,
@@ -84,7 +88,8 @@ export class SubmitHomeTurnUseCase {
         requestFingerprint: skillHomeRequestFingerprint(input.message, input.skillInvocation, []),
         message: input.message,
         initialStatus: 'unsupported',
-        skillInvocationId: invocation.id
+        skillInvocationId: invocation.id,
+        ...(input.skillInvocation.automationFence ? { automationFence: input.skillInvocation.automationFence } : {})
       });
       if (submission.turn.skillInvocationId !== invocation.id) throw new HomeTurnNotFoundError();
       await input.skillInvocation.updateState('denied');
@@ -118,7 +123,8 @@ export class SubmitHomeTurnUseCase {
       initialStatus: 'running',
       homePolicyRevision: revisions.home,
       workspacePolicyRevision: revisions.workspace,
-      ...(invocation ? { skillInvocationId: invocation.id } : {})
+      ...(invocation ? { skillInvocationId: invocation.id } : {}),
+      ...(input.skillInvocation?.automationFence ? { automationFence: input.skillInvocation.automationFence } : {})
     });
 
     if (input.skillInvocation && submission.turn.skillInvocationId !== invocation?.id) throw new HomeTurnNotFoundError();
@@ -203,6 +209,9 @@ export class SubmitHomeTurnUseCase {
 
     if (input.skillInvocation) {
       await input.skillInvocation.updateState('dispatching');
+      if (input.skillInvocation.automationFence && !await input.skillInvocation.heartbeat?.()) {
+        return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'SCHEDULE_LEASE_LOST', input.skillInvocation);
+      }
       if (!await input.skillInvocation.isCurrent()) {
         return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'SKILL_NOT_AVAILABLE', input.skillInvocation);
       }

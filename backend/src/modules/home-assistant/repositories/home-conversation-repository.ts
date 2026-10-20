@@ -54,7 +54,15 @@ export interface SubmitHomeTurnInput {
   readonly workspacePolicyRevision?: string | null;
   /** Trusted server-only skill binding persisted with this turn. */
   readonly skillInvocationId?: string | null;
+  /** Trusted internal scheduler fence; never supplied by HTTP. */
+  readonly automationFence?: HomeAutomationFence;
   readonly initialDisclosure?: HomeConsentDisclosureDraft;
+}
+
+export interface HomeAutomationFence {
+  readonly occurrenceId: string;
+  readonly leaseToken: string;
+  readonly generation: number;
 }
 
 export interface ListHomeTurnsInput {
@@ -77,6 +85,8 @@ export interface CompleteHomeTurnWithAssistantInput {
   readonly turnId: string;
   readonly content: string;
   readonly status: 'completed' | 'partial';
+  /** Trusted internal scheduler fence; prevents stale worker result commits. */
+  readonly automationFence?: HomeAutomationFence;
 }
 
 export interface AppendHomeMessageInput {

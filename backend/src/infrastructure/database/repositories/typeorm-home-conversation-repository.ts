@@ -45,6 +45,7 @@ import type {
   ListHomeMessagesInput,
   ListHomeTurnsInput,
   SubmitHomeTurnInput,
+  HomeAutomationFence,
   UpdateHomeConsentDeliveryInput,
   UpdateHomeToolResultDeliveryInput,
   UpdateHomeTurnStatusInput
@@ -192,6 +193,147 @@ async function boundedInitialDisclosureDraft(
   );
   const context = buildHomePlanningContext({ currentMessage, priorMessages: [...rows].reverse() });
   return { ...draft, categories: context.categories, itemCount: context.itemCount };
+}
+
+async function lockAutomationDispatch(queryRunner: QueryRunner, input: SubmitHomeTurnInput): Promise<void> {
+  const fence = input.automationFence;
+  if (!fence) return;
+  if (!input.skillInvocationId) throw new HomeConversationEventInvalidError();
+  const refs: readonly { readonly owner_id: string; readonly schedule_id: string; readonly kind: string; readonly schedule_revision: number }[] = await queryRunner.query(`
+    SELECT "owner_id","schedule_id","kind","schedule_revision" FROM "automation_occurrences"
+    WHERE "id"=$1 AND "owner_id"=$2 AND "conversation_id"=$3 AND "status"='dispatching'
+      AND "home_turn_id" IS NULL AND "lease_token"=$4 AND "claim_generation"=$5 AND "lease_expires_at">clock_timestamp()
+  `, [fence.occurrenceId, input.ownerId, input.conversationId, fence.leaseToken, fence.generation]);
+  const ref = refs[0];
+  if (!ref) throw new HomeConversationEventInvalidError();
+  const owners: readonly { readonly id: string }[] = await queryRunner.query(`
+    SELECT "id" FROM "users" WHERE "id"=$1 AND "is_active"=true
+      AND ("expires_at" IS NULL OR "expires_at">clock_timestamp()) FOR UPDATE
+  `, [input.ownerId]);
+  if (!owners[0]) throw new HomeConversationEventInvalidError();
+  const cleanup: readonly { readonly id: string }[] = await queryRunner.query(`
+    SELECT dc."admission_id" AS "id" FROM "demo_expiry_cleanups" dc
+    JOIN "demo_admissions" da ON da."id"=dc."admission_id" WHERE da."owner_id"=$1 LIMIT 1
+  `, [input.ownerId]);
+  if (cleanup[0]) throw new HomeConversationEventInvalidError();
+  const schedules: readonly { readonly id: string; readonly workspace_id: string; readonly skill_id: string;
+    readonly skill_revision_id: string; readonly skill_version: number; readonly revision: number; readonly enabled: boolean }[] = await queryRunner.query(`
+    SELECT "id","workspace_id","skill_id","skill_revision_id","skill_version","revision","enabled"
+    FROM "automation_schedules" WHERE "owner_id"=$1 AND "id"=$2 AND "conversation_id"=$3 FOR UPDATE
+  `, [input.ownerId, ref.schedule_id, input.conversationId]);
+  const schedule = schedules[0];
+  if (!schedule || Number(schedule.revision) !== Number(ref.schedule_revision)
+    || ref.kind !== 'manual' && !schedule.enabled) throw new HomeConversationEventInvalidError();
+  const occurrences: readonly { readonly id: string }[] = await queryRunner.query(`
+    SELECT "id" FROM "automation_occurrences" WHERE "id"=$1 AND "owner_id"=$2 AND "schedule_id"=$3
+      AND "schedule_revision"=$4 AND "status"='dispatching' AND "lease_token"=$5 AND "claim_generation"=$6
+      AND "lease_expires_at">clock_timestamp() FOR UPDATE
+  `, [fence.occurrenceId, input.ownerId, ref.schedule_id, ref.schedule_revision, fence.leaseToken, fence.generation]);
+  if (!occurrences[0]) throw new HomeConversationEventInvalidError();
+  const workspaces: readonly { readonly id: string }[] = await queryRunner.query(`
+    SELECT p."id" FROM "projects" p WHERE p."owner_id"=$1 AND p."id"=$2 AND p."status"='active'
+      AND NOT EXISTS(SELECT 1 FROM "project_removal_jobs" j WHERE j."project_id"=p."id")
+  `, [input.ownerId, schedule.workspace_id]);
+  if (!workspaces[0]) throw new HomeConversationEventInvalidError();
+  const skills: readonly { readonly id: string }[] = await queryRunner.query(`
+    SELECT s."id" FROM "skills" s JOIN "skill_revisions" r ON r."owner_id"=s."owner_id" AND r."skill_id"=s."id"
+      AND r."version"=s."current_version"
+    WHERE s."owner_id"=$1 AND s."id"=$2 AND s."deleted_at" IS NULL AND s."enabled"=true
+      AND (s."workspace_id" IS NULL OR s."workspace_id"=$3) AND r."id"=$4 AND r."enabled"=true
+      AND r."version"=$5 AND jsonb_typeof(r."declared_tools")='array'
+      AND r."declared_tools" <@ '["home_task_read","home_workspace_read"]'::jsonb
+  `, [input.ownerId, schedule.skill_id, schedule.workspace_id, schedule.skill_revision_id, schedule.skill_version]);
+  if (!skills[0]) throw new HomeConversationEventInvalidError();
+  const invocations: readonly { readonly id: string }[] = await queryRunner.query(`
+    SELECT "id" FROM "skill_invocations" WHERE "owner_id"=$1 AND "conversation_id"=$2 AND "id"=$3
+      AND "skill_id"=$4 AND "skill_revision_id"=$5 AND "skill_version"=$6 AND "state"='claimed' FOR UPDATE
+  `, [input.ownerId, input.conversationId, input.skillInvocationId, schedule.skill_id, schedule.skill_revision_id, schedule.skill_version]);
+  if (!invocations[0]) throw new HomeConversationEventInvalidError();
+}
+
+async function lockAutomationCompletion(queryRunner: QueryRunner, input: CompleteHomeTurnWithAssistantInput): Promise<boolean> {
+  const fence = input.automationFence;
+  if (!fence) return true;
+  const turns: readonly { readonly automation_occurrence_id: string | null; readonly skill_invocation_id: string | null;
+    readonly status: string; readonly home_policy_revision: string | null; readonly workspace_policy_revision: string | null }[] = await queryRunner.query(`
+    SELECT "automation_occurrence_id","skill_invocation_id","status","home_policy_revision","workspace_policy_revision"
+    FROM "home_turns" WHERE "owner_id"=$1 AND "conversation_id"=$2 AND "id"=$3
+  `, [input.ownerId, input.conversationId, input.turnId]);
+  const turn = turns[0];
+  if (!turn || turn.automation_occurrence_id !== fence.occurrenceId || !turn.skill_invocation_id
+    || turn.status !== 'running' && turn.status !== 'unknown') return false;
+  const refs: readonly { readonly schedule_id: string; readonly schedule_revision: number; readonly kind: string }[] = await queryRunner.query(`
+    SELECT "schedule_id","schedule_revision","kind" FROM "automation_occurrences"
+    WHERE "id"=$1 AND "owner_id"=$2 AND "conversation_id"=$3 AND "home_turn_id"=$4
+      AND "lease_token"=$5 AND "claim_generation"=$6 AND "lease_expires_at">clock_timestamp()
+  `, [fence.occurrenceId, input.ownerId, input.conversationId, input.turnId, fence.leaseToken, fence.generation]);
+  const ref = refs[0];
+  if (!ref) return false;
+  const owners: readonly { readonly id: string }[] = await queryRunner.query(`
+    SELECT "id" FROM "users" WHERE "id"=$1 AND "is_active"=true
+      AND ("expires_at" IS NULL OR "expires_at">clock_timestamp()) FOR UPDATE
+  `, [input.ownerId]);
+  if (!owners[0]) return false;
+  const cleanups: readonly { readonly id: string }[] = await queryRunner.query(`
+    SELECT dc."admission_id" AS "id" FROM "demo_expiry_cleanups" dc
+    JOIN "demo_admissions" da ON da."id"=dc."admission_id" WHERE da."owner_id"=$1 LIMIT 1
+  `, [input.ownerId]);
+  if (cleanups[0]) return false;
+  const schedules: readonly { readonly id: string; readonly workspace_id: string; readonly skill_id: string;
+    readonly skill_revision_id: string; readonly skill_version: number; readonly revision: number; readonly enabled: boolean }[] = await queryRunner.query(`
+    SELECT "id","workspace_id","skill_id","skill_revision_id","skill_version","revision","enabled"
+    FROM "automation_schedules" WHERE "owner_id"=$1 AND "id"=$2 AND "conversation_id"=$3 FOR UPDATE
+  `, [input.ownerId, ref.schedule_id, input.conversationId]);
+  const schedule = schedules[0];
+  if (!schedule || Number(schedule.revision) !== Number(ref.schedule_revision)
+    || ref.kind !== 'manual' && !schedule.enabled) return false;
+  const occurrences: readonly { readonly id: string }[] = await queryRunner.query(`
+    SELECT "id" FROM "automation_occurrences" WHERE "id"=$1 AND "owner_id"=$2 AND "schedule_id"=$3
+      AND "schedule_revision"=$4 AND "home_turn_id"=$5 AND "lease_token"=$6 AND "claim_generation"=$7
+      AND "lease_expires_at">clock_timestamp() FOR UPDATE
+  `, [fence.occurrenceId, input.ownerId, ref.schedule_id, ref.schedule_revision, input.turnId, fence.leaseToken, fence.generation]);
+  if (!occurrences[0]) return false;
+  const workspaces: readonly { readonly id: string }[] = await queryRunner.query(`
+    SELECT p."id" FROM "projects" p WHERE p."owner_id"=$1 AND p."id"=$2 AND p."status"='active'
+      AND NOT EXISTS(SELECT 1 FROM "project_removal_jobs" j WHERE j."project_id"=p."id")
+  `, [input.ownerId, schedule.workspace_id]);
+  if (!workspaces[0]) return false;
+  const skills: readonly { readonly id: string }[] = await queryRunner.query(`
+    SELECT s."id" FROM "skills" s JOIN "skill_revisions" r ON r."owner_id"=s."owner_id" AND r."skill_id"=s."id"
+      AND r."version"=s."current_version"
+    WHERE s."owner_id"=$1 AND s."id"=$2 AND s."deleted_at" IS NULL AND s."enabled"=true
+      AND (s."workspace_id" IS NULL OR s."workspace_id"=$3) AND r."id"=$4 AND r."enabled"=true
+      AND r."version"=$5 AND jsonb_typeof(r."declared_tools")='array'
+      AND r."declared_tools" <@ '["home_task_read","home_workspace_read"]'::jsonb
+  `, [input.ownerId, schedule.skill_id, schedule.workspace_id, schedule.skill_revision_id, schedule.skill_version]);
+  if (!skills[0]) return false;
+  const currentPolicy: readonly { readonly id: string }[] = await queryRunner.query(`
+    SELECT "id" FROM "assistant_scope_policies" WHERE "owner_id"=$1 AND "scope_kind"='home'
+      AND "enabled"=true AND "revoked_at" IS NULL AND "revision"=$2 FOR SHARE
+  `, [input.ownerId, turn.home_policy_revision]);
+  if (!currentPolicy[0]) return false;
+  const workspacePolicy: readonly { readonly id: string }[] = await queryRunner.query(`
+    SELECT "id" FROM "assistant_scope_policies" WHERE "owner_id"=$1 AND "scope_kind"='project'
+      AND "project_id"=$2 AND "enabled"=true AND "revoked_at" IS NULL AND "revision"=$3 FOR SHARE
+  `, [input.ownerId, schedule.workspace_id, turn.workspace_policy_revision]);
+  if (!workspacePolicy[0]) return false;
+  const bindings: readonly { readonly id: string }[] = await queryRunner.query(`
+    SELECT i."id" FROM "skill_invocations" i WHERE i."owner_id"=$1 AND i."conversation_id"=$2 AND i."id"=$3
+      AND i."skill_id"=$4 AND i."skill_revision_id"=$5 AND i."skill_version"=$6
+      AND i."state" IN ('bound','dispatching','accepted','unknown')
+      AND NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements(i."context_revisions") c
+        WHERE (c->>'kind'='home_message' AND NOT EXISTS (
+          SELECT 1 FROM "home_messages" m WHERE m."owner_id"=$1 AND m."conversation_id"=$2
+            AND m."id"=(c->>'id')::uuid AND m."sequence"=(c->>'revision')::integer
+        )) OR (c->>'kind'='project_fact' AND NOT EXISTS (
+          SELECT 1 FROM "project_facts" f WHERE f."owner_id"=$1 AND f."project_id"=$7
+            AND f."id"=(c->>'id')::uuid AND f."version"=(c->>'revision')::integer AND f."deleted_at" IS NULL
+        ))
+      ) FOR SHARE
+  `, [input.ownerId, input.conversationId, turn.skill_invocation_id, schedule.skill_id,
+    schedule.skill_revision_id, schedule.skill_version, schedule.workspace_id]);
+  return bindings.length === 1;
 }
 
 /** TypeORM adapter for durable Home conversations, turns, and messages. */
@@ -343,11 +485,12 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
   /** Persists a turn and its first user message as one idempotent state change. */
   public async submitTurn(input: SubmitHomeTurnInput): Promise<HomeTurnSubmission> {
     return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
+      await lockAutomationDispatch(queryRunner, input);
       const conversation = await lockConversation(queryRunner, input.ownerId, input.conversationId);
       if (!conversation) throw new HomeConversationNotFoundError();
 
       const existingRows: readonly (HomeTurnRow & KeyedRow)[] = await queryRunner.query(
-        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "home_policy_revision", "workspace_policy_revision", "skill_invocation_id", "created_at", "updated_at"
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "home_policy_revision", "workspace_policy_revision", "skill_invocation_id", "automation_occurrence_id", "created_at", "updated_at"
          FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "request_key" = $3 LIMIT 1`,
         [input.ownerId, input.conversationId, input.requestKey]
       );
@@ -355,6 +498,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       if (existing) {
         assertRequestFingerprint(existing.request_fingerprint, input.requestFingerprint, 'turn');
         if ((existing.skill_invocation_id ?? null) !== (input.skillInvocationId ?? null)) throw new HomeConversationEventInvalidError();
+        if ((existing.automation_occurrence_id ?? null) !== (input.automationFence?.occurrenceId ?? null)) throw new HomeConversationEventInvalidError();
         const messageRows: readonly HomeMessageKeyedRow[] = await queryRunner.query(
           `SELECT "id", "owner_id", "conversation_id", "turn_id", "sequence", "role", "content", "request_key", "request_fingerprint", "created_at"
            FROM "home_messages" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "turn_id" = $3 AND "request_key" = $4 LIMIT 1`,
@@ -391,10 +535,10 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
       );
       const turnSequence = Number(turnSequenceRows[0]?.sequence ?? 1);
       const turnRows: readonly HomeTurnRow[] = await queryRunner.query(
-        `INSERT INTO "home_turns" ("owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "home_policy_revision", "workspace_policy_revision", "skill_invocation_id")
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "skill_invocation_id", "created_at", "updated_at"`,
-        [input.ownerId, input.conversationId, turnSequence, input.requestKey, input.requestFingerprint, input.initialStatus, input.homePolicyRevision ?? null, input.workspacePolicyRevision ?? null, input.skillInvocationId ?? null]
+        `INSERT INTO "home_turns" ("owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "home_policy_revision", "workspace_policy_revision", "skill_invocation_id", "automation_occurrence_id")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "skill_invocation_id", "automation_occurrence_id", "created_at", "updated_at"`,
+        [input.ownerId, input.conversationId, turnSequence, input.requestKey, input.requestFingerprint, input.initialStatus, input.homePolicyRevision ?? null, input.workspacePolicyRevision ?? null, input.skillInvocationId ?? null, input.automationFence?.occurrenceId ?? null]
       );
       const turnRow = turnRows[0];
       if (!turnRow) throw new HomeTurnNotFoundError();
@@ -407,6 +551,23 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
           [input.ownerId, input.conversationId, input.skillInvocationId]
         ));
         if (boundRows[0]?.id !== input.skillInvocationId) throw new HomeConversationEventInvalidError();
+      }
+      if (input.automationFence) {
+        const linked: readonly { readonly id: string }[] = await queryRunner.query(`
+          UPDATE "automation_occurrences" SET "home_turn_id"=$7,"skill_invocation_id"=$8,
+            "status"=CASE WHEN $9='running' THEN 'running' ELSE 'failed' END,
+            "failure_code"=CASE WHEN $9='running' THEN NULL ELSE 'HOME_RUNTIME_UNAVAILABLE' END,
+            "updated_at"=clock_timestamp()
+          WHERE "id"=$1 AND "owner_id"=$2 AND "conversation_id"=$3 AND "status"='dispatching'
+            AND "home_turn_id" IS NULL AND "lease_token"=$4 AND "claim_generation"=$5
+            AND "lease_expires_at">clock_timestamp()
+            AND EXISTS(SELECT 1 FROM "skill_invocations" i WHERE i."owner_id"=$2 AND i."conversation_id"=$3
+              AND i."id"=$6 AND i."skill_revision_id"="automation_occurrences"."skill_revision_id"
+              AND i."skill_version"="automation_occurrences"."skill_version")
+          RETURNING "id"
+        `, [input.automationFence.occurrenceId, input.ownerId, input.conversationId, input.automationFence.leaseToken,
+          input.automationFence.generation, input.skillInvocationId, turnRow.id, input.skillInvocationId, input.initialStatus]);
+        if (!linked[0] || !input.skillInvocationId) throw new HomeConversationEventInvalidError();
       }
 
       await appendHomeConversationEvent(queryRunner, {
@@ -665,7 +826,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
     }
     parameters.push(input.limit + 1);
     const rows: readonly HomeTurnRow[] = await this.dataSource.query(
-      `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "skill_invocation_id", "created_at", "updated_at"
+      `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "skill_invocation_id", "automation_occurrence_id", "created_at", "updated_at"
        FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2${afterFilter}
        ORDER BY "sequence" ASC LIMIT $${parameters.length}`,
       parameters
@@ -679,7 +840,7 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
   /** Finds one turn only when both owner and conversation match. */
   public async findTurnForOwner(ownerId: string, conversationId: string, turnId: string): Promise<HomeTurn | null> {
     const rows: readonly HomeTurnRow[] = await this.dataSource.query(
-      `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "skill_invocation_id", "created_at", "updated_at"
+      `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "status", "home_policy_revision", "workspace_policy_revision", "skill_invocation_id", "automation_occurrence_id", "created_at", "updated_at"
        FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1`,
       [ownerId, conversationId, turnId]
     );
@@ -779,15 +940,17 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
   public async completeTurnWithAssistant(input: CompleteHomeTurnWithAssistantInput): Promise<HomeTurn | null> {
     if (Buffer.byteLength(input.content, 'utf8') > 262144) throw new HomeConversationEventInvalidError();
     return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
+      if (!await lockAutomationCompletion(queryRunner, input)) return null;
       if (!await lockConversation(queryRunner, input.ownerId, input.conversationId)) return null;
       const rows: readonly HomeTurnRow[] = await queryRunner.query(
-        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "home_policy_revision", "workspace_policy_revision", "skill_invocation_id", "created_at", "updated_at"
+        `SELECT "id", "owner_id", "conversation_id", "sequence", "request_key", "request_fingerprint", "status", "home_policy_revision", "workspace_policy_revision", "skill_invocation_id", "automation_occurrence_id", "created_at", "updated_at"
          FROM "home_turns" WHERE "owner_id" = $1 AND "conversation_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE`,
         [input.ownerId, input.conversationId, input.turnId]
       );
       const current = rows[0];
       if (!current) return null;
-      if (current.status !== 'running') return toHomeTurn(current);
+      if (current.automation_occurrence_id && !input.automationFence) return null;
+      if (current.status !== 'running' && !(input.automationFence && current.status === 'unknown')) return toHomeTurn(current);
 
       if (input.content.length > 0) await this.insertAssistantMessage(queryRunner, input);
       return this.changeTurnStatus(queryRunner, input.ownerId, input.conversationId, current, input.status);
