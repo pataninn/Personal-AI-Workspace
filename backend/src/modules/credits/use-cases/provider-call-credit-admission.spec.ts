@@ -8,7 +8,9 @@ function ledger(): jest.Mocked<ICreditLedgerRepository> {
     settleProviderCall: jest.fn().mockResolvedValue({ outcome: 'settled', chargedUnits: 2n }),
     retainUnknown: jest.fn().mockResolvedValue(undefined),
     releaseKnownNotSent: jest.fn().mockResolvedValue(undefined),
-    queueAccountTimeZoneChange: jest.fn().mockResolvedValue(new Date('2026-10-20T00:00:00Z'))
+    queueAccountTimeZoneChange: jest.fn().mockResolvedValue(new Date('2026-10-20T00:00:00Z')),
+    listHomeTurnProviderCallUsage: jest.fn().mockResolvedValue([]),
+    retainHomeTurnInFlightCallsUnknown: jest.fn().mockResolvedValue(0)
   };
 }
 

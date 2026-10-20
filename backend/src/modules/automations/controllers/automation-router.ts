@@ -86,6 +86,7 @@ function serializeSchedule(schedule: AutomationSchedule): Record<string, unknown
 }
 
 function serializeOccurrence(occurrence: AutomationOccurrence): Record<string, unknown> {
+  const budgetSkipped = occurrence.status === 'skipped' && occurrence.failureCode === 'BUDGET_EXHAUSTED';
   return {
     id: occurrence.id,
     kind: occurrence.kind,
@@ -93,9 +94,17 @@ function serializeOccurrence(occurrence: AutomationOccurrence): Record<string, u
     status: occurrence.status,
     scheduleRevision: occurrence.scheduleRevision,
     skillVersion: occurrence.skillVersion,
-    homeTurnId: occurrence.homeTurnId,
+    homeTurnId: budgetSkipped ? null : occurrence.homeTurnId,
     failureCode: occurrence.failureCode,
     attemptCount: occurrence.attemptCount,
+    taskSources: (occurrence.taskSources ?? []).map((source) => ({
+      taskId: source.taskId,
+      revision: source.revision,
+      available: source.available,
+      title: source.available ? source.title : null,
+      href: source.available ? source.href : null
+    })),
+    providerUsage: occurrence.providerUsage ?? { state: budgetSkipped || !occurrence.homeTurnId ? 'not_started' : 'unknown', calls: [] },
     createdAt: occurrence.createdAt.toISOString(),
     updatedAt: occurrence.updatedAt.toISOString()
   };

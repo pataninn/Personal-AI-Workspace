@@ -109,6 +109,16 @@ def dispatch_planning(operation, body):
     payload = body.get('payload', {})
     if not isinstance(payload, dict):
         raise BridgeError('Invalid planning operation payload')
+    if operation == 'planning-capabilities':
+        required_output = payload.get('requiredMaxOutputTokens')
+        if (set(payload) != {'providerProfile', 'model', 'requiredProviderReceiptVersion', 'requiredMaxOutputTokens'}
+                or payload.get('requiredProviderReceiptVersion') != 1
+                or type(required_output) is not int or not 1 <= required_output <= 512):
+            raise BridgeError('Invalid planning capability request')
+        route = profile()
+        if payload['providerProfile'] != route['providerProfile'] or payload['model'] != route['model']:
+            raise BridgeError('The requested Home provider route is unavailable')
+        return {'providerReceiptVersion': 1, 'providerProfile': route['providerProfile'], 'model': route['model'], 'maxOutputTokens': 512}
     with LOCK:
         run = PLANNING_RUNS.get(identity)
         if operation == 'planning-create':
@@ -124,7 +134,10 @@ def dispatch_planning(operation, body):
                 raise BridgeError('This identity already belongs to a project run')
             if len(RUNS) + len(PLANNING_RUNS) >= 4:
                 raise BridgeError('The local Hermes concurrency limit was reached')
-            if set(payload) != {'prompt', 'providerProfile', 'model', 'endpoint'}:
+            output_tokens = payload.get('maxOutputTokens')
+            if (set(payload) != {'prompt', 'providerProfile', 'model', 'endpoint', 'maxOutputTokens', 'requiredProviderReceiptVersion'}
+                    or payload.get('requiredProviderReceiptVersion') != 1
+                    or type(output_tokens) is not int or not 1 <= output_tokens <= 512):
                 raise BridgeError('Invalid planning create payload')
             prompt = payload.get('prompt')
             if not isinstance(prompt, str):
@@ -174,6 +187,14 @@ def dispatch_planning(operation, body):
         if len(payload['requestId']) > 128 or run.status != 'running' or not run.acp or run.cancelled.is_set():
             raise BridgeError('The planning run cannot accept this tool result')
         run.acp.home_tool_result(payload['requestId'], payload['result'])
+        return {'accepted': True}
+    if operation == 'planning-provider-credit-result':
+        if (set(payload) != {'requestId', 'result'} or not isinstance(payload.get('requestId'), str)
+                or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', payload['requestId'])):
+            raise BridgeError('Invalid planning provider receipt request')
+        if run.status != 'running' or not run.acp or run.cancelled.is_set():
+            raise BridgeError('The planning run cannot accept this provider receipt')
+        run.acp.provider_credit_result(payload['requestId'], payload['result'])
         return {'accepted': True}
     if operation == 'planning-cancel':
         if payload:

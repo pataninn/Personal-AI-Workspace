@@ -1,9 +1,10 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import type {
   CancelHomePlanningRunResult,
   HomePlanningProvider,
   HomePlanningRuntimeEvent,
+  HomeProviderCreditResult,
   HomePlanningRuntimeStatus,
   IHomePlanningRuntime,
   PollHomePlanningRunInput,
@@ -27,8 +28,10 @@ const MAX_PROMPT_BYTES = 256 * 1024;
 const MAX_POLL_PAGE_BYTES = 256 * 1024;
 const MAX_HOME_TOOL_RESULT_BYTES = 256 * 1024;
 const MAX_HOME_TOOL_EVENT_BYTES = 256 * 1024;
+export const MAX_HOME_PLANNING_OUTPUT_TOKENS = 512;
 const TURN_ID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
+const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu;
 export const HOME_PLANNING_TOOL_NAMES = [
   'home_list_tasks',
   'home_get_task',
@@ -51,6 +54,8 @@ export interface HermesHomePlanningRuntimeOptions {
   readonly registeredToolNames?: readonly HomePlanningToolName[];
   /** Must be enabled only after the bridge proves every provider egress attempt is admitted. */
   readonly providerEgressAdmissionEnforced?: boolean;
+  /** Effective output-token limit already reserved by Credits for each Home provider call. */
+  readonly maxOutputTokens?: number;
 }
 
 interface ActivePlanningRun {
@@ -67,6 +72,8 @@ export class HermesHomePlanningRuntime implements IHomePlanningRuntime {
   private readonly runs = new Map<string, ActivePlanningRun>();
   private readonly homeToolNames: ReadonlySet<string>;
   private readonly providerEgressAdmissionEnforced: boolean;
+  private readonly maxOutputTokens: number | undefined;
+  private providerReceiptCapabilityVerified = false;
 
   public constructor(
     private readonly bridge: HermesBridgeClient,
@@ -81,16 +88,40 @@ export class HermesHomePlanningRuntime implements IHomePlanningRuntime {
     }
     this.homeToolNames = new Set(registeredToolNames);
     this.providerEgressAdmissionEnforced = options.providerEgressAdmissionEnforced === true;
+    this.maxOutputTokens = Number.isSafeInteger(options.maxOutputTokens)
+      && (options.maxOutputTokens as number) >= 1
+      && (options.maxOutputTokens as number) <= MAX_HOME_PLANNING_OUTPUT_TOKENS
+      ? options.maxOutputTokens
+      : undefined;
   }
 
   public async supportsPolicyExecution(_input: { readonly providerProfile: string; readonly model: string }): Promise<boolean> {
-    // The ACP boundary cannot yet prove admission for every primary or auxiliary send.
-    return false;
+    if (!this.providerEgressAdmissionEnforced || this.maxOutputTokens === undefined
+      || _input.providerProfile !== this.provider.profile || _input.model !== this.provider.model) return false;
+    if (this.providerReceiptCapabilityVerified) return true;
+    try {
+      const reply = await this.bridge.call('planning-capabilities', randomUUID(), randomBytes(32).toString('base64url'), {
+        providerProfile: _input.providerProfile,
+        model: _input.model,
+        requiredProviderReceiptVersion: 1,
+        requiredMaxOutputTokens: this.maxOutputTokens
+      });
+      this.providerReceiptCapabilityVerified = reply.providerReceiptVersion === 1
+        && reply.providerProfile === _input.providerProfile
+        && reply.model === _input.model
+        && reply.maxOutputTokens === MAX_HOME_PLANNING_OUTPUT_TOKENS;
+      return this.providerReceiptCapabilityVerified;
+    } catch {
+      return false;
+    }
   }
 
   public async start(input: StartHomePlanningRunInput): Promise<StartHomePlanningRunResult> {
     if (!this.providerEgressAdmissionEnforced
       || !validTurnId(input.turnId) || !validPrompt(input.prompt) || !sameProvider(input.provider, this.provider)) {
+      return { outcome: 'unavailable', code: 'PLANNING_RUNTIME_UNAVAILABLE' };
+    }
+    if (!await this.supportsPolicyExecution({ providerProfile: input.provider.profile, model: input.provider.model })) {
       return { outcome: 'unavailable', code: 'PLANNING_RUNTIME_UNAVAILABLE' };
     }
     const fingerprint = requestFingerprint(input);
@@ -136,6 +167,17 @@ export class HermesHomePlanningRuntime implements IHomePlanningRuntime {
     return { accepted: reply.accepted };
   }
 
+  public async sendProviderCreditResult(input: { readonly turnId: string; readonly requestId: string; readonly result: HomeProviderCreditResult }): Promise<{ readonly accepted: boolean }> {
+    const active = this.runs.get(input.turnId);
+    if (!active || !active.accepted || active.cancelled || !validTurnId(input.turnId) || !validRequestId(input.requestId)
+      || !validProviderCreditResult(input.result)) throw new AiRunRuntimeUnavailableError();
+    const reply = await this.bridge.call('planning-provider-credit-result', input.turnId, active.capability, {
+      requestId: input.requestId, result: input.result
+    });
+    if (reply.accepted !== true && reply.accepted !== false) throw new AiRunRuntimeUnavailableError();
+    return { accepted: reply.accepted };
+  }
+
   public async cancel(turnId: string): Promise<CancelHomePlanningRunResult> {
     if (!validTurnId(turnId)) return { outcome: 'unknown' };
     const active = this.runs.get(turnId);
@@ -162,7 +204,9 @@ export class HermesHomePlanningRuntime implements IHomePlanningRuntime {
         prompt: input.prompt,
         providerProfile: input.provider.profile,
         model: input.provider.model,
-        endpoint: input.provider.endpoint
+        endpoint: input.provider.endpoint,
+        maxOutputTokens: this.maxOutputTokens,
+        requiredProviderReceiptVersion: 1
       });
     } catch (error: unknown) {
       if (error instanceof HermesBridgeCallError && ['not-sent', 'rejected'].includes(error.acceptance)) {
@@ -222,6 +266,11 @@ function parsePoll(reply: Record<string, unknown>, cursor: number, homeToolNames
         name: item.params.name,
         args: item.params.args
       });
+    } else if (item.type === 'home-provider-credit-request') {
+      if (typeof item.id !== 'string' || !validRequestId(item.id) || !isRecord(item.params)
+        || typeof item.params.sessionId !== 'string' || item.params.sessionId.length < 1 || item.params.sessionId.length > 128
+        || !validProviderCreditRequest(item.params.request) || encodedBytes(item) > MAX_HOME_TOOL_EVENT_BYTES) return unknownPoll(cursor);
+      events.push({ sequence, type: 'home.provider.credit.requested', requestId: item.id, request: item.params.request });
     } else if (item.type !== 'started') {
       return unknownPoll(cursor);
     }
@@ -230,6 +279,33 @@ function parsePoll(reply: Record<string, unknown>, cursor: number, homeToolNames
   const code = typeof reply.code === 'string' && /^PLANNING_RUNTIME_[A-Z_]{1,48}$/u.test(reply.code) ? reply.code : undefined;
   return { status: reply.status as HomePlanningRuntimeStatus, events, nextCursor, hasMore: reply.hasMore, ...(code ? { code } : {}) };
 }
+
+function validProviderCreditRequest(value: unknown): value is Extract<HomePlanningRuntimeEvent, { readonly type: 'home.provider.credit.requested' }>['request'] {
+  if (!isRecord(value) || !validUuid(value.callId) || !validUuid(value.attemptId)) return false;
+  if (value.operation === 'reserve') return Object.keys(value).length === 7
+    && typeof value.providerProfile === 'string' && value.providerProfile.length <= 128
+    && typeof value.model === 'string' && value.model.length <= 200
+    && Number.isSafeInteger(value.inputTokenUpperBound) && (value.inputTokenUpperBound as number) > 0
+    && value.inputBounderVersion === 'hermes-json-utf8-v1';
+  if (value.operation === 'settle') return Object.keys(value).length === 5 && validUuid(value.reservationId)
+    && isRecord(value.usage) && Object.keys(value.usage).length === 3
+    && Number.isSafeInteger(value.usage.promptTokens) && (value.usage.promptTokens as number) >= 0
+    && Number.isSafeInteger(value.usage.completionTokens) && (value.usage.completionTokens as number) >= 0
+    && Number.isSafeInteger(value.usage.totalTokens) && value.usage.totalTokens === (value.usage.promptTokens as number) + (value.usage.completionTokens as number);
+  if (value.operation === 'unknown' || value.operation === 'release') return Object.keys(value).every((key) => ['operation', 'callId', 'attemptId', 'reservationId', 'reason'].includes(key))
+    && validUuid(value.reservationId) && (value.reason === undefined || typeof value.reason === 'string' && /^[a-z0-9_-]{1,64}$/u.test(value.reason));
+  return false;
+}
+
+function validProviderCreditResult(value: HomeProviderCreditResult): boolean {
+  if (!isRecord(value)) return false;
+  if (value.outcome === 'reserved') return Object.keys(value).length === 2 && validUuid(value.reservationId);
+  if (value.outcome === 'denied') return Object.keys(value).length === 2 && ['BUDGET_EXHAUSTED', 'ADMISSION_UNAVAILABLE'].includes(String(value.code));
+  if (value.outcome === 'settled') return Object.keys(value).length === 2 && ['settled', 'over_bound'].includes(String(value.status));
+  return (value.outcome === 'released' || value.outcome === 'unknown') && Object.keys(value).length === 1;
+}
+
+function validUuid(value: unknown): value is string { return typeof value === 'string' && UUID_PATTERN.test(value); }
 
 function validPrompt(value: string): boolean {
   return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= MAX_PROMPT_BYTES;

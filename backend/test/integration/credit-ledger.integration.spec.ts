@@ -11,6 +11,9 @@ const REGULAR_ID = '3a310000-0000-4000-8000-000000000001';
 const DEMO_ID = '3a310000-0000-4000-8000-000000000002';
 const DEMO_ID_TWO = '3a310000-0000-4000-8000-000000000003';
 const OVERFLOW_ID = '3a310000-0000-4000-8000-000000000004';
+const HISTORY_OTHER_OWNER_ID = '3a310000-0000-4000-8000-000000000005';
+const HOME_TURN_ID = '3a312000-0000-4000-8000-000000000001';
+const OTHER_HOME_TURN_ID = '3a312000-0000-4000-8000-000000000002';
 const SOURCE_ONE = '3a311000-0000-4000-8000-000000000001';
 const SOURCE_TWO = '3a311000-0000-4000-8000-000000000002';
 const SOURCE_THREE = '3a311000-0000-4000-8000-000000000003';
@@ -410,6 +413,95 @@ describeDatabase('Task 3.1 PostgreSQL credit ledger', () => {
     }]);
     await expect(repository.reserveProviderCall(reservation(OVERFLOW_ID, SOURCE_ONE, 'after-overflow', '1')))
       .rejects.toMatchObject({ reason: 'paused' });
+  });
+
+  it('lists Home turn provider usage only for matching owner and turn reservations', async () => {
+    await dataSource!.query('UPDATE "credit_runtime_policy" SET "inference_paused" = false WHERE "id" = 1');
+    await dataSource!.query(`
+      UPDATE "account_limits" SET "daily_credit_limit_units" = NULL, "lifetime_credit_limit_units" = NULL
+      WHERE "owner_id" = $1
+    `, [REGULAR_ID]);
+    await dataSource!.query(`
+      INSERT INTO "users" ("id", "scope_key", "display_name", "password_hash", "identifier", "account_kind", "role", "expires_at")
+      VALUES ($1, 'account:home-history-other', 'History other', 'fixture-hash', 'home-history-other', 'regular', 'user', NULL)
+    `, [HISTORY_OTHER_OWNER_ID]);
+    await dataSource!.query('INSERT INTO "account_limits" ("owner_id", "max_concurrent_inference_calls") VALUES ($1, 4)', [HISTORY_OTHER_OWNER_ID]);
+
+    const settled = await repository.reserveProviderCall({
+      ...reservation(REGULAR_ID, SOURCE_ONE, 'home-turn-settled', '1'),
+      maxInputTokens: 11, maximumUnits: 14n,
+      sourceKind: 'home_turn', sourceId: HOME_TURN_ID, maxAttemptsForSource: 3
+    });
+    await repository.settleProviderCall({
+      reservationId: settled.reservationId,
+      usage: { promptTokens: 11, completionTokens: 3, totalTokens: 14 }
+    });
+    const uncertain = await repository.reserveProviderCall({
+      ...reservation(REGULAR_ID, SOURCE_TWO, 'home-turn-unknown', '1'),
+      sourceKind: 'home_turn', sourceId: HOME_TURN_ID, maxAttemptsForSource: 3
+    });
+    await repository.retainUnknown(uncertain.reservationId, 'network_lost');
+    const uncertainState: readonly { status: string; unknown_reason: string | null }[] = await dataSource!.query(
+      'SELECT "status", "unknown_reason" FROM "credit_provider_call_reservations" WHERE "id" = $1', [uncertain.reservationId]
+    );
+    expect(uncertainState).toEqual([{ status: 'unknown', unknown_reason: 'network_lost' }]);
+
+    const otherTurn = await repository.reserveProviderCall({
+      ...reservation(REGULAR_ID, SOURCE_THREE, 'other-home-turn', '1'),
+      sourceKind: 'home_turn', sourceId: OTHER_HOME_TURN_ID
+    });
+    await repository.settleProviderCall({ reservationId: otherTurn.reservationId, usage: { promptTokens: 2, completionTokens: 1, totalTokens: 3 } });
+    const interrupted = await repository.reserveProviderCall({
+      ...reservation(REGULAR_ID, SOURCE_NINE, 'home-turn-interrupted', '1'),
+      sourceKind: 'home_turn', sourceId: HOME_TURN_ID, maxAttemptsForSource: 3
+    });
+    const beforeInterrupt: readonly { status: string; reserved_units: string }[] = await dataSource!.query(
+      'SELECT "status", "reserved_units" FROM "credit_provider_call_reservations" WHERE "id" = $1', [interrupted.reservationId]
+    );
+    expect(beforeInterrupt).toEqual([{ status: 'in_flight', reserved_units: '7' }]);
+    const inFlightBeforeInterrupt: readonly { call_id: string; source_id: string }[] = await dataSource!.query(`
+      SELECT "call_id", "source_id" FROM "credit_provider_call_reservations"
+      WHERE "owner_id" = $1 AND "source_kind" = 'home_turn' AND "source_id" = $2 AND "status" = 'in_flight'
+      ORDER BY "call_id"
+    `, [REGULAR_ID, HOME_TURN_ID]);
+    expect(inFlightBeforeInterrupt).toEqual([{ call_id: 'home-turn-interrupted', source_id: HOME_TURN_ID }]);
+    await expect(repository.retainHomeTurnInFlightCallsUnknown(REGULAR_ID, HOME_TURN_ID)).resolves.toBe(1);
+    const afterInterrupt: readonly { status: string; unknown_reason: string | null; reserved_units: string }[] = await dataSource!.query(
+      'SELECT "status", "unknown_reason", "reserved_units" FROM "credit_provider_call_reservations" WHERE "id" = $1', [interrupted.reservationId]
+    );
+    expect(afterInterrupt).toEqual([{ status: 'unknown', unknown_reason: 'home_turn_interrupted', reserved_units: '7' }]);
+    await expect(repository.retainHomeTurnInFlightCallsUnknown(REGULAR_ID, HOME_TURN_ID)).resolves.toBe(0);
+    await expect(repository.retainHomeTurnInFlightCallsUnknown(HISTORY_OTHER_OWNER_ID, HOME_TURN_ID)).resolves.toBe(0);
+    await expect(repository.retainHomeTurnInFlightCallsUnknown(REGULAR_ID, OTHER_HOME_TURN_ID)).resolves.toBe(0);
+    const otherOwner = await repository.reserveProviderCall({
+      ...reservation(HISTORY_OTHER_OWNER_ID, SOURCE_FOUR, 'same-home-turn-other-owner', '1'),
+      maxInputTokens: 5, maximumUnits: 8n,
+      sourceKind: 'home_turn', sourceId: HOME_TURN_ID
+    });
+    await repository.settleProviderCall({ reservationId: otherOwner.reservationId, usage: { promptTokens: 5, completionTokens: 1, totalTokens: 6 } });
+
+    const history = await repository.listHomeTurnProviderCallUsage(REGULAR_ID, HOME_TURN_ID);
+    expect(history).toHaveLength(3);
+    expect(history).toEqual(expect.arrayContaining([
+      {
+        status: 'settled', providerProfile: 'nvidia-hosted-nim', model: 'nvidia/nemotron-3-super-120b-a12b',
+        usage: { inputTokens: 11, outputTokens: 3, chargedUnits: '14' }
+      },
+      { status: 'unknown', providerProfile: 'nvidia-hosted-nim', model: 'nvidia/nemotron-3-super-120b-a12b' },
+      { status: 'unknown', providerProfile: 'nvidia-hosted-nim', model: 'nvidia/nemotron-3-super-120b-a12b' }
+    ]));
+    await expect(repository.listHomeTurnProviderCallUsage(REGULAR_ID, OTHER_HOME_TURN_ID)).resolves.toEqual([
+      {
+        status: 'settled', providerProfile: 'nvidia-hosted-nim', model: 'nvidia/nemotron-3-super-120b-a12b',
+        usage: { inputTokens: 2, outputTokens: 1, chargedUnits: '3' }
+      }
+    ]);
+    await expect(repository.listHomeTurnProviderCallUsage(HISTORY_OTHER_OWNER_ID, HOME_TURN_ID)).resolves.toEqual([
+      {
+        status: 'settled', providerProfile: 'nvidia-hosted-nim', model: 'nvidia/nemotron-3-super-120b-a12b',
+        usage: { inputTokens: 5, outputTokens: 1, chargedUnits: '6' }
+      }
+    ]);
   });
 });
 

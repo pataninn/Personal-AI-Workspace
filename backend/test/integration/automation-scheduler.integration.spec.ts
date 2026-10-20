@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { DataSource } from 'typeorm';
 
 import { createDataSource } from '@/infrastructure/database/data-source';
+import { AddAutomationTaskSources1710000039000 } from '@/infrastructure/database/migrations/1710000039000-add-automation-task-sources';
 import { TypeOrmProjectRemovalRepository } from '@/infrastructure/database/repositories/typeorm-project-removal-repository';
 import { TypeOrmAutomationRepository } from '@/infrastructure/database/repositories/typeorm-automation-repository';
 import { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
@@ -15,6 +16,9 @@ const DATABASE_NAME = 'home_history_task_7_1_scheduler_test';
 const OWNER_ID = 'd7710000-0000-4000-8000-000000000101';
 const OTHER_OWNER_ID = 'd7710000-0000-4000-8000-000000000102';
 const WORKSPACE_ID = 'd7710000-0000-4000-8000-000000000201';
+const OTHER_WORKSPACE_ID = 'd7710000-0000-4000-8000-000000000202';
+const TASK_ID = 'd7710000-0000-4000-8000-000000000601';
+const OTHER_TASK_ID = 'd7710000-0000-4000-8000-000000000602';
 const SKILL_ID = 'd7710000-0000-4000-8000-000000000301';
 const REVISION_ID = 'd7710000-0000-4000-8000-000000000302';
 const CONVERSATION_ID = 'd7710000-0000-4000-8000-000000000401';
@@ -118,6 +122,20 @@ describeDatabase('Task 7.1 durable scheduler PostgreSQL integration', () => {
     expect(identity).toEqual([{ database: DATABASE_NAME, user: 'home_test' }]);
     const migrations = await dataSource.runMigrations({ transaction: 'all' });
     expect(migrations.some((migration) => migration.name === 'CreateAutomations1710000038000')).toBe(true);
+    const migrationRunner = dataSource.createQueryRunner();
+    await migrationRunner.connect();
+    await migrationRunner.startTransaction();
+    try {
+      const taskSourceMigration = new AddAutomationTaskSources1710000039000();
+      await taskSourceMigration.down(migrationRunner);
+      await taskSourceMigration.up(migrationRunner);
+      await migrationRunner.commitTransaction();
+    } catch (error: unknown) {
+      if (migrationRunner.isTransactionActive) await migrationRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await migrationRunner.release();
+    }
     quota = new TypeOrmStorageQuotaRepository(dataSource);
     accounting = new TypeOrmStorageContentAccounting(dataSource, quota);
     automations = new TypeOrmAutomationRepository(dataSource);
@@ -135,7 +153,8 @@ describeDatabase('Task 7.1 durable scheduler PostgreSQL integration', () => {
     await source.query('INSERT INTO "account_limits" ("owner_id","storage_limit_bytes") VALUES ($1,100000),($2,100000)', [OWNER_ID, OTHER_OWNER_ID]);
     await source.query(`INSERT INTO "storage_account_totals" ("owner_id","accounting_state") VALUES ($1,'ready'),($2,'ready')`, [OWNER_ID, OTHER_OWNER_ID]);
     await source.query(`INSERT INTO "projects" ("id","owner_id","name","slug","relative_root","relative_root_key")
-      VALUES ($1,$2,'Scheduler workspace','scheduler-workspace',NULL,NULL)`, [WORKSPACE_ID, OWNER_ID]);
+      VALUES ($1,$2,'Scheduler workspace','scheduler-workspace',NULL,NULL),
+        ($3,$4,'Other workspace','other-workspace',NULL,NULL)`, [WORKSPACE_ID, OWNER_ID, OTHER_WORKSPACE_ID, OTHER_OWNER_ID]);
     await source.transaction(async (manager) => {
       await manager.query('INSERT INTO "skills" ("id","owner_id","workspace_id","current_version") VALUES ($1,$2,$3,1)', [SKILL_ID, OWNER_ID, WORKSPACE_ID]);
       await manager.query(`INSERT INTO "skill_revisions" ("id","owner_id","skill_id","version","title","instructions","enabled","declared_tools")
@@ -224,6 +243,97 @@ describeDatabase('Task 7.1 durable scheduler PostgreSQL integration', () => {
     } finally {
       await secondDataSource.destroy();
     }
+  });
+
+  it('records bounded task source revisions only under the current occurrence lease', async () => {
+    const schedule = await createSchedule();
+    const first = await automations.createManualOccurrence({
+      ownerId: OWNER_ID, scheduleId: schedule.id, expectedRevision: 1,
+      requestKeyDigest: 'a'.repeat(64), requestFingerprint: 'b'.repeat(64)
+    });
+    const firstClaim = (await automations.claimBatch({ limit: 1, leaseMilliseconds: 30_000 }))[0];
+    expect(firstClaim?.occurrence.id).toBe(first.occurrence.id);
+    if (!firstClaim) throw new Error('The source-recording occurrence was not claimed.');
+    expect(await automations.beginDispatch(firstClaim.fence)).toBe(true);
+    expect(await automations.recordTurnStatus({ ...firstClaim.fence, status: 'running' })).toBe(true);
+    const initial = [{ taskId: TASK_ID, revision: 1 }, { taskId: TASK_ID, revision: 1 }];
+    await expect(automations.recordTaskSources({ ownerId: OWNER_ID, fence: firstClaim.fence, sources: initial }))
+      .resolves.toBe('recorded');
+    await expect(requiredDataSource().query(
+      'SELECT "task_source_revisions" FROM "automation_occurrences" WHERE "id"=$1', [first.occurrence.id]
+    )).resolves.toEqual([{ task_source_revisions: [{ id: TASK_ID, revision: 1 }] }]);
+    await requiredDataSource().query(
+      'UPDATE "automation_occurrences" SET "lease_expires_at"=clock_timestamp()-interval \'1 second\' WHERE "id"=$1',
+      [first.occurrence.id]
+    );
+    const renewedClaim = (await automations.claimBatch({ limit: 1, leaseMilliseconds: 30_000 }))[0];
+    expect(renewedClaim?.occurrence.id).toBe(first.occurrence.id);
+    if (!renewedClaim) throw new Error('The source-recording occurrence was not reclaimed.');
+    expect(renewedClaim.fence.generation).toBe(firstClaim.fence.generation + 1);
+    expect(renewedClaim.fence.leaseToken).not.toBe(firstClaim.fence.leaseToken);
+    await expect(automations.recordTaskSources({ ownerId: OWNER_ID, fence: firstClaim.fence, sources: initial }))
+      .resolves.toBe('lease_lost');
+    expect(await automations.recordTurnStatus({ ...renewedClaim.fence, status: 'succeeded' })).toBe(true);
+    await expect(automations.recordTaskSources({ ownerId: OWNER_ID, fence: renewedClaim.fence, sources: initial }))
+      .resolves.toBe('lease_lost');
+
+    const overflow = await automations.createManualOccurrence({
+      ownerId: OWNER_ID, scheduleId: schedule.id, expectedRevision: 1,
+      requestKeyDigest: 'c'.repeat(64), requestFingerprint: 'd'.repeat(64)
+    });
+    const overflowClaim = (await automations.claimBatch({ limit: 1, leaseMilliseconds: 30_000 }))[0];
+    expect(overflowClaim?.occurrence.id).toBe(overflow.occurrence.id);
+    if (!overflowClaim) throw new Error('The overflow occurrence was not claimed.');
+    expect(await automations.beginDispatch(overflowClaim.fence)).toBe(true);
+    expect(await automations.recordTurnStatus({ ...overflowClaim.fence, status: 'running' })).toBe(true);
+    const bounded = Array.from({ length: 256 }, (_, index) => ({
+      taskId: `d7720000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      revision: 1
+    }));
+    await expect(automations.recordTaskSources({ ownerId: OWNER_ID, fence: overflowClaim.fence, sources: bounded }))
+      .resolves.toBe('recorded');
+    await expect(automations.recordTaskSources({
+      ownerId: OWNER_ID, fence: overflowClaim.fence,
+      sources: [{ taskId: 'd7720000-0000-4000-8000-000000000256', revision: 1 }]
+    })).resolves.toBe('limit_exceeded');
+    await expect(requiredDataSource().query(
+      'SELECT "status","failure_code",jsonb_array_length("task_source_revisions") AS "source_count" FROM "automation_occurrences" WHERE "id"=$1',
+      [overflow.occurrence.id]
+    )).resolves.toEqual([{ status: 'failed', failure_code: 'TASK_SOURCE_LIMIT', source_count: 256 }]);
+  });
+
+  it('projects task sources only when owner, workspace and exact version still match', async () => {
+    const source = requiredDataSource();
+    await source.query(`INSERT INTO "project_tasks" ("id","owner_id","project_id","title","position","version") VALUES
+      ($1,$2,$3,'Scoped task',0,1),($4,$5,$6,'Private task',0,1)`,
+    [TASK_ID, OWNER_ID, WORKSPACE_ID, OTHER_TASK_ID, OTHER_OWNER_ID, OTHER_WORKSPACE_ID]);
+    const schedule = await createSchedule();
+    const run = await automations.createManualOccurrence({
+      ownerId: OWNER_ID, scheduleId: schedule.id, expectedRevision: 1,
+      requestKeyDigest: 'e'.repeat(64), requestFingerprint: 'f'.repeat(64)
+    });
+    const claimed = (await automations.claimBatch({ limit: 1, leaseMilliseconds: 30_000 }))[0];
+    expect(claimed?.occurrence.id).toBe(run.occurrence.id);
+    if (!claimed) throw new Error('The projection occurrence was not claimed.');
+    expect(await automations.beginDispatch(claimed.fence)).toBe(true);
+    expect(await automations.recordTurnStatus({ ...claimed.fence, status: 'running' })).toBe(true);
+    await expect(automations.recordTaskSources({ ownerId: OWNER_ID, fence: claimed.fence, sources: [
+      { taskId: TASK_ID, revision: 1 }, { taskId: OTHER_TASK_ID, revision: 1 }
+    ] })).resolves.toBe('recorded');
+
+    const firstPage = await automations.listOccurrences({ ownerId: OWNER_ID, scheduleId: schedule.id, limit: 10 });
+    expect(firstPage?.occurrences[0]?.taskSources).toEqual([
+      { taskId: TASK_ID, revision: 1, available: true, title: 'Scoped task', href: `/tasks/${TASK_ID}` },
+      { taskId: OTHER_TASK_ID, revision: 1, available: false, title: null, href: null }
+    ]);
+    await expect(automations.listOccurrences({ ownerId: OTHER_OWNER_ID, scheduleId: schedule.id, limit: 10 })).resolves.toBeNull();
+
+    await source.query('UPDATE "project_tasks" SET "title"=\'Changed task\',"version"=2 WHERE "id"=$1', [TASK_ID]);
+    const afterEdit = await automations.listOccurrences({ ownerId: OWNER_ID, scheduleId: schedule.id, limit: 10 });
+    expect(afterEdit?.occurrences[0]?.taskSources).toEqual([
+      { taskId: TASK_ID, revision: 1, available: false, title: null, href: null },
+      { taskId: OTHER_TASK_ID, revision: 1, available: false, title: null, href: null }
+    ]);
   });
 
   it('reconciles a linked uncertain turn in a fresh worker process without reinvoking the skill', async () => {

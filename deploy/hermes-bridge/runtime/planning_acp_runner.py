@@ -8,8 +8,12 @@ os.environ['HERMES_ACP_SKIP_CONFIGURED_MCP'] = '1'
 
 import model_tools
 from tools.registry import registry
-from run_agent import AIAgent
+import provider_credit
 import home_tools
+
+provider_credit.install_httpx_boundary()
+
+from run_agent import AIAgent
 
 PLANNING_CWD = Path(os.environ['PAI_PLANNING_CWD']).resolve()
 if 'PAI_PROJECT_ROOT' in os.environ or not PLANNING_CWD.is_dir() or any(PLANNING_CWD.iterdir()):
@@ -69,6 +73,7 @@ _approval = permissions.make_approval_callback
 def approval(*args, **kwargs):
     if len(args) >= 3:
         home_tools.connect(args[0].__self__, args[1], args[2])
+        provider_credit.connect(args[0].__self__, args[1], args[2])
     kwargs['timeout'] = 900
     return _approval(*args, **kwargs)
 

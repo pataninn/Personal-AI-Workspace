@@ -4,6 +4,10 @@ import type { HomeConversation, HomeTurn } from '@/modules/home-assistant/domain
 import type { IHomeConversationRepository } from '@/modules/home-assistant/repositories/home-conversation-repository';
 import type { IHomePlanningRuntime } from '@/modules/home-assistant/repositories/home-planning-runtime';
 import type { IHomePlanningToolRequestHandler } from '@/modules/home-assistant/repositories/home-planning-tool-request-handler';
+import type { HomePlanningRuntimeEvent } from '@/modules/home-assistant/repositories/home-planning-runtime';
+import type { IHomeAutomationSourceRecorder } from '@/modules/home-assistant/repositories/home-automation-source-recorder';
+import type { IHomeProviderCreditReceiptHandler } from '@/modules/home-assistant/repositories/home-provider-credit-receipt-handler';
+import type { IHomeTurnProviderUsageHistory } from '@/modules/credits/repositories/provider-call-usage-history';
 import { GetHomeTurnUseCase } from '@/modules/home-assistant/use-cases/get-home-turn';
 
 const OWNER = '11111111-1111-4111-8111-111111111111';
@@ -34,7 +38,7 @@ function makeConversation(scope: HomeConversation['scope'] = { kind: 'home' }): 
 }
 
 function setup(options: {
-  readonly events?: readonly { readonly sequence: number; readonly type: 'assistant.delta'; readonly text: string }[] | readonly { readonly sequence: number; readonly type: 'home.tool.requested'; readonly requestId: string; readonly sessionId: string; readonly name: string; readonly args: Readonly<Record<string, unknown>> }[];
+  readonly events?: readonly HomePlanningRuntimeEvent[];
   readonly revisions?: { home: string | null; workspace: string | null };
   readonly scope?: HomeConversation['scope'];
   readonly handlerResult?: Awaited<ReturnType<IHomePlanningToolRequestHandler['resolve']>>;
@@ -43,6 +47,10 @@ function setup(options: {
   readonly cancelConfirmed?: boolean;
   readonly initialStatus?: HomeTurn['status'];
   readonly automationOccurrenceId?: string;
+  readonly automationSources?: IHomeAutomationSourceRecorder;
+  readonly providerCreditReceipts?: IHomeProviderCreditReceiptHandler;
+  readonly providerUsageHistory?: IHomeTurnProviderUsageHistory;
+  readonly pollUnknown?: boolean;
 } = {}) {
   let status: HomeTurn['status'] = options.initialStatus ?? 'running';
   const revisions = options.revisions ?? { home: '4', workspace: null };
@@ -63,8 +71,9 @@ function setup(options: {
   const events = options.events ?? [];
   const runtime = {
     supportsPolicyExecution: jest.fn(async () => true),
-    poll: jest.fn(async () => ({ status: 'completed' as const, events, nextCursor: events.length, hasMore: false })),
+    poll: jest.fn(async () => ({ status: options.pollUnknown ? 'unknown' as const : 'completed' as const, events, nextCursor: events.length, hasMore: false })),
     sendToolResult: jest.fn(async () => ({ accepted: options.sendAccepted ?? true })),
+    sendProviderCreditResult: jest.fn(async () => ({ accepted: options.sendAccepted ?? true })),
     cancel: jest.fn(async () => ({ outcome: options.cancelConfirmed === false ? 'unknown' as const : 'confirmed' as const })),
     delete: jest.fn(async () => undefined)
   };
@@ -87,7 +96,10 @@ function setup(options: {
     runtime as unknown as IHomePlanningRuntime,
     undefined,
     handler as unknown as IHomePlanningToolRequestHandler,
-    { executionPolicy: executionPolicy as unknown as Pick<AssertAssistantExecutionPolicyUseCase, 'assertHome'>, providerProfile: PROVIDER, model: MODEL }
+    { executionPolicy: executionPolicy as unknown as Pick<AssertAssistantExecutionPolicyUseCase, 'assertHome'>, providerProfile: PROVIDER, model: MODEL },
+    options.automationSources,
+    options.providerCreditReceipts,
+    options.providerUsageHistory
   );
   return { useCase, conversations, runtime, executionPolicy, handler };
 }
@@ -144,6 +156,96 @@ describe('GetHomeTurnUseCase', () => {
     expect(result.status).toBe('completed');
   });
 
+  it('records exact Home task revisions under the occurrence lease before sending the read result', async () => {
+    const occurrenceId = '77777777-7777-4777-8777-777777777777';
+    const event = { sequence: 1, type: 'home.tool.requested' as const, requestId: 'request-1', sessionId: 'session-1', name: 'home_list_tasks', args: { limit: 1 } };
+    const sourceRecorder = {
+      recordTaskSources: jest.fn(async () => 'recorded' as const),
+      markBudgetSkipped: jest.fn(async () => true)
+    };
+    const { useCase, runtime } = setup({
+      events: [event], automationOccurrenceId: occurrenceId,
+      scope: { kind: 'workspace', workspaceId: PROJECT }, revisions: { home: '4', workspace: '9' },
+      automationSources: sourceRecorder as unknown as IHomeAutomationSourceRecorder,
+      handlerResult: {
+        kind: 'immediate', result: { outcome: 'shared', data: { items: [{ id: 'task-id', version: 7 }] } },
+        taskSources: [{ taskId: '55555555-5555-4555-8555-555555555555', revision: 7 }]
+      }
+    });
+    const guard = { fence: { occurrenceId, leaseToken: 'lease-token', generation: 4 }, isCurrent: jest.fn(async () => true) };
+
+    await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN, automationGuard: guard });
+
+    expect(sourceRecorder.recordTaskSources).toHaveBeenCalledWith({
+      ownerId: OWNER, fence: guard.fence, sources: [{ taskId: '55555555-5555-4555-8555-555555555555', revision: 7 }]
+    });
+    expect(sourceRecorder.recordTaskSources.mock.invocationCallOrder[0]!).toBeLessThan(runtime.sendToolResult.mock.invocationCallOrder[0]!);
+  });
+
+  it('routes every provider receipt through Credits and returns the admission result to the bridge', async () => {
+    const request = {
+      operation: 'reserve' as const,
+      callId: '88888888-8888-4888-8888-888888888888',
+      attemptId: '99999999-9999-4999-8999-999999999999',
+      providerProfile: PROVIDER,
+      model: MODEL,
+      inputTokenUpperBound: 1024,
+      inputBounderVersion: 'hermes-json-utf8-v1' as const
+    };
+    const event = { sequence: 1, type: 'home.provider.credit.requested' as const, requestId: 'credit-1', request };
+    const receipts = {
+      handle: jest.fn(async () => ({ outcome: 'reserved' as const, reservationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })),
+      hasAdmittedCall: jest.fn(() => true),
+      markInterrupted: jest.fn(async () => undefined),
+      clearTurn: jest.fn()
+    };
+    const { useCase, runtime } = setup({ providerCreditReceipts: receipts as unknown as IHomeProviderCreditReceiptHandler, events: [event] });
+
+    await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+
+    expect(receipts.handle).toHaveBeenCalledWith({ ownerId: OWNER, turnId: TURN, providerProfile: PROVIDER, model: MODEL, request });
+    expect(runtime.sendProviderCreditResult).toHaveBeenCalledWith({
+      turnId: TURN, requestId: 'credit-1', result: { outcome: 'reserved', reservationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }
+    });
+  });
+
+  it('marks a confirmed first-call budget denial as a skipped occurrence before acknowledging the bridge', async () => {
+    const occurrenceId = '77777777-7777-4777-8777-777777777777';
+    const request = {
+      operation: 'reserve' as const,
+      callId: '88888888-8888-4888-8888-888888888888',
+      attemptId: '99999999-9999-4999-8999-999999999999',
+      providerProfile: PROVIDER,
+      model: MODEL,
+      inputTokenUpperBound: 1024,
+      inputBounderVersion: 'hermes-json-utf8-v1' as const
+    };
+    const event = { sequence: 1, type: 'home.provider.credit.requested' as const, requestId: 'credit-1', request };
+    const automationSources = {
+      recordTaskSources: jest.fn(async () => 'recorded' as const),
+      markBudgetSkipped: jest.fn(async () => true)
+    };
+    const receipts = {
+      handle: jest.fn(async () => ({ outcome: 'denied' as const, code: 'BUDGET_EXHAUSTED' as const })),
+      hasAdmittedCall: jest.fn(() => false),
+      markInterrupted: jest.fn(async () => undefined),
+      clearTurn: jest.fn()
+    };
+    const { useCase, runtime } = setup({
+      events: [event], automationOccurrenceId: occurrenceId,
+      scope: { kind: 'workspace', workspaceId: PROJECT }, revisions: { home: '4', workspace: '9' },
+      automationSources: automationSources as unknown as IHomeAutomationSourceRecorder,
+      providerCreditReceipts: receipts as unknown as IHomeProviderCreditReceiptHandler
+    });
+    const guard = { fence: { occurrenceId, leaseToken: 'lease-token', generation: 4 }, isCurrent: jest.fn(async () => true) };
+
+    await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN, automationGuard: guard });
+
+    expect(automationSources.markBudgetSkipped).toHaveBeenCalledWith({ ownerId: OWNER, fence: guard.fence });
+    expect(automationSources.markBudgetSkipped.mock.invocationCallOrder[0]!).toBeLessThan(runtime.sendProviderCreditResult.mock.invocationCallOrder[0]!);
+    expect(runtime.sendProviderCreditResult).toHaveBeenCalledWith({ turnId: TURN, requestId: 'credit-1', result: { outcome: 'denied', code: 'BUDGET_EXHAUSTED' } });
+  });
+
   it('does not execute a new tool request while reconciling an unknown scheduled turn', async () => {
     const occurrenceId = '77777777-7777-4777-8777-777777777777';
     const event = { sequence: 1, type: 'home.tool.requested' as const, requestId: 'tool-after-unknown', sessionId: 'session-1', name: 'home_list_tasks', args: { limit: 1 } };
@@ -161,6 +263,51 @@ describe('GetHomeTurnUseCase', () => {
     expect(runtime.sendToolResult).not.toHaveBeenCalled();
     expect(conversations.completeTurnWithAssistant).not.toHaveBeenCalled();
     expect(result.status).toBe('unknown');
+  });
+
+  it('retains in-flight calls as unknown on poll interruption and again after a runtime restart', async () => {
+    const firstReceipts = {
+      handle: jest.fn(),
+      hasAdmittedCall: jest.fn(() => true),
+      markInterrupted: jest.fn(async () => undefined),
+      clearTurn: jest.fn()
+    };
+    const running = setup({
+      pollUnknown: true,
+      providerCreditReceipts: firstReceipts as unknown as IHomeProviderCreditReceiptHandler
+    });
+
+    const interrupted = await running.useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+
+    expect(interrupted.status).toBe('unknown');
+    expect(firstReceipts.markInterrupted).toHaveBeenCalledWith(OWNER, TURN);
+    expect(firstReceipts.clearTurn).toHaveBeenCalledWith(TURN);
+
+    const restartedReceipts = {
+      handle: jest.fn(),
+      hasAdmittedCall: jest.fn(() => false),
+      markInterrupted: jest.fn(async () => undefined),
+      clearTurn: jest.fn()
+    };
+    const usageHistory = {
+      getForHomeTurn: jest.fn(async () => ({
+        state: 'unknown' as const,
+        calls: [{ status: 'unknown' as const, providerProfile: 'p', model: 'm', inputTokens: null, outputTokens: null, chargedUnits: null }]
+      }))
+    };
+    const restarted = setup({
+      initialStatus: 'unknown',
+      providerCreditReceipts: restartedReceipts as unknown as IHomeProviderCreditReceiptHandler,
+      providerUsageHistory: usageHistory
+    });
+
+    const stillUnknown = await restarted.useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+
+    expect(restartedReceipts.markInterrupted).toHaveBeenCalledWith(OWNER, TURN);
+    expect(usageHistory.getForHomeTurn).toHaveBeenCalledWith(OWNER, TURN);
+    expect(restarted.runtime.poll).not.toHaveBeenCalled();
+    expect(restartedReceipts.handle).not.toHaveBeenCalled();
+    expect(stillUnknown.status).toBe('unknown');
   });
 
   it('continues with the bounded version-conflict result after current policy checks', async () => {

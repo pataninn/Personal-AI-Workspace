@@ -18,6 +18,8 @@ export interface HomePlanningToolResultCandidate {
   readonly categories: readonly HomeConsentCategory[];
   readonly itemCount: number;
   readonly data: Readonly<Record<string, unknown>>;
+  /** Exact task rows returned by a scoped read; intentionally excluded from tool narrative data. */
+  readonly taskSources?: readonly { readonly taskId: string; readonly revision: number }[];
 }
 
 export type HomePlanningToolResolution =
@@ -27,6 +29,8 @@ export type HomePlanningToolResolution =
     readonly result: HomePlanningToolResult;
     /** Internal owner-checked target used to recheck scope policy before runtime continuation. */
     readonly authorizationProjectId?: string;
+    /** Exact task revisions to persist before returning the read result to an automated turn. */
+    readonly taskSources?: readonly { readonly taskId: string; readonly revision: number }[];
   };
 
 /** Optional application boundary for registered Home tools; no handler means deny all requests. */

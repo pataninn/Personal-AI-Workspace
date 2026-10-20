@@ -99,12 +99,32 @@ function request(name: string, args: Readonly<Record<string, unknown>>, scope: H
 describe('HomePlanningToolRequestHandler', () => {
   it('returns an in-scope task read immediately with no consent continuation', async () => {
     const { handler, listTasks, assertHome } = setup();
+    listTasks.execute.mockResolvedValueOnce({
+      items: [{
+        task: { id: TASK, ownerId: OWNER, projectId: null, title: 'Task', details: null, status: 'todo', importance: 'medium', deadline: null, version: 7, subtasks: [] },
+        workspace: null
+      }],
+      nextCursor: null
+    } as never);
 
     const result = await handler.resolve(request('home_list_tasks', { limit: 1 }));
 
     expect(listTasks.execute).toHaveBeenCalledTimes(1);
     expect(assertHome).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER, homePolicyRevision: '7' }));
-    expect(result).toMatchObject({ kind: 'immediate', result: { outcome: 'shared', data: { items: [] } } });
+    expect(result).toMatchObject({
+      kind: 'immediate',
+      result: { outcome: 'shared', data: { items: [{ id: TASK, version: 7 }] } },
+      taskSources: [{ taskId: TASK, revision: 7 }]
+    });
+  });
+
+  it('returns the exact revision from a scoped single-task read as internal source metadata', async () => {
+    const { handler } = setup();
+
+    const result = await handler.resolve(request('home_get_task', { taskId: TASK }));
+
+    expect(result).toMatchObject({ kind: 'immediate', taskSources: [{ taskId: TASK, revision: 1 }] });
+    expect(JSON.stringify(result?.kind === 'immediate' ? result.result : result)).not.toContain('taskSources');
   });
 
   it('does not read tasks when the stored policy omits the required capability', async () => {

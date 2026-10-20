@@ -27,10 +27,23 @@ export interface AccountTimeZoneChangeCommand {
   readonly timeZone: string;
 }
 
+export interface HomeTurnProviderCallUsageRow {
+  readonly status: 'in_flight' | 'unknown' | 'settled' | 'released' | 'over_bound';
+  readonly providerProfile: string;
+  readonly model: string;
+  readonly usage?: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly chargedUnits: string;
+  };
+}
+
 export interface ICreditLedgerRepository {
   reserveProviderCall(command: CreditReservationCommand): Promise<ProviderCallCreditReservation>;
   settleProviderCall(command: CreditSettlementCommand): Promise<ProviderCallSettlementResult>;
   retainUnknown(reservationId: string, reason: string): Promise<void>;
   releaseKnownNotSent(reservationId: string): Promise<void>;
   queueAccountTimeZoneChange(command: AccountTimeZoneChangeCommand): Promise<Date>;
+  listHomeTurnProviderCallUsage(ownerId: string, homeTurnId: string): Promise<readonly HomeTurnProviderCallUsageRow[]>;
+  retainHomeTurnInFlightCallsUnknown(ownerId: string, homeTurnId: string): Promise<number>;
 }

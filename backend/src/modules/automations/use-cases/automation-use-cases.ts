@@ -13,6 +13,7 @@ import {
 } from '@/modules/automations/domain/automation-errors';
 import { assertLocalTime, nextScheduledInstant } from '@/modules/automations/domain/schedule-time';
 import type { IAutomationRepository } from '@/modules/automations/repositories/automation-repository';
+import type { IHomeTurnProviderUsageHistory } from '@/modules/credits/repositories/provider-call-usage-history';
 import type { CancelHomeTurnUseCase } from '@/modules/home-assistant/use-cases/cancel-home-turn';
 import type { CreateHomeConversationUseCase } from '@/modules/home-assistant/use-cases/create-home-conversation';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
@@ -185,11 +186,26 @@ export class RunAutomationNowUseCase {
 }
 
 export class ListAutomationOccurrencesUseCase {
-  public constructor(private readonly repository: IAutomationRepository) {}
+  public constructor(private readonly repository: IAutomationRepository, private readonly providerUsage?: IHomeTurnProviderUsageHistory) {}
   public async execute(input: { readonly ownerId: string; readonly scheduleId: string; readonly limit: number; readonly before?: string }) {
     const result = await this.repository.listOccurrences(input);
     if (!result) throw new AutomationNotFoundError();
-    return result;
+      const occurrences = await Promise.all(result.occurrences.map(async (occurrence) => {
+        const budgetSkipped = occurrence.status === 'skipped' && occurrence.failureCode === 'BUDGET_EXHAUSTED';
+        if (!occurrence.homeTurnId) {
+          return { ...occurrence, providerUsage: { state: 'not_started' as const, calls: [] } };
+        }
+        if (!this.providerUsage) {
+          return { ...occurrence, providerUsage: budgetSkipped
+            ? { state: 'not_started' as const, calls: [] }
+            : { state: 'unknown' as const, calls: [] } };
+        }
+        const usage = await this.providerUsage.getForHomeTurn(input.ownerId, occurrence.homeTurnId);
+        return { ...occurrence, providerUsage: budgetSkipped && usage.state === 'unknown' && usage.calls.length === 0
+          ? { state: 'not_started' as const, calls: [] }
+          : usage };
+      }));
+    return { ...result, occurrences };
   }
 }
 

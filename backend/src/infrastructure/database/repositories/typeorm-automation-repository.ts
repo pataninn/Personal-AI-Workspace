@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import type { DataSource, EntityManager } from 'typeorm';
 
-import type { AutomationLeaseFence, AutomationOccurrence, AutomationOccurrenceStatus, AutomationSchedule } from '@/modules/automations/domain/automation-types';
+import type { AutomationLeaseFence, AutomationOccurrence, AutomationOccurrenceStatus, AutomationSchedule, AutomationTaskSourceProjection, AutomationTaskSourceRevision } from '@/modules/automations/domain/automation-types';
 import { AutomationBusyError, AutomationIdempotencyConflictError, AutomationNotFoundError, AutomationRevisionConflictError, AutomationSkillNotReadOnlyError, AutomationSkillUnavailableError, AutomationWorkspaceUnavailableError } from '@/modules/automations/domain/automation-errors';
 import { planDailyCatchUp } from '@/modules/automations/domain/schedule-time';
 import type { AutomationOccurrencePage, ClaimedAutomationOccurrence, CreateAutomationOccurrenceRecord, CreateAutomationScheduleRecord, IAutomationRepository, UpdateAutomationScheduleRecord, UpdateAutomationScheduleResult } from '@/modules/automations/repositories/automation-repository';
+import type { IHomeAutomationSourceRecorder } from '@/modules/home-assistant/repositories/home-automation-source-recorder';
 
 interface ScheduleRow {
   readonly id: string;
@@ -48,6 +49,15 @@ interface OccurrenceRow {
   readonly workspace_id?: string;
   readonly conversation_id?: string;
   readonly skill_id?: string;
+  readonly task_source_revisions?: unknown;
+}
+
+interface TaskSourceProjectionRow {
+  readonly occurrence_id: string;
+  readonly task_id: string;
+  readonly revision: number;
+  readonly available: boolean;
+  readonly title: string | null;
 }
 
 interface CursorRow { readonly intended_for_utc: string; readonly id: string; }
@@ -80,6 +90,44 @@ function rows<T>(value: unknown): readonly T[] {
 
 function date(value: Date | string): Date { return value instanceof Date ? value : new Date(value); }
 function nullableDate(value: Date | string | null): Date | null { return value === null ? null : date(value); }
+
+function parseTaskSources(value: unknown): readonly AutomationTaskSourceRevision[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 256) throw new Error('The automation task-source record is invalid.');
+  const seen = new Set<string>();
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('The automation task-source record is invalid.');
+    const row = entry as Record<string, unknown>;
+    if (Object.keys(row).length !== 2 || typeof row.id !== 'string'
+      || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(row.id)
+      || !Number.isSafeInteger(row.revision) || (row.revision as number) < 1 || (row.revision as number) > 999999999) {
+      throw new Error('The automation task-source record is invalid.');
+    }
+    const key = `${row.id}:${row.revision}`;
+    if (seen.has(key)) throw new Error('The automation task-source record is invalid.');
+    seen.add(key);
+    return { taskId: row.id, revision: row.revision as number };
+  });
+}
+
+function normalizeIncomingTaskSources(value: readonly AutomationTaskSourceRevision[]): readonly AutomationTaskSourceRevision[] {
+  if (!Array.isArray(value) || value.length > 256) throw new TypeError('The automation task-source request is invalid.');
+  const seen = new Set<string>();
+  const result: AutomationTaskSourceRevision[] = [];
+  for (const source of value) {
+    if (!source || typeof source.taskId !== 'string'
+      || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(source.taskId)
+      || !Number.isSafeInteger(source.revision) || source.revision < 1 || source.revision > 999999999) {
+      throw new TypeError('The automation task-source request is invalid.');
+    }
+    const key = `${source.taskId}:${source.revision}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push({ taskId: source.taskId, revision: source.revision });
+    }
+  }
+  return result;
+}
 
 function toSchedule(row: ScheduleRow): AutomationSchedule {
   return {
@@ -121,7 +169,8 @@ function toOccurrence(row: OccurrenceRow): AutomationOccurrence {
     failureCode: row.failure_code,
     claimedUntil: nullableDate(row.lease_expires_at),
     createdAt: date(row.created_at),
-    updatedAt: date(row.updated_at)
+    updatedAt: date(row.updated_at),
+    taskSourceRevisions: parseTaskSources(row.task_source_revisions)
   };
 }
 
@@ -194,12 +243,13 @@ const SCHEDULE_SELECT = `
 
 const OCCURRENCE_SELECT = `
   SELECT "id","owner_id","schedule_id","kind","intended_for_utc","local_date","status","schedule_revision",
-          "skill_version","skill_revision_id","home_turn_id","attempt_count","failure_code","lease_expires_at","created_at","updated_at","request_fingerprint"
+          "skill_version","skill_revision_id","home_turn_id","attempt_count","failure_code","lease_expires_at","created_at","updated_at","request_fingerprint",
+          "task_source_revisions"
   FROM "automation_occurrences"
 `;
 
 /** Owner-scoped scheduler persistence. No DB transaction remains open across Home/provider work. */
-export class TypeOrmAutomationRepository implements IAutomationRepository {
+export class TypeOrmAutomationRepository implements IAutomationRepository, IHomeAutomationSourceRecorder {
   public constructor(private readonly dataSource: DataSource) {}
 
   public async createSchedule(input: CreateAutomationScheduleRecord): Promise<{ readonly schedule: AutomationSchedule; readonly replayed: boolean }> {
@@ -348,8 +398,31 @@ export class TypeOrmAutomationRepository implements IAutomationRepository {
     ));
     const hasMore = result.length > Math.max(1, Math.min(100, Math.trunc(input.limit)));
     const page = hasMore ? result.slice(0, -1) : result;
+    const projections = page.length ? rows<TaskSourceProjectionRow>(await this.dataSource.query(`
+      SELECT o."id" AS "occurrence_id",source.value->>'id' AS "task_id",
+        (source.value->>'revision')::integer AS "revision",(t."id" IS NOT NULL) AS "available",t."title"
+      FROM "automation_occurrences" o
+      JOIN "automation_schedules" s ON s."owner_id"=o."owner_id" AND s."id"=o."schedule_id"
+      CROSS JOIN LATERAL jsonb_array_elements(o."task_source_revisions") WITH ORDINALITY AS source(value,ordinal)
+      LEFT JOIN "project_tasks" t ON t."owner_id"=o."owner_id" AND t."project_id"=s."workspace_id"
+        AND t."id"::text=source.value->>'id' AND t."version"::text=source.value->>'revision'
+      WHERE o."owner_id"=$1 AND o."id"=ANY($2::uuid[])
+      ORDER BY o."id",source.ordinal
+    `, [input.ownerId, page.map((item) => item.id)])) : [];
+    const sourcesByOccurrence = new Map<string, AutomationTaskSourceProjection[]>();
+    for (const row of projections) {
+      const sources = sourcesByOccurrence.get(row.occurrence_id) ?? [];
+      sources.push({
+        taskId: row.task_id,
+        revision: Number(row.revision),
+        available: row.available,
+        title: row.available ? row.title : null,
+        href: row.available ? `/tasks/${row.task_id}` : null
+      });
+      sourcesByOccurrence.set(row.occurrence_id, sources);
+    }
     const last = page.at(-1);
-    return { occurrences: page.map(toOccurrence), nextCursor: hasMore && last ? cursorEncode({ intended_for_utc: date(last.intended_for_utc).toISOString(), id: last.id }) : null };
+    return { occurrences: page.map((item) => ({ ...toOccurrence(item), taskSources: sourcesByOccurrence.get(item.id) ?? [] })), nextCursor: hasMore && last ? cursorEncode({ intended_for_utc: date(last.intended_for_utc).toISOString(), id: last.id }) : null };
   }
 
   public async materializeDueSchedules(limit: number): Promise<number> {
@@ -505,6 +578,55 @@ export class TypeOrmAutomationRepository implements IAutomationRepository {
         AND "lease_expires_at">clock_timestamp() RETURNING "id"
     `, [input.occurrenceId, input.leaseToken, input.generation, failureCode]));
     return result.length === 1;
+  }
+
+  public async recordTaskSources(input: { readonly ownerId: string; readonly fence: AutomationLeaseFence; readonly sources: readonly AutomationTaskSourceRevision[] }): Promise<'recorded' | 'limit_exceeded' | 'lease_lost'> {
+    const incoming = normalizeIncomingTaskSources(input.sources);
+    return await this.dataSource.transaction(async (manager) => {
+      if (!await this.withCurrentFence(manager, input.fence, true)) return 'lease_lost';
+      const current = rows<{ readonly task_source_revisions: unknown }>(await manager.query(`
+        SELECT "task_source_revisions" FROM "automation_occurrences"
+        WHERE "id"=$1 AND "owner_id"=$2 AND "lease_token"=$3 AND "claim_generation"=$4
+          AND "lease_expires_at">clock_timestamp() AND "status"='running'
+        FOR UPDATE
+      `, [input.fence.occurrenceId, input.ownerId, input.fence.leaseToken, input.fence.generation]))[0];
+      if (!current) return 'lease_lost';
+      const existing = parseTaskSources(current.task_source_revisions);
+      const keys = new Set(existing.map((source) => `${source.taskId}:${source.revision}`));
+      const additions = incoming.filter((source) => !keys.has(`${source.taskId}:${source.revision}`));
+      if (existing.length + additions.length > 256) {
+        await manager.query(`
+          UPDATE "automation_occurrences" SET "status"='failed',"failure_code"='TASK_SOURCE_LIMIT',
+            "lease_token"=NULL,"lease_expires_at"=NULL,"updated_at"=clock_timestamp()
+          WHERE "id"=$1 AND "owner_id"=$2 AND "lease_token"=$3 AND "claim_generation"=$4
+            AND "lease_expires_at">clock_timestamp()
+        `, [input.fence.occurrenceId, input.ownerId, input.fence.leaseToken, input.fence.generation]);
+        return 'limit_exceeded';
+      }
+      if (!additions.length) return 'recorded';
+      const combined = [...existing, ...additions].map((source) => ({ id: source.taskId, revision: source.revision }));
+      const updated = rows<{ readonly id: string }>(await manager.query(`
+        UPDATE "automation_occurrences" SET "task_source_revisions"=$5::jsonb,"updated_at"=clock_timestamp()
+        WHERE "id"=$1 AND "owner_id"=$2 AND "lease_token"=$3 AND "claim_generation"=$4
+          AND "lease_expires_at">clock_timestamp() AND "status"='running'
+        RETURNING "id"
+      `, [input.fence.occurrenceId, input.ownerId, input.fence.leaseToken, input.fence.generation, JSON.stringify(combined)]));
+      return updated.length === 1 ? 'recorded' : 'lease_lost';
+    });
+  }
+
+  public async markBudgetSkipped(input: { readonly ownerId: string; readonly fence: AutomationLeaseFence }): Promise<boolean> {
+    return await this.dataSource.transaction(async (manager) => {
+      if (!await this.withCurrentFence(manager, input.fence, true)) return false;
+      const updated = rows<{ readonly id: string }>(await manager.query(`
+        UPDATE "automation_occurrences" SET "status"='skipped',"failure_code"='BUDGET_EXHAUSTED',
+          "lease_token"=NULL,"lease_expires_at"=NULL,"updated_at"=clock_timestamp()
+        WHERE "id"=$1 AND "owner_id"=$2 AND "lease_token"=$3 AND "claim_generation"=$4
+          AND "lease_expires_at">clock_timestamp() AND "status"='running' AND "home_turn_id" IS NOT NULL
+        RETURNING "id"
+      `, [input.fence.occurrenceId, input.ownerId, input.fence.leaseToken, input.fence.generation]));
+      return updated.length === 1;
+    });
   }
 
   private async withCurrentFence(manager: EntityManager, fence: AutomationLeaseFence, automaticOnly: boolean): Promise<boolean> {

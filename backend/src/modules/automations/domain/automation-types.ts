@@ -48,6 +48,32 @@ export interface AutomationOccurrence {
   readonly claimedUntil: Date | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
+  readonly taskSourceRevisions?: readonly AutomationTaskSourceRevision[];
+  readonly taskSources?: readonly AutomationTaskSourceProjection[];
+  readonly providerUsage?: AutomationProviderUsageProjection;
+}
+
+export interface AutomationTaskSourceRevision {
+  readonly taskId: string;
+  readonly revision: number;
+}
+
+export interface AutomationTaskSourceProjection extends AutomationTaskSourceRevision {
+  readonly available: boolean;
+  readonly title: string | null;
+  readonly href: string | null;
+}
+
+export interface AutomationProviderUsageProjection {
+  readonly state: 'not_started' | 'settled' | 'pending' | 'unknown';
+  readonly calls: readonly {
+    readonly status: 'pending' | 'unknown' | 'settled' | 'over_bound';
+    readonly providerProfile: string;
+    readonly model: string;
+    readonly inputTokens: number | null;
+    readonly outputTokens: number | null;
+    readonly chargedUnits: string | null;
+  }[];
 }
 
 export interface AutomationLeaseFence {

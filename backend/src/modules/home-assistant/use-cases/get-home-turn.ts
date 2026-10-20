@@ -6,6 +6,9 @@ import type { HomePlanningProvider, HomePlanningRuntimeEvent, IHomePlanningRunti
 import type { HomeToolResultConsentGate } from '@/modules/home-assistant/use-cases/home-tool-result-consent-gate';
 import type { IHomePlanningToolRequestHandler } from '@/modules/home-assistant/repositories/home-planning-tool-request-handler';
 import type { HomeAutomationFence } from '@/modules/home-assistant/repositories/home-conversation-repository';
+import type { IHomeAutomationSourceRecorder } from '@/modules/home-assistant/repositories/home-automation-source-recorder';
+import type { IHomeProviderCreditReceiptHandler } from '@/modules/home-assistant/repositories/home-provider-credit-receipt-handler';
+import type { IHomeTurnProviderUsageHistory } from '@/modules/credits/repositories/provider-call-usage-history';
 import { redactEgressText } from '@/shared/egress/redaction';
 
 const MAX_RUNTIME_EVENTS = 2000;
@@ -46,7 +49,10 @@ export class GetHomeTurnUseCase {
     // Retained only as a positional compatibility slot; no consent result may continue a runtime.
     _legacyConsentGate?: HomeToolResultConsentGate,
     private readonly toolRequestHandler?: IHomePlanningToolRequestHandler,
-    private readonly policyConfiguration?: HomeTurnPolicyConfiguration
+    private readonly policyConfiguration?: HomeTurnPolicyConfiguration,
+    private readonly automationSources?: IHomeAutomationSourceRecorder,
+    private readonly providerCreditReceipts?: IHomeProviderCreditReceiptHandler,
+    private readonly providerUsageHistory?: IHomeTurnProviderUsageHistory
   ) {}
 
   public async execute(input: { readonly ownerId: string; readonly conversationId: string; readonly turnId: string; readonly automationGuard?: TrustedScheduledTurnGuard }): Promise<HomeTurn> {
@@ -56,6 +62,14 @@ export class GetHomeTurnUseCase {
     if (!turn) throw new HomeTurnNotFoundError();
     if (turn.automationOccurrenceId && input.automationGuard?.fence.occurrenceId !== turn.automationOccurrenceId) return turn;
     if (input.automationGuard && turn.automationOccurrenceId !== input.automationGuard.fence.occurrenceId) return turn;
+    if (turn.status === 'unknown') {
+      await this.providerCreditReceipts?.markInterrupted(input.ownerId, turn.id);
+      this.providerCreditReceipts?.clearTurn(turn.id);
+      if (this.providerUsageHistory) {
+        const usage = await this.providerUsageHistory.getForHomeTurn(input.ownerId, turn.id);
+        if (usage.state === 'unknown' || usage.state === 'pending') return turn;
+      }
+    }
 
     if (!hasPolicyBinding(turn, conversation.scope)) {
       return this.blockLegacyTurn(turn, input.ownerId, input.conversationId, input.automationGuard);
@@ -109,18 +123,37 @@ export class GetHomeTurnUseCase {
       }
       if (!page) {
         await this.updateStatus(ownerId, conversationId, turn.id, 'unknown');
-        await this.clearRuntime(turn.id);
+        await this.clearRuntime(ownerId, turn.id);
         return;
       }
       if (page.status === 'unknown') {
         await this.updateStatus(ownerId, conversationId, turn.id, 'unknown');
-        await this.clearRuntime(turn.id);
+        await this.clearRuntime(ownerId, turn.id);
         return;
+      }
+      if (page.status === 'failed' && page.code === 'PLANNING_RUNTIME_BUDGET_EXHAUSTED' && turn.automationOccurrenceId) {
+        if (!guard || guard.fence.occurrenceId !== turn.automationOccurrenceId || !this.automationSources
+          || !await guard.isCurrent()) {
+          await this.updateStatus(ownerId, conversationId, turn.id, 'unknown');
+          await this.clearRuntime(ownerId, turn.id);
+          return;
+        }
+        try {
+          if (!await this.automationSources.markBudgetSkipped({ ownerId, fence: guard.fence })) {
+            await this.updateStatus(ownerId, conversationId, turn.id, 'unknown');
+            await this.clearRuntime(ownerId, turn.id);
+            return;
+          }
+        } catch {
+          await this.updateStatus(ownerId, conversationId, turn.id, 'unknown');
+          await this.clearRuntime(ownerId, turn.id);
+          return;
+        }
       }
       const recorded = await this.recordRuntimeEvents(turn, ownerId, conversationId, scope, state, page.events, guard);
       if (recorded === 'invalid') {
         await this.updateStatus(ownerId, conversationId, turn.id, 'unknown');
-        await this.clearRuntime(turn.id);
+        await this.clearRuntime(ownerId, turn.id);
         return;
       }
       if (recorded === 'blocked') {
@@ -130,7 +163,7 @@ export class GetHomeTurnUseCase {
       if (!Number.isSafeInteger(page.nextCursor) || page.nextCursor < state.cursor || page.nextCursor < state.lastEventSequence
         || (page.hasMore && page.nextCursor === state.cursor)) {
         await this.updateStatus(ownerId, conversationId, turn.id, 'unknown');
-        await this.clearRuntime(turn.id);
+        await this.clearRuntime(ownerId, turn.id);
         return;
       }
       state.cursor = page.nextCursor;
@@ -149,12 +182,12 @@ export class GetHomeTurnUseCase {
           ...(guard ? { automationFence: guard.fence } : {})
         });
         if (!completed) await this.stopRuntimeAndMark(turn, ownerId, conversationId, guard);
-        if (completed && ['completed', 'partial'].includes(completed.status)) await this.deleteTerminalRuntime(turn.id);
+        if (completed && ['completed', 'partial'].includes(completed.status)) await this.deleteTerminalRuntime(ownerId, turn.id);
         return;
       }
       if (page.status === 'failed' || page.status === 'cancelled') {
         const updated = await this.updateStatus(ownerId, conversationId, turn.id, page.status);
-        if (updated && ['failed', 'cancelled'].includes(updated.status)) await this.deleteTerminalRuntime(turn.id);
+        if (updated && ['failed', 'cancelled'].includes(updated.status)) await this.deleteTerminalRuntime(ownerId, turn.id);
         return;
       }
       if (!page.hasMore) return;
@@ -234,10 +267,54 @@ export class GetHomeTurnUseCase {
         const targetProjectId = candidate.authorizationProjectId;
         if (scope.kind === 'workspace' && targetProjectId !== undefined && targetProjectId !== scope.workspaceId) return 'blocked';
         if (!await this.isAuthorized(turn, ownerId, conversationId, scope, targetProjectId, guard)) return 'blocked';
+        if (turn.automationOccurrenceId && candidate.taskSources?.length) {
+          if (!guard || guard.fence.occurrenceId !== turn.automationOccurrenceId || !this.automationSources
+            || !await guard.isCurrent()) return 'blocked';
+          let recorded: Awaited<ReturnType<IHomeAutomationSourceRecorder['recordTaskSources']>>;
+          try {
+            recorded = await this.automationSources.recordTaskSources({ ownerId, fence: guard.fence, sources: candidate.taskSources });
+          } catch {
+            return 'blocked';
+          }
+          if (recorded !== 'recorded') return 'blocked';
+        }
         try {
           const sent = await this.runtime?.sendToolResult({ turnId: turn.id, requestId: event.requestId, result: candidate.result });
           if (!sent?.accepted) return 'blocked';
         } catch {
+          return 'blocked';
+        }
+      } else if (event.type === 'home.provider.credit.requested') {
+        if (turn.status === 'unknown' && guard) return 'blocked';
+        if (index !== events.length - 1 || !this.providerCreditReceipts || !this.runtime?.sendProviderCreditResult
+          || !await this.isAuthorized(turn, ownerId, conversationId, scope, undefined, guard)) return 'blocked';
+        if (turn.automationOccurrenceId && (!guard || turn.automationOccurrenceId !== guard.fence.occurrenceId || !await guard.isCurrent())) return 'blocked';
+        let result;
+        try {
+          result = await this.providerCreditReceipts.handle({
+            ownerId,
+            turnId: turn.id,
+            providerProfile: this.policyConfiguration?.providerProfile ?? '',
+            model: this.policyConfiguration?.model ?? '',
+            request: event.request
+          });
+        } catch {
+          return 'blocked';
+        }
+        if (result.outcome === 'denied' && result.code === 'BUDGET_EXHAUSTED' && turn.automationOccurrenceId
+          && !this.providerCreditReceipts.hasAdmittedCall(turn.id)) {
+          if (!guard || !this.automationSources || !await guard.isCurrent()
+            || !await this.automationSources.markBudgetSkipped({ ownerId, fence: guard.fence })) return 'blocked';
+        }
+        try {
+          const sent = await this.runtime.sendProviderCreditResult({ turnId: turn.id, requestId: event.requestId, result });
+          if (!sent.accepted) return 'blocked';
+        } catch {
+          return 'blocked';
+        }
+        if (result.outcome === 'unknown' || event.request.operation === 'unknown') {
+          await this.updateStatus(ownerId, conversationId, turn.id, 'unknown');
+          await this.clearRuntime(ownerId, turn.id);
           return 'blocked';
         }
       }
@@ -257,7 +334,11 @@ export class GetHomeTurnUseCase {
     if (!current) throw new HomeTurnNotFoundError();
     if (current.status !== 'running' && current.status !== 'cancel_requested') return current;
     const updated = await this.updateStatus(ownerId, conversationId, turn.id, cancelled ? 'cancelled' : 'unknown');
-    if (cancelled) await this.deleteTerminalRuntime(turn.id);
+    if (cancelled) await this.deleteTerminalRuntime(ownerId, turn.id);
+    else {
+      await this.providerCreditReceipts?.markInterrupted(ownerId, turn.id);
+      this.providerCreditReceipts?.clearTurn(turn.id);
+    }
     return updated ?? current;
   }
 
@@ -265,7 +346,9 @@ export class GetHomeTurnUseCase {
     return this.conversations.updateTurnStatus({ ownerId, conversationId, turnId, status });
   }
 
-  private async deleteTerminalRuntime(turnId: string): Promise<void> {
+  private async deleteTerminalRuntime(ownerId: string, turnId: string): Promise<void> {
+    await this.providerCreditReceipts?.markInterrupted(ownerId, turnId);
+    this.providerCreditReceipts?.clearTurn(turnId);
     if (!this.runtime) return;
     try {
       await this.runtime.delete(turnId);
@@ -286,8 +369,10 @@ export class GetHomeTurnUseCase {
     }
   }
 
-  private async clearRuntime(turnId: string): Promise<void> {
+  private async clearRuntime(ownerId: string, turnId: string): Promise<void> {
+    await this.providerCreditReceipts?.markInterrupted(ownerId, turnId);
     this.pollStates.delete(turnId);
+    this.providerCreditReceipts?.clearTurn(turnId);
   }
 }
 

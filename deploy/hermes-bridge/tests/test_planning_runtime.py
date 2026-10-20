@@ -70,7 +70,9 @@ class PlanningDispatchTests(unittest.TestCase):
             'operation': operation,
             'runId': identity,
             'capability': capability,
-            'payload': payload if payload is not None else {'prompt': 'synthetic prompt', **PROVIDER},
+            'payload': payload if payload is not None else {
+                'prompt': 'synthetic prompt', **PROVIDER, 'maxOutputTokens': 512, 'requiredProviderReceiptVersion': 1
+            },
         }
 
     def create(self, body=None):
@@ -85,11 +87,28 @@ class PlanningDispatchTests(unittest.TestCase):
         self.assertTrue(FakeThread.created[0].started)
         self.assertEqual(FakeThread.created[0].daemon, True)
 
+    def test_output_cap_is_required_at_capability_and_create_boundaries(self):
+        with patch.object(server, 'profile', return_value={**PROVIDER, 'providerName': 'pai-nebius-token-factory'}):
+            result = server.dispatch(self.body('planning-capabilities', payload={
+                'providerProfile': PROVIDER['providerProfile'], 'model': PROVIDER['model'],
+                'requiredProviderReceiptVersion': 1, 'requiredMaxOutputTokens': 64
+            }))
+        self.assertEqual(result['maxOutputTokens'], 512)
+        with self.assertRaises(BridgeError):
+            server.dispatch(self.body('planning-capabilities', payload={
+                'providerProfile': PROVIDER['providerProfile'], 'model': PROVIDER['model'],
+                'requiredProviderReceiptVersion': 1
+            }))
+        with self.assertRaises(BridgeError):
+            self.create(self.body(payload={
+                'prompt': 'synthetic prompt', **PROVIDER, 'requiredProviderReceiptVersion': 1
+            }))
+
     def test_same_capability_and_payload_replay_create_without_starting_a_second_worker(self):
         self.create()
         self.assertEqual(self.create(), {'status': 'preparing'})
         self.assertEqual(len(FakeThread.created), 1)
-        changed = self.body(payload={'prompt': 'different prompt', **PROVIDER})
+        changed = self.body(payload={'prompt': 'different prompt', **PROVIDER, 'maxOutputTokens': 512, 'requiredProviderReceiptVersion': 1})
         with self.assertRaises(BridgeError):
             self.create(changed)
 
@@ -108,9 +127,9 @@ class PlanningDispatchTests(unittest.TestCase):
         with self.assertRaises(BridgeError):
             self.create(self.body(capability='short'))
         with self.assertRaises(BridgeError):
-            self.create(self.body(payload={'prompt': 'x' * (planning_lifecycle.MAX_PLANNING_PROMPT + 1), **PROVIDER}))
+            self.create(self.body(payload={'prompt': 'x' * (planning_lifecycle.MAX_PLANNING_PROMPT + 1), **PROVIDER, 'maxOutputTokens': 512, 'requiredProviderReceiptVersion': 1}))
         with self.assertRaises(BridgeError):
-            self.create(self.body(payload={'prompt': 'ok', **PROVIDER, 'files': []}))
+            self.create(self.body(payload={'prompt': 'ok', **PROVIDER, 'maxOutputTokens': 512, 'requiredProviderReceiptVersion': 1, 'files': []}))
         with patch.object(server, 'profile', return_value={**PROVIDER}), \
                 patch.object(server, 'assert_route', side_effect=BridgeError('route mismatch')):
             with self.assertRaises(BridgeError):
@@ -193,7 +212,7 @@ class PlanningLifecycleTests(unittest.TestCase):
             rows = [[], []]
 
             with patch.object(planning_lifecycle, 'STATE', state):
-                run = planning_lifecycle.PlanningRun(TURN_ID, CAPABILITY, {'prompt': 'test', **PROVIDER})
+                run = planning_lifecycle.PlanningRun(TURN_ID, CAPABILITY, {'prompt': 'test', **PROVIDER, 'maxOutputTokens': 512})
 
                 def fake_cli(args, timeout=60):
                     commands.append(args)
@@ -220,7 +239,7 @@ class PlanningLifecycleTests(unittest.TestCase):
             self.assertIn(run.remote_work, ssh.call_args.args[0])
 
     def test_runner_command_uses_empty_home_cwd_and_never_sets_project_root(self):
-        run = planning_lifecycle.PlanningRun(TURN_ID, CAPABILITY, {'prompt': 'synthetic prompt', **PROVIDER})
+        run = planning_lifecycle.PlanningRun(TURN_ID, CAPABILITY, {'prompt': 'synthetic prompt', **PROVIDER, 'maxOutputTokens': 512})
         captured = {}
 
         class FakeAcp:
@@ -257,16 +276,14 @@ class PlanningLifecycleTests(unittest.TestCase):
             def prompt(self, prompt, timeout=900):
                 pass
 
-        run = planning_lifecycle.PlanningRun(TURN_ID, CAPABILITY, {'prompt': 'synthetic prompt', **PROVIDER})
-        with patch.dict(os.environ, {'PAI_PLANNING_MAX_TOKENS': '64'}), \
-                patch.object(run, '_create'), patch.object(run, '_create_empty_workdir'), \
+        run = planning_lifecycle.PlanningRun(TURN_ID, CAPABILITY, {'prompt': 'synthetic prompt', **PROVIDER, 'maxOutputTokens': 64})
+        with patch.object(run, '_create'), patch.object(run, '_create_empty_workdir'), \
                 patch.object(planning_lifecycle, 'AcpSession', FakeAcp):
             run.work()
         self.assertIn('PAI_PLANNING_MAX_TOKENS=64', captured['command'])
 
-        invalid = planning_lifecycle.PlanningRun(TURN_ID, CAPABILITY, {'prompt': 'synthetic prompt', **PROVIDER})
-        with patch.dict(os.environ, {'PAI_PLANNING_MAX_TOKENS': '513'}), \
-                patch.object(invalid, '_create') as create:
+        invalid = planning_lifecycle.PlanningRun(TURN_ID, CAPABILITY, {'prompt': 'synthetic prompt', **PROVIDER, 'maxOutputTokens': 513})
+        with patch.object(invalid, '_create') as create:
             invalid.work()
         create.assert_not_called()
         self.assertEqual(invalid.status, 'failed')
@@ -310,6 +327,9 @@ class PlanningRunnerPolicyTests(unittest.TestCase):
             home_tools = types.ModuleType('home_tools')
             home_tools.HOME_TOOL_NAMES = HOME_TOOL_NAMES
             home_tools.register_home_tools = home_tool_transport.register_home_tools
+            provider_credit = types.ModuleType('provider_credit')
+            provider_credit.install_httpx_boundary = lambda: None
+            provider_credit.connect = lambda *_args, **_kwargs: None
             acp_adapter = types.ModuleType('acp_adapter')
             acp_adapter.__path__ = []
             permissions = types.ModuleType('acp_adapter.permissions')
@@ -323,6 +343,7 @@ class PlanningRunnerPolicyTests(unittest.TestCase):
                 'tools.registry': tools_registry,
                 'run_agent': run_agent,
                 'home_tools': home_tools,
+                'provider_credit': provider_credit,
                 'acp_adapter': acp_adapter,
                 'acp_adapter.permissions': permissions,
                 'acp_adapter.entry': entry,

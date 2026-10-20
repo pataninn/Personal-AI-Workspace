@@ -13,6 +13,8 @@ from runtime.acp_runner import PROFILE_VERSION, PROFILE_HASH, command_hash, pars
 MAX_HOME_TOOL_RESULT = 256 * 1024
 MAX_HOME_TOOL_EVENT = 256 * 1024
 MAX_HOME_TOOL_REQUESTS = 50
+MAX_PROVIDER_CREDIT_REQUESTS = 32
+UUID_RE = re.compile(r'^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$', re.I)
 
 
 class AcpSession:
@@ -31,6 +33,9 @@ class AcpSession:
         self.home_tool_requests = {}
         self.home_tool_request_count = 0
         self.home_tool_lock = threading.Lock()
+        self.provider_credit_requests = {}
+        self.provider_credit_request_count = 0
+        self.provider_credit_lock = threading.Lock()
         self.close_lock = threading.Lock()
         self.done = threading.Event()
         threading.Thread(target=self._read, daemon=True).start()
@@ -132,6 +137,32 @@ class AcpSession:
             self.home_tool_requests.pop(key, None)
             self.send({'jsonrpc': '2.0', 'id': request['id'], 'result': value})
 
+    def provider_credit_result(self, identity, result):
+        key = str(identity)
+        with self.provider_credit_lock:
+            request = self.provider_credit_requests.get(key)
+            if not request or self.state.cancelled.is_set():
+                raise BridgeError('The provider credit request is no longer pending')
+            value = self._validate_provider_credit_result(request['operation'], result)
+            self.provider_credit_requests.pop(key, None)
+            self.send({'jsonrpc': '2.0', 'id': request['frame']['id'], 'result': value})
+
+    @staticmethod
+    def _validate_provider_credit_result(operation, result):
+        if not isinstance(result, dict):
+            raise BridgeError('Invalid provider credit result')
+        if operation == 'reserve' and result.get('outcome') == 'reserved' and set(result) == {'outcome', 'reservationId'} and UUID_RE.fullmatch(str(result['reservationId'])):
+            return result
+        if operation == 'reserve' and result.get('outcome') == 'denied' and set(result) == {'outcome', 'code'} and result['code'] in ('BUDGET_EXHAUSTED', 'ADMISSION_UNAVAILABLE'):
+            return result
+        if operation == 'settle' and result.get('outcome') == 'settled' and set(result) == {'outcome', 'status'} and result['status'] in ('settled', 'over_bound'):
+            return result
+        if operation == 'release' and result == {'outcome': 'released'}:
+            return result
+        if result == {'outcome': 'unknown'}:
+            return result
+        raise BridgeError('Invalid provider credit result')
+
     @staticmethod
     def _validate_home_tool_result(result):
         if not isinstance(result, dict):
@@ -187,6 +218,8 @@ class AcpSession:
                         self.state.push({'type': 'project-task-request', 'id': str(frame['id']), 'params': params})
                     elif frame['method'] == '_pai/home_tools' and 'id' in frame:
                         self._home_tool_request(frame)
+                    elif frame['method'] == '_pai/provider_credit' and 'id' in frame:
+                        self._provider_credit_request(frame)
                     elif frame['method'] in ('_pai/policy_command', '_pai/policy_command_result') and 'id' in frame:
                         self._policy_command_request(frame)
                     elif frame['method'] == 'session/request_permission':
@@ -311,6 +344,72 @@ class AcpSession:
         try:
             self.send({'jsonrpc': '2.0', 'id': request_id,
                        'result': {'error': 'The typed Home tool request is unavailable.'}})
+        except (BrokenPipeError, OSError, BridgeError):
+            pass
+
+    def _provider_credit_request(self, frame):
+        request_id = frame.get('id')
+        params = frame.get('params')
+        if isinstance(request_id, bool) or not isinstance(request_id, (str, int)) or (isinstance(request_id, int) and request_id < 0):
+            return
+        key = str(request_id)
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', key) or not isinstance(params, dict) or set(params) != {'sessionId', 'request'}:
+            self._reject_provider_credit_request(request_id)
+            return
+        request = params.get('request')
+        if (params.get('sessionId') != self.session_id or not isinstance(request, dict)
+                or not self._valid_provider_credit_request(request) or key in self.provider_credit_requests
+                or self.state.cancelled.is_set()):
+            self._reject_provider_credit_request(request_id)
+            return
+        event = {'type': 'home-provider-credit-request', 'id': key,
+                 'params': {'sessionId': self.session_id, 'request': request}}
+        try:
+            encoded = json.dumps(event, separators=(',', ':'), allow_nan=False).encode('utf-8')
+        except (TypeError, ValueError, UnicodeEncodeError):
+            self._reject_provider_credit_request(request_id)
+            return
+        if len(encoded) > MAX_HOME_TOOL_EVENT:
+            self._reject_provider_credit_request(request_id)
+            return
+        with self.provider_credit_lock:
+            if key in self.provider_credit_requests or self.state.cancelled.is_set() or self.provider_credit_request_count >= MAX_PROVIDER_CREDIT_REQUESTS:
+                self._reject_provider_credit_request(request_id)
+                return
+            self.provider_credit_request_count += 1
+            self.provider_credit_requests[key] = {'frame': frame, 'operation': request['operation']}
+        self.state.push(event)
+
+    @staticmethod
+    def _valid_provider_credit_request(request):
+        operation = request.get('operation')
+        common = {'operation', 'callId', 'attemptId'}
+        if (not isinstance(request.get('callId'), str) or not UUID_RE.fullmatch(request['callId'])
+                or not isinstance(request.get('attemptId'), str) or not UUID_RE.fullmatch(request['attemptId'])):
+            return False
+        if operation == 'reserve':
+            return (set(request) == common | {'providerProfile', 'model', 'inputTokenUpperBound', 'inputBounderVersion'}
+                    and isinstance(request.get('providerProfile'), str) and 1 <= len(request['providerProfile']) <= 128
+                    and isinstance(request.get('model'), str) and 1 <= len(request['model']) <= 200
+                    and type(request.get('inputTokenUpperBound')) is int and 1 <= request['inputTokenUpperBound'] <= 1000000
+                    and request.get('inputBounderVersion') == 'hermes-json-utf8-v1')
+        if operation == 'settle':
+            usage = request.get('usage')
+            return (set(request) == common | {'reservationId', 'usage'}
+                    and isinstance(request.get('reservationId'), str) and UUID_RE.fullmatch(request['reservationId'])
+                    and isinstance(usage, dict) and set(usage) == {'promptTokens', 'completionTokens', 'totalTokens'}
+                    and all(type(usage.get(name)) is int and usage[name] >= 0 for name in ('promptTokens', 'completionTokens', 'totalTokens'))
+                    and usage['totalTokens'] == usage['promptTokens'] + usage['completionTokens'])
+        if operation in ('unknown', 'release'):
+            allowed = common | {'reservationId', 'reason'}
+            return (set(request) <= allowed and {'operation', 'callId', 'attemptId', 'reservationId'} <= set(request)
+                    and isinstance(request.get('reservationId'), str) and UUID_RE.fullmatch(request['reservationId'])
+                    and ('reason' not in request or isinstance(request['reason'], str) and re.fullmatch(r'[a-z0-9_-]{1,64}', request['reason'])))
+        return False
+
+    def _reject_provider_credit_request(self, request_id):
+        try:
+            self.send({'jsonrpc': '2.0', 'id': request_id, 'error': {'code': -32000, 'message': 'The provider credit request is unavailable.'}})
         except (BrokenPipeError, OSError, BridgeError):
             pass
 

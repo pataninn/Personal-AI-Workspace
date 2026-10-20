@@ -105,4 +105,29 @@ describe('automation routes', () => {
       .set('Cookie', '__Host-pa_session=session-token');
     expect(invalid.status).toBe(400);
   });
+
+  it('hides the Home result link for a confirmed pre-send budget skip', async () => {
+    const { app, listOccurrences } = buildApp();
+    listOccurrences.execute.mockResolvedValueOnce({
+      occurrences: [{
+        ...occurrence(),
+        status: 'skipped',
+        homeTurnId: '88888888-8888-4888-8888-888888888888',
+        failureCode: 'BUDGET_EXHAUSTED',
+        providerUsage: { state: 'not_started', calls: [] }
+      } as never],
+      nextCursor: null
+    } as never);
+
+    const page = await request(app).get(`/api/v1/automations/schedules/${SCHEDULE_ID}/occurrences`)
+      .set('Cookie', '__Host-pa_session=session-token');
+
+    expect(page.status).toBe(200);
+    expect(page.body.data.occurrences[0]).toMatchObject({
+      status: 'skipped',
+      failureCode: 'BUDGET_EXHAUSTED',
+      homeTurnId: null,
+      providerUsage: { state: 'not_started', calls: [] }
+    });
+  });
 });

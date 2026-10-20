@@ -11310,10 +11310,51 @@
           "homeTurnId": { "$ref": "#/components/schemas/Uuid", "nullable": true },
           "failureCode": { "type": "string", "maxLength": 64, "nullable": true },
           "attemptCount": { "type": "integer", "minimum": 0, "maximum": 3 },
+          "taskSources": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "object",
+              "properties": {
+                "taskId": { "$ref": "#/components/schemas/Uuid" },
+                "revision": { "type": "integer", "minimum": 1, "maximum": 999999999 },
+                "available": { "type": "boolean" },
+                "title": { "type": "string", "nullable": true },
+                "href": { "type": "string", "pattern": "^/tasks/[0-9a-f-]{36}$", "nullable": true }
+              },
+              "required": ["taskId", "revision", "available", "title", "href"],
+              "additionalProperties": false
+            }
+          },
+          "providerUsage": {
+            "type": "object",
+            "properties": {
+              "state": { "type": "string", "enum": ["not_started", "settled", "pending", "unknown"] },
+              "calls": {
+                "type": "array",
+                "maxItems": 32,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "enum": ["pending", "unknown", "settled", "over_bound"] },
+                    "providerProfile": { "type": "string", "minLength": 1, "maxLength": 128 },
+                    "model": { "type": "string", "minLength": 1, "maxLength": 200 },
+                    "inputTokens": { "type": "integer", "minimum": 0, "nullable": true },
+                    "outputTokens": { "type": "integer", "minimum": 0, "nullable": true },
+                    "chargedUnits": { "type": "string", "pattern": "^[0-9]+$", "nullable": true }
+                  },
+                  "required": ["status", "providerProfile", "model", "inputTokens", "outputTokens", "chargedUnits"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": ["state", "calls"],
+            "additionalProperties": false
+          },
           "createdAt": { "type": "string", "format": "date-time" },
           "updatedAt": { "type": "string", "format": "date-time" }
         },
-        "required": ["id", "kind", "intendedFor", "status", "scheduleRevision", "skillVersion", "homeTurnId", "failureCode", "attemptCount", "createdAt", "updatedAt"],
+        "required": ["id", "kind", "intendedFor", "status", "scheduleRevision", "skillVersion", "homeTurnId", "failureCode", "attemptCount", "taskSources", "providerUsage", "createdAt", "updatedAt"],
         "additionalProperties": false
       },
       "AutomationCreateRequest": {

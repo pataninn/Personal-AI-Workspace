@@ -1,4 +1,4 @@
-import type { AutomationLeaseFence, AutomationOccurrence, AutomationOccurrenceStatus, AutomationSchedule } from '@/modules/automations/domain/automation-types';
+import type { AutomationLeaseFence, AutomationOccurrence, AutomationOccurrenceStatus, AutomationSchedule, AutomationTaskSourceRevision } from '@/modules/automations/domain/automation-types';
 
 export interface CreateAutomationScheduleRecord {
   readonly ownerId: string;
@@ -86,4 +86,5 @@ export interface IAutomationRepository {
   recordCancellationResult(input: { readonly occurrenceId: string; readonly status: AutomationCancellationOutcome }): Promise<boolean>;
   finishWithoutTurn(input: AutomationLeaseFence & { readonly status: 'failed' | 'skipped'; readonly failureCode: string }): Promise<boolean>;
   releaseSafeClaim(input: AutomationLeaseFence, failureCode: string): Promise<boolean>;
+  recordTaskSources(input: { readonly ownerId: string; readonly fence: AutomationLeaseFence; readonly sources: readonly AutomationTaskSourceRevision[] }): Promise<'recorded' | 'limit_exceeded' | 'lease_lost'>;
 }

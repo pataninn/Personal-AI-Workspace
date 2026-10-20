@@ -1,4 +1,4 @@
-import type { IHomePlanningRuntime, HomePlanningProvider } from '@/modules/home-assistant/repositories/home-planning-runtime';
+import type { HomePlanningProvider } from '@/modules/home-assistant/repositories/home-planning-runtime';
 import { AiRunRuntimeUnavailableError } from '@/modules/ai-runs/domain/ai-run-errors';
 
 import { HermesBridgeCallError, HermesBridgeClient } from '@/infrastructure/hermes/hermes-bridge-client';
@@ -15,11 +15,16 @@ const provider: HomePlanningProvider = {
   endpoint: 'https://api.tokenfactory.nebius.com/v1'
 };
 
-function runtimeWith(bridgeCall: jest.Mock, registeredToolNames: readonly HomePlanningToolName[] = []): IHomePlanningRuntime {
+function runtimeWith(bridgeCall: jest.Mock, registeredToolNames: readonly HomePlanningToolName[] = [], maxOutputTokens = 512): HermesHomePlanningRuntime {
   return new HermesHomePlanningRuntime(
-    { call: bridgeCall } as unknown as HermesBridgeClient,
+    { call: async (operation: string, runId: string, capability: string, payload: unknown) => {
+      if (operation === 'planning-capabilities') {
+        return { providerReceiptVersion: 1, providerProfile: provider.profile, model: provider.model, maxOutputTokens: 512 };
+      }
+      return await bridgeCall(operation, runId, capability, payload) as Record<string, unknown>;
+    } } as unknown as HermesBridgeClient,
     provider,
-    { registeredToolNames, providerEgressAdmissionEnforced: true }
+    { registeredToolNames, providerEgressAdmissionEnforced: true, maxOutputTokens }
   );
 }
 
@@ -42,8 +47,44 @@ describe('HermesHomePlanningRuntime', () => {
     expect(call).toHaveBeenCalledTimes(1);
     expect(call.mock.calls[0]).toEqual([
       'planning-create', turnId, expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
-      { prompt: 'Plan a synthetic test.', providerProfile: provider.profile, model: provider.model, endpoint: provider.endpoint }
+      { prompt: 'Plan a synthetic test.', providerProfile: provider.profile, model: provider.model, endpoint: provider.endpoint, maxOutputTokens: 512, requiredProviderReceiptVersion: 1 }
     ]);
+  });
+
+  it('passes the configured sub-512 output bound to capability negotiation and run creation', async () => {
+    const calls: unknown[][] = [];
+    const bridge = {
+      call: async (operation: string, runId: string, capability: string, payload: unknown) => {
+        calls.push([operation, runId, capability, payload]);
+        return operation === 'planning-capabilities'
+          ? { providerReceiptVersion: 1, providerProfile: provider.profile, model: provider.model, maxOutputTokens: 512 }
+          : { status: 'preparing' };
+      }
+    } as unknown as HermesBridgeClient;
+    const runtime = new HermesHomePlanningRuntime(bridge, provider, {
+      providerEgressAdmissionEnforced: true, maxOutputTokens: 64
+    });
+
+    await expect(runtime.start({ turnId, prompt: 'Plan a synthetic test.', provider })).resolves.toEqual({ outcome: 'accepted' });
+
+    expect(calls[0]?.[3]).toMatchObject({ requiredMaxOutputTokens: 64 });
+    expect(calls[1]?.[3]).toMatchObject({ maxOutputTokens: 64 });
+  });
+
+  it('keeps an older bridge unsupported when its required receipt capability is absent', async () => {
+    const call = jest.fn().mockResolvedValue({ providerReceiptVersion: 1, providerProfile: provider.profile, model: provider.model });
+    const runtime = new HermesHomePlanningRuntime(
+      { call } as unknown as HermesBridgeClient,
+      provider,
+      { registeredToolNames: ['home_list_tasks'], providerEgressAdmissionEnforced: true, maxOutputTokens: 64 }
+    );
+
+    await expect(runtime.supportsPolicyExecution({ providerProfile: provider.profile, model: provider.model })).resolves.toBe(false);
+    await expect(runtime.start({ turnId, prompt: 'Plan a synthetic test.', provider }))
+      .resolves.toEqual({ outcome: 'unavailable', code: 'PLANNING_RUNTIME_UNAVAILABLE' });
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(call.mock.calls.map(([operation]) => operation)).toEqual(['planning-capabilities', 'planning-capabilities']);
+    expect(call.mock.calls[0]?.[3]).toMatchObject({ requiredMaxOutputTokens: 64 });
   });
 
   it('rejects changed retries, unsupported profiles, and oversized prompts without bridge egress', async () => {

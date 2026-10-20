@@ -26,7 +26,19 @@ export type HomePlanningRuntimeEvent =
       readonly sessionId: string;
       readonly name: string;
       readonly args: Readonly<Record<string, unknown>>;
-    };
+    }
+  | { readonly sequence: number; readonly type: 'home.provider.credit.requested'; readonly requestId: string; readonly request: HomeProviderCreditRequest };
+
+export type HomeProviderCreditRequest =
+  | { readonly operation: 'reserve'; readonly callId: string; readonly attemptId: string; readonly providerProfile: string; readonly model: string; readonly inputTokenUpperBound: number; readonly inputBounderVersion: 'hermes-json-utf8-v1' }
+  | { readonly operation: 'settle'; readonly callId: string; readonly attemptId: string; readonly reservationId: string; readonly usage: { readonly promptTokens: number; readonly completionTokens: number; readonly totalTokens: number } }
+  | { readonly operation: 'unknown' | 'release'; readonly callId: string; readonly attemptId: string; readonly reservationId: string; readonly reason?: string };
+
+export type HomeProviderCreditResult =
+  | { readonly outcome: 'reserved'; readonly reservationId: string }
+  | { readonly outcome: 'denied'; readonly code: 'BUDGET_EXHAUSTED' | 'ADMISSION_UNAVAILABLE' }
+  | { readonly outcome: 'settled'; readonly status: 'settled' | 'over_bound' }
+  | { readonly outcome: 'released' | 'unknown' };
 
 export type HomePlanningRuntimeStatus = 'preparing' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
 
@@ -70,6 +82,9 @@ export interface IHomePlanningRuntime {
 
   /** Delivers one already-authorized typed Home tool result or a content-free denial. */
   sendToolResult(input: SendHomePlanningToolResultInput): Promise<{ readonly accepted: boolean }>;
+
+  /** Resolves exactly one provider admission or settlement receipt for the active Home turn. */
+  sendProviderCreditResult?(input: { readonly turnId: string; readonly requestId: string; readonly result: HomeProviderCreditResult }): Promise<{ readonly accepted: boolean }>;
 
   /** Confirms stop only when the bridge confirms it; transport uncertainty remains unknown. */
   cancel(turnId: string): Promise<CancelHomePlanningRunResult>;

@@ -5,7 +5,7 @@
 **Last Updated:** 2026-10-20
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Eighteen tasks delivered; latest verified `dba6d049688173b6ac1ff71f5e23eddc6401baad` (7.1 durable scheduler). Task6.3 QA2PASS and scopedcommit next. Export/briefing implementation follows; no deployment started.
+**Status:** Execution active. Nineteen tasks delivered; latest verified `127e722157b5858ac3886b24f22aa8b356a22ded` (6.3 editable skills and saved workspace runs). Export6.4 and briefing7.2 implementation active; scheduleUI7.3 follows7.2, finalaudit5.4 last. No deployment started.
 
 **Current execution boundary (user update):** User resumed the goal2026-10-20. Complete all remaining tasks through7.3 including5.4, independently verify and locally commit them, then stop for user review before deployment8.x or acceptance9.x. No push authorized.
 
@@ -629,7 +629,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 5.4 â€” Audit spacing, responsiveness, and accessibility across release screens
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 5.1, 5.3, 3.6, 6.3, 6.4, 7.3
 **Risk:** Medium: overlays and dense forms
@@ -644,7 +644,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-5-4-spacing-accessibility/artifacts/`
-- `Current status:` Pending; no implementation or live validation performed.
+- `Current status:` FinalUIaudit specification complete. Reuse relevant priorpasses, fill adminmobile/keyboard evidence and newexport/automations checks, representative narrow/desktop/200%zoom/contrast/focus risks. Actualaudit/fixes wait delivered6.4/7.3; no runtimeauditproofyet.
 
 **Description:** Apply consistent existing spacing/type tokens and repair observed layout defects across all changed screens.
 
@@ -748,7 +748,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 6.3 — Expose editable skills and a working Plan my day flow
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 6.2, 7.1 (shared managed-workspace eligibility predicate; delivery serialized)
 **Risk:** Medium: usable output and permissions
@@ -763,22 +763,22 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-6-3-skills-interface/artifacts/`
-- `Current status:` OfficialQAcycle2 PASS; QA1evidencegap/historyretained. DeterministicrealPGcase1PASS/2skips twiceafterSQLJSONnumericfix, savedcompletedassistantresult/exactfactrevisionlabel/foreigndenial, freshguards clean. EarlierUIpre-reviewrepairs/tests/build/mockbrowserproof accepted. Scopedcommit waits7.1delivery forsharedmanagedpredicate; no6.3hashyet.
+- `Current status:` Delivered `127e722157b5858ac3886b24f22aa8b356a22ded` after QA2PASS; QA1history preserved. Exact46paths rootaudited:32source+13matchingtaskdocs+globaltracker; branch/index correct, protected7filehashes unchanged. CommittedDI/OpenAPI contains only6.3summary additions beyond7.1 baseline, no futureexport/sourcefields. Isolatedstagedbackend/frontendapp+node typesPASS; actualcompletedmanagedrun/exactnumericfactlabel/foreign-denialPG1PASS2skips twice with freshguards. EarlierUIrepairs/tests/build/mockbrowserproof retained; no paidprovider/deploymentclaim.
 
 **Description:** Build skill list/detail/editor and invocation states with a useful saved plan based on tasks, deadlines, and memory.
 
 **Subtasks:**
 
-- [ ] Allow inspect/copy/edit/enable/disable/delete personal skills; preserve read-only showcase behavior.
-- [ ] Run Plan my day against chosen workspaces and save/link the result through existing conversation rendering.
-- [ ] Show usage/errors/source context and distinguish suggested changes from requested edits.
+- [x] Allow inspect/copy/edit/enable/disable/delete personal skills; preserve read-only showcase behavior.
+- [x] Run Plan my day against chosen workspaces and save/link the result through existing conversation rendering.
+- [x] Show usage/errors/source context and distinguish suggested changes from requested edits.
 
 **Definition of Done:**
 
-- [ ] A visitor edits and runs their own skill; saved output uses remembered working hours and task priorities; unsupported actions fail safely.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
-- [ ] Developer-owned contract implemented and verified before task closure.
+- [x] A visitor edits and runs their own skill; saved output uses remembered working hours and task priorities; unsupported actions fail safely.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Developer-owned contract implemented and verified before task closure.
 
 **Upstream Outputs Needed:** Architecture sections 4.3, 8; Task 1.1 ui-spec.md and relevant task contracts; completed dependency outputs.
 
@@ -801,7 +801,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-6-4-workspace-export/artifacts/`
-- `Current status:` Developer_export_luna implementation active after delivered7.1; preflight/UI/contract complete. Own bounded export module/file enumeration/Usage/lifecycle tests; migration0040 reserved. Sharedcomposition/OpenAPI/registry held until6.3stagedblob freeze. No export validation or finalQA yet.
+- `Current status:` Developer_export_luna implementation active after delivered7.1; preflight/UI/contract complete. Own bounded export module/file enumeration/Usage/lifecycle tests; migration0040 reserved. Shared composition/OpenAPI/registry released after 6.3 delivery. Developer checks PASS: backend/frontend types, 5 Jest suites/19 tests, 3 isolated PostgreSQL cases with clean guards and 2 route-stubbed preview cases. Official QA1 FAIL: file-secret 500/422 mapping, use-case infrastructure import, missing direct captureForExport coverage. Focused developer repair active; no commit yet.
 
 **Description:** Export an owned mutable workspace's permitted files and structured data, and show credit/storage usage in settings.
 
@@ -879,22 +879,22 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-7-2-briefing-workflow/artifacts/`
-- `Current status:` Developer_briefing_luna implementation active after delivered7.1; preflight/contract complete. Own bounded task source refs and existing Home bridge per-send credit admission/receipt/historical ledger projection. Migration0039 reserved; sharedfiles held for6.3commit isolation. No7.2runtimeproof/finalQA yet.
+- `Current status:` Independent official QA1 PASS. Backend types, 8 Jest suites/57 tests, Python58 PASS/3 baseline Linux-only skips and 3 exact PostgreSQL cases PASS with clean guards. Actual-runner deterministic transport proves reserve/send/settle; output-cap and interruption retention repairs verified. Thirty-eight source paths plus seven task documents and global tracker await scoped local commit/root audit; task stays in progress until commit. No live provider/deployment claim.
 
 **Description:** Invoke the Daily briefing skill with current tasks/deadlines/notes/memory and save a dated result via existing conversations.
 
 **Subtasks:**
 
-- [ ] Persist status, source revisions, skill version, model/provider, usage, and result link.
-- [ ] Implement queued/running/success/failure/skipped-budget/cancelled/interrupted results with actionable reasons.
-- [ ] Use the same workflow for schedules and manual Run now; avoid duplicate output or unrequested task changes.
+- [x] Persist status, source revisions, skill version, model/provider, usage, and result link.
+- [x] Implement queued/running/success/failure/skipped-budget/cancelled/interrupted results with actionable reasons.
+- [x] Use the same workflow for schedules and manual Run now; avoid duplicate output or unrequested task changes.
 
 **Definition of Done:**
 
-- [ ] Fixture briefing references the correct owner tasks/facts; budget exhaustion saves a skipped status without a provider call; retries do not duplicate saved output.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
-- [ ] Developer-owned contract implemented and verified before task closure.
+- [x] Fixture briefing references the correct owner tasks/facts; budget exhaustion saves a skipped status without a provider call; retries do not duplicate saved output.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Developer-owned contract implemented and verified before task closure.
 
 **Upstream Outputs Needed:** Architecture sections 9.2; completed dependency outputs.
 
@@ -1109,10 +1109,10 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | 5.1 â€” Move Home assistant into a floating Ask panel | `[x]` | PASS; `1d22db9fe9f3fb67ac05eddf199952dadf2a5fb3` |
 | 5.2 â€” Replace Inbox emphasis with Add task and View all | `[x]` | PASS; `fdb200dc23eb83a1047f138ccdd8f7316f3855b1` |
 | 5.3 — Open task details editable with Save and dirty-exit protection | `[x]` | Delivered `a327237c0d3e667a36a77f9f4dee71a281ea2b75`; QA2 PASS; stopped after delivery |
-| 5.4 â€” Audit spacing, responsiveness, and accessibility across release screens | `[ ]` | Pending |
+| 5.4 â€” Audit spacing, responsiveness, and accessibility across release screens | `[~]` | UIaudit speccomplete; finalaudit waits6.4/7.3 |
 | 6.1 â€” Make memory and selected context visibly control future runs | `[x]` | PASS; `633cbeecd934ddd0e1042441158f91ca5e98435e`; accepted Low selector debt |
 | 6.2 â€” Persist editable user skills with bounded invocation | `[x]` | PASS; `ddc2a355f6f3886048433cea7a6a28de08891261`; Low title-length debt |
-| 6.3 â€” Expose editable skills and a working Plan my day flow | `[~]` | QA2PASS; scopedcommit waits7.1delivery/sharedpredicate |
+| 6.3 — Expose editable skills and a working Plan my day flow | `[x]` | Delivered `127e722157b5858ac3886b24f22aa8b356a22ded`; QA2PASS/rootaudit46paths |
 | 6.4 â€” Add bounded portable workspace export and usage settings | `[~]` | Export implementation active; migration0040 reserved |
 | 7.1 — Implement durable daily schedules and job claiming | `[x]` | Delivered `dba6d049688173b6ac1ff71f5e23eddc6401baad`; QA1PASS/rootaudit58paths |
 | 7.2 â€” Produce and persist useful daily briefings | `[~]` | Briefing/bridge admission implementation active; migration0039 reserved |
@@ -1124,7 +1124,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Blocked Items and implementation-time inputs
 
-Eighteen tasks are delivered as listed in Plan Summary. Remainingthrough7.3:5.4,6.3,6.4,7.2,7.3.6.3QA2PASS awaits scopedcommit. Goalcontinues withLuna/max specialists andfocusedchecks; stopforuserreview before8.x/9.x. Migration0039reserved7.2source metadata,0040reserved6.4export metadata; serialize registry/sharedhunks.
+Nineteen tasks are delivered as listed in Plan Summary. Remainingthrough7.3:5.4,6.4,7.2,7.3. Goalcontinues withLuna/max specialists andfocusedchecks; stopforuserreview before8.x/9.x. Migration0039reserved7.2source metadata,0040reserved6.4export metadata; coordinate registry/sharedhunks.
 
 - Task 8.1/8.2 needs the real deployment host/domain and DNS/certificate access. Do not claim the local self-signed setup fixes public browser trust.
 - Credit enforcement requires actual provider pricing and a way to bound/meter all Hermes calls. Public AI access stays disabled if that cannot be established.

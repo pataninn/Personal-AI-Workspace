@@ -278,14 +278,17 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
       await this.assertWorkspace(ownerId, scope, filters.workspaceId);
     }
     const page = await this.dependencies.listTasks.execute({ ownerId, filters, ...(args.cursor ? { cursor: args.cursor as string } : {}) });
-    const items = page.items.filter((item) => item.workspace?.status !== 'archived' || filters.includeArchived).map((item) => taskSummary(item));
-    return boundedCandidate(scope, ['task_metadata'], items.length, { items, nextCursor: page.nextCursor }, MAX_TASK_LIST_BYTES);
+    const returnedItems = page.items.filter((item) => item.workspace?.status !== 'archived' || filters.includeArchived);
+    const items = returnedItems.map((item) => taskSummary(item));
+    return boundedCandidate(scope, ['task_metadata'], items.length, { items, nextCursor: page.nextCursor }, MAX_TASK_LIST_BYTES,
+      returnedItems.map((item) => ({ taskId: item.task.id, revision: item.task.version })));
   }
 
   private async getTaskResult(ownerId: string, scope: HomeConversationScope, args: Record<string, unknown>): Promise<HomePlanningToolResultCandidate> {
     const includeArchived = args.includeArchived === true;
     const item = await this.scopedTask(ownerId, scope, args.taskId as string, includeArchived);
-    return boundedCandidate(scope, ['task_metadata'], 1, { task: taskDetail(item) }, MAX_TASK_DETAIL_BYTES);
+    return boundedCandidate(scope, ['task_metadata'], 1, { task: taskDetail(item) }, MAX_TASK_DETAIL_BYTES,
+      [{ taskId: item.task.id, revision: item.task.version }]);
   }
 
   private async searchWorkspaces(ownerId: string, scope: HomeConversationScope, args: Record<string, unknown>): Promise<HomePlanningToolResultCandidate> {
@@ -339,6 +342,7 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
     return {
       kind: 'immediate',
       result: { outcome: 'shared', data: candidate.data },
+      ...(candidate.taskSources ? { taskSources: candidate.taskSources } : {}),
       ...(authorizationProjectId ? { authorizationProjectId } : {})
     };
   }
@@ -452,10 +456,10 @@ function workspaceMetadata(project: Project) {
   return { id: project.id, name: project.name, objective: project.objective, version: project.version };
 }
 
-function boundedCandidate(scope: HomeConversationScope, categories: HomePlanningToolResultCandidate['categories'], itemCount: number, data: Readonly<Record<string, unknown>>, maxBytes: number): HomePlanningToolResultCandidate {
+function boundedCandidate(scope: HomeConversationScope, categories: HomePlanningToolResultCandidate['categories'], itemCount: number, data: Readonly<Record<string, unknown>>, maxBytes: number, taskSources?: HomePlanningToolResultCandidate['taskSources']): HomePlanningToolResultCandidate {
   const bytes = Buffer.byteLength(JSON.stringify(data), 'utf8');
   if (bytes < 1 || bytes > maxBytes) throw new HomeConversationInputInvalidError('The Home planning result exceeds its supported size.');
-  return { scope, categories, itemCount, data };
+  return { scope, categories, itemCount, data, ...(taskSources ? { taskSources } : {}) };
 }
 
 type ExpectedVersionMutationOutcome<T> = { readonly kind: 'applied'; readonly value: T } | { readonly kind: 'conflict' };

@@ -39,10 +39,12 @@ import { WorkspaceGatewayAdapter } from '@/infrastructure/workspace/workspace-ga
 import { readSecretFile } from '@/infrastructure/auth/read-secret-file';
 import { NvidiaHostedNimProvider } from '@/infrastructure/ai-provider/nvidia-hosted-nim-provider';
 import { ProviderCallCreditAdmission } from '@/modules/credits/use-cases/provider-call-credit-admission';
+import { GetHomeTurnProviderUsageUseCase } from '@/modules/credits/use-cases/get-home-turn-provider-usage';
+import { HandleHomeProviderCreditReceiptUseCase } from '@/modules/credits/use-cases/handle-home-provider-credit-receipt';
 import { DirectProviderAgentRuntime } from '@/infrastructure/ai-provider/direct-provider-agent-runtime';
 import { HermesAgentRuntime } from '@/infrastructure/hermes/hermes-agent-runtime';
 import { HermesBridgeClient } from '@/infrastructure/hermes/hermes-bridge-client';
-import { HermesHomePlanningRuntime, HOME_PLANNING_TOOL_NAMES } from '@/infrastructure/hermes/hermes-home-planning-runtime';
+import { HermesHomePlanningRuntime, HOME_PLANNING_TOOL_NAMES, MAX_HOME_PLANNING_OUTPUT_TOKENS } from '@/infrastructure/hermes/hermes-home-planning-runtime';
 import { ApprovedContextReader } from '@/infrastructure/hermes/approved-context-reader';
 import { HermesProjectTaskTools } from '@/infrastructure/hermes/hermes-project-task-tools';
 import type { IModelProvider } from '@/modules/ai-runs/repositories/model-provider';
@@ -145,7 +147,8 @@ export async function createApplication(
   const readiness = new InMemoryReadinessState();
   let maintenanceHandle: PeriodicMaintenanceHandle | undefined;
   let automationMaintenanceHandle: PeriodicMaintenanceHandle | undefined;
-  const providerCallCreditAdmission = new ProviderCallCreditAdmission(new TypeOrmCreditLedgerRepository(dataSource));
+  const creditLedgerRepository = new TypeOrmCreditLedgerRepository(dataSource);
+  const providerCallCreditAdmission = new ProviderCallCreditAdmission(creditLedgerRepository);
   const modelProvider = config.agentRuntimeMode === 'direct'
     ? await createModelProvider(config, environment, providerCallCreditAdmission)
     : undefined;
@@ -178,6 +181,7 @@ export async function createApplication(
     const skillRepository = new TypeOrmSkillRepository(dataSource, storageContentAccounting);
     const skillInvocationRepository = new TypeOrmSkillInvocationRepository(dataSource);
     const automationRepository = new TypeOrmAutomationRepository(dataSource);
+    const homeTurnProviderUsage = new GetHomeTurnProviderUsageUseCase(creditLedgerRepository);
     const storageFileMutation = new StorageQuotaFileMutation(storageQuotaRepository);
     const demoAdmissionRepository = new TypeOrmDemoAdmissionRepository(dataSource);
     const userRepository = new TypeOrmUserRepository(dataSource);
@@ -276,10 +280,14 @@ export async function createApplication(
     const taskTools = new HermesProjectTaskTools({ runs: aiRunRepository, principalAuthorization, list: new ListProjectTasksUseCase(projectRepository, projectTaskRepository), create: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases), update: new UpdateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases) });
     const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository, logger, taskTools);
     const homePlanningProvider: HomePlanningProvider = { profile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint };
+    const homeProviderCreditConfiguration = config.providerCreditConfiguration
+      ? { ...config.providerCreditConfiguration, maxOutputTokens: Math.min(config.providerCreditConfiguration.maxOutputTokens, MAX_HOME_PLANNING_OUTPUT_TOKENS) }
+      : undefined;
     const homePlanningRuntime = config.agentRuntimeMode === 'hermes'
       ? new HermesHomePlanningRuntime(createHermesBridge(config), homePlanningProvider, {
         registeredToolNames: HOME_PLANNING_TOOL_NAMES,
-        providerEgressAdmissionEnforced: false
+        providerEgressAdmissionEnforced: Boolean(homeProviderCreditConfiguration),
+        ...(homeProviderCreditConfiguration ? { maxOutputTokens: homeProviderCreditConfiguration.maxOutputTokens } : {})
       })
       : undefined;
     const assistantRuntimeCapability = new RuntimeCapabilityAdapter(agentRuntime, homePlanningRuntime);
@@ -321,7 +329,10 @@ export async function createApplication(
     const cancelHomeTurn = new CancelHomeTurnUseCase(homeConversationRepository, homePlanningRuntime);
     const getHomeTurn = new GetHomeTurnUseCase(homeConversationRepository, homePlanningRuntime, homeToolResultConsentGate, homePlanningToolHandler, {
       executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel
-    });
+    }, automationRepository, new HandleHomeProviderCreditReceiptUseCase(
+      providerCallCreditAdmission, homeProviderCreditConfiguration,
+      { profile: homePlanningProvider.profile, model: homePlanningProvider.model }, creditLedgerRepository
+    ), homeTurnProviderUsage);
     const invokeSkill = new InvokeSkillUseCase(skillRepository, skillInvocationRepository, homeConversationRepository, submitHomeTurn);
     const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel, projectFactRepository, assistantExecutionPolicy);
     const proposeSandboxCommand = new ProposeSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger, assistantExecutionPolicy);
@@ -408,7 +419,7 @@ export async function createApplication(
           listSchedules: new ListAutomationSchedulesUseCase(automationRepository),
           updateSchedule: new UpdateAutomationScheduleUseCase(automationRepository, projectRepository, skillRepository, principalAuthorization, cancelHomeTurn, clock),
           runNow: new RunAutomationNowUseCase(automationRepository, principalAuthorization),
-          listOccurrences: new ListAutomationOccurrencesUseCase(automationRepository),
+          listOccurrences: new ListAutomationOccurrencesUseCase(automationRepository, homeTurnProviderUsage),
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
         },

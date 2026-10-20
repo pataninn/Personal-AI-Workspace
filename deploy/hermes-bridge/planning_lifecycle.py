@@ -107,11 +107,8 @@ class PlanningRun:
 
     def work(self):
         try:
-            try:
-                max_tokens = int(os.environ.get('PAI_PLANNING_MAX_TOKENS', str(MAX_PLANNING_OUTPUT_TOKENS)))
-            except ValueError:
-                raise BridgeError('The planning output token limit is invalid') from None
-            if not 1 <= max_tokens <= MAX_PLANNING_OUTPUT_TOKENS:
+            max_tokens = self.payload.get('maxOutputTokens')
+            if type(max_tokens) is not int or not 1 <= max_tokens <= MAX_PLANNING_OUTPUT_TOKENS:
                 raise BridgeError('The planning output token limit is outside its bound')
             self._create()
             if self.cancelled.is_set():
@@ -123,6 +120,8 @@ class PlanningRun:
                 '/usr/bin/env',
                 'PAI_PLANNING_CWD=' + self.remote_work,
                 'PAI_MODEL=' + self.payload['model'],
+                'PAI_PROVIDER_PROFILE=' + self.payload['providerProfile'],
+                'PAI_PROVIDER_ENDPOINT=' + self.payload['endpoint'],
                 'PAI_PLANNING_MAX_TOKENS=' + str(max_tokens),
                 '/opt/hermes/.venv/bin/python',
                 '/opt/pai/planning_acp_runner.py',

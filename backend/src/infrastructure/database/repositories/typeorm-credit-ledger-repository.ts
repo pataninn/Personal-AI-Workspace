@@ -2,7 +2,7 @@ import type { DataSource, QueryRunner } from 'typeorm';
 import { canonicalCreditTimeZone, creditDailyWindowAt, nextCreditTimeZoneChangeBoundary, utcDailyWindowAt } from '@/modules/credits/domain/credit-time-windows';
 import { ProviderCreditAdmissionDeniedError } from '@/modules/credits/domain/credit-errors';
 import { creditUnitsForUsage, POSTGRES_BIGINT_MAX } from '@/modules/credits/domain/credit-calculation';
-import type { ICreditLedgerRepository, CreditReservationCommand, CreditSettlementCommand, AccountTimeZoneChangeCommand } from '@/modules/credits/repositories/credit-ledger-repository';
+import type { ICreditLedgerRepository, CreditReservationCommand, CreditSettlementCommand, AccountTimeZoneChangeCommand, HomeTurnProviderCallUsageRow } from '@/modules/credits/repositories/credit-ledger-repository';
 import type { CreditCallSourceKind, ProviderCallCreditReservation, ProviderCallSettlementResult } from '@/modules/credits/repositories/provider-call-credit-admission';
 import type { CreditDenialReason } from '@/modules/credits/domain/credit-errors';
 
@@ -65,6 +65,48 @@ interface ReservationRow {
  */
 export class TypeOrmCreditLedgerRepository implements ICreditLedgerRepository {
   public constructor(private readonly dataSource: DataSource) {}
+
+  public async listHomeTurnProviderCallUsage(ownerId: string, homeTurnId: string): Promise<readonly HomeTurnProviderCallUsageRow[]> {
+    const rows: readonly {
+      readonly status: HomeTurnProviderCallUsageRow['status'];
+      readonly provider_profile: string;
+      readonly provider_model: string;
+      readonly input_tokens: string | number | null;
+      readonly output_tokens: string | number | null;
+      readonly charged_units: string | null;
+    }[] = await this.dataSource.query(`
+      SELECT r."status",r."provider_profile",r."provider_model",
+        u."input_tokens",u."output_tokens",u."charged_units"
+      FROM "credit_provider_call_reservations" r
+      LEFT JOIN "credit_usage_entries" u ON u."reservation_id"=r."id" AND u."owner_id"=$1
+        AND u."source_kind"='home_turn' AND u."source_id"=$2
+      WHERE r."owner_id"=$1 AND r."source_kind"='home_turn' AND r."source_id"=$2
+      ORDER BY r."created_at",r."id"
+    `, [ownerId, homeTurnId]);
+    return rows.map((row) => {
+      const inputTokens = safeTokenCount(row.input_tokens);
+      const outputTokens = safeTokenCount(row.output_tokens);
+      const usage = inputTokens !== undefined && outputTokens !== undefined && row.charged_units !== null
+        ? { inputTokens, outputTokens, chargedUnits: row.charged_units }
+        : undefined;
+      return {
+        status: row.status,
+        providerProfile: row.provider_profile,
+        model: row.provider_model,
+        ...(usage ? { usage } : {})
+      };
+    });
+  }
+
+  public async retainHomeTurnInFlightCallsUnknown(ownerId: string, homeTurnId: string): Promise<number> {
+    const rows = queryRows<{ readonly id: string }>(await this.dataSource.query(`
+      UPDATE "credit_provider_call_reservations"
+      SET "status"='unknown',"unknown_reason"='home_turn_interrupted'
+      WHERE "owner_id"=$1 AND "source_kind"='home_turn' AND "source_id"=$2 AND "status"='in_flight'
+      RETURNING "id"
+    `, [ownerId, homeTurnId]));
+    return rows.length;
+  }
 
   public async reserveProviderCall(command: CreditReservationCommand): Promise<ProviderCallCreditReservation> {
     return this.inTransaction(async (runner) => {
@@ -525,6 +567,12 @@ function enforceLimit(limit: string | null, counter: CounterRow, requested: bigi
   if (current + requested > BigInt(limit)) throw denied('limit_exceeded');
 }
 
+function queryRows<T>(value: unknown): readonly T[] {
+  if (!Array.isArray(value)) return [];
+  if (value.length === 2 && Array.isArray(value[0]) && typeof value[1] === 'number') return value[0] as readonly T[];
+  return value as readonly T[];
+}
+
 function whereKeys(keys: Record<string, string | Date>): { predicate: string; values: readonly (string | Date)[] } {
   const columns = Object.keys(keys);
   const values = Object.values(keys);
@@ -540,6 +588,11 @@ function toDate(value: Date | string | null | undefined): Date | undefined {
 
 function safeUnknownReason(reason: string): string {
   return /^[a-z0-9_-]{1,64}$/u.test(reason) ? reason : 'provider_outcome_unknown';
+}
+
+function safeTokenCount(value: string | number | null): number | undefined {
+  const parsed = typeof value === 'number' ? value : value === null ? NaN : Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 function denied(reason: CreditDenialReason): ProviderCreditAdmissionDeniedError {
