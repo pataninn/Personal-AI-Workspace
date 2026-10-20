@@ -3,6 +3,7 @@ import type { DataSource, QueryRunner } from 'typeorm';
 import { AppError } from '@/shared/errors/app-error';
 import { SKILL_TOOL_CAPABILITIES, type SkillToolCapability } from '@/modules/skills/domain/skill-types';
 import type { SkillContextRevision, SkillInvocation, SkillInvocationState } from '@/modules/skills/domain/skill-invocation-types';
+import type { SkillRunSourceSummary, SkillRunTurnSummary } from '@/modules/skills/domain/skill-run-summary-types';
 import type { ClaimSkillInvocationRecord, ISkillInvocationRepository } from '@/modules/skills/repositories/skill-invocation-repository';
 
 interface SkillInvocationRow {
@@ -24,6 +25,14 @@ interface SkillInvocationRow {
   readonly created_at: Date | string;
   readonly updated_at: Date | string;
   readonly current: boolean;
+}
+
+interface SkillRunTurnSummaryRow {
+  readonly turn_id: string;
+  readonly title: string;
+  readonly skill_version: number | string;
+  readonly state: SkillInvocationState;
+  readonly sources: unknown;
 }
 
 const INVOCATION_SELECT = `SELECT i."id", i."owner_id", i."conversation_id", i."skill_id", i."skill_revision_id", i."skill_version", i."request_key_digest", i."request_fingerprint", i."context_revisions", i."state", i."created_at", i."updated_at",
@@ -60,6 +69,22 @@ function toContextRevisions(value: unknown): readonly SkillContextRevision[] {
     revisions.push({ kind: record.kind, id: record.id, revision: Number(record.revision) });
   }
   return revisions;
+}
+
+function toRunSources(value: unknown): readonly SkillRunSourceSummary[] {
+  const parsed: unknown = typeof value === 'string' ? JSON.parse(value) as unknown : value;
+  if (!Array.isArray(parsed) || parsed.length > 33) throw new Error('The skill invocation repository returned invalid run sources.');
+  const sources: SkillRunSourceSummary[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('The skill invocation repository returned invalid run sources.');
+    const record = item as Record<string, unknown>;
+    if ((record.kind !== 'home_message' && record.kind !== 'project_fact') || !Number.isSafeInteger(record.revision)
+      || Number(record.revision) < 1 || (record.label !== null && typeof record.label !== 'string')) {
+      throw new Error('The skill invocation repository returned invalid run sources.');
+    }
+    sources.push({ kind: record.kind, revision: Number(record.revision), label: record.label });
+  }
+  return sources;
 }
 
 function toTools(value: unknown): readonly SkillToolCapability[] {
@@ -165,6 +190,47 @@ export class TypeOrmSkillInvocationRepository implements ISkillInvocationReposit
       [ownerId, conversationId, turnId]
     );
     return rows[0] ? toInvocation(rows[0]) : null;
+  }
+
+  public async listTurnSummaries(ownerId: string, conversationId: string, turnIds: readonly string[]): Promise<readonly SkillRunTurnSummary[]> {
+    if (turnIds.length === 0) return [];
+    const rows: readonly SkillRunTurnSummaryRow[] = await this.dataSource.query(
+      `SELECT h."id" AS "turn_id", r."title", i."skill_version", i."state",
+         COALESCE(jsonb_agg(jsonb_build_object(
+           'kind', source.value->>'kind',
+           'revision', source.value->'revision',
+           'label', CASE
+             WHEN source.value->>'kind' = 'home_message' AND message."id" IS NOT NULL THEN 'Home conversation context'
+             WHEN source.value->>'kind' = 'project_fact' AND fact."id" IS NOT NULL THEN fact."title"
+             ELSE NULL
+           END
+         ) ORDER BY source.position) FILTER (WHERE source.value IS NOT NULL), '[]'::jsonb) AS "sources"
+       FROM "home_turns" h
+       JOIN "skill_invocations" i ON i."owner_id" = h."owner_id" AND i."conversation_id" = h."conversation_id" AND i."id" = h."skill_invocation_id"
+       JOIN "skill_revisions" r ON r."owner_id" = i."owner_id" AND r."skill_id" = i."skill_id" AND r."id" = i."skill_revision_id" AND r."version" = i."skill_version"
+       JOIN "home_conversations" c ON c."owner_id" = h."owner_id" AND c."id" = h."conversation_id"
+       LEFT JOIN LATERAL jsonb_array_elements(i."context_revisions") WITH ORDINALITY source(value, position) ON TRUE
+       LEFT JOIN "home_messages" message ON source.value->>'kind' = 'home_message'
+         AND message."owner_id" = h."owner_id" AND message."conversation_id" = h."conversation_id"
+         AND message."id"::text = source.value->>'id' AND message."sequence"::text = source.value->>'revision'
+       LEFT JOIN "project_facts" fact ON source.value->>'kind' = 'project_fact'
+         AND fact."owner_id" = h."owner_id" AND fact."project_id" = c."workspace_id"
+         AND fact."id"::text = source.value->>'id' AND fact."version"::text = source.value->>'revision'
+         AND fact."deleted_at" IS NULL
+       WHERE h."owner_id" = $1 AND h."conversation_id" = $2 AND h."id" = ANY($3::uuid[])
+       GROUP BY h."id", h."sequence", r."title", i."skill_version", i."state"
+       ORDER BY h."sequence" ASC`,
+      [ownerId, conversationId, turnIds]
+    );
+    return rows.map((row) => ({
+      turnId: row.turn_id,
+      summary: {
+        title: row.title,
+        skillVersion: Number(row.skill_version),
+        state: row.state,
+        sources: toRunSources(row.sources)
+      }
+    }));
   }
 
   public async updateState(ownerId: string, invocationId: string, state: SkillInvocationState): Promise<SkillInvocation | null> {

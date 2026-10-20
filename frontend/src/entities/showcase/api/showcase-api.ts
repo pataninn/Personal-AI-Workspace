@@ -8,6 +8,7 @@ import type {
   ShowcasePreview,
   ShowcasePreviewFact,
   ShowcasePreviewFile,
+  ShowcasePreviewSkill,
   ShowcasePreviewTask,
   ShowcasePublishResult,
   ShowcaseSkill,
@@ -115,6 +116,7 @@ function normalizeShowcasePreview(value: unknown): ShowcasePreview {
     project: normalizeProject(project),
     tasks: readArray(record?.tasks, normalizePreviewTask),
     facts: readArray(record?.facts, normalizePreviewFact),
+    skills: record?.skills === undefined ? [] : readArray(record.skills, normalizePreviewSkill),
     files: readArray(record?.files, normalizePreviewFile),
     previewDigest: readHash(record?.previewDigest),
     sourceRevision: readHash(record?.sourceRevision),
@@ -200,6 +202,15 @@ function normalizePreviewTask(value: unknown): ShowcasePreviewTask {
 function normalizePreviewFact(value: unknown): ShowcasePreviewFact {
   const record = asRecord(value);
   return { title: readString(record?.title), content: readString(record?.content) };
+}
+
+function normalizePreviewSkill(value: unknown): ShowcasePreviewSkill {
+  const record = asRecord(value);
+  return {
+    title: readString(record?.title),
+    instructions: readString(record?.instructions),
+    declaredTools: readArray(record?.declaredTools, readString)
+  };
 }
 
 function normalizePreviewFile(value: unknown): ShowcasePreviewFile {

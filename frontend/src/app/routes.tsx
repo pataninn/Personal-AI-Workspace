@@ -17,6 +17,7 @@ import { NotFoundPage } from '@/pages/not-found';
 import { ShowcasePage } from '@/pages/showcase';
 import { AdminShowcasePage } from '@/pages/admin-showcase';
 import { AdminPortalPage } from '@/pages/admin-portal';
+import { SkillsPage } from '@/pages/skills';
 import { UsagePage } from '@/pages/usage';
 import { selectSessionErrorCode, selectSessionStatus } from '@/entities/user-session';
 import { useAppSelector } from '@/app/store/hooks';
@@ -75,6 +76,7 @@ export const router = createBrowserRouter([
                   { path: 'projects/:projectId/tasks', element: <ProjectTasksPage /> },
                   { path: 'projects/:projectId/activity', element: <ProjectActivityPage /> },
                   { path: 'projects/:projectId/file-history', element: <ProjectFileHistoryPage /> },
+                  { path: 'projects/:projectId/skills', element: <SkillsPage /> },
                   { path: 'projects/:projectId/planning-chat', element: <WorkspacePlanningChatPage /> },
                   { path: 'projects/:projectId/conversations', element: <ProjectWorkspacePage /> },
                   { path: 'projects/:projectId/conversations/:conversationId', element: <ProjectWorkspacePage /> },

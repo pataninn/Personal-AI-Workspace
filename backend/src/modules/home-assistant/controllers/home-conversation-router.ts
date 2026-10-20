@@ -14,6 +14,8 @@ import type { GetHomeTurnUseCase } from '@/modules/home-assistant/use-cases/get-
 import type { CancelHomeTurnUseCase } from '@/modules/home-assistant/use-cases/cancel-home-turn';
 import type { ListHomeMessagesUseCase } from '@/modules/home-assistant/use-cases/list-home-messages';
 import type { ListHomeEventsUseCase } from '@/modules/home-assistant/use-cases/list-home-events';
+import type { ListHomeSkillRunSummariesUseCase } from '@/modules/skills/use-cases/list-home-skill-run-summaries';
+import type { SkillRunSummary } from '@/modules/skills/domain/skill-run-summary-types';
 import { authenticateRequest, requireCsrf, sameOrigin } from '@/modules/auth/controllers/request-auth';
 import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
 import { AppError } from '@/shared/errors/app-error';
@@ -36,6 +38,7 @@ export interface HomeConversationRouterDependencies {
   readonly createConversation: CreateHomeConversationUseCase;
   readonly getConversation: GetHomeConversationUseCase;
   readonly listTurns: ListHomeTurnsUseCase;
+  readonly listSkillRunSummaries?: ListHomeSkillRunSummariesUseCase;
   readonly submitTurn: SubmitHomeTurnUseCase;
   readonly decideConsent: DecideHomeConsentUseCase;
   readonly getTurn: GetHomeTurnUseCase;
@@ -113,14 +116,15 @@ function serializeConversation(value: HomeConversation): Record<string, unknown>
   };
 }
 
-function serializeTurn(value: HomeTurn): Record<string, unknown> {
+function serializeTurn(value: HomeTurn, skillRun?: SkillRunSummary): Record<string, unknown> {
   return {
     id: value.id,
     conversationId: value.conversationId,
     sequence: value.sequence,
     status: value.status,
     createdAt: value.createdAt.toISOString(),
-    updatedAt: value.updatedAt.toISOString()
+    updatedAt: value.updatedAt.toISOString(),
+    ...(skillRun ? { skillRun } : {})
   };
 }
 
@@ -203,7 +207,11 @@ export function createHomeConversationRouter(dependencies: HomeConversationRoute
       ownerId: ownerId(request), conversationId, limit: parseLimit(request.query.limit),
       ...(afterSequence === undefined ? {} : { afterSequence })
     });
-    sendData(response, { turns: result.turns.map(serializeTurn), nextAfterSequence: result.nextAfterSequence });
+    const summaries = await dependencies.listSkillRunSummaries?.execute({
+      ownerId: ownerId(request), conversationId, turnIds: result.turns.map((turn) => turn.id)
+    }) ?? [];
+    const summaryByTurnId = new Map(summaries.map((entry) => [entry.turnId, entry.summary]));
+    sendData(response, { turns: result.turns.map((turn) => serializeTurn(turn, summaryByTurnId.get(turn.id))), nextAfterSequence: result.nextAfterSequence });
   }));
 
   router.post('/home/conversations/:conversationId/turns', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, route(async (request, response) => {
@@ -227,7 +235,8 @@ export function createHomeConversationRouter(dependencies: HomeConversationRoute
     const conversationId = parseUuid(request.params.conversationId, new HomeConversationNotFoundError());
     const turnId = parseUuid(request.params.turnId, new HomeTurnNotFoundError());
     const result = await dependencies.getTurn.execute({ ownerId: ownerId(request), conversationId, turnId });
-    sendData(response, serializeTurn(result));
+    const summaries = await dependencies.listSkillRunSummaries?.execute({ ownerId: ownerId(request), conversationId, turnIds: [result.id] }) ?? [];
+    sendData(response, serializeTurn(result, summaries[0]?.summary));
   }));
 
   router.post('/home/conversations/:conversationId/turns/:turnId/cancellation', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, route(async (request, response) => {

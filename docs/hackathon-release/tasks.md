@@ -5,7 +5,7 @@
 **Last Updated:** 2026-10-20
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution resumed2026-10-20. Seventeen tasks delivered; latest verified `a327237c0d3e667a36a77f9f4dee71a281ea2b75`. Task6.3 skill interface and Task7.1 scheduler/cleanup work resumed from preserved checkpoints. Task6.4 architecture preparation may proceed independently; implementation waits for dependencies. No deployment started.
+**Status:** Execution active. Eighteen tasks delivered; latest verified `dba6d049688173b6ac1ff71f5e23eddc6401baad` (7.1 durable scheduler). Task6.3 QA2PASS and scopedcommit next. Export/briefing implementation follows; no deployment started.
 
 **Current execution boundary (user update):** User resumed the goal2026-10-20. Complete all remaining tasks through7.3 including5.4, independently verify and locally commit them, then stop for user review before deployment8.x or acceptance9.x. No push authorized.
 
@@ -801,7 +801,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-6-4-workspace-export/artifacts/`
-- `Current status:` Architecture preflight, UI specification and developer contract preparation complete. Contract defines bounded portable JSON, authenticated expiring download, idempotency and cleanup/path/size fences. No export code/tests; implementation waits delivered7.1 and coordinated next migration slot.
+- `Current status:` Developer_export_luna implementation active after delivered7.1; preflight/UI/contract complete. Own bounded export module/file enumeration/Usage/lifecycle tests; migration0040 reserved. Sharedcomposition/OpenAPI/registry held until6.3stagedblob freeze. No export validation or finalQA yet.
 
 **Description:** Export an owned mutable workspace's permitted files and structured data, and show credit/storage usage in settings.
 
@@ -826,7 +826,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 7.1 â€” Implement durable daily schedules and job claiming
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** developer, tester
 **Depends on:** 3.1, 3.5, 6.2
 **Risk:** High: duplicate work, timezones, and restart behavior
@@ -841,22 +841,22 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-7-1-durable-scheduler/artifacts/`
-- `Current status:` IndependentQAcycle1 PASS. Tester reranDST/worker2suites8testsPASS and reusedaccurateschedulerPG4/4/freshchildrestart/cleanup1PASS3skips/lifecycle4suites8/types/build proof. No functional/security blockers; Lowclaim-index debt and cohesivefilelengthguideline exception logged. Exact48source/runtime+9taskdocs+globaltracker commit preparation next; nohashyet.
+- `Current status:` Delivered `dba6d049688173b6ac1ff71f5e23eddc6401baad` after independentQA1PASS. Exact58paths rootverified:48source/runtime+9taskdocs+globaltracker, noextra/missing, branchcorrect/indexempty/protected7filehashesunchanged. CommittedAPI/DIexcludes6.3summary, registry0038only. IsolatedstagedbackendtypesPASS. Scheduler4/4, cleanup1PASS3skips, freshchildrestart and separateworker lifecycle/build proofaccepted. Lowindexdebt/guidelineexceptionlogged; no paidprovider/deploymentclaim.
 
 **Description:** Add PostgreSQL schedule/occurrence/lease persistence and independent worker execution using the shared runtime authorization path.
 
 **Subtasks:**
 
-- [ ] Implement daily local-time/IANA scheduling, pause/update, next due UTC, unique occurrence keys, and Run now keys.
-- [ ] Implement leases/heartbeats/fenced commits, catch-up coalescing, bounded retry, and unknown-inference reconciliation.
-- [ ] Recheck owner/expiry/skill/context permissions and credit/storage limits at execution.
+- [x] Implement daily local-time/IANA scheduling, pause/update, next due UTC, unique occurrence keys, and Run now keys.
+- [x] Implement leases/heartbeats/fenced commits, catch-up coalescing, bounded retry, and unknown-inference reconciliation.
+- [x] Recheck owner/expiry/skill/context permissions and credit/storage limits at execution.
 
 **Definition of Done:**
 
-- [ ] Two workers cannot commit duplicate occurrence results; DST/downtime fixtures pass; pause/disable/expiry blocks late work; process restart preserves schedules.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
-- [ ] Developer-owned contract implemented and verified before task closure.
+- [x] Two workers cannot commit duplicate occurrence results; DST/downtime fixtures pass; pause/disable/expiry blocks late work; process restart preserves schedules.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Developer-owned contract implemented and verified before task closure.
 
 **Upstream Outputs Needed:** Architecture sections 9.1; completed dependency outputs.
 
@@ -879,7 +879,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-7-2-briefing-workflow/artifacts/`
-- `Current status:` Architecture and developer contract preparation complete; no7.2code/tests. Implement bounded actual task-source refs separately from immutable invocation fingerprint and existing Home bridge per-call admission/usage receipt/owner-scoped ledger projection. Inference stays fail-closed until implemented/proven. Implementation waits delivered7.1.
+- `Current status:` Developer_briefing_luna implementation active after delivered7.1; preflight/contract complete. Own bounded task source refs and existing Home bridge per-send credit admission/receipt/historical ledger projection. Migration0039 reserved; sharedfiles held for6.3commit isolation. No7.2runtimeproof/finalQA yet.
 
 **Description:** Invoke the Daily briefing skill with current tasks/deadlines/notes/memory and save a dated result via existing conversations.
 
@@ -1113,9 +1113,9 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | 6.1 â€” Make memory and selected context visibly control future runs | `[x]` | PASS; `633cbeecd934ddd0e1042441158f91ca5e98435e`; accepted Low selector debt |
 | 6.2 â€” Persist editable user skills with bounded invocation | `[x]` | PASS; `ddc2a355f6f3886048433cea7a6a28de08891261`; Low title-length debt |
 | 6.3 â€” Expose editable skills and a working Plan my day flow | `[~]` | QA2PASS; scopedcommit waits7.1delivery/sharedpredicate |
-| 6.4 â€” Add bounded portable workspace export and usage settings | `[~]` | Architecture/UI/contract complete; implementation waits7.1 |
-| 7.1 â€” Implement durable daily schedules and job claiming | `[~]` | QA1PASS; exact58path scopedlocalcommit pending |
-| 7.2 â€” Produce and persist useful daily briefings | `[~]` | Architecture/contract complete; implementation waits7.1 |
+| 6.4 â€” Add bounded portable workspace export and usage settings | `[~]` | Export implementation active; migration0040 reserved |
+| 7.1 — Implement durable daily schedules and job claiming | `[x]` | Delivered `dba6d049688173b6ac1ff71f5e23eddc6401baad`; QA1PASS/rootaudit58paths |
+| 7.2 â€” Produce and persist useful daily briefings | `[~]` | Briefing/bridge admission implementation active; migration0039 reserved |
 | 7.3 â€” Add schedule controls, Run now, and run history | `[~]` | UI spec/contract complete; implementation waits7.2 |
 | 8.1 â€” Prepare persistent host, proxy, worker, and migration deployment | `[ ]` | Pending |
 | 8.2 â€” Verify trusted HTTPS and real NVIDIA inference on public topology | `[ ]` | Pending |
@@ -1124,7 +1124,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ## Blocked Items and implementation-time inputs
 
-Seventeen tasks are delivered as listed in Plan Summary. Goal resumed2026-10-20. Remaining through7.3:5.4,6.3,6.4,7.1,7.2,7.3. Use Luna/max specialists and focused checks; finish working scope, then stop for review before deployment8.x/acceptance9.x.
+Eighteen tasks are delivered as listed in Plan Summary. Remainingthrough7.3:5.4,6.3,6.4,7.2,7.3.6.3QA2PASS awaits scopedcommit. Goalcontinues withLuna/max specialists andfocusedchecks; stopforuserreview before8.x/9.x. Migration0039reserved7.2source metadata,0040reserved6.4export metadata; serialize registry/sharedhunks.
 
 - Task 8.1/8.2 needs the real deployment host/domain and DNS/certificate access. Do not claim the local self-signed setup fixes public browser trust.
 - Credit enforcement requires actual provider pricing and a way to bound/meter all Hermes calls. Public AI access stays disabled if that cannot be established.

@@ -111,6 +111,7 @@ import { TypeOrmSkillInvocationRepository } from '@/infrastructure/database/repo
 import { TypeOrmAutomationRepository } from '@/infrastructure/database/repositories/typeorm-automation-repository';
 import { BuildShowcasePreviewUseCase, PublishShowcaseUseCase } from '@/modules/showcases/use-cases/showcase-use-cases';
 import { CreateSkillUseCase, DeleteSkillUseCase, GetSkillUseCase, InvokeSkillUseCase, ListSkillsUseCase, UpdateSkillUseCase } from '@/modules/skills';
+import { ListHomeSkillRunSummariesUseCase } from '@/modules/skills/use-cases/list-home-skill-run-summaries';
 import { AdminPortalUseCases } from '@/modules/admin-portal';
 import { TypeOrmAdminPortalRepository } from '@/infrastructure/database/repositories/typeorm-admin-portal-repository';
 import {
@@ -455,6 +456,7 @@ export async function createApplication(
           createConversation: new CreateHomeConversationUseCase(homeConversationRepository),
           getConversation: new GetHomeConversationUseCase(homeConversationRepository),
           listTurns: new ListHomeTurnsUseCase(homeConversationRepository),
+          listSkillRunSummaries: new ListHomeSkillRunSummariesUseCase(skillInvocationRepository),
           submitTurn: submitHomeTurn,
           decideConsent: new DecideHomeConsentUseCase(homeConversationRepository, homePlanningRuntime, homePlanningProvider, homeToolResultConsentGate),
           getTurn: getHomeTurn,

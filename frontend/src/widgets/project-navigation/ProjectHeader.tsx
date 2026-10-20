@@ -20,6 +20,7 @@ export function ProjectHeader({ onRemove }: ProjectHeaderProps): React.JSX.Eleme
   const destinations = [
     ...(!hasFileAccess ? [{ suffix: 'planning-chat', label: 'Planning chat', testId: `project-planning-chat-nav-${projectId}` }] : []),
     ...(hasFileAccess ? [{ suffix: 'context', label: 'Context', testId: `project-context-nav-${projectId}` }] : []),
+    { suffix: 'skills', label: 'Skills', testId: `project-skills-nav-${projectId}` },
     { suffix: 'memory', label: 'Memory', testId: `project-memory-nav-${projectId}` },
     { suffix: 'tasks', label: 'Tasks', testId: `project-tasks-nav-${projectId}` },
     ...(hasFileAccess ? [

@@ -29,10 +29,14 @@ function buildApp(): {
   readonly submitTurn: jest.Mock;
   readonly listEvents: jest.Mock;
   readonly listConversations: jest.Mock;
+  readonly listTurns: jest.Mock;
+  readonly listSkillRunSummaries: jest.Mock;
   readonly decideConsent: jest.Mock;
 } {
   const submitTurn = jest.fn(async (): Promise<HomeTurnSubmission> => ({ turn, message, replayed: false }));
   const listConversations = jest.fn();
+  const listTurns = jest.fn();
+  const listSkillRunSummaries = jest.fn();
   const decideConsent = jest.fn(async (): Promise<HomeConsentDecisionResponse> => ({
     turn: { ...turn, status: 'running' },
     disclosure: {
@@ -56,7 +60,8 @@ function buildApp(): {
     listConversations: { execute: listConversations },
     createConversation: { execute: jest.fn() },
     getConversation: { execute: jest.fn() },
-    listTurns: { execute: jest.fn() },
+    listTurns: { execute: listTurns },
+    listSkillRunSummaries: { execute: listSkillRunSummaries },
     submitTurn: { execute: submitTurn },
     decideConsent: { execute: decideConsent },
     getTurn: { execute: jest.fn() },
@@ -78,7 +83,7 @@ function buildApp(): {
     const appError = error instanceof AppError ? error : new AppError('INTERNAL_ERROR', 500, 'Internal server error.');
     response.status(appError.statusCode).json({ data: null, error: { code: appError.code, message: appError.message } });
   });
-  return { app, submitTurn, listEvents, listConversations, decideConsent };
+  return { app, submitTurn, listEvents, listConversations, listTurns, listSkillRunSummaries, decideConsent };
 }
 
 function mutationHeaders(): Record<string, string> {
@@ -221,5 +226,29 @@ describe('Home conversation routes', () => {
       lastEventSequence: 2
     });
     expect(listEvents).toHaveBeenCalledWith({ ownerId: OWNER_ID, conversationId: CONVERSATION_ID, afterSequence: 1, limit: 10 });
+  });
+
+  it('returns only the safe skill summary from the owner-scoped turn read', async () => {
+    const { app, listTurns, listSkillRunSummaries } = buildApp();
+    listTurns.mockResolvedValueOnce({ turns: [turn], nextAfterSequence: null });
+    listSkillRunSummaries.mockResolvedValueOnce([{
+      turnId: TURN_ID,
+      summary: {
+        title: 'Plan my day', skillVersion: 3, state: 'accepted',
+        sources: [{ kind: 'project_fact', revision: 5, label: null }]
+      }
+    }]);
+
+    const response = await request(app)
+      .get(`/api/v1/home/conversations/${CONVERSATION_ID}/turns?afterSequence=0`)
+      .set('Cookie', '__Host-pa_session=session-token');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.turns[0].skillRun).toEqual({
+      title: 'Plan my day', skillVersion: 3, state: 'accepted',
+      sources: [{ kind: 'project_fact', revision: 5, label: null }]
+    });
+    expect(response.body.data.turns[0].skillRun.sources[0]).not.toHaveProperty('id');
+    expect(listSkillRunSummaries).toHaveBeenCalledWith({ ownerId: OWNER_ID, conversationId: CONVERSATION_ID, turnIds: [TURN_ID] });
   });
 });

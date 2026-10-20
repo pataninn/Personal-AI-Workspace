@@ -31,6 +31,12 @@ export interface HomeTurnSnapshot {
   readonly conversationId: string;
   readonly sequence: number;
   readonly status: HomeTurnStatus;
+  readonly skillRun?: {
+    readonly title: string;
+    readonly skillVersion: number;
+    readonly state: 'claimed' | 'bound' | 'dispatching' | 'accepted' | 'unknown' | 'denied';
+    readonly sources: readonly { readonly kind: 'home_message' | 'project_fact'; readonly revision: number; readonly label: string | null }[];
+  };
   readonly createdAt: string;
   readonly updatedAt: string;
 }

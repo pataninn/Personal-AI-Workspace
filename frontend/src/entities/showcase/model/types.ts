@@ -73,6 +73,12 @@ export interface ShowcasePreviewFact {
   readonly content: string;
 }
 
+export interface ShowcasePreviewSkill {
+  readonly title: string;
+  readonly instructions: string;
+  readonly declaredTools: readonly string[];
+}
+
 export interface ShowcasePreviewFile {
   readonly name: string;
   readonly mediaType: string;
@@ -85,6 +91,7 @@ export interface ShowcasePreview {
   readonly project: { readonly name: string; readonly objective: string | null };
   readonly tasks: readonly ShowcasePreviewTask[];
   readonly facts: readonly ShowcasePreviewFact[];
+  readonly skills: readonly ShowcasePreviewSkill[];
   readonly files: readonly ShowcasePreviewFile[];
   readonly previewDigest: string;
   readonly sourceRevision: string;

@@ -10940,9 +10940,31 @@
           "sequence": { "type": "integer", "minimum": 1 },
           "status": { "type": "string", "enum": ["pending", "running", "cancel_requested", "completed", "partial", "failed", "cancelled", "unknown", "unsupported"] },
           "createdAt": { "type": "string", "format": "date-time" },
-          "updatedAt": { "type": "string", "format": "date-time" }
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "skillRun": { "$ref": "#/components/schemas/HomeSkillRunSummary" }
         },
         "required": ["id", "conversationId", "sequence", "status", "createdAt", "updatedAt"],
+        "additionalProperties": false
+      },
+      "HomeSkillRunSummary": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "skillVersion": { "type": "integer", "minimum": 1 },
+          "state": { "type": "string", "enum": ["claimed", "bound", "dispatching", "accepted", "unknown", "denied"] },
+          "sources": { "type": "array", "items": { "$ref": "#/components/schemas/HomeSkillRunSourceSummary" }, "maxItems": 33 }
+        },
+        "required": ["title", "skillVersion", "state", "sources"],
+        "additionalProperties": false
+      },
+      "HomeSkillRunSourceSummary": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string", "enum": ["home_message", "project_fact"] },
+          "revision": { "type": "integer", "minimum": 1 },
+          "label": { "type": "string", "nullable": true }
+        },
+        "required": ["kind", "revision", "label"],
         "additionalProperties": false
       },
       "HomeTurnEnvelope": {

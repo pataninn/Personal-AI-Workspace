@@ -62,7 +62,7 @@ function LocationProbe(): React.JSX.Element {
   return <output data-testid="route-location">{`${location.pathname}${location.search}`}</output>;
 }
 
-function renderPlanningChat(project: ProjectSnapshot): void {
+function renderPlanningChat(project: ProjectSnapshot, conversationId: string | null = 'conversation-1'): void {
   const projectState: ProjectState = {
     listStatus: 'success',
     projects: [project],
@@ -71,7 +71,8 @@ function renderPlanningChat(project: ProjectSnapshot): void {
   };
   const store = configureStore({ reducer: { project: projectReducer, userSession: userSessionReducer }, preloadedState: { project: projectState, userSession: SESSION } });
 
-  render(<Provider store={store}><MemoryRouter initialEntries={[`/projects/${PROJECT_ID}/planning-chat?conversation=conversation-1`]}><Routes>
+  const query = conversationId ? `?conversation=${encodeURIComponent(conversationId)}` : '';
+  render(<Provider store={store}><MemoryRouter initialEntries={[`/projects/${PROJECT_ID}/planning-chat${query}`]}><Routes>
     <Route path="/projects/:projectId/planning-chat" element={<WorkspacePlanningChatPage />} />
     <Route path="/projects/:projectId" element={<p data-testid="existing-project-chat">Existing project chat</p>} />
     <Route path="/dashboard" element={<p>Home</p>} />
@@ -109,10 +110,22 @@ describe('WorkspacePlanningChatPage', () => {
   it('redirects projects with file capability to the existing project chat', async () => {
     const project = workspace({ workspaceMode: 'file_backed', capabilities: { planning: true, fileAccess: true } });
     getProjectMock.mockResolvedValue(project);
-    renderPlanningChat(project);
+    renderPlanningChat(project, null);
 
     expect(await screen.findByTestId('existing-project-chat')).toBeInTheDocument();
     expect(screen.getByTestId('route-location')).toHaveTextContent(`/projects/${PROJECT_ID}`);
     expect(screen.queryByTestId('planning-chat-widget')).not.toBeInTheDocument();
+  });
+
+  it('opens the saved Home result for a file-backed workspace only when a conversation is selected', async () => {
+    const project = workspace({ workspaceMode: 'file_backed', capabilities: { planning: true, fileAccess: true } });
+    getProjectMock.mockResolvedValue(project);
+    renderPlanningChat(project, 'saved-run');
+
+    const chat = await screen.findByTestId('planning-chat-widget');
+    expect(chat).toHaveAttribute('data-scope', 'workspace');
+    expect(chat).toHaveAttribute('data-workspace-id', PROJECT_ID);
+    expect(screen.getByTestId('route-location')).toHaveTextContent(`/projects/${PROJECT_ID}/planning-chat?conversation=saved-run`);
+    expect(screen.queryByTestId('existing-project-chat')).not.toBeInTheDocument();
   });
 });

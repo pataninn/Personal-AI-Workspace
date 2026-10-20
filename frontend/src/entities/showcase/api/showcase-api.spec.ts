@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { getCurrentShowcase } from '@/entities/showcase/api/showcase-api';
+import { getCurrentShowcase, previewShowcase } from '@/entities/showcase/api/showcase-api';
 
 function publicResponse(data: Record<string, unknown>): Response {
   return {
@@ -40,5 +40,17 @@ describe('showcase public API', () => {
       }]
     });
     await expect(getCurrentShowcase()).resolves.toMatchObject({ skills: [] });
+  });
+
+  it('normalizes the server-reviewed skill preview without source identity fields', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(publicResponse({
+      project: { name: 'Sample', objective: null }, tasks: [], facts: [],
+      skills: [{ title: 'Plan helper', instructions: 'Prioritize open work.', declaredTools: ['home_task_read'] }],
+      files: [], previewDigest: 'a'.repeat(64), sourceRevision: 'b'.repeat(64),
+      totals: { itemCount: 1, fileCount: 0, snapshotBytes: 10 }, exclusions: []
+    })));
+
+    await expect(previewShowcase({ projectId: '11111111-1111-4111-8111-111111111111', selection: { taskIds: [], factIds: [], skillIds: [], filePaths: [] } }, 'csrf'))
+      .resolves.toMatchObject({ skills: [{ title: 'Plan helper', instructions: 'Prioritize open work.', declaredTools: ['home_task_read'] }] });
   });
 });

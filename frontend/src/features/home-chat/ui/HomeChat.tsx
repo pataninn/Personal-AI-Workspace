@@ -178,6 +178,7 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
                 <span className="home-chat-message-role">{message.role === 'user' ? 'You' : 'Assistant'}</span>
                 <div className="home-chat-message-body">{message.role === 'assistant' ? <MarkdownContent content={message.content} /> : <p>{message.content}</p>}</div>
                 {status ? <span className={`home-chat-turn-status home-chat-turn-status-${statusClass(status)}`} data-turn-id={message.turnId}>{status}</span> : null}
+                {message.role === 'assistant' ? <SkillRunDetails turn={chat.turns.find((turn) => turn.id === message.turnId)} /> : null}
                 {message.role === 'assistant' ? <HomePlanningRecords records={planningRecords} turnId={message.turnId} allowUndo={allowUndo} /> : null}
               </li>;
             })}
@@ -242,6 +243,17 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
 
   </section>;
   return isAsk ? <DialogContent className="home-ask-dialog" data-testid="home-ask-dialog">{panel}</DialogContent> : panel;
+}
+
+function SkillRunDetails({ turn }: { readonly turn: ReturnType<typeof useHomeChat>['turns'][number] | undefined }): React.JSX.Element | null {
+  if (!turn?.skillRun) return null;
+  return <details className="mt-3 rounded-lg border border-[var(--color-border)] p-3" data-testid={`skill-run-details-${turn.id}`}>
+    <summary className="cursor-pointer text-sm font-medium">Run details · {turn.skillRun.title} v{turn.skillRun.skillVersion} · {turn.skillRun.state}</summary>
+    <div className="mt-3 grid gap-2 text-sm"><h3 className="font-medium">Sources used</h3>
+      {turn.skillRun.sources.length ? <ul className="grid gap-1">{turn.skillRun.sources.map((source, index) => <li key={`${source.kind}-${source.revision}-${index}`}>{source.label ?? 'Source unavailable'} · {source.kind.replaceAll('_', ' ')} · revision {source.revision}</li>)}</ul> : <p>No recorded context sources.</p>}
+      <Link className="w-fit text-[var(--color-link)] underline underline-offset-4" to="/usage">View aggregate usage</Link>
+    </div>
+  </details>;
 }
 
 interface HistoryListProps {

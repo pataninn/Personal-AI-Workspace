@@ -103,6 +103,10 @@ function ShowcaseContent({ showcase }: { readonly showcase: CurrentShowcase }): 
         <div><p className="product-label">Project notes</p><h2 id="showcase-facts-title" className="text-2xl font-semibold">Facts</h2></div>
         {showcase.facts.length ? <ul className="grid gap-4 md:grid-cols-2">{showcase.facts.map((fact) => <li key={fact.id}><Card className="h-full p-5"><h3 className="font-semibold">{fact.title}</h3><p className="mt-2 whitespace-pre-wrap text-[var(--color-text-muted)]">{fact.content}</p></Card></li>)}</ul> : <p className="text-[var(--color-text-muted)]">No project facts were included in this snapshot.</p>}
       </section>
+      <section className="grid gap-4" aria-labelledby="showcase-skills-title">
+        <div><p className="product-label">Reusable guidance</p><h2 id="showcase-skills-title" className="text-2xl font-semibold">Skills</h2></div>
+        {showcase.skills.length ? <ul className="grid gap-4 md:grid-cols-2">{showcase.skills.map((skill) => <li key={skill.id}><Card className="grid h-full gap-3 p-5"><h3 className="font-semibold">{skill.title}</h3><p className="whitespace-pre-wrap text-sm text-[var(--color-text-muted)]">{skill.instructions}</p><p className="text-xs text-[var(--color-text-muted)]">Declared tools: {skill.declaredTools.map((tool) => tool.replace(/^home_/u, '').replaceAll('_', ' ')).join(', ') || 'None'}</p></Card></li>)}</ul> : <p className="text-[var(--color-text-muted)]">No skills were included in this snapshot.</p>}
+      </section>
       <section className="grid gap-4" aria-labelledby="showcase-files-title">
         <div><p className="product-label">Included documents</p><h2 id="showcase-files-title" className="text-2xl font-semibold">Files</h2></div>
         {showcase.files.length ? <ul className="grid gap-3 md:grid-cols-2">{showcase.files.map((file) => <li key={file.id}><ShowcaseFileRow file={file} /></li>)}</ul> : <p className="text-[var(--color-text-muted)]">No files were included in this snapshot.</p>}

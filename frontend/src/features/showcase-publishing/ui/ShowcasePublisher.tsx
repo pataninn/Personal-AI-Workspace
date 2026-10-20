@@ -5,6 +5,7 @@ import { useAppSelector } from '@/app/store/hooks';
 import { listProjectFacts, type ProjectFact } from '@/entities/project-fact';
 import { listProjectTasks, type ProjectTask } from '@/entities/project-task';
 import { listProjects, type ProjectSnapshot } from '@/entities/project';
+import { listSkills, type UserSkill } from '@/entities/skill';
 import { flattenWorkspaceFiles, getWorkspaceTree, type WorkspaceFileCandidate } from '@/entities/workspace';
 import { getCurrentShowcase, previewShowcase, publishShowcase } from '@/entities/showcase';
 import type { ShowcasePreview, ShowcasePreviewRequest, ShowcasePublishResult, ShowcaseSelection } from '@/entities/showcase';
@@ -20,6 +21,7 @@ import { PreviewFileContent } from './PreviewFileContent';
 interface SourceItems {
   readonly tasks: readonly ProjectTask[];
   readonly facts: readonly ProjectFact[];
+  readonly skills: readonly UserSkill[];
   readonly files: readonly WorkspaceFileCandidate[];
   readonly filesTruncated: boolean;
 }
@@ -92,10 +94,11 @@ export function ShowcasePublisher(): React.JSX.Element {
     const filesPromise = project.capabilities.fileAccess
       ? getWorkspaceTree(project.id).then((tree) => ({ files: flattenWorkspaceFiles(tree), filesTruncated: tree.truncated }))
       : Promise.resolve({ files: [] as WorkspaceFileCandidate[], filesTruncated: false });
-    void Promise.all([listProjectTasks(project.id), listProjectFacts(project.id), filesPromise])
-      .then(([taskList, facts, files]) => {
+    void Promise.all([listProjectTasks(project.id), listProjectFacts(project.id), filesPromise, listSkills()])
+      .then(([taskList, facts, files, allSkills]) => {
         if (active) {
-          setSource({ tasks: taskList.tasks, facts, files: files.files, filesTruncated: files.filesTruncated });
+          const skills = allSkills.filter((skill) => skill.enabled && (skill.workspaceId === null || skill.workspaceId === project.id));
+          setSource({ tasks: taskList.tasks, facts, skills, files: files.files, filesTruncated: files.filesTruncated });
           setSourceState('loaded');
         }
       })
@@ -189,13 +192,13 @@ export function ShowcasePublisher(): React.JSX.Element {
           {projectsState === 'error' ? <Alert tone="error"><p>Active projects could not be loaded.</p><Button type="button" variant="secondary" onClick={() => setProjectsReload((value) => value + 1)}>Try again</Button></Alert> : null}
           {projectsState === 'loaded' && projects.length === 0 ? <p className="text-[var(--color-text-muted)]">No active projects are available to preview.</p> : null}
           {projectsState === 'loaded' && projects.length > 0 ? (
-            <select id="showcase-source-project" className="min-h-12 rounded-lg border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3" value={projectId} onChange={(event) => chooseProject(event.target.value)}>
+            <select id="showcase-source-project" className="min-h-12 rounded-lg border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3" value={projectId} onChange={(event) => chooseProject(event.target.value)} disabled={isPreviewing || isPublishing}>
               <option value="">Choose an active project</option>
               {projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           ) : null}
         </section>
-        {project ? <SelectionFields project={project} source={source} state={sourceState} selection={selection} onToggle={toggleSelection} onReload={() => setSourceReload((value) => value + 1)} /> : null}
+        {project ? <SelectionFields project={project} source={source} state={sourceState} selection={selection} disabled={isPreviewing || isPublishing} onToggle={toggleSelection} onReload={() => setSourceReload((value) => value + 1)} /> : null}
         {previewError ? <Alert tone="error" data-testid="showcase-preview-error">{previewError}</Alert> : null}
         <div className="flex flex-wrap gap-3">
           <Button type="button" variant="secondary" disabled={!project || sourceState !== 'loaded' || !csrfToken || isPreviewing} aria-busy={isPreviewing} onClick={() => { void requestPreview(); }}>
@@ -221,29 +224,34 @@ export function ShowcasePublisher(): React.JSX.Element {
   );
 }
 
-function SelectionFields({ project, source, state, selection, onToggle, onReload }: {
+function SelectionFields({ project, source, state, selection, disabled, onToggle, onReload }: {
   readonly project: ProjectSnapshot;
   readonly source: SourceItems | null;
   readonly state: LoadState;
   readonly selection: ShowcaseSelection;
+  readonly disabled: boolean;
   readonly onToggle: (kind: keyof ShowcaseSelection, value: string) => void;
   readonly onReload: () => void;
 }): React.JSX.Element {
   if (state === 'loading' || state === 'idle') return <div className="grid gap-4" aria-busy="true"><Skeleton className="h-20" /><Skeleton className="h-20" /><Skeleton className="h-20" /></div>;
-  if (state === 'error' || !source) return <Alert tone="error"><p>Project items could not be loaded safely.</p><Button type="button" variant="secondary" onClick={onReload}>Try again</Button></Alert>;
+  if (state === 'error' || !source) return <Alert tone="error"><p>Project items could not be loaded safely.</p><Button type="button" variant="secondary" onClick={onReload} disabled={disabled}>Try again</Button></Alert>;
   return (
     <div className="grid gap-6">
       <fieldset className="grid gap-3" aria-labelledby="showcase-tasks-label">
         <legend id="showcase-tasks-label" className="font-semibold">Tasks</legend>
-        {source.tasks.length ? source.tasks.map((task) => <label key={task.id} className="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3"><input type="checkbox" className="mt-1 size-4 accent-[var(--color-primary)]" checked={selection.taskIds.includes(task.id)} onChange={() => onToggle('taskIds', task.id)} /><span>{task.title}<span className="block text-sm text-[var(--color-text-muted)]">{task.status.replaceAll('_', ' ')} · {task.importance} priority</span></span></label>) : <p className="text-sm text-[var(--color-text-muted)]">No eligible tasks are available.</p>}
+        {source.tasks.length ? source.tasks.map((task) => <label key={task.id} className="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3"><input type="checkbox" className="mt-1 size-4 accent-[var(--color-primary)]" checked={selection.taskIds.includes(task.id)} onChange={() => onToggle('taskIds', task.id)} disabled={disabled} /><span>{task.title}<span className="block text-sm text-[var(--color-text-muted)]">{task.status.replaceAll('_', ' ')} · {task.importance} priority</span></span></label>) : <p className="text-sm text-[var(--color-text-muted)]">No eligible tasks are available.</p>}
       </fieldset>
       <fieldset className="grid gap-3" aria-labelledby="showcase-facts-label">
         <legend id="showcase-facts-label" className="font-semibold">Project facts</legend>
-        {source.facts.length ? source.facts.map((fact) => <label key={fact.id} className="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3"><input type="checkbox" className="mt-1 size-4 accent-[var(--color-primary)]" checked={selection.factIds.includes(fact.id)} onChange={() => onToggle('factIds', fact.id)} /><span>{fact.title}<span className="block text-sm text-[var(--color-text-muted)]">{fact.content}</span></span></label>) : <p className="text-sm text-[var(--color-text-muted)]">No active project facts are available.</p>}
+        {source.facts.length ? source.facts.map((fact) => <label key={fact.id} className="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3"><input type="checkbox" className="mt-1 size-4 accent-[var(--color-primary)]" checked={selection.factIds.includes(fact.id)} onChange={() => onToggle('factIds', fact.id)} disabled={disabled} /><span>{fact.title}<span className="block text-sm text-[var(--color-text-muted)]">{fact.content}</span></span></label>) : <p className="text-sm text-[var(--color-text-muted)]">No active project facts are available.</p>}
+      </fieldset>
+      <fieldset className="grid gap-3" aria-labelledby="showcase-skills-label">
+        <legend id="showcase-skills-label" className="font-semibold">Skills</legend>
+        {source.skills.length ? source.skills.map((skill) => <label key={skill.id} className="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3"><input type="checkbox" className="mt-1 size-4 accent-[var(--color-primary)]" checked={selection.skillIds.includes(skill.id)} onChange={() => onToggle('skillIds', skill.id)} disabled={disabled} /><span>{skill.title}<span className="block whitespace-pre-wrap text-sm text-[var(--color-text-muted)]">{skill.instructions}</span><span className="mt-1 block text-xs text-[var(--color-text-muted)]">Tools: {skill.declaredTools.join(', ') || 'None'}</span></span></label>) : <p className="text-sm text-[var(--color-text-muted)]">No enabled skills are eligible for this workspace.</p>}
       </fieldset>
       <fieldset className="grid gap-3" aria-labelledby="showcase-files-label">
         <legend id="showcase-files-label" className="font-semibold">Regular files</legend>
-        {!project.capabilities.fileAccess ? <p className="text-sm text-[var(--color-text-muted)]">This project has no file access.</p> : source.files.length ? source.files.map((file) => <label key={file.path} className="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3"><input type="checkbox" className="mt-1 size-4 accent-[var(--color-primary)]" checked={selection.filePaths.includes(file.path)} onChange={() => onToggle('filePaths', file.path)} /><span className="break-all">{file.path}<span className="block text-sm text-[var(--color-text-muted)]">{formatBytes(file.sizeBytes)}</span></span></label>) : <p className="text-sm text-[var(--color-text-muted)]">No regular files are available.</p>}
+        {!project.capabilities.fileAccess ? <p className="text-sm text-[var(--color-text-muted)]">This project has no file access.</p> : source.files.length ? source.files.map((file) => <label key={file.path} className="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3"><input type="checkbox" className="mt-1 size-4 accent-[var(--color-primary)]" checked={selection.filePaths.includes(file.path)} onChange={() => onToggle('filePaths', file.path)} disabled={disabled} /><span className="break-all">{file.path}<span className="block text-sm text-[var(--color-text-muted)]">{formatBytes(file.sizeBytes)}</span></span></label>) : <p className="text-sm text-[var(--color-text-muted)]">No regular files are available.</p>}
         {source.filesTruncated ? <p className="text-sm text-[var(--color-warning)]">The safe workspace listing is truncated. Only listed files can be included.</p> : null}
       </fieldset>
       <p className="text-sm text-[var(--color-text-muted)]">Nothing is selected automatically. Chats, histories, credentials, settings, and unselected items are excluded.</p>
@@ -263,6 +271,7 @@ function ShowcasePreviewCard({ preview, stale, onPublish, publishingDisabled }: 
       {stale ? <Alert tone="warning">This preview is stale. Refresh it before publishing.</Alert> : null}
       <section className="grid gap-3" aria-labelledby="preview-tasks-title"><h3 id="preview-tasks-title" className="font-semibold">Selected tasks</h3>{preview.tasks.length ? preview.tasks.map((task, index) => <Card key={`${task.title}-${index}`} className="grid gap-2 p-4"><p className="font-medium">{task.title}</p><p className="text-sm text-[var(--color-text-muted)]">{task.status.replaceAll('_', ' ')} · {task.importance}{task.deadline ? ` · Due ${task.deadline}` : ''}</p>{task.details ? <p className="whitespace-pre-wrap">{task.details}</p> : null}{task.checklist.length ? <ul className="grid gap-1">{task.checklist.map((item, itemIndex) => <li key={`${item.title}-${itemIndex}`}>{item.completed ? '✓' : '○'} {item.title}</li>)}</ul> : null}</Card>) : <p className="text-sm text-[var(--color-text-muted)]">No tasks selected.</p>}</section>
       <section className="grid gap-3" aria-labelledby="preview-facts-title"><h3 id="preview-facts-title" className="font-semibold">Selected facts</h3>{preview.facts.length ? preview.facts.map((fact, index) => <Card key={`${fact.title}-${index}`} className="p-4"><h4 className="font-medium">{fact.title}</h4><p className="mt-1 whitespace-pre-wrap">{fact.content}</p></Card>) : <p className="text-sm text-[var(--color-text-muted)]">No facts selected.</p>}</section>
+      <section className="grid gap-3" aria-labelledby="preview-skills-title"><h3 id="preview-skills-title" className="font-semibold">Selected skills</h3>{preview.skills.length ? preview.skills.map((skill, index) => <Card key={`${skill.title}-${index}`} className="grid gap-2 p-4"><h4 className="font-medium">{skill.title}</h4><p className="whitespace-pre-wrap text-sm">{skill.instructions}</p><p className="text-xs text-[var(--color-text-muted)]">Declared tools: {skill.declaredTools.join(', ') || 'None'}</p></Card>) : <p className="text-sm text-[var(--color-text-muted)]">No skills selected.</p>}</section>
       <section className="grid gap-3" aria-labelledby="preview-files-title"><h3 id="preview-files-title" className="font-semibold">Selected files and exact bytes</h3>{preview.files.length ? preview.files.map((file) => <Card key={file.name} className="grid gap-3 p-4"><h4 className="break-all font-medium">{file.name}</h4><PreviewFileContent file={file} /></Card>) : <p className="text-sm text-[var(--color-text-muted)]">No files selected.</p>}</section>
       <section className="grid gap-2" aria-labelledby="preview-exclusions-title"><h3 id="preview-exclusions-title" className="font-semibold">Excluded from the snapshot</h3><ul className="grid list-disc gap-1 pl-5 text-sm text-[var(--color-text-muted)]">{preview.exclusions.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul></section>
       <Button type="button" className="w-fit" disabled={publishingDisabled || stale} onClick={onPublish}>Publish showcase</Button>

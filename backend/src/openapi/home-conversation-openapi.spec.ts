@@ -70,4 +70,23 @@ describe('Home conversation OpenAPI contract', () => {
     expect(schemas.HomeConsentDecisionEnvelope).toBeDefined();
     expect(schemas.HomeConsentDisclosure).toBeDefined();
   });
+
+  it('documents an optional content-free skill summary on owner-scoped turn reads', () => {
+    const schemas = record(record(record(openApiDocument, 'OpenAPI document').components, 'components').schemas, 'schemas');
+    const turn = record(schemas.HomeTurn, 'HomeTurn');
+    const properties = record(turn.properties, 'HomeTurn properties');
+    expect(properties.skillRun).toEqual({ $ref: '#/components/schemas/HomeSkillRunSummary' });
+    expect(turn.required).not.toContain('skillRun');
+
+    const summary = record(schemas.HomeSkillRunSummary, 'HomeSkillRunSummary');
+    const summaryProperties = record(summary.properties, 'skill summary properties');
+    expect(summaryProperties.sources).toEqual({ type: 'array', items: { $ref: '#/components/schemas/HomeSkillRunSourceSummary' }, maxItems: 33 });
+    expect(summary.additionalProperties).toBe(false);
+
+    const source = record(schemas.HomeSkillRunSourceSummary, 'HomeSkillRunSourceSummary');
+    const sourceProperties = record(source.properties, 'source properties');
+    expect(sourceProperties.label).toMatchObject({ type: 'string', nullable: true });
+    expect(Object.keys(sourceProperties)).toEqual(['kind', 'revision', 'label']);
+    expect(source.additionalProperties).toBe(false);
+  });
 });

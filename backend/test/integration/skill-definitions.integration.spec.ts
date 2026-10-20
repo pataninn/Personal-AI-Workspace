@@ -1,12 +1,24 @@
 import type { DataSource, QueryRunner } from 'typeorm';
 
 import { createDataSource } from '@/infrastructure/database/data-source';
+import { TypeOrmHomeConversationRepository } from '@/infrastructure/database/repositories/typeorm-home-conversation-repository';
+import { TypeOrmProjectChatContextRepository } from '@/infrastructure/database/repositories/typeorm-project-chat-context-repository';
+import { TypeOrmProjectFactRepository } from '@/infrastructure/database/repositories/typeorm-project-fact-repository';
+import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories/typeorm-project-repository';
 import { TypeOrmProjectRemovalRepository } from '@/infrastructure/database/repositories/typeorm-project-removal-repository';
 import { TypeOrmSkillInvocationRepository } from '@/infrastructure/database/repositories/typeorm-skill-invocation-repository';
 import { TypeOrmSkillRepository } from '@/infrastructure/database/repositories/typeorm-skill-repository';
 import { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
 import { TypeOrmStorageRootMappingRepository } from '@/infrastructure/database/repositories/typeorm-storage-root-mapping-repository';
 import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import { ProjectChatContextUseCases } from '@/modules/ai-runs/use-cases/project-chat-context-use-cases';
+import type { AssistantScopePolicy } from '@/modules/assistant-policy/domain/assistant-scope-policy';
+import type { AssistantExecutionAuthorization } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
+import { GetHomeTurnUseCase } from '@/modules/home-assistant/use-cases/get-home-turn';
+import { InvokeSkillUseCase } from '@/modules/skills/use-cases/invoke-skill';
+import { ListHomeSkillRunSummariesUseCase } from '@/modules/skills/use-cases/list-home-skill-run-summaries';
+import type { HomePlanningProvider, IHomePlanningRuntime } from '@/modules/home-assistant/repositories/home-planning-runtime';
+import { SubmitHomeTurnUseCase, type HomeExecutionPolicyConfiguration, type HomeTurnRuntimeConfiguration } from '@/modules/home-assistant/use-cases/submit-home-turn';
 import { DeleteProjectUseCase } from '@/modules/projects/use-cases/delete-project';
 import type { IProjectRecoveryCleaner } from '@/modules/projects/repositories/project-removal-repository';
 
@@ -228,6 +240,117 @@ describeDatabase('Task 6.2 skill definitions PostgreSQL integration', () => {
     await expect(quota.readUsage(OWNER_ID)).resolves.toMatchObject({ state: 'ready', usedBytes: 0n, reservedBytes: 0n });
   });
 
+  it('persists a managed skill run and reloads its Home summary within the owning account', async () => {
+    const created = await skills.create({
+      ownerId: OWNER_ID, workspaceId: WORKSPACE_ID,
+      idempotencyKeyDigest: '4'.repeat(64), requestFingerprint: '5'.repeat(64),
+      title: 'Plan my day', instructions: 'Review saved workspace tasks.', enabled: true, declaredTools: ['home_task_read']
+    });
+    const source = requiredDataSource();
+    const factRepository = new TypeOrmProjectFactRepository(source, accounting);
+    const fact = await factRepository.create({
+      ownerId: OWNER_ID,
+      projectId: WORKSPACE_ID,
+      key: 'daily-focus',
+      title: 'Workspace priority',
+      content: 'Protect morning focus time for the migration.'
+    });
+    const chatContext = new TypeOrmProjectChatContextRepository(source);
+    await chatContext.update(OWNER_ID, WORKSPACE_ID, { factIds: [fact.id] });
+    const projectContext = new ProjectChatContextUseCases(
+      new TypeOrmProjectRepository(source, accounting), chatContext, factRepository, {} as never
+    );
+    const conversations = new TypeOrmHomeConversationRepository(requiredDataSource(), accounting);
+    const conversation = (await conversations.create({
+      ownerId: OWNER_ID, scope: { kind: 'workspace', workspaceId: WORKSPACE_ID }, title: 'Plan my day',
+      requestKey: 'managed-skill-conversation-create', requestFingerprint: '6'.repeat(64)
+    })).resource;
+    const provider: HomePlanningProvider = { profile: 'fixture-local', model: 'deterministic-test', endpoint: 'https://fixture.invalid' };
+    const runtime: IHomePlanningRuntime = {
+      supportsPolicyExecution: async () => true,
+      start: async ({ prompt }) => {
+        startedPrompts.push(prompt);
+        return { outcome: 'accepted' };
+      },
+      poll: async () => ({
+        status: 'completed',
+        events: [{ sequence: 1, type: 'assistant.delta', text: 'Plan: protect morning focus time for the migration.' }],
+        nextCursor: 1,
+        hasMore: false
+      }),
+      sendToolResult: async () => ({ accepted: true }),
+      cancel: async () => ({ outcome: 'confirmed' }),
+      delete: async () => undefined
+    };
+    const runtimeConfiguration: HomeTurnRuntimeConfiguration = { mode: 'hermes', runtime, provider };
+    const policy = managedWorkspacePolicy(OWNER_ID, WORKSPACE_ID, provider);
+    const executionPolicy = {
+      assertHome: async (input: {
+        readonly ownerId: string;
+        readonly projectId?: string;
+        readonly providerProfile: string;
+        readonly model: string;
+        readonly homePolicyRevision?: string;
+        readonly workspacePolicyRevision?: string;
+      }) => {
+        if (input.ownerId !== OWNER_ID || input.projectId !== WORKSPACE_ID
+          || input.providerProfile !== provider.profile || input.model !== provider.model
+          || (input.homePolicyRevision !== undefined && input.homePolicyRevision !== '1')
+          || (input.workspacePolicyRevision !== undefined && input.workspacePolicyRevision !== '2')) {
+          throw new Error('The fixture policy revision changed.');
+        }
+        return policy;
+      }
+    };
+    const policyConfiguration: HomeExecutionPolicyConfiguration = {
+      executionPolicy,
+      providerProfile: provider.profile,
+      model: provider.model
+    };
+    const startedPrompts: string[] = [];
+    const submitTurn = new SubmitHomeTurnUseCase(
+      conversations,
+      runtimeConfiguration,
+      policyConfiguration,
+      { readSelectedFacts: (ownerId, projectId) => projectContext.getSelectedFacts(ownerId, projectId) }
+    );
+    const invoke = new InvokeSkillUseCase(skills, invocations, conversations, submitTurn);
+    const result = await invoke.execute({
+      ownerId: OWNER_ID, skillId: created.skill.id, conversationId: conversation.id,
+      expectedVersion: 1, requestKey: 'managed-skill-invocation-1', request: 'Plan my day.'
+    });
+    const turnId = result.invocation.turnId;
+    if (!turnId) throw new Error('The persisted skill invocation should have a Home turn.');
+    expect(result.invocation.state).toBe('running');
+    expect(result.invocation.contextRevisions).toEqual([{ kind: 'project_fact', id: fact.id, revision: fact.version }]);
+    expect(startedPrompts).toHaveLength(1);
+    expect(startedPrompts[0]).toContain('Protect morning focus time for the migration.');
+
+    const getTurn = new GetHomeTurnUseCase(conversations, runtime, undefined, undefined, policyConfiguration);
+    await expect(getTurn.execute({ ownerId: OWNER_ID, conversationId: conversation.id, turnId })).resolves.toMatchObject({
+      id: turnId, status: 'completed', homePolicyRevision: '1', workspacePolicyRevision: '2'
+    });
+    const savedMessages = await conversations.listMessagesForOwner({ ownerId: OWNER_ID, conversationId: conversation.id, limit: 10, transcriptOnly: true });
+    expect(savedMessages?.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'assistant', content: 'Plan: protect morning focus time for the migration.' })
+    ]));
+
+    const turns = await conversations.listTurnsForOwner({ ownerId: OWNER_ID, conversationId: conversation.id, limit: 10, afterSequence: 0 });
+    expect(turns?.turns.map((turn) => turn.id)).toContain(turnId);
+    const summaries = new ListHomeSkillRunSummariesUseCase(invocations);
+    const reloadedSummaries = await summaries.execute({ ownerId: OWNER_ID, conversationId: conversation.id, turnIds: [turnId] });
+    expect(typeof reloadedSummaries[0]?.summary.sources[0]?.revision).toBe('number');
+    expect(reloadedSummaries).toEqual([{
+      turnId, summary: {
+        title: 'Plan my day', skillVersion: 1, state: 'accepted',
+        sources: [{ kind: 'project_fact', revision: fact.version, label: 'Workspace priority' }]
+      }
+    }]);
+    expect(await conversations.findForOwner(OTHER_OWNER_ID, conversation.id)).toBeNull();
+    expect(await conversations.listTurnsForOwner({ ownerId: OTHER_OWNER_ID, conversationId: conversation.id, limit: 10, afterSequence: 0 })).toBeNull();
+    await expect(summaries.execute({ ownerId: OTHER_OWNER_ID, conversationId: conversation.id, turnIds: [turnId] })).resolves.toEqual([]);
+  });
+
   async function scanContent(ownerId: string) {
     const runner = requiredDataSource().createQueryRunner();
     await runner.connect();
@@ -249,6 +372,21 @@ describeDatabase('Task 6.2 skill definitions PostgreSQL integration', () => {
     return dataSource;
   }
 });
+
+function managedWorkspacePolicy(ownerId: string, workspaceId: string, provider: HomePlanningProvider): AssistantExecutionAuthorization {
+  const now = new Date('2026-10-20T00:00:00.000Z');
+  const homePolicy: AssistantScopePolicy = {
+    id: 'd6620000-0000-4000-8000-000000000116', ownerId, scopeKind: 'home', projectId: null,
+    policyProfile: 'home_in_scope_v1', providerProfile: provider.profile, model: provider.model,
+    enabled: true, revokedAt: null, revision: '1', createdAt: now, updatedAt: now
+  };
+  const workspacePolicy: AssistantScopePolicy = {
+    id: 'd6620000-0000-4000-8000-000000000117', ownerId, scopeKind: 'project', projectId: workspaceId,
+    policyProfile: 'workspace_in_scope_v1', providerProfile: provider.profile, model: provider.model,
+    enabled: true, revokedAt: null, revision: '2', createdAt: now, updatedAt: now
+  };
+  return { policies: [homePolicy, workspacePolicy], effectiveCapabilities: [], revisions: { home: '1', workspace: '2' } };
+}
 
 function skillBytes(title: string, instructions: string, tools: readonly string[]): bigint {
   return BigInt(Buffer.byteLength(title) + Buffer.byteLength(instructions) + Buffer.byteLength(JSON.stringify(tools)));
