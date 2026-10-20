@@ -2,10 +2,10 @@
 
 **Goal:** Deliver all requested UX, automatic tools, task editing/deletion, HTTPS, private demo and account controls, plus visible memory, reusable skills, data export, and always-on briefings.
 **Created:** 2026-10-19
-**Last Updated:** 2026-10-20
+**Last Updated:** 2026-10-21
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Twenty tasks delivered; latest verified `0b80a94ff4341aded468940bc530be744a361970` (7.2 briefing sources and metered provider calls). Export6.4 QA2 active; scheduleUI7.3 now eligible, finalaudit5.4 last. No deployment started.
+**Status:** Execution active. Twenty-one tasks delivered; latest verified `444a1048130558778e830af38b1b48a31672b878` (6.4 bounded private workspace export). ScheduleUI7.3 implementation active; finalaudit5.4 last. No deployment started.
 
 **Current execution boundary (user update):** User resumed the goal2026-10-20. Complete all remaining tasks through7.3 including5.4, independently verify and locally commit them, then stop for user review before deployment8.x or acceptance9.x. No push authorized.
 
@@ -786,7 +786,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 6.4 â€” Add bounded portable workspace export and usage settings
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** designer-ui-ux, developer, tester
 **Depends on:** 3.2, 6.2, 7.1
 **Risk:** High: cross-owner downloads and retention
@@ -801,7 +801,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-6-4-workspace-export/artifacts/`
-- `Current status:` Independent officialQA2 PASS after resolving all3 QA1 findings. Backend/frontend types, 3 exact PostgreSQL cases with clean guards, 2 route-stubbed browser cases and build PASS. QA independently reran changed5Jest suites/25 tests incl direct Windows temporary file/junction capture proof. Structured/file secrets reject safely, DB-clock expiry and injected probe verified. Linux artifact/proc runtime limits explicit. Scoped local commit/root audit pending; task remains in progress.
+- `Current status:` Delivered `444a1048130558778e830af38b1b48a31672b878` after independentQA2 PASS. Root verified exact48 paths (35 source,12 taskdocs/artifacts,globaltracker), no extras/missing; all12 canonical/app hashes equal, correct branch/empty index/protected7 hashes unchanged. Isolated staged backend/frontend app/node types, OpenAPI/diff checks PASS. QA independently reran5suites25tests; prior3PG/2preview PASS retained. Linux artifact/proc runtime limits explicit, no deployment claim.
 
 **Description:** Export an owned mutable workspace's permitted files and structured data, and show credit/storage usage in settings.
 
@@ -917,22 +917,22 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-7-3-automation-interface/artifacts/`
-- `Current status:` Developer_automation_ui_luna implementation active after delivered7.2. Existing UI specification/contract guide one-workspace schedules, Run now/pause/history/Home result links and in-app notice. Frontend-only ownership; no runtime validation or finalQA yet.
+- `Current status:` Independent officialQA1 PASS. Frontend types/build, developer Vitest3files8tests, tester existing2files4tests and six route-stubbed browser cases PASS. Canonical/app task folders match25files; acceptedLow selector/component-usage-doc checklist debt logged. No functional/security blocker, live backend/provider claim or deployment. Scoped local commit/root audit pending; task remains in progress.
 
 **Description:** Expose daily time/timezone/workspace selection, pause, Run now, and history/results using existing workspace navigation.
 
 **Subtasks:**
 
-- [ ] Display next run in the chosen timezone plus last outcome; validate selected mutable workspaces.
-- [ ] Handle disabled skills, expired demos, exhausted credits, active runs, and failed jobs.
-- [ ] Add unobtrusive in-app new-briefing notice; make a judge-triggered run discoverable.
+- [x] Display next run in the chosen timezone plus last outcome; validate selected mutable workspaces.
+- [x] Handle disabled skills, expired demos, exhausted credits, active runs, and failed jobs.
+- [x] Add unobtrusive in-app new-briefing notice; make a judge-triggered run discoverable.
 
 **Definition of Done:**
 
-- [ ] UI reflects server schedule state and result history; Run now needs no approval dialog; demo cannot schedule beyond access expiry or target showcase.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
-- [ ] Developer-owned contract implemented and verified before task closure.
+- [x] UI reflects server schedule state and result history; Run now needs no approval dialog; demo cannot schedule beyond access expiry or target showcase.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Developer-owned contract implemented and verified before task closure.
 
 **Upstream Outputs Needed:** Architecture sections 4.3, 9; Task 1.1 ui-spec.md and relevant task contracts; completed dependency outputs.
 
@@ -1113,10 +1113,10 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | 6.1 â€” Make memory and selected context visibly control future runs | `[x]` | PASS; `633cbeecd934ddd0e1042441158f91ca5e98435e`; accepted Low selector debt |
 | 6.2 â€” Persist editable user skills with bounded invocation | `[x]` | PASS; `ddc2a355f6f3886048433cea7a6a28de08891261`; Low title-length debt |
 | 6.3 — Expose editable skills and a working Plan my day flow | `[x]` | Delivered `127e722157b5858ac3886b24f22aa8b356a22ded`; QA2PASS/rootaudit46paths |
-| 6.4 â€” Add bounded portable workspace export and usage settings | `[~]` | Export implementation active; migration0040 reserved |
+| 6.4 â€” Add bounded portable workspace export and usage settings | `[x]` | Delivered `444a1048130558778e830af38b1b48a31672b878`; QA2PASS and root48-path audit |
 | 7.1 — Implement durable daily schedules and job claiming | `[x]` | Delivered `dba6d049688173b6ac1ff71f5e23eddc6401baad`; QA1PASS/rootaudit58paths |
 | 7.2 â€” Produce and persist useful daily briefings | `[x]` | Delivered `0b80a94ff4341aded468940bc530be744a361970`; QA1PASS and root46-path audit |
-| 7.3 â€” Add schedule controls, Run now, and run history | `[~]` | UI spec/contract complete; implementation starting after delivered7.2 |
+| 7.3 â€” Add schedule controls, Run now, and run history | `[~]` | UI checks PASS (types,8unit,6preview); final handoff/officialQA pending |
 | 8.1 â€” Prepare persistent host, proxy, worker, and migration deployment | `[ ]` | Pending |
 | 8.2 â€” Verify trusted HTTPS and real NVIDIA inference on public topology | `[ ]` | Pending |
 | 9.1 â€” Validate security, concurrency, restart, and complete user journeys | `[ ]` | Pending |
@@ -1159,6 +1159,7 @@ Accepted observations and follow-up work. The user priority update permits expli
 | Low | Task4.2 receipt lookup says Checking receipt in a plain span without a polite live status | Accepted minor accessibility refinement: receipt fetching and final applied/source labels work; add role=status or aria-live=polite later so assistive technology announces the transient lookup state. No data, authorization or mutation gate is waived. |
 | Low | Task4.3 focused storage-quota OpenAPI check finds seven Home/AI-run 413-response references already absent at baseline HEAD | Documentation/test drift outside task deletion; preserve the failing check and HEAD comparison in Task4.3 validation. Resolve retired-route expectations and active-route documentation during release validation. Task-owned project POST quota and canonical delete/archive schema checks must pass. |
 | Low | Task6.2 skill title length uses UTF-16 code units while contract/database character limits count Unicode code points | Accepted edge-case input friction: titles containing astral characters can be rejected earlier than the documented120-character maximum. Validation remains safely bounded. Align code-point counting and add a boundary test during later refinement; no owner/capability/quota validation is waived. |
+| Low | Task7.3 new controls do not all expose data-testid and components have no separate usage comments or Storybook stories | Accepted checklist debt under user speed priority, consistent with Task6.1 selector exception. Accessible labels/roles and focused unit/browser flows prove interaction; components have actual feature/page call sites. Optional test IDs and component usage documentation can follow later. No functional, security or accessibility requirement waived. Evidence: task-7-3-automation-interface/qa-report.md and dev-summary.md. |
 
 Do not defer account isolation, quota enforcement, expiry containment, trusted HTTPS, functional requested task/UX flows, or actual scheduled execution to meet a cosmetic launch date.
 

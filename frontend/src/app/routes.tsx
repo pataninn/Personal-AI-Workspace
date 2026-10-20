@@ -19,6 +19,7 @@ import { AdminShowcasePage } from '@/pages/admin-showcase';
 import { AdminPortalPage } from '@/pages/admin-portal';
 import { SkillsPage } from '@/pages/skills';
 import { UsagePage } from '@/pages/usage';
+import { AutomationsPage } from '@/pages/automations';
 import { selectSessionErrorCode, selectSessionStatus } from '@/entities/user-session';
 import { useAppSelector } from '@/app/store/hooks';
 import { getSafeReturnTo, loginPath } from '@/shared/lib/navigation';
@@ -68,6 +69,7 @@ export const router = createBrowserRouter([
                   { path: 'dashboard', element: <DashboardPage /> },
                   { path: 'admin', element: <AdminPortalPage /> },
                   { path: 'usage', element: <UsagePage /> },
+                  { path: 'automations', element: <AutomationsPage /> },
                   { path: 'tasks', element: <AllTasksPage /> },
                   { path: 'tasks/:taskId', element: <TaskDetailPage /> },
                   { path: 'projects/:projectId', element: <ProjectWorkspacePage /> },

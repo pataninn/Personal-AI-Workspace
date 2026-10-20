@@ -21,6 +21,7 @@ describe('application route registration', () => {
   it('adds planning chat while keeping existing project conversation routes', () => {
     const paths = routePaths(router.routes);
 
+    expect(paths).toContain('automations');
     expect(paths).toContain('projects/:projectId/planning-chat');
     expect(paths).toContain('projects/:projectId/conversations');
     expect(paths).toContain('projects/:projectId/conversations/:conversationId');

@@ -8,6 +8,12 @@ export async function listSkills(): Promise<readonly UserSkill[]> {
   return result.skills;
 }
 
+export async function listSkillsForWorkspace(workspaceId: string): Promise<readonly UserSkill[]> {
+  const query = new URLSearchParams({ workspaceId });
+  const result = await getJson<{ readonly skills: UserSkill[] }>(`${SKILLS_PATH}?${query.toString()}`);
+  return result.skills;
+}
+
 export async function listSkillTemplates(): Promise<readonly SkillTemplate[]> {
   const result = await getJson<{ readonly templates: SkillTemplate[] }>(`${SKILLS_PATH}/templates`);
   return result.templates;

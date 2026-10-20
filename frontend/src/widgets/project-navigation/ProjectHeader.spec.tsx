@@ -37,6 +37,7 @@ describe('ProjectHeader capability navigation', () => {
     expect(screen.getByRole('link', { name: 'Planning chat' })).toHaveAttribute('href', `/projects/${PROJECT_ID}/planning-chat`);
     expect(screen.getByRole('link', { name: 'Memory' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Tasks' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Automations' })).toHaveAttribute('href', `/automations?workspaceId=${PROJECT_ID}`);
   });
 
   it('shows file navigation only when the project has file capability', () => {

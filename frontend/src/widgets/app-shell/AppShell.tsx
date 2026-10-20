@@ -293,7 +293,7 @@ function ShellBreadcrumb(): React.JSX.Element {
   const { pathname } = useLocation();
   const project = useAppSelector(selectProjects).find((candidate) => candidate.id === projectId);
   const section = pathname.split('/').at(-1);
-  const labels: Record<string, string> = { activity: 'Activity', memory: 'Memory', context: 'Context', tasks: 'Tasks', 'file-history': 'History', admin: 'Admin portal', usage: 'Usage' };
+  const labels: Record<string, string> = { activity: 'Activity', memory: 'Memory', context: 'Context', tasks: 'Tasks', 'file-history': 'History', admin: 'Admin portal', usage: 'Usage', automations: 'Automations' };
   const title = pathname === '/tasks' ? 'All tasks' : pathname.startsWith('/tasks/') ? 'Task details' : projectId && section && labels[section] ? labels[section] : project?.name ?? 'Home';
   return <nav className="shell-breadcrumb" aria-label="Current page"><strong>{title}</strong></nav>;
 }
@@ -312,6 +312,9 @@ function WorkspaceNavigation({ currentPath, onNavigate }: { readonly currentPath
         <Icon name="home" /><span>Home</span>
       </NavLink>
       <ProjectNavigation onNavigate={onNavigate} />
+      <NavLink className={({ isActive }) => `shell-nav-link${isActive ? ' is-active' : ''}`} to="/automations" aria-current={currentPath === '/automations' ? 'page' : undefined} onClick={onNavigate}>
+        <span>Automations</span>
+      </NavLink>
       <NavLink className={({ isActive }) => `shell-nav-link${isActive ? ' is-active' : ''}`} to="/usage" aria-current={currentPath === '/usage' ? 'page' : undefined} onClick={onNavigate}>
         <span>Usage</span>
       </NavLink>
