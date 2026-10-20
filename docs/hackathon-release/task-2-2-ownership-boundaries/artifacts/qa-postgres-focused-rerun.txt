@@ -1,8 +1,0 @@
-# Task 2.2 independent PostgreSQL focused rerun
-
-- Fixture: the already-provisioned test-only PostgreSQL instance bound to loopback `127.0.0.1:55441`; URL was loaded from the ACL-restricted environment file into the test process and was never printed or saved.
-- Guarded command from `Personal-AI-Workspace/backend/`: `pnpm.cmd exec jest --config jest.integration.config.cjs --runInBand --runTestsByPath test/integration/r1-populated-migration.integration.spec.ts test/integration/ownership-boundaries.integration.spec.ts`
-- Result: 2 suites passed, 5 tests passed, 0 snapshots; exit code 0; 6.908 seconds.
-- The populated migration suite includes the gated account-expiry-before-runtime-release case and disable-vs-output ordering. It verifies the DB-authoritative expiry predicate reports inactive before gate release, no command proposal is dispatched, and private output/suggestions/events are suppressed. The ownership suite verifies positive owner-scoped relationships and rejects conversation/project and run/conversation owner/project mismatches with their composite PostgreSQL constraints.
-- Both specs use their exact guarded, disposable test databases and their own cleanup paths. No application database was used.
-- This focused rerun follows an earlier full isolated PostgreSQL run that failed because a runtime guard used the application clock for a database expiry boundary. The developer changed PostgreSQL active-state evaluation to use `expires_at > now()` on the database and reran the guarded expiry case successfully; this QA rerun independently reproduces the corrected result.

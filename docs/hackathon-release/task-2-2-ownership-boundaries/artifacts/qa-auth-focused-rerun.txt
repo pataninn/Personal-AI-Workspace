@@ -1,5 +1,0 @@
-# Task 2.2 independent principal authorization/auth rerun
-
-- Command from the application root: `$env:pnpm_config_verify_deps_before_run='false'; pnpm.cmd --dir backend exec jest --runInBand --runTestsByPath src/modules/auth/use-cases/principal-authorization.spec.ts src/modules/auth/use-cases/auth-use-cases.spec.ts`.
-- Result: 2 suites passed, 20 tests passed, exit code 0; 4.953 seconds.
-- This verifies principal activity predicate preference and account authentication/use-case behavior. The PostgreSQL expiry predicate is independently covered by `qa-postgres-focused-rerun.txt`.
