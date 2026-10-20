@@ -124,6 +124,10 @@ import {
   UpdateAutomationScheduleUseCase
 } from '@/modules/automations/use-cases/automation-use-cases';
 import { AutomationWorker } from '@/modules/automations/use-cases/automation-worker';
+import { TypeOrmWorkspaceExportRepository } from '@/infrastructure/database/repositories/typeorm-workspace-export-repository';
+import { PrivateWorkspaceExportArtifactStore } from '@/infrastructure/workspace-export-artifact-store';
+import { currentWorkspaceExportBuilderIdentity, probeWorkspaceExportBuilder } from '@/infrastructure/workspace-export-process-identity';
+import { CreateWorkspaceExportUseCase, DownloadWorkspaceExportUseCase, ReconcileWorkspaceExports } from '@/modules/workspace-exports';
 
 export interface Application {
   readonly app: Express;
@@ -170,6 +174,10 @@ export async function createApplication(
       ...(modelProvider ? { providerCheck: () => modelProvider.checkAvailability() } : {}),
       ...(config.agentRuntimeMode === 'hermes' ? { providerCheck: async () => { await createHermesBridge(config).call('probe', undefined, undefined, { providerProfile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint }); } } : {})
     });
+    const workspaceExportRepository = new TypeOrmWorkspaceExportRepository(dataSource);
+    const workspaceExportArtifacts = new PrivateWorkspaceExportArtifactStore();
+    const reconcileWorkspaceExports = new ReconcileWorkspaceExports(workspaceExportRepository, workspaceExportArtifacts, probeWorkspaceExportBuilder);
+    await reconcileWorkspaceExports.reconcileStartup();
     const assistantScopePolicyRepository = new TypeOrmAssistantScopePolicyRepository(dataSource);
     await assistantScopePolicyRepository.synchronizeProviderConfiguration({
       providerProfile: config.nimProfile,
@@ -219,7 +227,8 @@ export async function createApplication(
       projectRecoveryCleaner,
       storageContentAccounting,
       storageQuotaRepository,
-      storageRootMappingRepository
+      storageRootMappingRepository,
+      reconcileWorkspaceExports
     );
     const workspaceBoundary = new WorkspaceBoundaryAdapter({
       containerRoot: config.workspaceRoot,
@@ -248,6 +257,10 @@ export async function createApplication(
     }
     const projectFileAccess = new TypeOrmProjectFileAccess(dataSource, storageRootMappingRepository);
     const projectFileGateway = new ProjectFileGateway({ containerRoot: config.workspaceRoot, workspaceBoundary });
+    const createWorkspaceExport = new CreateWorkspaceExportUseCase(
+      workspaceExportRepository, workspaceExportArtifacts, projectFileAccess, projectFileGateway, currentWorkspaceExportBuilderIdentity
+    );
+    const downloadWorkspaceExport = new DownloadWorkspaceExportUseCase(workspaceExportRepository, workspaceExportArtifacts);
     const projectFileActions = new ProjectFileActions(projectFileAccess, projectFileGateway, new MarkItDownDocumentConverter(), storageFileMutation);
     const showcaseRepository = new TypeOrmShowcaseRepository(dataSource);
     const buildShowcasePreview = new BuildShowcasePreviewUseCase(projectRepository, projectTaskRepository, projectFactRepository, projectFileActions, config.showcaseLimits, skillRepository);
@@ -257,7 +270,7 @@ export async function createApplication(
       storageFileMutation, storageQuotaRepository, storageContentAccounting, config.showcaseLimits
     );
     const demoExpiryCleanupRepository = new TypeOrmDemoExpiryCleanupRepository(
-      dataSource, workspaceBoundary, projectRecoveryCleaner, storageRootMappingRepository, storageQuotaRepository
+      dataSource, workspaceBoundary, projectRecoveryCleaner, storageRootMappingRepository, storageQuotaRepository, reconcileWorkspaceExports
     );
     const managedStorageReady = async (): Promise<boolean> => Boolean(config.accountWorkspacesIdentity)
       && (await workspaceBoundary.getManagedSnapshot()).status === 'ready';
@@ -425,6 +438,13 @@ export async function createApplication(
         },
         adminPortal: {
           portal: adminPortal,
+          getSession,
+          appOrigin: config.appOrigin,
+          clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
+        },
+        workspaceExports: {
+          create: createWorkspaceExport,
+          download: downloadWorkspaceExport,
           getSession,
           appOrigin: config.appOrigin,
           clearSessionCookie: (response) => clearSessionCookie(response, config.protocol === 'https')
@@ -604,6 +624,9 @@ export async function createApplication(
               stagingGateway?.cleanupExpired() ?? Promise.resolve(0),
               physicalStorageMonitor.observe()
             ]);
+            try { await reconcileWorkspaceExports.reconcileStartup(); } catch {
+              logger.warn({ operation: 'workspace export cleanup' }, 'Expired workspace exports remain pending and will retry.');
+            }
             try {
               await projectRemovalRepository.cleanupPending(async (turn) => {
                 const result = await cancelHomeTurn.execute({ ownerId: turn.ownerId, conversationId: turn.conversationId, turnId: turn.turnId });

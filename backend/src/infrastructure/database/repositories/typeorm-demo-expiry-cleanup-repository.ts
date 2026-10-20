@@ -6,6 +6,7 @@ import type { IProjectRecoveryCleaner } from '@/modules/projects/repositories/pr
 import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspace-boundary';
 import type { IStorageRootMappingRepository, StorageRootMapping } from '@/modules/storage-quotas/repositories/storage-root-mapping-repository';
 import type { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
+import type { IWorkspaceExportCleanup } from '@/modules/workspace-exports/repositories/workspace-export-repository';
 
 interface CleanupManifest {
   readonly ownerId: string;
@@ -16,6 +17,7 @@ interface CleanupManifest {
   readonly roots: readonly StorageRootMapping[];
   readonly scheduleIds: readonly string[];
   readonly automationTurns: readonly { readonly scheduleId: string; readonly occurrenceId: string; readonly conversationId: string; readonly turnId: string | null }[];
+  readonly exportIds: readonly string[];
   readonly copy: { readonly admissionId: string; readonly projectId: string; readonly hasManagedRoot: boolean } | null;
 }
 
@@ -60,10 +62,11 @@ function parseManifest(value: CleanupManifest | string): CleanupManifest {
   if (!parsed || typeof parsed.ownerId !== 'string' || !Array.isArray(parsed.projectIds)
     || !Array.isArray(parsed.runs) || !Array.isArray(parsed.commands) || !Array.isArray(parsed.reservations)
     || !Array.isArray(parsed.roots) || parsed.scheduleIds !== undefined && !Array.isArray(parsed.scheduleIds)
-    || parsed.automationTurns !== undefined && !Array.isArray(parsed.automationTurns)) {
+    || parsed.automationTurns !== undefined && !Array.isArray(parsed.automationTurns)
+    || parsed.exportIds !== undefined && !Array.isArray(parsed.exportIds)) {
     throw new Error('The persisted demo cleanup manifest is invalid.');
   }
-  return { ...parsed, scheduleIds: parsed.scheduleIds ?? [], automationTurns: parsed.automationTurns ?? [] };
+  return { ...parsed, scheduleIds: parsed.scheduleIds ?? [], automationTurns: parsed.automationTurns ?? [], exportIds: parsed.exportIds ?? [] };
 }
 
 const ACTIVE_RUNS = "('pending_approval','staging','ready','queued','running','waiting_approval','cancel_requested')";
@@ -76,7 +79,8 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
     private readonly workspace: IWorkspaceBoundary,
     private readonly recovery: IProjectRecoveryCleaner,
     private readonly roots: IStorageRootMappingRepository,
-    private readonly quota: TypeOrmStorageQuotaRepository
+    private readonly quota: TypeOrmStorageQuotaRepository,
+    private readonly workspaceExports?: IWorkspaceExportCleanup
   ) {}
 
   public async runBatch(cancellation: DemoExpiryCancellationPort, requestedLimit = 4): Promise<number> {
@@ -154,6 +158,8 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
           `SELECT "id","project_id" FROM "ai_runs" WHERE "owner_id"=$1 ORDER BY "id"`, [due.owner_id]));
         const commands = rows<CommandRow>(await manager.query(
           `SELECT "id","run_id" FROM "sandbox_commands" WHERE "owner_id"=$1 ORDER BY "id"`, [due.owner_id]));
+        const exports = rows<{ readonly id: string }>(await manager.query(
+          `SELECT "id" FROM "workspace_exports" WHERE "owner_id"=$1 ORDER BY "id" FOR UPDATE`, [due.owner_id]));
         const reservations = rows<{ readonly id: string; readonly root_key: string; readonly status: string }>(await manager.query(
           `SELECT "id","root_key","status" FROM "storage_filesystem_reservations" WHERE "owner_id"=$1 ORDER BY "id"`, [due.owner_id]));
         const roots = rows<RootRow>(await manager.query(`
@@ -172,6 +178,7 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
           automationTurns: automationTurns.map((row) => ({
             scheduleId: row.schedule_id, occurrenceId: row.occurrence_id, conversationId: row.conversation_id, turnId: row.turn_id
           })),
+          exportIds: exports.map((row) => row.id),
           roots: roots.map((root) => ({
             ownerId: root.owner_id, projectId: root.project_id, locatorProjectId: root.locator_project_id,
             rootKey: root.root_key, storageKind: root.storage_kind, relativeRoot: root.relative_root, state: root.state
@@ -283,6 +290,11 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
   }
 
   private async purge(job: CleanupJob, manifest: CleanupManifest): Promise<void> {
+    if (manifest.exportIds.length > 0) {
+      if (!this.workspaceExports) throw new Error('Workspace export cleanup is unavailable.');
+      await this.workspaceExports.waitForTerminalAndRemove(manifest.exportIds);
+      await this.assertLease(job);
+    }
     const blocker = await this.getBarrier(manifest.ownerId);
     if (blocker) throw new Error(blocker);
     const namespace = await this.workspace.inspectManagedNamespace?.();

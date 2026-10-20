@@ -31,6 +31,7 @@ function fixture(): { app: express.Express; gateway: jest.Mocked<IProjectFileGat
   const gateway: jest.Mocked<IProjectFileGateway> = {
     write: jest.fn().mockImplementation(async (_scope, input) => { files.set(input.path, input.bytes); return { hash: HASH }; }),
     remove: jest.fn().mockImplementation(async (_scope, input) => { files.delete(input.path); }),
+    captureForExport: jest.fn().mockResolvedValue([]),
     download: jest.fn().mockImplementation(async (_scope, filePath) => {
       const bytes = files.get(filePath);
       if (!bytes) throw new AppError('WORKSPACE_PATH_NOT_FOUND', 404, 'File not found.');

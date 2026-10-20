@@ -58,9 +58,54 @@
     },
     {
       "name": "Automations"
+    },
+    {
+      "name": "Workspace exports"
     }
   ],
   "paths": {
+    "/api/v1/workspace-exports": {
+      "post": {
+        "tags": ["Workspace exports"],
+        "summary": "Prepare or replay a bounded workspace JSON export",
+        "operationId": "createWorkspaceExport",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OriginHeader" },
+          { "$ref": "#/components/parameters/CsrfHeader" },
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9._~-]+$" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceExportCreateRequest" } } } },
+        "responses": {
+          "201": { "description": "Workspace export prepared.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceExportEnvelope" } } } },
+          "200": { "description": "Exact idempotent request replayed while its artifact remains ready.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceExportEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/MutationForbidden" },
+          "404": { "description": "Workspace is foreign, inactive, or being removed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "Matching request is still building or the idempotency key cannot be replayed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "413": { "description": "The workspace exceeds a file, structured-data, total-document, or deadline bound; no partial export is published.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "429": { "description": "At most two unexpired exports may be active per owner.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "422": { "description": "Recognized credential-like content makes the structured export unsafe; no artifact is published.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/workspace-exports/{exportId}": {
+      "get": {
+        "tags": ["Workspace exports"],
+        "summary": "Download one ready owner-owned workspace export",
+        "operationId": "downloadWorkspaceExport",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "name": "exportId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } }],
+        "responses": {
+          "200": { "description": "Private JSON bytes. Cache-Control is no-store and nosniff is enabled.", "headers": { "Content-Disposition": { "schema": { "type": "string" } }, "Cache-Control": { "schema": { "type": "string", "enum": ["no-store"] } }, "X-Content-Type-Options": { "schema": { "type": "string", "enum": ["nosniff"] } } }, "content": { "application/json": { "schema": { "type": "string", "format": "binary" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "description": "Artifact is missing, expired, foreign, removed, or unavailable.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
     "/api/v1/automations/schedules": {
       "get": {
         "tags": ["Automations"],
@@ -11404,6 +11449,29 @@
       "AutomationOccurrenceListEnvelope": {
         "type": "object",
         "properties": { "data": { "type": "object", "properties": { "occurrences": { "type": "array", "items": { "$ref": "#/components/schemas/AutomationOccurrence" } }, "nextCursor": { "type": "string", "nullable": true } }, "required": ["occurrences", "nextCursor"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "WorkspaceExportCreateRequest": {
+        "type": "object",
+        "properties": { "workspaceId": { "$ref": "#/components/schemas/Uuid" } },
+        "required": ["workspaceId"],
+        "additionalProperties": false
+      },
+      "WorkspaceExport": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "workspaceId": { "$ref": "#/components/schemas/Uuid" },
+          "sizeBytes": { "type": "integer", "minimum": 0, "maximum": 33554432 },
+          "expiresAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "workspaceId", "sizeBytes", "expiresAt"],
+        "additionalProperties": false
+      },
+      "WorkspaceExportEnvelope": {
+        "type": "object",
+        "properties": { "data": { "type": "object", "properties": { "export": { "$ref": "#/components/schemas/WorkspaceExport" } }, "required": ["export"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
         "required": ["data", "error"],
         "additionalProperties": false
       }

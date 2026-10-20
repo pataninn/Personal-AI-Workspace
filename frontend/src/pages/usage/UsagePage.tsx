@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 
 import { useAccountUsage } from '@/entities/account-usage';
+import { WorkspaceExportPanel } from '@/features/workspace-export';
 import { Alert, Button, Card, Skeleton } from '@/shared/ui';
 
 export function UsagePage(): React.JSX.Element {
@@ -30,6 +31,7 @@ export function UsagePage(): React.JSX.Element {
       </section>
       <p className="field-help">Updated {formatDate(state.data.asOf)}. Credits measure the configured AI budget. Storage is logical persistent data, not physical disk use.</p>
     </> : null}
+    <WorkspaceExportPanel />
   </main>;
 }
 

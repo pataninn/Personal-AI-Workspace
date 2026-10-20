@@ -43,6 +43,7 @@ import { createShowcaseRouter, type ShowcaseRouterDependencies } from '@/modules
 import { createSkillRouter, type SkillRouterDependencies } from '@/modules/skills';
 import { createAdminPortalRouter, type AdminPortalRouterDependencies } from '@/modules/admin-portal';
 import { createAutomationRouter, type AutomationRouterDependencies } from '@/modules/automations/controllers/automation-router';
+import { createWorkspaceExportRouter, type WorkspaceExportRouterDependencies } from '@/modules/workspace-exports';
 
 export interface CreateAppOptions {
   readonly logger: AppLogger;
@@ -68,6 +69,7 @@ export interface CreateAppOptions {
   readonly skills?: SkillRouterDependencies;
   readonly automations?: AutomationRouterDependencies;
   readonly adminPortal?: AdminPortalRouterDependencies;
+  readonly workspaceExports?: WorkspaceExportRouterDependencies;
   readonly assistantExecutionPolicy?: AssistantExecutionPolicyRouterDependencies;
   readonly demoCopyGate?: { readonly getSession: Pick<GetSessionUseCase, 'execute'>; readonly isReady: (ownerId: string) => Promise<boolean> };
   readonly trustedProxyCidrs?: readonly string[];
@@ -220,6 +222,7 @@ export function createApp(options: CreateAppOptions): Express {
   if (options.skills) app.use('/api/v1/skills', createSkillRouter(options.skills));
   if (options.automations) app.use('/api/v1/automations', createAutomationRouter(options.automations));
   if (options.adminPortal) app.use('/api/v1', createAdminPortalRouter(options.adminPortal));
+  if (options.workspaceExports) app.use('/api/v1/workspace-exports', createWorkspaceExportRouter(options.workspaceExports));
   if (options.demoAdmission) {
     app.use('/api/v1/demo', createDemoAdmissionRouter(options.demoAdmission));
   }

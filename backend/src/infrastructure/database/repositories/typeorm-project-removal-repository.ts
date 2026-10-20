@@ -4,6 +4,7 @@ import { TypeOrmStorageQuotaRepository, lockStorageRootOwner } from '@/infrastru
 import type { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
 import type { StorageContentEntity, StorageContentIdentity, StorageContentMutationScope } from '@/infrastructure/database/storage-content-projections';
 import type { IStorageRootMappingRepository } from '@/modules/storage-quotas/repositories/storage-root-mapping-repository';
+import type { IWorkspaceExportCleanup } from '@/modules/workspace-exports/repositories/workspace-export-repository';
 import type { StorageQuotaTransaction } from '@/modules/storage-quotas/repositories/storage-quota-repository';
 import { accountingUnavailable } from '@/modules/storage-quotas/domain/storage-quota-errors';
 import { ProjectNotFoundError, ProjectRecoveryCleanupError, ProjectRemovalBusyError, ProjectRemovalCleanupPendingError, ProjectVersionConflictError } from '@/modules/projects/domain/project-errors';
@@ -26,6 +27,7 @@ interface RemovalJob {
   readonly project_id: string;
   readonly storage_root_key: string | null;
   readonly run_ids: unknown;
+  readonly export_ids: unknown;
 }
 
 interface RemovalPlan {
@@ -33,6 +35,7 @@ interface RemovalPlan {
   readonly projectId: string;
   readonly rootKey: string | null;
   readonly runIds: readonly string[];
+  readonly exportIds: readonly string[];
   readonly automationTurns: readonly ProjectAutomationTurnReference[];
 }
 
@@ -48,6 +51,16 @@ function parseRunIds(value: unknown): readonly string[] {
   if (!Array.isArray(value) || !value.every((item): item is string => typeof item === 'string' && UUID_PATTERN.test(item))
     || new Set(value).size !== value.length) throw new ProjectRecoveryCleanupError();
   return value;
+}
+
+function parseExportIds(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || !value.every((item): item is string => typeof item === 'string' && UUID_PATTERN.test(item))
+    || new Set(value).size !== value.length) throw new ProjectRecoveryCleanupError();
+  return value;
+}
+
+function sameUuidList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
 }
 
 function isLockConflict(error: unknown): boolean {
@@ -228,12 +241,14 @@ export class TypeOrmProjectRemovalRepository implements IProjectRemovalRepositor
     private readonly recoveryCleaner: IProjectRecoveryCleaner,
     private readonly storageAccounting: TypeOrmStorageContentAccounting,
     private readonly storageQuotaRepository: TypeOrmStorageQuotaRepository,
-    private readonly rootMappings: IStorageRootMappingRepository
+    private readonly rootMappings: IStorageRootMappingRepository,
+    private readonly workspaceExports?: IWorkspaceExportCleanup
   ) {}
 
   /** Persists a removal barrier before filesystem quarantine and releases only verified recovery copies. */
   public async remove(input: RemoveProjectRecord, cancelAutomationTurn?: ProjectAutomationCancellation): Promise<void> {
     const plan = await this.createRemovalJob(input);
+    await this.removeWorkspaceExports(plan.exportIds);
     if (plan.automationTurns.length > 0 && !cancelAutomationTurn) throw new ProjectRemovalBusyError();
     if (cancelAutomationTurn) await this.cancelAutomationTurns(plan.automationTurns, cancelAutomationTurn);
     if (await this.hasActiveWorkspaceAutomations(input.ownerId, input.projectId)) throw new ProjectRemovalBusyError();
@@ -256,7 +271,7 @@ export class TypeOrmProjectRemovalRepository implements IProjectRemovalRepositor
   /** Repairs committed jobs before the application accepts project writes. */
   public async cleanupPending(cancelAutomationTurn?: ProjectAutomationCancellation): Promise<number> {
     const jobs = queryRows<RemovalJob>(await this.dataSource.query(
-      'SELECT "owner_id", "project_id", "storage_root_key", "run_ids" FROM "project_removal_jobs" ORDER BY "created_at"'
+      'SELECT "owner_id", "project_id", "storage_root_key", "run_ids", "export_ids" FROM "project_removal_jobs" ORDER BY "created_at"'
     ));
     for (const job of jobs) await this.completeJob(job, cancelAutomationTurn);
     return jobs.length;
@@ -278,15 +293,19 @@ export class TypeOrmProjectRemovalRepository implements IProjectRemovalRepositor
             [input.ownerId, input.projectId]
           ));
           if (existing.length > 0) throw new ProjectRemovalBusyError();
+          const exportIds = queryRows<{ readonly id: string }>(await runner.query(
+            'SELECT "id" FROM "workspace_exports" WHERE "owner_id"=$1 AND "workspace_id"=$2 ORDER BY "id" FOR UPDATE',
+            [input.ownerId, input.projectId]
+          )).map((row) => row.id);
           const runIds = await lockRuns(runner, input);
           await lockDependents(runner, input);
           const automationTurns = await fenceWorkspaceAutomations(runner, input);
           if (project.relative_root_key !== rootKey) throw accountingUnavailable();
           await runner.query(
-            'INSERT INTO "project_removal_jobs" ("owner_id", "project_id", "storage_root_key", "run_ids") VALUES ($1, $2, $3, $4::jsonb)',
-            [input.ownerId, input.projectId, rootKey, JSON.stringify(runIds)]
+            'INSERT INTO "project_removal_jobs" ("owner_id", "project_id", "storage_root_key", "run_ids", "export_ids") VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)',
+            [input.ownerId, input.projectId, rootKey, JSON.stringify(runIds), JSON.stringify(exportIds)]
           );
-          return { result: { ownerId: input.ownerId, projectId: input.projectId, rootKey, runIds, automationTurns }, references: [] };
+          return { result: { ownerId: input.ownerId, projectId: input.projectId, rootKey, runIds, exportIds, automationTurns }, references: [] };
         },
         { beforeReferences: async () => { rootKey = await lockRootAndReservations(runner, input); } }
       );
@@ -312,10 +331,11 @@ export class TypeOrmProjectRemovalRepository implements IProjectRemovalRepositor
         async () => {
           const project = await lockProject(runner, input);
           const job = queryRows<RemovalJob>(await runner.query(
-            'SELECT "owner_id", "project_id", "storage_root_key", "run_ids" FROM "project_removal_jobs" WHERE "owner_id" = $1 AND "project_id" = $2 FOR UPDATE',
+            'SELECT "owner_id", "project_id", "storage_root_key", "run_ids", "export_ids" FROM "project_removal_jobs" WHERE "owner_id" = $1 AND "project_id" = $2 FOR UPDATE',
             [input.ownerId, input.projectId]
           ));
-          if (!job[0] || job[0].storage_root_key !== plan.rootKey || project.relative_root_key !== plan.rootKey) {
+          if (!job[0] || job[0].storage_root_key !== plan.rootKey || project.relative_root_key !== plan.rootKey
+            || !sameUuidList(parseExportIds(job[0].export_ids), plan.exportIds)) {
             throw new ProjectRemovalBusyError();
           }
           if (plan.rootKey) {
@@ -358,10 +378,12 @@ export class TypeOrmProjectRemovalRepository implements IProjectRemovalRepositor
 
   private async completeJob(job: RemovalJob, cancelAutomationTurn?: ProjectAutomationCancellation): Promise<void> {
     const runIds = parseRunIds(job.run_ids);
+    const exportIds = parseExportIds(job.export_ids);
     const projects = queryRows<{ readonly id: string; readonly relative_root_key: string | null }>(await this.dataSource.query(
       'SELECT "id", "relative_root_key" FROM "projects" WHERE "owner_id" = $1 AND "id" = $2', [job.owner_id, job.project_id]
     ));
     if (projects.length > 0) {
+      await this.removeWorkspaceExports(exportIds);
       if (projects[0]?.relative_root_key !== job.storage_root_key) throw accountingUnavailable();
       const turns = await this.findWorkspaceAutomationTurns(job.owner_id, job.project_id);
       if (turns.length > 0 && cancelAutomationTurn) await this.cancelAutomationTurns(turns, cancelAutomationTurn);
@@ -371,6 +393,7 @@ export class TypeOrmProjectRemovalRepository implements IProjectRemovalRepositor
       return;
     }
     if (job.storage_root_key !== null) await this.assertRetainedRoot(job);
+    await this.removeWorkspaceExports(exportIds);
     await this.recoveryCleaner.purge(runIds);
     await this.storageQuotaRepository.releaseRecoveryReferencesAfterVerifiedPurge(job.owner_id, job.project_id, runIds);
     await this.deleteJob(job.owner_id, job.project_id);
@@ -422,6 +445,12 @@ export class TypeOrmProjectRemovalRepository implements IProjectRemovalRepositor
       [job.owner_id, job.storage_root_key, job.project_id]
     ));
     if (mappings.length !== 1) throw accountingUnavailable();
+  }
+
+  private async removeWorkspaceExports(ids: readonly string[]): Promise<void> {
+    if (ids.length === 0) return;
+    if (!this.workspaceExports) throw new ProjectRemovalCleanupPendingError();
+    await this.workspaceExports.waitForTerminalAndRemove(ids);
   }
 
   private async deleteJob(ownerId: string, projectId: string): Promise<void> {

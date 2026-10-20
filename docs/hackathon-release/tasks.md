@@ -5,7 +5,7 @@
 **Last Updated:** 2026-10-20
 **Architecture:** [architecture.md](architecture.md)
 **Application root:** `Personal-AI-Workspace/`
-**Status:** Execution active. Nineteen tasks delivered; latest verified `127e722157b5858ac3886b24f22aa8b356a22ded` (6.3 editable skills and saved workspace runs). Export6.4 and briefing7.2 implementation active; scheduleUI7.3 follows7.2, finalaudit5.4 last. No deployment started.
+**Status:** Execution active. Twenty tasks delivered; latest verified `0b80a94ff4341aded468940bc530be744a361970` (7.2 briefing sources and metered provider calls). Export6.4 QA2 active; scheduleUI7.3 now eligible, finalaudit5.4 last. No deployment started.
 
 **Current execution boundary (user update):** User resumed the goal2026-10-20. Complete all remaining tasks through7.3 including5.4, independently verify and locally commit them, then stop for user review before deployment8.x or acceptance9.x. No push authorized.
 
@@ -801,22 +801,22 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-6-4-workspace-export/artifacts/`
-- `Current status:` Developer_export_luna implementation active after delivered7.1; preflight/UI/contract complete. Own bounded export module/file enumeration/Usage/lifecycle tests; migration0040 reserved. Shared composition/OpenAPI/registry released after 6.3 delivery. Developer checks PASS: backend/frontend types, 5 Jest suites/19 tests, 3 isolated PostgreSQL cases with clean guards and 2 route-stubbed preview cases. Official QA1 FAIL: file-secret 500/422 mapping, use-case infrastructure import, missing direct captureForExport coverage. Focused developer repair active; no commit yet.
+- `Current status:` Independent officialQA2 PASS after resolving all3 QA1 findings. Backend/frontend types, 3 exact PostgreSQL cases with clean guards, 2 route-stubbed browser cases and build PASS. QA independently reran changed5Jest suites/25 tests incl direct Windows temporary file/junction capture proof. Structured/file secrets reject safely, DB-clock expiry and injected probe verified. Linux artifact/proc runtime limits explicit. Scoped local commit/root audit pending; task remains in progress.
 
 **Description:** Export an owned mutable workspace's permitted files and structured data, and show credit/storage usage in settings.
 
 **Subtasks:**
 
-- [ ] Define portable JSON/file format covering tasks, memory, conversations, skills, and schedules; add manifest/version.
-- [ ] Build bounded expiring export creation/download with ownership recheck, path checks, and temporary cleanup.
-- [ ] Exclude secrets/internal recovery/audit/foreign data; display quota, expiry, and retention explanations.
+- [x] Define portable JSON/file format covering tasks, memory, conversations, skills, and schedules; add manifest/version.
+- [x] Build bounded expiring export creation/download with ownership recheck, path checks, and temporary cleanup.
+- [x] Exclude secrets/internal recovery/audit/foreign data; display quota, expiry, and retention explanations.
 
 **Definition of Done:**
 
-- [ ] Export fixture content round-trips through a parser; oversized exports fail predictably; expiry/disable/foreign download attempts are denied; exported secrets fixture is absent.
-- [ ] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
-- [ ] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
-- [ ] Developer-owned contract implemented and verified before task closure.
+- [x] Export fixture content round-trips through a parser; oversized exports fail predictably; expiry/disable/foreign download attempts are denied; exported secrets fixture is absent.
+- [x] Relevant common DoD checks pass; developer self-review and tester verdict recorded.
+- [x] Required evidence stored and linked, or tool unavailability plus equivalent evidence documented.
+- [x] Developer-owned contract implemented and verified before task closure.
 
 **Upstream Outputs Needed:** Architecture sections 4.3, 7.2, 11; Task 1.1 ui-spec.md and relevant task contracts; completed dependency outputs.
 
@@ -864,7 +864,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 
 ### Task 7.2 â€” Produce and persist useful daily briefings
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Agents:** developer, tester
 **Depends on:** 7.1
 **Risk:** High: context accuracy and billed failures
@@ -879,7 +879,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-7-2-briefing-workflow/artifacts/`
-- `Current status:` Independent official QA1 PASS. Backend types, 8 Jest suites/57 tests, Python58 PASS/3 baseline Linux-only skips and 3 exact PostgreSQL cases PASS with clean guards. Actual-runner deterministic transport proves reserve/send/settle; output-cap and interruption retention repairs verified. Thirty-eight source paths plus seven task documents and global tracker await scoped local commit/root audit; task stays in progress until commit. No live provider/deployment claim.
+- `Current status:` Delivered `0b80a94ff4341aded468940bc530be744a361970` after independent officialQA1 PASS. Root verified exact46 paths (38 source,7 taskdocs,globaltracker), no extra/missing; all7 canonical/app documents hash-equal; correct branch, empty index and protected7 hashes unchanged. Committed shared hunks contain only7.2 source/usage/credit wiring and migration0039. Isolated staged backend types/OpenAPI/diff checks PASS. Jest57/Python58+3 baseline skips/3 exact PostgreSQL cases PASS; no live provider claim.
 
 **Description:** Invoke the Daily briefing skill with current tasks/deadlines/notes/memory and save a dated result via existing conversations.
 
@@ -917,7 +917,7 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 **Evidence Collected:**
 
 - `Artifacts folder:` `.codex/docs/hackathon-release/task-7-3-automation-interface/artifacts/`
-- `Current status:` UI specification and developer contract preparation complete against current7.1/7.2DTOs. No UI code/tests yet; implementation waits delivered7.2. One-workspace schedules, Run now/pause/history/Home result links and in-app notice defined.
+- `Current status:` Developer_automation_ui_luna implementation active after delivered7.2. Existing UI specification/contract guide one-workspace schedules, Run now/pause/history/Home result links and in-app notice. Frontend-only ownership; no runtime validation or finalQA yet.
 
 **Description:** Expose daily time/timezone/workspace selection, pause, Run now, and history/results using existing workspace navigation.
 
@@ -1115,8 +1115,8 @@ Each API/full-stack contract file listed below is a **planned deliverable**, not
 | 6.3 — Expose editable skills and a working Plan my day flow | `[x]` | Delivered `127e722157b5858ac3886b24f22aa8b356a22ded`; QA2PASS/rootaudit46paths |
 | 6.4 â€” Add bounded portable workspace export and usage settings | `[~]` | Export implementation active; migration0040 reserved |
 | 7.1 — Implement durable daily schedules and job claiming | `[x]` | Delivered `dba6d049688173b6ac1ff71f5e23eddc6401baad`; QA1PASS/rootaudit58paths |
-| 7.2 â€” Produce and persist useful daily briefings | `[~]` | Briefing/bridge admission implementation active; migration0039 reserved |
-| 7.3 â€” Add schedule controls, Run now, and run history | `[~]` | UI spec/contract complete; implementation waits7.2 |
+| 7.2 â€” Produce and persist useful daily briefings | `[x]` | Delivered `0b80a94ff4341aded468940bc530be744a361970`; QA1PASS and root46-path audit |
+| 7.3 â€” Add schedule controls, Run now, and run history | `[~]` | UI spec/contract complete; implementation starting after delivered7.2 |
 | 8.1 â€” Prepare persistent host, proxy, worker, and migration deployment | `[ ]` | Pending |
 | 8.2 â€” Verify trusted HTTPS and real NVIDIA inference on public topology | `[ ]` | Pending |
 | 9.1 â€” Validate security, concurrency, restart, and complete user journeys | `[ ]` | Pending |
