@@ -36,7 +36,7 @@ const usage = {
 
 function envelope(data: unknown): { readonly data: unknown; readonly error: null } { return { data, error: null }; }
 
-test('admin manages a mock account, while exhausted AI usage leaves manual tasks editable', async ({ page }) => {
+test('admin manages a mock account, while exhausted AI usage leaves manual tasks editable', async ({ page }, testInfo) => {
   test.setTimeout(45_000);
   let currentRole: 'admin' | 'user' = 'admin';
   let accountCreated = false;
@@ -109,22 +109,53 @@ test('admin manages a mock account, while exhausted AI usage leaves manual tasks
       error: { code: 'MOCK_ROUTE_NOT_FOUND', message: 'This browser smoke uses local mock routes only.' } }) });
   });
 
+  await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/admin');
   await expect(page.getByTestId('admin-portal-page')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Admin portal' })).toBeVisible();
-  await page.getByRole('button', { name: 'Create account' }).click();
+  const createAccount = page.getByRole('button', { name: 'Create account' }).first();
+  await createAccount.focus();
+  await page.keyboard.press('Enter');
   await page.getByLabel('Display name').fill('Browser smoke user');
   await page.getByLabel('Sign-in identifier').fill('browser-smoke-user');
   await page.getByLabel('Initial password').fill(TEST_PASSWORD);
   await page.getByLabel('Confirm password').fill(TEST_PASSWORD);
-  await page.getByRole('button', { name: 'Create account', exact: true }).click();
+  const submitAccount = page.getByRole('button', { name: 'Create account', exact: true });
+  await submitAccount.focus();
+  await page.keyboard.press('Enter');
   const accountCard = page.getByTestId(`admin-account-${ACCOUNT_ID}`);
   await expect(accountCard).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-admin-desktop.png'), fullPage: true });
 
-  await accountCard.getByRole('button', { name: 'Edit limits' }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(accountCard.getByRole('button', { name: 'Edit limits' })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-admin-mobile.png'), fullPage: true });
+
+  await page.setViewportSize({ width: 320, height: 844 });
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const editLimits = accountCard.getByRole('button', { name: 'Edit limits' });
+  await editLimits.focus();
+  await page.keyboard.press('Tab');
+  await expect(accountCard.getByRole('button', { name: 'Reset credentials' })).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(editLimits).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.getByLabel('Daily credit limit')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-admin-edit-limits-320px.png'), fullPage: true });
   await page.getByLabel('Daily credit limit').fill('0');
-  await accountCard.getByRole('button', { name: 'Save limits' }).click();
+  const saveLimits = accountCard.getByRole('button', { name: 'Save limits' });
+  await saveLimits.focus();
+  await page.keyboard.press('Enter');
   await expect(accountCard).toContainText('Remaining 0 / limit 0');
+
+  await page.setViewportSize({ width: 640, height: 360 });
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const resetCredentials = accountCard.getByRole('button', { name: 'Reset credentials' });
+  await resetCredentials.focus();
+  const resetBounds = await resetCredentials.boundingBox();
+  expect(resetBounds && resetBounds.y >= 0 && resetBounds.y + resetBounds.height <= 360).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-admin-reflow-width.png'), fullPage: true });
 
   await accountCard.getByRole('button', { name: 'Reset credentials' }).click();
   await page.getByLabel('New password').fill(TEST_PASSWORD);
@@ -149,7 +180,16 @@ test('admin manages a mock account, while exhausted AI usage leaves manual tasks
   await expect(page.getByTestId('usage-page')).toBeVisible();
   await expect(page.getByTestId('usage-availability')).toContainText('An AI usage allowance has been reached.');
   await expect(page.getByTestId('usage-daily-credits')).toContainText('Remaining');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-usage-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-usage-mobile.png'), fullPage: true });
   if (artifacts) await page.screenshot({ path: join(artifacts, 'usage-exhausted-mock-smoke.png'), fullPage: true });
+  await page.setViewportSize({ width: 320, height: 844 });
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 640, height: 360 });
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   await page.getByTestId('home-ask-launcher').click();
   await expect(page.getByTestId('home-chat-input')).toBeDisabled();
@@ -159,8 +199,7 @@ test('admin manages a mock account, while exhausted AI usage leaves manual tasks
   const task = page.getByRole('link', { name: /Prepare weekly notes/u });
   await expect(task).toBeVisible();
   await task.click();
-  await page.getByTestId('task-edit-open').click();
-  const manualTitle = page.getByTestId('project-task-title-input');
+  const manualTitle = page.getByRole('textbox', { name: 'Task title' });
   await expect(manualTitle).toBeEnabled();
   await manualTitle.fill('Manually edited while AI is exhausted');
   await expect(manualTitle).toHaveValue('Manually edited while AI is exhausted');

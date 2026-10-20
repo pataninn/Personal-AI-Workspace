@@ -84,7 +84,7 @@ test('keeps an uncertain retry on its workspace and ignores its late response af
   await expect(page.getByTestId('usage-workspace-storage')).toContainText('17 bytes');
 });
 
-test('shows bounded, capacity, and unavailable errors without leaving a stale download', async ({ page }) => {
+test('shows bounded, capacity, and unavailable errors without leaving a stale download', async ({ page }, testInfo) => {
   let alphaCreateCount = 0;
   const alphaKeys: string[] = [];
   await installUsageApi(page, async (route) => {
@@ -113,32 +113,64 @@ test('shows bounded, capacity, and unavailable errors without leaving a stale do
     });
   });
 
+  await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/usage');
   await expect(page.getByTestId('workspace-export')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-export-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-export-mobile.png'), fullPage: true });
   const workspaceSelect = page.getByTestId('workspace-export-project-select');
-  await workspaceSelect.selectOption(ALPHA_ID);
-  await page.getByRole('button', { name: 'Prepare export' }).click();
+  await workspaceSelect.focus();
+  await page.keyboard.press('ArrowDown');
+  await expect(workspaceSelect).toHaveValue(ALPHA_ID);
+  await page.keyboard.press('Tab');
+  const prepareExport = page.getByRole('button', { name: 'Prepare export' });
+  await expect(prepareExport).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(page.getByTestId('workspace-export-create-error')).toContainText('exceeds the supported export size');
   await expect(page.getByTestId('workspace-export-ready')).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-export-size-error.png'), fullPage: true });
+
+  await page.setViewportSize({ width: 320, height: 844 });
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(prepareExport).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-export-320px.png'), fullPage: true });
+  await page.setViewportSize({ width: 640, height: 360 });
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(prepareExport).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-export-640css-reflow.png'), fullPage: true });
 
   await workspaceSelect.selectOption(BETA_ID);
-  await page.getByRole('button', { name: 'Prepare export' }).click();
+  await prepareExport.click();
   await expect(page.getByTestId('workspace-export-create-error')).toContainText('At most two exports can be active');
   await expect(page.getByTestId('workspace-export-ready')).toHaveCount(0);
 
   await workspaceSelect.selectOption(ALPHA_ID);
-  await page.getByRole('button', { name: 'Prepare export' }).click();
+  await prepareExport.click();
   await expect(page.getByTestId('workspace-export-create-error')).toContainText('looks like a credential');
   await expect(page.getByTestId('workspace-export-ready')).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Prepare export' }).click();
+  await prepareExport.click();
   await expect(page.getByTestId('workspace-export-ready')).toContainText('Alpha workspace');
   expect(alphaKeys[2]).not.toBe(alphaKeys[1]);
-  await page.getByRole('button', { name: 'Download JSON' }).click();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-export-ready-desktop.png'), fullPage: true });
+  const download = page.getByRole('button', { name: 'Download JSON' });
+  await download.focus();
+  await page.keyboard.press('Enter');
   await expect(page.getByTestId('workspace-export-download-error')).toContainText('This export is unavailable. Prepare a new export.');
   await expect(page.getByTestId('workspace-export-ready')).toHaveCount(0);
   await expect(page.getByTestId('usage-lifetime-credits')).toContainText('No AI usage yet.');
   await expect(page.getByTestId('usage-workspace-storage')).toContainText('17 bytes');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-export-unavailable-mobile.png'), fullPage: true });
+  await page.setViewportSize({ width: 320, height: 844 });
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(prepareExport).toBeVisible();
+  await page.setViewportSize({ width: 640, height: 360 });
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 async function installUsageApi(

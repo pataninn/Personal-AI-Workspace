@@ -365,6 +365,20 @@ test('keeps the mobile workspace navigation and form keyboard accessible without
   await expect(page.getByLabel('Time zone')).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('automation-mobile-keyboard-validation.png'), fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-automations-mobile.png'), fullPage: true });
+
+  await page.setViewportSize({ width: 320, height: 844 });
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-automations-320px.png'), fullPage: true });
+
+  await page.setViewportSize({ width: 640, height: 360 });
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const save = page.getByRole('button', { name: 'Save' });
+  await save.focus();
+  const saveBounds = await save.boundingBox();
+  expect(saveBounds && saveBounds.y >= 0 && saveBounds.y + saveBounds.height <= 360).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('task-5-4-automations-640css-reflow.png'), fullPage: true });
   expectBrowserErrors(consoleErrors);
 });
 
