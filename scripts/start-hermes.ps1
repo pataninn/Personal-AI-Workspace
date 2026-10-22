@@ -31,7 +31,7 @@ try {
     } else { $environmentText = $environmentText.TrimEnd() + "`nAGENT_RUNTIME_MODE=hermes`n" }
     [IO.File]::WriteAllText($environmentFile, $environmentText, [Text.UTF8Encoding]::new($false))
 
-    docker compose -p personal-ai-workspace up -d --no-build --wait --wait-timeout 180
+    docker compose -p personal-ai-workspace up -d --no-build --force-recreate --wait --wait-timeout 180 personal-ai-app
     if ($LASTEXITCODE -ne 0) { throw 'The app did not become healthy. Check Docker Compose status.' }
     Write-Host 'Hermes is ready: https://127.0.0.1:8443/'
 } finally { Pop-Location }

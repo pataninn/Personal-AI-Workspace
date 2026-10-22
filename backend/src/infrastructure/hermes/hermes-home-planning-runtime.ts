@@ -149,7 +149,7 @@ export class HermesHomePlanningRuntime implements IHomePlanningRuntime {
     const active = this.runs.get(input.turnId);
     if (!active) return unknownPoll(input.cursor);
     try {
-      const reply = await this.bridge.call('planning-poll', input.turnId, active.capability, { cursor: input.cursor });
+      const reply = await this.bridge.call('planning-poll', input.turnId, active.capability, { cursor: input.cursor, waitMs: 1000 });
       return parsePoll(reply, input.cursor, this.homeToolNames);
     } catch {
       return unknownPoll(input.cursor);

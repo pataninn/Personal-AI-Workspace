@@ -113,6 +113,46 @@ function setup(options: {
 }
 
 describe('GetHomeTurnUseCase', () => {
+  it('returns a persisted answer while sandbox deletion is still pending', async () => {
+    const { useCase, conversations, runtime } = setup({ events: [{ sequence: 1, type: 'assistant.delta', text: 'Hello' }] });
+    let finishDeletion: (() => void) | undefined;
+    runtime.delete.mockImplementation(() => new Promise<undefined>((resolve) => { finishDeletion = () => resolve(undefined); }));
+    const result = await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+    expect(result.status).toBe('completed');
+    expect(conversations.completeTurnWithAssistant).toHaveBeenCalled();
+    expect(runtime.delete).toHaveBeenCalledTimes(1);
+    await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+    expect(runtime.delete).toHaveBeenCalledTimes(1);
+    finishDeletion?.();
+  });
+
+  it('waits for credit finalization before returning or deleting the runtime', async () => {
+    let finishCredits: (() => void) | undefined;
+    const receipts = {
+      handle: jest.fn(), hasAdmittedCall: jest.fn(() => true), clearTurn: jest.fn(),
+      markInterrupted: jest.fn(() => new Promise<void>((resolve) => { finishCredits = resolve; }))
+    };
+    const { useCase, runtime } = setup({ providerCreditReceipts: receipts as unknown as IHomeProviderCreditReceiptHandler });
+    let returned = false;
+    const pending = useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN }).then((value) => { returned = true; return value; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(receipts.markInterrupted).toHaveBeenCalledWith(OWNER, TURN);
+    expect(returned).toBe(false);
+    expect(runtime.delete).not.toHaveBeenCalled();
+    finishCredits?.();
+    expect((await pending).status).toBe('completed');
+    expect(runtime.delete).toHaveBeenCalledWith(TURN);
+  });
+
+  it('retries failed background cleanup on a later owner-scoped read', async () => {
+    const { useCase, runtime } = setup();
+    runtime.delete.mockRejectedValueOnce(new Error('cleanup unavailable'));
+    await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+    expect(runtime.delete).toHaveBeenCalledTimes(2);
+  });
+
   it('does not poll or resume a legacy turn without a persisted policy binding', async () => {
     const { useCase, conversations, runtime } = setup({ revisions: { home: null, workspace: null } });
 

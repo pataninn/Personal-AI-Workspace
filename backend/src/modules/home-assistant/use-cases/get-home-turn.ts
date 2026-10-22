@@ -44,6 +44,7 @@ export interface TrustedScheduledTurnGuard {
 /** Reads a Home turn only when its persisted policy binding remains current. */
 export class GetHomeTurnUseCase {
   private readonly pollStates = new Map<string, RuntimePollState>();
+  private readonly cleanups = new Map<string, Promise<void>>();
   private readonly activePolls = new Map<string, Promise<void>>();
 
   public constructor(
@@ -195,7 +196,7 @@ export class GetHomeTurnUseCase {
           ...(guard ? { automationFence: guard.fence } : {})
         });
         if (!completed) await this.stopRuntimeAndMark(turn, ownerId, conversationId, guard);
-        if (completed && ['completed', 'partial'].includes(completed.status)) await this.deleteTerminalRuntime(ownerId, turn.id);
+        if (completed && ['completed', 'partial'].includes(completed.status)) await this.deleteTerminalRuntime(ownerId, turn.id, false);
         return;
       }
       if (page.status === 'failed' || page.status === 'cancelled') {
@@ -364,27 +365,29 @@ export class GetHomeTurnUseCase {
     return this.conversations.updateTurnStatus({ ownerId, conversationId, turnId, status });
   }
 
-  private async deleteTerminalRuntime(ownerId: string, turnId: string): Promise<void> {
+  private async deleteTerminalRuntime(ownerId: string, turnId: string, waitForDeletion = true): Promise<void> {
     await this.providerCreditReceipts?.markInterrupted(ownerId, turnId);
     this.providerCreditReceipts?.clearTurn(turnId);
-    if (!this.runtime) return;
-    try {
-      await this.runtime.delete(turnId);
+    const deletion = this.cleanupRuntime(turnId);
+    if (waitForDeletion) await deletion;
+  }
+
+  private cleanupRuntime(turnId: string): Promise<void> {
+    const pending = this.cleanups.get(turnId);
+    if (pending) return pending;
+    if (!this.runtime) return Promise.resolve();
+    const deletion = this.runtime.delete(turnId).then(() => {
       this.pollStates.delete(turnId);
-    } catch {
+    }).catch(() => {
       const state = this.pollStates.get(turnId);
       if (state) state.cleanupPending = true;
-    }
+    }).finally(() => { this.cleanups.delete(turnId); });
+    this.cleanups.set(turnId, deletion);
+    return deletion;
   }
 
   private async retryCleanup(turnId: string): Promise<void> {
-    if (!this.runtime) return;
-    try {
-      await this.runtime.delete(turnId);
-      this.pollStates.delete(turnId);
-    } catch {
-      // Retain only the cursor and retry cleanup on the next owner-scoped turn read.
-    }
+    await this.cleanupRuntime(turnId);
   }
 
   private async clearRuntime(ownerId: string, turnId: string): Promise<void> {

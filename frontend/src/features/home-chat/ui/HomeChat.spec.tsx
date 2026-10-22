@@ -405,7 +405,7 @@ describe('Home chat', () => {
     api.listHomeConversations.mockResolvedValue({ conversations: [conversation], nextCursor: null });
     api.listHomeMessages.mockResolvedValue({ messages: [savedMessage], nextBeforeSequence: null });
     api.listHomeTurns.mockResolvedValue({ turns: [{ ...pendingTurn, status: 'running' }], nextAfterSequence: null });
-    api.getHomeTurn.mockResolvedValue({ ...pendingTurn, status: 'cancelled' });
+    api.getHomeTurn.mockResolvedValue({ ...pendingTurn, status: 'running' });
     renderChat(`/dashboard?conversation=${CONVERSATION_ID}`);
     const user = userEvent.setup();
     const stop = await screen.findByRole('button', { name: 'Stop response' });
@@ -415,6 +415,7 @@ describe('Home chat', () => {
     expect(await screen.findByRole('button', { name: 'Check status' })).toBeEnabled();
     expect(api.cancelHomeTurn).toHaveBeenCalledTimes(1);
 
+    api.getHomeTurn.mockResolvedValue({ ...pendingTurn, status: 'cancelled' });
     await user.click(screen.getByRole('button', { name: 'Check status' }));
     expect(await screen.findByText('Cancelled')).toBeInTheDocument();
     expect(api.getHomeTurn).toHaveBeenCalledWith(CONVERSATION_ID, TURN_ID);

@@ -3,6 +3,8 @@ import hashlib
 import hmac
 import json
 import re
+import secrets
+import uuid
 import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +17,8 @@ from provider import assert_route
 
 RUNS = {}
 PLANNING_RUNS = {}
+PLANNING_ALIASES = {}
+WARM_PLANNING_ID = None
 LOCK = threading.Lock()
 
 
@@ -32,7 +36,40 @@ def recover_runs():
         RUNS[identity] = run
     for ledger in (STATE / 'planning-runs').glob('pai-h-*/ledger.json'):
         run = PlanningRun.recover(ledger)
+        if run.awaiting_prompt:
+            run.delete()
+            continue
         PLANNING_RUNS[run.identity] = run
+        if run.assigned_identity:
+            if run.assigned_identity in PLANNING_ALIASES or run.assigned_identity in PLANNING_RUNS or run.assigned_identity in RUNS:
+                raise BridgeError('Persisted planning assignment needs manual review')
+            PLANNING_ALIASES[run.assigned_identity] = run.identity
+
+
+def home_warm_ready():
+    with LOCK:
+        run = PLANNING_RUNS.get(WARM_PLANNING_ID)
+        return bool(run and run.awaiting_prompt and run.prepared.is_set() and not run.finished.is_set())
+
+
+def prepare_home_runtime():
+    """Keep one context-free runtime ready; a claimed runtime is never pooled again."""
+    global WARM_PLANNING_ID
+    try:
+        route = profile()
+        with LOCK:
+            if WARM_PLANNING_ID in PLANNING_RUNS or len(RUNS) + len(PLANNING_RUNS) >= 4:
+                return
+            identity = str(uuid.uuid4())
+            payload = {key: route[key] for key in ('providerProfile', 'model', 'endpoint')}
+            payload.update({'maxOutputTokens': 512, 'requiredProviderReceiptVersion': 1})
+            run = PlanningRun(identity, secrets.token_urlsafe(32), payload, prepare_only=True)
+            PLANNING_RUNS[identity] = run
+            WARM_PLANNING_ID = identity
+        threading.Thread(target=run.work, daemon=True).start()
+    except Exception:
+        # Warming is optional; a normal fresh run remains available.
+        return
 
 
 def dispatch(body):
@@ -43,7 +80,7 @@ def dispatch(body):
             raise BridgeError('The OpenShell binary changed')
         run_cli(['whoami', '--output', 'json'])
         assert_route(p, body.get('payload', {}))
-        return {'ready': True, 'profile': p, 'policyCommand': policy_capability(), 'providerReceiptVersion': 1, 'maxOutputTokens': 512}
+        return {'ready': True, 'homeWarmReady': home_warm_ready(), 'profile': p, 'policyCommand': policy_capability(), 'providerReceiptVersion': 1, 'maxOutputTokens': 512}
     if isinstance(operation, str) and operation.startswith('planning-'):
         return dispatch_planning(operation, body)
     identity = run_id(body.get('runId'))
@@ -126,8 +163,9 @@ def dispatch_planning(operation, body):
         if payload['providerProfile'] != route['providerProfile'] or payload['model'] != route['model']:
             raise BridgeError('The requested Home provider route is unavailable')
         return {'providerReceiptVersion': 1, 'providerProfile': route['providerProfile'], 'model': route['model'], 'maxOutputTokens': 512}
+    global WARM_PLANNING_ID
     with LOCK:
-        run = PLANNING_RUNS.get(identity)
+        run = PLANNING_RUNS.get(PLANNING_ALIASES.get(identity, identity))
         if operation == 'planning-create':
             if run:
                 if not hmac.compare_digest(run.capability, capability):
@@ -139,8 +177,6 @@ def dispatch_planning(operation, body):
                 return {'status': run.status}
             if identity in RUNS:
                 raise BridgeError('This identity already belongs to a project run')
-            if len(RUNS) + len(PLANNING_RUNS) >= 4:
-                raise BridgeError('The local Hermes concurrency limit was reached')
             output_tokens = payload.get('maxOutputTokens')
             if (set(payload) != {'prompt', 'providerProfile', 'model', 'endpoint', 'maxOutputTokens', 'requiredProviderReceiptVersion'}
                     or payload.get('requiredProviderReceiptVersion') != 1
@@ -156,19 +192,38 @@ def dispatch_planning(operation, body):
             if not prompt or prompt_size > MAX_PLANNING_PROMPT:
                 raise BridgeError('Invalid planning prompt')
             assert_route(profile(), payload)
+            warm = PLANNING_RUNS.get(WARM_PLANNING_ID)
+            if (warm and warm.awaiting_prompt and warm.status == 'preparing' and not warm.finished.is_set()
+                    and all(warm.payload.get(key) == value for key, value in payload.items() if key != 'prompt')):
+                with warm.assignment_lock:
+                    warm.capability = capability
+                    warm.payload = payload
+                    warm.awaiting_prompt = False
+                    warm.assigned_identity = identity
+                    if warm.local.exists():
+                        warm._write_ledger(warm.sandbox_id)
+                PLANNING_ALIASES[identity] = warm.identity
+                WARM_PLANNING_ID = None
+                warm.prompt_ready.set()
+                threading.Thread(target=prepare_home_runtime, daemon=True).start()
+                return {'status': 'preparing'}
+            if len(RUNS) + len(PLANNING_RUNS) >= 4:
+                raise BridgeError('The local Hermes concurrency limit was reached')
             run = PlanningRun(identity, capability, payload)
             PLANNING_RUNS[identity] = run
             try:
                 threading.Thread(target=run.work, daemon=True).start()
             except Exception:
-                PLANNING_RUNS.pop(identity, None)
+                PLANNING_RUNS.pop(run.identity, None)
+                PLANNING_ALIASES.pop(run.assigned_identity or identity, None)
                 raise BridgeError('The planning run could not be started') from None
             return {'status': 'preparing'}
         if run and not hmac.compare_digest(run.capability, capability):
             raise BridgeError('The planning run capability does not match')
     if not run:
         if operation == 'planning-poll':
-            if set(payload) != {'cursor'}:
+            if (set(payload) not in ({'cursor'}, {'cursor', 'waitMs'})
+                    or type(payload.get('waitMs', 0)) is not int or not 0 <= payload.get('waitMs', 0) <= 1000):
                 raise BridgeError('Invalid planning event cursor')
             cursor = payload.get('cursor')
             if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
@@ -184,9 +239,10 @@ def dispatch_planning(operation, body):
             return {'outcome': 'unknown'}
         raise BridgeError('The planning run is not available')
     if operation == 'planning-poll':
-        if set(payload) != {'cursor'}:
+        if (set(payload) not in ({'cursor'}, {'cursor', 'waitMs'})
+                    or type(payload.get('waitMs', 0)) is not int or not 0 <= payload.get('waitMs', 0) <= 1000):
             raise BridgeError('Invalid planning event cursor')
-        return run.poll(payload.get('cursor', 0))
+        return run.poll(payload.get('cursor', 0), payload.get('waitMs', 0))
     if operation == 'planning-home-tool-result':
         if (set(payload) != {'requestId', 'result'} or not isinstance(payload.get('requestId'), str)
                 or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', payload['requestId'])):
@@ -208,16 +264,18 @@ def dispatch_planning(operation, body):
             raise BridgeError('Invalid planning cancel payload')
         run.close()
         with LOCK:
-            if PLANNING_RUNS.get(identity) is run:
-                PLANNING_RUNS.pop(identity, None)
+            if PLANNING_RUNS.get(run.identity) is run:
+                PLANNING_RUNS.pop(run.identity, None)
+            PLANNING_ALIASES.pop(run.assigned_identity or identity, None)
         return {'outcome': 'confirmed'}
     if operation == 'planning-delete':
         if payload:
             raise BridgeError('Invalid planning delete payload')
         run.delete()
         with LOCK:
-            if PLANNING_RUNS.get(identity) is run:
-                PLANNING_RUNS.pop(identity, None)
+            if PLANNING_RUNS.get(run.identity) is run:
+                PLANNING_RUNS.pop(run.identity, None)
+            PLANNING_ALIASES.pop(run.assigned_identity or identity, None)
         return {'deleted': True}
     raise BridgeError('Unsupported planning bridge operation')
 
@@ -263,6 +321,7 @@ def main():
     context.verify_mode = ssl.CERT_REQUIRED
     server = ThreadingHTTPServer(('0.0.0.0', 17871), Handler)
     server.socket = context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=prepare_home_runtime, daemon=True).start()
     server.serve_forever()
 
 

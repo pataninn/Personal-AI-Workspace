@@ -28,7 +28,7 @@ def planning_sandbox_name(identity):
 
 
 class PlanningRun:
-    def __init__(self, identity, capability, payload):
+    def __init__(self, identity, capability, payload, prepare_only=False):
         self.identity = run_id(identity)
         self.capability = capability
         self.name = planning_sandbox_name(identity)
@@ -41,6 +41,7 @@ class PlanningRun:
         self.cancelled = threading.Event()
         self.finished = threading.Event()
         self.lock = threading.Lock()
+        self.changed = threading.Condition(self.lock)
         self.cleanup_lock = threading.Lock()
         self.events = []
         self.sequence = 0
@@ -48,6 +49,13 @@ class PlanningRun:
         self.payload = payload
         self.home_tool_names = PLANNING_TOOL_NAMES
         self.is_planning = True
+        self.awaiting_prompt = prepare_only
+        self.assigned_identity = None
+        self.assignment_lock = threading.RLock()
+        self.prepared = threading.Event()
+        self.prompt_ready = threading.Event()
+        if not prepare_only:
+            self.prompt_ready.set()
 
     @classmethod
     def recover(cls, ledger):
@@ -65,6 +73,10 @@ class PlanningRun:
         if sandbox_id is not None and not isinstance(sandbox_id, str):
             raise BridgeError('Persisted planning sandbox ownership needs manual review')
         run.sandbox_id = sandbox_id
+        if value.get('unclaimed') is True and 'assignedRunId' in value:
+            raise BridgeError('Persisted planning assignment needs manual review')
+        run.awaiting_prompt = value.get('unclaimed') is True
+        run.assigned_identity = run_id(value['assignedRunId']) if 'assignedRunId' in value else None
         run.status = 'unknown'
         run.code = 'PLANNING_RUNTIME_OUTCOME_UNKNOWN'
         run.finished.set()
@@ -82,11 +94,18 @@ class PlanningRun:
             self.event_bytes += size
             self.sequence += 1
             self.events.append(entry)
+            self.changed.notify_all()
 
-    def poll(self, cursor):
+    def poll(self, cursor, wait_ms=0):
         if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
             raise BridgeError('Invalid planning event cursor')
-        with self.lock:
+        if type(wait_ms) is not int or not 0 <= wait_ms <= 1000:
+            raise BridgeError('Invalid planning wait duration')
+        deadline = time.monotonic() + wait_ms / 1000
+        with self.changed:
+            while (self.sequence <= cursor and self.status in ('preparing', 'running')
+                   and not self.cancelled.is_set() and time.monotonic() < deadline):
+                self.changed.wait(timeout=max(0, deadline - time.monotonic()))
             status = self.status
             events = [event for event in self.events if event['sequence'] > cursor]
             selected = []
@@ -130,6 +149,10 @@ class PlanningRun:
             self.acp.open(self.remote_work)
             if self.cancelled.is_set():
                 return
+            self.prepared.set()
+            self.prompt_ready.wait()
+            if self.cancelled.is_set():
+                return
             with self.lock:
                 self.status = 'running'
             self.push({'type': 'started'})
@@ -142,8 +165,12 @@ class PlanningRun:
                 self.status = 'cancelled' if self.cancelled.is_set() else 'failed'
         finally:
             self.finished.set()
-            if self.cancelled.is_set() and self.sandbox_id:
+            with self.changed:
+                self.changed.notify_all()
+            if (self.cancelled.is_set() or self.awaiting_prompt) and self.sandbox_id:
                 try:
+                    if self.awaiting_prompt and self.acp:
+                        self.acp.close()
                     self._cleanup()
                 except Exception:
                     self.code = 'PLANNING_RUNTIME_OUTCOME_UNKNOWN'
@@ -151,7 +178,9 @@ class PlanningRun:
     def _create(self):
         if any(row.get('name') == self.name for row in inventory()):
             raise BridgeError('A planning sandbox already exists for this turn; manual review is required')
-        self.local.mkdir(parents=True, mode=0o700)
+        with self.assignment_lock:
+            self.local.mkdir(parents=True, mode=0o700)
+            self._write_ledger(None)
         route = profile()
         assert_route(route, self.payload)
         image = route.get('image')
@@ -164,7 +193,6 @@ class PlanningRun:
         policy_hash = hashlib.sha256(policy.read_bytes()).hexdigest()
         if policy_hash != route['policySha256']:
             raise BridgeError('The pinned sandbox policy changed')
-        self._write_ledger(None)
         run_cli([
             'sandbox', 'create', '--name', self.name, '--from', image,
             '--provider', route['providerName'], '--no-auto-providers', '--policy', str(policy),
@@ -193,12 +221,15 @@ class PlanningRun:
         assert_route(route, self.payload)
 
     def _write_ledger(self, sandbox_id):
-        write_private(self.local / 'ledger.json', json.dumps({
-            'runId': self.identity,
-            'capability': self.capability,
-            'sandboxId': sandbox_id,
-            'sandboxName': self.name,
-        }, separators=(',', ':')))
+        with self.assignment_lock:
+            write_private(self.local / 'ledger.json', json.dumps({
+                'runId': self.identity,
+                'capability': self.capability,
+                'sandboxId': sandbox_id,
+                'sandboxName': self.name,
+                'unclaimed': self.awaiting_prompt,
+                **({'assignedRunId': self.assigned_identity} if self.assigned_identity else {}),
+            }, separators=(',', ':')))
 
     def _create_empty_workdir(self):
         result = subprocess.run(
@@ -216,6 +247,8 @@ class PlanningRun:
         ]
 
     def close(self):
+        self.cancelled.set()
+        self.prompt_ready.set()
         acp = self.acp
         if acp:
             with acp.home_tool_lock:

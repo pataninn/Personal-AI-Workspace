@@ -855,22 +855,30 @@ export function useHomeChat({ scope, disabled = false, syncConversationInUrl = t
     const requestKey = selectedViewKey;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let lastHistoryRefresh = 0;
+    let retryDelay = 100;
     const poll = async (): Promise<void> => {
       try {
         const refreshed = await getHomeTurn(selectedConversationId, activeTurn.id);
         if (cancelled || !current(requestKey)) return;
         setTurns((previous) => mergeTurns(previous, [refreshed]));
-        await refreshEventFeed(selectedConversationId, requestKey);
-        await refreshLatestFor(selectedConversationId, requestKey);
+        const terminal = refreshed.status !== 'running';
+        if (terminal || Date.now() - lastHistoryRefresh >= 2000) {
+          await refreshEventFeed(selectedConversationId, requestKey);
+          lastHistoryRefresh = Date.now();
+        }
+        if (terminal) await refreshLatestFor(selectedConversationId, requestKey);
+        retryDelay = 100;
         setReconnecting(false);
         setSendError(null);
       } catch {
         if (cancelled || !current(requestKey)) return;
         setReconnecting(true);
+        retryDelay = 2000;
       }
-      if (!cancelled && current(requestKey)) timer = setTimeout(() => { void poll(); }, 2000);
+      if (!cancelled && current(requestKey)) timer = setTimeout(() => { void poll(); }, retryDelay);
     };
-    timer = setTimeout(() => { void poll(); }, 2000);
+    timer = setTimeout(() => { void poll(); }, 0);
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [activeTurn?.id, activeTurn?.status, current, disabled, loadedEventsConversationId, pendingForActiveTurn, refreshEventFeed, refreshLatestFor, selectedConversationId, selectedViewKey]);
 

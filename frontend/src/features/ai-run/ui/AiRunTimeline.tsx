@@ -59,6 +59,8 @@ export function AiRunTimeline({ snapshot, projectId, conversationId, csrfToken, 
     previousRef.current = { status: timeline.snapshot.status, connection: timeline.connection, terminal };
   }, [terminal, timeline.connection, timeline.snapshot.status]);
 
+  if (timeline.snapshot.status === 'ready' && timeline.snapshot.decision === 'approved') return <span className="sr-only" data-testid="run-connection-status">{statusText}</span>;
+
   // Once the saved answer is in chat history, the compact stream must not repeat it.
   if (compact && timeline.snapshot.status === 'succeeded' && timeline.reconciliationStatus === 'complete' && !timeline.error) {
     return <span className="sr-only" role="status">Assistant response complete.</span>;
