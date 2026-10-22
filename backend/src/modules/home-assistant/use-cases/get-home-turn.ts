@@ -283,9 +283,12 @@ export class GetHomeTurnUseCase {
           return 'blocked';
         }
         if (!candidate || candidate.kind !== 'immediate') return 'blocked';
-        const targetProjectId = candidate.authorizationProjectId;
-        if (scope.kind === 'workspace' && targetProjectId !== undefined && targetProjectId !== scope.workspaceId) return 'blocked';
-        if (!await this.isAuthorized(turn, ownerId, conversationId, scope, targetProjectId, guard)) return 'blocked';
+        const targetProjectIds = candidate.authorizationProjectIds ?? [];
+        if (scope.kind === 'workspace' && targetProjectIds.some((id) => id !== scope.workspaceId)) return 'blocked';
+        if (!await this.isAuthorized(turn, ownerId, conversationId, scope, undefined, guard)) return 'blocked';
+        for (const projectId of targetProjectIds) {
+          if (!await this.isAuthorized(turn, ownerId, conversationId, scope, projectId, guard)) return 'blocked';
+        }
         if (turn.automationOccurrenceId && candidate.taskSources?.length) {
           if (!guard || guard.fence.occurrenceId !== turn.automationOccurrenceId || !this.automationSources
             || !await guard.isCurrent()) return 'blocked';

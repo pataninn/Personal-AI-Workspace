@@ -27,8 +27,8 @@ export type HomePlanningToolResolution =
   | {
     readonly kind: 'immediate';
     readonly result: HomePlanningToolResult;
-    /** Internal owner-checked target used to recheck scope policy before runtime continuation. */
-    readonly authorizationProjectId?: string;
+    /** Internal owner-checked targets used to recheck scope policy before runtime continuation. */
+    readonly authorizationProjectIds?: readonly string[];
     /** Exact task revisions to persist before returning the read result to an automated turn. */
     readonly taskSources?: readonly { readonly taskId: string; readonly revision: number }[];
   };

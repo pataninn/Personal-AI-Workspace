@@ -430,6 +430,21 @@ describe('GetHomeTurnUseCase', () => {
     expect(result.status).toBe('cancelled');
   });
 
+  it.each([undefined, 5])('rechecks all Home result workspaces before sending (failure at %s)', async (assertFailsAt) => {
+    const { useCase, runtime, executionPolicy } = setup({
+      events: [{ sequence: 1, type: 'home.tool.requested', requestId: 'mixed', sessionId: 'session-1', name: 'home_list_tasks', args: {} }],
+      ...(assertFailsAt ? { assertFailsAt } : {}),
+      handlerResult: { kind: 'immediate', authorizationProjectIds: [PROJECT, OWNER],
+        result: { outcome: 'shared', data: { items: [] } } }
+    });
+    const result = await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+    for (const projectId of [PROJECT, OWNER]) {
+      expect(executionPolicy.assertHome).toHaveBeenCalledWith(expect.objectContaining({ projectId }));
+    }
+    expect(runtime.sendToolResult).toHaveBeenCalledTimes(assertFailsAt ? 0 : 1);
+    expect(result.status).toBe(assertFailsAt ? 'cancelled' : 'completed');
+  });
+
   it('does not send a denial or consent continuation for an unsupported tool resolution', async () => {
     const event = { sequence: 1, type: 'home.tool.requested' as const, requestId: 'request-1', sessionId: 'session-1', name: 'home_list_tasks', args: { limit: 1 } };
     const { useCase, runtime } = setup({ events: [event], handlerResult: { kind: 'consented', candidate: {
@@ -446,7 +461,7 @@ describe('GetHomeTurnUseCase', () => {
     const event = { sequence: 1, type: 'home.tool.requested' as const, requestId: 'request-1', sessionId: 'session-1', name: 'home_list_tasks', args: { limit: 1 } };
     const { useCase, runtime } = setup({
       events: [event], scope: { kind: 'workspace', workspaceId: PROJECT }, revisions: { home: '4', workspace: '9' },
-      handlerResult: { kind: 'immediate', authorizationProjectId: OWNER, result: { outcome: 'shared', data: { items: [] } } }
+      handlerResult: { kind: 'immediate', authorizationProjectIds: [OWNER], result: { outcome: 'shared', data: { items: [] } } }
     });
 
     await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });

@@ -333,17 +333,18 @@ export class HomePlanningToolRequestHandler implements IHomePlanningToolRequestH
       throw new HomePlanningScopeConflictError();
     }
     if (!await this.policyAllows(input, turn, capability, authorizationProjectId)) return null;
-    if (input.scope.kind === 'home') {
-      const targetIds = candidateProjectIds(candidate);
-      if (targetIds.length > 1) return null;
-      authorizationProjectId ??= targetIds[0];
-      if (authorizationProjectId && !await this.policyAllows(input, turn, capability, authorizationProjectId)) return null;
+    const authorizationProjectIds = [...new Set([
+      ...(authorizationProjectId ? [authorizationProjectId] : []),
+      ...candidateProjectIds(candidate)
+    ])];
+    for (const projectId of authorizationProjectIds) {
+      if (!await this.policyAllows(input, turn, capability, projectId)) return null;
     }
     return {
       kind: 'immediate',
       result: { outcome: 'shared', data: candidate.data },
       ...(candidate.taskSources ? { taskSources: candidate.taskSources } : {}),
-      ...(authorizationProjectId ? { authorizationProjectId } : {})
+      ...(authorizationProjectIds.length ? { authorizationProjectIds } : {})
     };
   }
 

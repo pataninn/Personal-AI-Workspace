@@ -54,8 +54,9 @@ export const ASSISTANT_POLICY_PROFILES: Readonly<Record<AssistantPolicyProfile, 
     toolCapabilities: ['home_task_read', 'home_task_write', 'home_workspace_read', 'home_workspace_write', 'home_action_undo']
   },
   workspace_in_scope_v1: {
-    contextCategories: ['request', 'recent_conversation', 'project_files', 'project_facts'],
-    toolCapabilities: ['workspace_file_read', 'workspace_file_write', 'bounded_sandbox_command']
+    contextCategories: ['request', 'recent_conversation', 'project_files', 'project_facts', 'task_metadata', 'workspace_metadata'],
+    toolCapabilities: ['home_task_read', 'home_task_write', 'home_workspace_read', 'home_workspace_write', 'home_action_undo',
+      'workspace_file_read', 'workspace_file_write', 'bounded_sandbox_command']
   }
 };
 

@@ -1,3 +1,4 @@
+import { ASSISTANT_POLICY_PROFILES, intersectAssistantCapabilities } from '@/modules/assistant-policy/domain/assistant-scope-policy';
 import type { AssistantExecutionAuthorization } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
 import type { HomeConversation, HomeTurn } from '@/modules/home-assistant/domain/home-conversation-types';
 import type { IHomeConversationRepository } from '@/modules/home-assistant/repositories/home-conversation-repository';
@@ -45,7 +46,9 @@ function setup(options: {
     })
   };
   const assertHome = jest.fn(async (input: { readonly ownerId: string; readonly projectId?: string }) => ({
-    policies: [], effectiveCapabilities: options.capabilities ?? ['home_task_read', 'home_task_write', 'home_workspace_read', 'home_workspace_write', 'home_action_undo'],
+    policies: [], effectiveCapabilities: options.capabilities ?? (input.projectId
+      ? intersectAssistantCapabilities(ASSISTANT_POLICY_PROFILES.home_in_scope_v1.toolCapabilities, ASSISTANT_POLICY_PROFILES.workspace_in_scope_v1.toolCapabilities)
+      : ASSISTANT_POLICY_PROFILES.home_in_scope_v1.toolCapabilities),
     revisions: { home: '7', ...(input.projectId ? { workspace: '9' } : {}) }
   } satisfies AssistantExecutionAuthorization));
   const listTasks = { execute: jest.fn(async () => ({ items: [], nextCursor: null })) };
@@ -118,6 +121,32 @@ describe('HomePlanningToolRequestHandler', () => {
     });
   });
 
+  it.each([false, true])('checks all workspace policies for a mixed Home task list (denied: %s)', async (denied) => {
+    const { handler, listTasks, assertHome } = setup();
+    const otherProject = '66666666-6666-4666-8666-666666666666';
+    listTasks.execute.mockResolvedValueOnce({
+      items: [null, PROJECT, otherProject].map((projectId, index) => ({
+        task: { id: `${TASK.slice(0, -1)}${index}`, ownerId: OWNER, projectId, title: 'Task', details: null,
+          status: 'todo', importance: 'medium', deadline: null, version: 1, subtasks: [] },
+        workspace: projectId ? { id: projectId, name: 'Workspace', status: 'active' } : null
+      })), nextCursor: null
+    } as never);
+    if (denied) {
+      assertHome.mockImplementation(async (input) => {
+        if (input.projectId === otherProject) throw new Error('workspace denied');
+        return { policies: [], effectiveCapabilities: ['home_task_read'], revisions: { home: '7' } };
+      });
+    }
+    const result = await handler.resolve(request('home_list_tasks', { limit: 10 }));
+    for (const projectId of [PROJECT, otherProject]) {
+      expect(assertHome).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER, projectId }));
+    }
+    expect(listTasks.execute).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER }));
+    if (denied) expect(result).toBeNull();
+    else expect(result).toMatchObject({ kind: 'immediate', authorizationProjectIds: [PROJECT, otherProject],
+      result: { outcome: 'shared', data: { items: [expect.any(Object), expect.any(Object), expect.any(Object)] } } });
+  });
+
   it('returns the exact revision from a scoped single-task read as internal source metadata', async () => {
     const { handler } = setup();
 
@@ -180,7 +209,7 @@ describe('HomePlanningToolRequestHandler', () => {
     const result = await handler.resolve(request('home_reuse_workspace', { workspaceId: PROJECT }));
 
     expect(assertHome).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER, projectId: PROJECT, homePolicyRevision: '7' }));
-    expect(result).toMatchObject({ kind: 'immediate', authorizationProjectId: PROJECT, result: { outcome: 'shared' } });
+    expect(result).toMatchObject({ kind: 'immediate', authorizationProjectIds: [PROJECT], result: { outcome: 'shared' } });
     expect(JSON.stringify(result?.kind === 'immediate' ? result.result : result)).not.toContain('authorizationProjectId');
   });
 

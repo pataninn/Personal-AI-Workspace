@@ -49,9 +49,19 @@ describe('AssertAssistantExecutionPolicyUseCase', () => {
 
     await expect(fixture.useCase.assertHome({
       ownerId: OWNER, projectId: PROJECT, providerProfile: PROVIDER, model: MODEL
-    })).resolves.toMatchObject({ policies: [home, workspace], revisions: { home: '7', workspace: '7' } });
+    })).resolves.toMatchObject({ policies: [home, workspace], revisions: { home: '7', workspace: '7' },
+      effectiveCapabilities: ['home_task_read', 'home_task_write', 'home_workspace_read', 'home_workspace_write', 'home_action_undo'] });
     expect(fixture.findPolicy).toHaveBeenCalledTimes(2);
     expect(fixture.assess).toHaveBeenCalledWith({ scopeKind: 'home', providerProfile: PROVIDER, model: MODEL });
+  });
+
+  it.each([null, false])('blocks Home task access when the target workspace policy is absent or disabled (%s)', async (enabled) => {
+    const policies = [policyRow(), ...(enabled === null ? [] : [policyRow({
+      scopeKind: 'project', projectId: PROJECT, policyProfile: 'workspace_in_scope_v1', enabled
+    })])];
+    const fixture = createUseCase(policies, projectRow(), { available: true });
+    await expect(fixture.useCase.assertHome({ ownerId: OWNER, projectId: PROJECT, providerProfile: PROVIDER, model: MODEL }))
+      .rejects.toThrow();
   });
 
   it('fails closed when a trusted runtime capability is unavailable', async () => {
