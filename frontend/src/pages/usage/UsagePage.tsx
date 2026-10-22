@@ -6,15 +6,15 @@ import { Alert, Button, Card, Skeleton } from '@/shared/ui';
 
 export function UsagePage(): React.JSX.Element {
   const { state, refresh } = useAccountUsage();
-  return <main className="mx-auto grid w-full max-w-5xl gap-6 px-4 py-8" data-testid="usage-page">
+  return <section className="grid w-full content-start gap-6" data-testid="usage-page">
     <header className="flex flex-wrap items-end justify-between gap-4">
-      <div><p className="product-label">Account</p><h1 className="text-3xl font-semibold">Usage</h1><p className="field-help">Your current account allowances and logical workspace storage.</p></div>
+      <div><p className="product-label">Account</p><h1 className="text-3xl font-semibold">Usage</h1><p className="field-help">Track your AI usage and storage.</p></div>
       <Link className="text-[var(--color-link)] underline underline-offset-4" to="/dashboard">Back to workspace</Link>
     </header>
     {state.status === 'loading' ? <div className="grid gap-4 md:grid-cols-3" aria-busy="true" data-testid="usage-loading">
       <Skeleton className="h-40" /><Skeleton className="h-40" /><Skeleton className="h-40" />
     </div> : null}
-    {state.status === 'error' ? <Alert tone="error" data-testid="usage-error"><p>Usage unavailable. Your AI controls stay disabled until the current allowance can be checked.</p><Button type="button" variant="secondary" onClick={refresh}>Try again</Button></Alert> : null}
+    {state.status === 'error' ? <Alert tone="error" data-testid="usage-error"><p>Usage could not be checked. Try again before sending an AI request.</p><Button type="button" variant="secondary" onClick={refresh}>Try again</Button></Alert> : null}
     {state.status === 'success' ? <>
       <section className="grid gap-4 md:grid-cols-3" aria-label="Account usage totals">
         <CreditCard title="Daily credits" usage={state.data.daily} />
@@ -23,16 +23,16 @@ export function UsagePage(): React.JSX.Element {
       </section>
       <section aria-label="AI availability">
         {state.data.availability.status === 'available'
-          ? <Alert tone="success" data-testid="usage-availability">AI budget availability is confirmed for this account. Provider readiness may vary.</Alert>
+          ? <Alert tone="success" data-testid="usage-availability">AI usage is available.</Alert>
           : <Alert tone={state.data.availability.status === 'unknown' ? 'warning' : 'info'} data-testid="usage-availability">
             <p>{state.data.availability.reason ?? 'AI submissions are currently unavailable.'}</p>
             {state.data.availability.status === 'unknown' ? <Button type="button" variant="secondary" onClick={refresh}>Check again</Button> : null}
           </Alert>}
       </section>
-      <p className="field-help">Updated {formatDate(state.data.asOf)}. Credits measure the configured AI budget and may include estimated token usage when a provider receipt is missing. Storage is logical persistent data, not physical disk use.</p>
+      <p className="field-help">Updated {formatDate(state.data.asOf)}. Usage may include estimates.</p>
     </> : null}
     <WorkspaceExportPanel />
-  </main>;
+  </section>;
 }
 
 function CreditCard({ title, usage }: { readonly title: string; readonly usage: { readonly limitUnits: string | null; readonly settledUnits: string; readonly reservedUnits: string; readonly remainingUnits: string | null; readonly resetAt?: string; readonly timeZone?: string } }): React.JSX.Element {
@@ -43,7 +43,7 @@ function CreditCard({ title, usage }: { readonly title: string; readonly usage: 
     <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-2 text-sm">
       <dt>Allowance</dt><dd>{usage.limitUnits === null ? 'Unlimited' : formatCount(usage.limitUnits)}</dd>
       <dt>Consumed</dt><dd>{formatCount(usage.settledUnits)}</dd>
-      <dt>Pending reservations</dt><dd>{formatCount(usage.reservedUnits)}</dd>
+      <dt>In progress</dt><dd>{formatCount(usage.reservedUnits)}</dd>
       <dt>Remaining</dt><dd>{usage.remainingUnits === null ? 'Unlimited' : formatCount(usage.remainingUnits)}</dd>
     </dl>
     {usage.resetAt ? <p className="field-help">Resets {formatInZone(usage.resetAt, usage.timeZone ?? 'UTC')} ({usage.timeZone ?? 'UTC'}).</p> : null}
@@ -53,11 +53,11 @@ function CreditCard({ title, usage }: { readonly title: string; readonly usage: 
 function StorageCard({ usage }: { readonly usage: { readonly state: string; readonly usedBytes: string | null; readonly reservedBytes: string | null; readonly limitBytes: string | null; readonly asOf: string | null } }): React.JSX.Element {
   const ready = usage.state === 'ready' && usage.usedBytes !== null && usage.reservedBytes !== null;
   return <Card className="grid content-start gap-3 p-5" data-testid="usage-workspace-storage">
-    <h2 className="text-lg font-semibold">Workspace data storage</h2>
+    <h2 className="text-lg font-semibold">Storage</h2>
     {ready ? <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-2 text-sm">
-      <dt>Used</dt><dd>{formatBytes(usage.usedBytes!)} ({usage.usedBytes} bytes)</dd>
-      <dt>Reserved</dt><dd>{formatBytes(usage.reservedBytes!)} ({usage.reservedBytes} bytes)</dd>
-      <dt>Limit</dt><dd>{usage.limitBytes === null ? 'Unlimited' : `${formatBytes(usage.limitBytes)} (${usage.limitBytes} bytes)`}</dd>
+      <dt>Used</dt><dd>{formatBytes(usage.usedBytes!)}</dd>
+      <dt>Reserved</dt><dd>{formatBytes(usage.reservedBytes!)}</dd>
+      <dt>Limit</dt><dd>{usage.limitBytes === null ? 'Unlimited' : formatBytes(usage.limitBytes)}</dd>
     </dl> : <p className="field-help">Storage usage unavailable while accounting is {usage.state}.</p>}
     {usage.asOf ? <p className="field-help">Updated {formatDate(usage.asOf)}.</p> : null}
   </Card>;

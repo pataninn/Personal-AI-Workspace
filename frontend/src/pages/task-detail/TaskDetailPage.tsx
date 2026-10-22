@@ -158,7 +158,7 @@ export function TaskDetailPage(): React.JSX.Element {
   });
 
   useEffect(() => {
-    if (current?.status === 'success') pageHeadingRef.current?.focus();
+    if (current?.status === 'success') pageHeadingRef.current?.focus({ preventScroll: true });
   }, [taskId, current?.status]);
 
   useEffect(() => {

@@ -39,7 +39,7 @@ export function DashboardPage(): React.JSX.Element {
 
   return <div className="projects-page home-page">
     <header className="projects-page-header home-hero"><div><p className="product-label">Home · {new Date().toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' })}</p><h1 aria-label="Home">Pick up a <span>project</span> or<br className="hero-break" /> choose your <span>next task</span>.</h1></div><Button type="button" data-testid="project-create-trigger" disabled={home.status !== 'success' || boundaryUnavailable} onClick={() => { setCreateOpen(true); }}><Icon name="plus" size={18} />New project</Button></header>
-    {boundaryUnavailable ? <Alert tone="error" data-testid="workspace-boundary-error" role="alert"><strong>The authoritative workspace is unavailable.</strong><p>Project actions are disabled until the local workspace setup is available.</p><Button type="button" variant="secondary" data-testid="workspace-boundary-retry-button" onClick={refreshWorkspaceData}>Try again</Button></Alert> : null}
+    {boundaryUnavailable ? <Alert tone="error" data-testid="workspace-boundary-error" role="alert"><strong>Workspaces are temporarily unavailable.</strong><p>Try again to reload your projects.</p><Button type="button" variant="secondary" data-testid="workspace-boundary-retry-button" onClick={refreshWorkspaceData}>Try again</Button></Alert> : null}
     <HomeOverviewWidget
       tasks={tasks}
       taskStatus={home.status}

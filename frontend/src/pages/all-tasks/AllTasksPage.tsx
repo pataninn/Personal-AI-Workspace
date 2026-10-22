@@ -37,7 +37,7 @@ export function AllTasksPage(): React.JSX.Element {
   const hasAppliedFilters = Boolean(query.status || query.importance || query.deadlineFrom || query.deadlineTo || query.q || query.includeArchived);
   return <div className="global-tasks-page" data-testid="all-tasks-page">
     <header className="global-tasks-header">
-      <div><p className="product-label">Home</p><h1>{heading}</h1><p className="supporting-copy">Find tasks across your workspaces and unassigned tasks.</p></div>
+      <div><p className="product-label">Home</p><h1>{heading}</h1><p className="supporting-copy">Everything you need to do, in one place.</p></div>
       <nav aria-label="Task collections" className="global-task-collection-nav">
         <Link to="/tasks" aria-current={!query.workspaceId ? 'page' : undefined}>All tasks</Link>
         <Link to="/dashboard">Home</Link>

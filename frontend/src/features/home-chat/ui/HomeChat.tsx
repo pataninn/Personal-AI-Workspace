@@ -148,7 +148,7 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
       <Button type="button" variant="secondary" data-testid="home-chat-refresh-policy" onClick={chat.retryPolicy}>Try again</Button>
     </Alert> : null}
     {disabled && disabledReason ? <Alert id={archivedId} tone="warning" data-testid="planning-chat-read-only">{disabledReason}</Alert> : null}
-    {chat.runtimeUnavailable ? <Alert tone="error" data-testid="home-chat-runtime-unavailable" role="alert">The configured assistant runtime is unavailable. Try again before trying again.</Alert> : null}
+    {chat.runtimeUnavailable ? <Alert tone="error" data-testid="home-chat-runtime-unavailable" role="alert">The assistant is temporarily unavailable. Try again shortly.</Alert> : null}
     {chat.reconnecting ? <p className="home-chat-reconnect" role="status" aria-live="polite"><Spinner label="Reconnecting" /> Reconnecting…</p> : null}
 
     <div className={`home-chat-layout${isAsk ? ' home-chat-layout-ask' : ''}`}>

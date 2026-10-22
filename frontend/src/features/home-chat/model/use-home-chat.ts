@@ -254,6 +254,7 @@ export function useHomeChat({ scope, disabled = false, syncConversationInUrl = t
   const busyTokenRef = useRef(0);
   const previousViewKeyRef = useRef(selectedViewKey);
   const cancelAttemptRef = useRef(false);
+  const cancelRevisionRef = useRef(0);
   const prevScopeIdRef = useRef(scopeId);
   const policyReady = policyLoadStatus === 'loaded' && policyScopeId === scopeId && executionPolicyReady(policyStatus, scope);
   const policyReadyRef = useRef(policyReady);
@@ -795,6 +796,7 @@ export function useHomeChat({ scope, disabled = false, syncConversationInUrl = t
     if (!selectedConversationId || !activeTurn || activeTurn.status !== 'running' || !csrfToken || disabled || cancelAttemptRef.current) return;
     const requestKey = viewKeyRef.current;
     cancelAttemptRef.current = true;
+    cancelRevisionRef.current += 1;
     setCancelPending(true);
     setCancelNeedsCheck(false);
     setSendError(null);
@@ -810,7 +812,12 @@ export function useHomeChat({ scope, disabled = false, syncConversationInUrl = t
         setReconnecting(true);
         setCancelNeedsCheck(true);
       }
-    } finally { if (current(requestKey)) setCancelPending(false); }
+    } finally {
+      if (current(requestKey)) {
+        cancelRevisionRef.current += 1;
+        setCancelPending(false);
+      }
+    }
   }, [activeTurn, current, csrfToken, disabled, refreshEventFeed, selectedConversationId]);
 
   const checkTurnStatus = useCallback(async (): Promise<void> => {
@@ -851,16 +858,17 @@ export function useHomeChat({ scope, disabled = false, syncConversationInUrl = t
   }, [activeTurn, current, isLegacyTurn, refreshEventFeed, refreshLatestFor, selectedConversationId]);
 
   useEffect(() => {
-    if (!selectedConversationId || loadedEventsConversationId !== selectedConversationId || activeTurn?.status !== 'running' || pendingForActiveTurn || disabled) return;
+    if (!selectedConversationId || loadedEventsConversationId !== selectedConversationId || activeTurn?.status !== 'running' || pendingForActiveTurn || disabled || cancelPending || cancelNeedsCheck) return;
     const requestKey = selectedViewKey;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let lastHistoryRefresh = 0;
     let retryDelay = 100;
     const poll = async (): Promise<void> => {
+      const cancelRevision = cancelRevisionRef.current;
       try {
         const refreshed = await getHomeTurn(selectedConversationId, activeTurn.id);
-        if (cancelled || !current(requestKey)) return;
+        if (cancelled || !current(requestKey) || cancelRevision !== cancelRevisionRef.current) return;
         setTurns((previous) => mergeTurns(previous, [refreshed]));
         const terminal = refreshed.status !== 'running';
         if (terminal || Date.now() - lastHistoryRefresh >= 2000) {
@@ -868,11 +876,12 @@ export function useHomeChat({ scope, disabled = false, syncConversationInUrl = t
           lastHistoryRefresh = Date.now();
         }
         if (terminal) await refreshLatestFor(selectedConversationId, requestKey);
+        if (cancelled || !current(requestKey) || cancelRevision !== cancelRevisionRef.current) return;
         retryDelay = 100;
         setReconnecting(false);
         setSendError(null);
       } catch {
-        if (cancelled || !current(requestKey)) return;
+        if (cancelled || !current(requestKey) || cancelRevision !== cancelRevisionRef.current) return;
         setReconnecting(true);
         retryDelay = 2000;
       }
@@ -880,7 +889,7 @@ export function useHomeChat({ scope, disabled = false, syncConversationInUrl = t
     };
     timer = setTimeout(() => { void poll(); }, 0);
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [activeTurn?.id, activeTurn?.status, current, disabled, loadedEventsConversationId, pendingForActiveTurn, refreshEventFeed, refreshLatestFor, selectedConversationId, selectedViewKey]);
+  }, [activeTurn?.id, activeTurn?.status, cancelNeedsCheck, cancelPending, current, disabled, loadedEventsConversationId, pendingForActiveTurn, refreshEventFeed, refreshLatestFor, selectedConversationId, selectedViewKey]);
 
   const loadStatus = useCallback((turnId: string): string | null => {
     const turn = turns.find((item) => item.id === turnId);

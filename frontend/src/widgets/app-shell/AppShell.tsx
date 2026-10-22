@@ -54,7 +54,8 @@ export function AppShell(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
-    mainRef.current?.focus();
+    mainRef.current?.focus({ preventScroll: true });
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
   }, [location.pathname]);
 
   async function handleSignOut(): Promise<void> {

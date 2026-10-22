@@ -68,6 +68,30 @@ describe('AllTasksPage', () => {
     await waitFor(() => expect(listGlobalTasksMock).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'done', q: 'proposal' })));
   });
 
+  it('keeps advanced filters compact until requested and preserves focus when editing them', async () => {
+    const user = userEvent.setup();
+    renderAllTasks();
+    await screen.findByRole('link', { name: /Review proposal/ });
+    const disclosure = screen.getByText('More filters').closest('details');
+    expect(disclosure).not.toHaveAttribute('open');
+    await user.click(screen.getByText('More filters'));
+    const importance = screen.getByLabelText('Importance');
+    await user.selectOptions(importance, 'high');
+    expect(importance).toHaveFocus();
+    expect(disclosure).toHaveAttribute('open');
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }));
+    await waitFor(() => expect(listGlobalTasksMock).toHaveBeenLastCalledWith({ importance: 'high' }));
+  });
+
+  it('reveals advanced filters that are already active in a shared URL', async () => {
+    renderAllTasks('/tasks?importance=high&deadlineFrom=2026-10-20&includeArchived=true');
+    await screen.findByRole('link', { name: /Review proposal/ });
+    expect(screen.getByText('More filters').closest('details')).toHaveAttribute('open');
+    expect(screen.getByLabelText('Importance')).toHaveValue('high');
+    expect(screen.getByLabelText('Deadline from')).toHaveValue('2026-10-20');
+    expect(screen.getByLabelText('Include archived workspaces')).toBeChecked();
+  });
+
   it('keeps unassigned tasks in All tasks and leaves Inbox available as a collection filter', async () => {
     listGlobalTasksMock.mockResolvedValue({ items: [workspaceTask, unassignedTask], nextCursor: null });
     renderAllTasks();

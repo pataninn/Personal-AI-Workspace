@@ -203,11 +203,10 @@ export function ProjectMemoryManager({ projectId, projectName, archived, fileAcc
       : 'The latest saved selection was reloaded; your draft is still available.');
   }
   return (
-    <section className="project-memory-manager" data-testid="project-memory-manager">
+    <section className="project-memory-manager content-start" data-testid="project-memory-manager">
       <AssistantPolicySummary status={assistantPolicy.status} policy={assistantPolicy.policy} />
-      {assistantPolicy.status === 'error' ? <Alert tone="error"><p>Assistant provider and storage details could not be loaded.</p><Button type="button" onClick={assistantPolicy.retry}>Try again</Button></Alert> : null}
-      <p className="supporting-copy">Included facts can be used by future chats and scheduled runs in this project when permitted. Changes affect future AI context only; they do not change past messages or recall provider requests already sent.</p>
-      {!fileAccess ? <p className="supporting-copy">Files and file context remain unavailable in this planning-only workspace. You can still manage its saved project facts.</p> : null}
+      {assistantPolicy.status === 'error' ? <Alert tone="error"><p>Assistant availability could not be checked.</p><Button type="button" onClick={assistantPolicy.retry}>Try again</Button></Alert> : null}
+      {!fileAccess ? <p className="supporting-copy">Saved facts are available here. Files are not enabled for this workspace.</p> : null}
       {chatContext.loading ? <p role="status">Loading context selection…</p> : null}
       {!chatContext.loading && !chatContext.context ? <p role="status">Saved context selection is unknown until it can be reloaded.</p> : null}
       {chatContext.error ? <Alert tone="error" role="alert"><p>{chatContext.error}</p><Button type="button" onClick={() => { void reloadContext(); }}>Reload context</Button></Alert> : null}
@@ -218,15 +217,15 @@ export function ProjectMemoryManager({ projectId, projectName, archived, fileAcc
           : <Button type="button" variant="secondary" disabled={chatContext.loading} onClick={() => { void reloadContext(); }}>Reload saved context</Button>}
       </section> : null}
       {archived ? <Alert id={archivedDescriptionId} tone="warning" data-testid="project-memory-archived-message">This project is archived. Its memory is available to review, but you cannot change it or use it for new runs.</Alert> : null}
-      <p className="form-status" data-testid="project-memory-announcement" role="status" aria-live="polite">{announcement}</p>
+      <p className={announcement ? 'form-status' : 'sr-only'} data-testid="project-memory-announcement" role="status" aria-live="polite">{announcement}</p>
       <div className="project-memory-toolbar">
-        <p className="supporting-copy">Choose which saved facts are available to future context for this project.</p>
+        <p className="supporting-copy">Include useful facts in future chats.</p>
         <Button type="button" data-testid="project-memory-add" disabled={archived || busy || !csrfToken} aria-describedby={archived ? archivedDescriptionId : undefined} onClick={openAddDialog}>Add a fact</Button>
       </div>
       <div className="project-memory-list" data-testid="project-memory-list" aria-busy={status === 'loading' || undefined}>
         {status === 'idle' || status === 'loading' ? <MemoryLoading /> : null}
         {status === 'error' ? <section className="error-state project-memory-error" data-testid="project-memory-error" role="alert" aria-labelledby="project-memory-error-title"><h2 id="project-memory-error-title">Project memory could not be loaded</h2><p>We could not load saved facts. Try again.</p><Button type="button" variant="secondary" data-testid="project-memory-retry" onClick={() => { void reload(); }}>Try again</Button></section> : null}
-        {status === 'success' && facts.length === 0 ? <section className="empty-state project-memory-empty" data-testid="project-memory-empty" aria-labelledby="project-memory-empty-title"><h2 id="project-memory-empty-title">No saved facts yet</h2><p>{fileAccess ? 'Add a fact when there is something useful for this project that you want the assistant to remember.' : 'Add a fact to keep useful project information together.'}</p><Button type="button" data-testid="project-memory-empty-add" disabled={archived || busy || !csrfToken} aria-describedby={archived ? archivedDescriptionId : undefined} onClick={openAddDialog}>Add a fact</Button></section> : null}
+        {status === 'success' && facts.length === 0 ? <section className="empty-state project-memory-empty" data-testid="project-memory-empty" aria-labelledby="project-memory-empty-title"><h2 id="project-memory-empty-title">No saved facts yet</h2><p>{fileAccess ? 'Save useful details for your assistant to remember.' : 'Add a fact to keep useful project information together.'}</p><Button type="button" data-testid="project-memory-empty-add" disabled={archived || busy || !csrfToken} aria-describedby={archived ? archivedDescriptionId : undefined} onClick={openAddDialog}>Add a fact</Button></section> : null}
         {status === 'success' && facts.length > 0 ? <ul className="memory-fact-list">{facts.map((fact) => <MemoryFactItem key={fact.id} fact={fact} archived={archived} busy={busy} archivedDescriptionId={archivedDescriptionId} actionError={factActionError[fact.id] ?? null} onEdit={openEditDialog} onVerify={(selected) => { void markReviewed(selected); }} onDelete={openDeleteDialog} includedInChat={(pendingFactIds ?? chatContext.context?.factIds)?.includes(fact.id)} selectionDraft={pendingFactIds !== null} contextDisabled={chatContext.loading || chatContext.saving || !chatContext.context || !csrfToken || (!chatContext.context.factIds.includes(fact.id) && chatContext.context.factIds.length >= 25)} onContextToggle={(selected, included) => { void toggleChatFact(selected, included); }} />)}</ul> : null}
       </div>
       <ProjectFactEditorDialog

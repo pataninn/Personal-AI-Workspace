@@ -141,11 +141,11 @@ a { color: inherit; }
 .reference-project-identity h2 { margin: 0; font: 700 38px/1.05 var(--font-display); letter-spacing: -.025em; }
 .project-title-actions { display: flex; align-items: center; gap: 10px; }
 .project-title-actions h2 { min-width: 0; overflow-wrap: anywhere; }
-.project-actions-trigger { flex: none; width: 36px; min-height: 36px; padding: 0; font-size: 24px; }
+.project-actions-trigger { flex: none; width: 44px; min-height: 44px; padding: 0; font-size: 24px; }
 .project-remove-menu-item { color: var(--color-error); }
 .reference-project-identity p { margin: 4px 0 0; font: 400 13px/1.5 var(--font-mono); color: var(--color-text-muted); overflow-wrap: anywhere; }
 .reference-project-tabs { display: inline-flex; gap: 2px; padding: 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 999px; }
-.reference-project-tabs a { display: flex; align-items: center; min-height: 40px; padding: 0 16px; border-radius: 999px; color: var(--color-text-muted); font-size: 14px; font-weight: 500; text-decoration: none; }
+.reference-project-tabs a { display: flex; align-items: center; min-height: 44px; padding: 0 16px; border-radius: 999px; color: var(--color-text-muted); font-size: 14px; font-weight: 500; text-decoration: none; }
 .reference-project-tabs a:hover { background: var(--color-surface-muted); color: var(--color-text); }
 .reference-project-tabs a.is-active { background: var(--color-primary); color: var(--color-primary-contrast); font-weight: 600; }
 .app-shell-main:has(.reference-project-header) { padding-top: 32px; max-width: none; padding-bottom: 32px; }

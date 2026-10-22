@@ -104,7 +104,7 @@ describe('WorkspacePlanningChatPage', () => {
 
     const chat = await screen.findByTestId('planning-chat-widget');
     expect(chat).toHaveAttribute('data-disabled', 'true');
-    expect(chat).toHaveAttribute('data-disabled-reason', 'This planning workspace is archived. Its conversation history is read-only.');
+    expect(chat).toHaveAttribute('data-disabled-reason', 'This workspace is archived. You can still read past conversations.');
   });
 
   it('redirects projects with file capability to the existing project chat', async () => {

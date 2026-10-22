@@ -138,9 +138,9 @@ export function SkillsWorkspace({ projectId, projectName, archived }: { readonly
     }
   }
 
-  return <main className="mx-auto grid w-full max-w-5xl gap-6 px-4 py-8 sm:px-6 lg:px-8" data-testid="skills-page">
+  return <section className="grid w-full content-start gap-6" data-testid="skills-page">
     <header className="flex flex-wrap items-end justify-between gap-4 border-b border-[var(--color-border)] pb-5">
-      <div><p className="product-label">{projectName}</p><h1 className="text-3xl font-semibold">Skills</h1><p className="mt-2 max-w-2xl text-[var(--color-text-muted)]">Manage reusable, private instructions. Current workspace policy still controls every run.</p></div>
+      <div><h1 className="text-3xl font-semibold">Skills</h1><p className="mt-2 max-w-2xl text-[var(--color-text-muted)]">Reusable instructions for the way you work.</p></div>
       <div className="flex flex-wrap gap-3"><Button type="button" variant="secondary" onClick={openNewSkill}>New skill</Button>{visibleSkills.some((skill) => skill.title === 'Plan my day' && skill.enabled) ? <Button type="button" onClick={() => setRunTarget(visibleSkills.find((skill) => skill.title === 'Plan my day' && skill.enabled) ?? null)}>Plan my day</Button> : <Button type="button" variant="secondary" disabled={templatesStatus !== 'loaded' || !templates.some((template) => template.id === 'plan-my-day')} onClick={() => { const template = templates.find((item) => item.id === 'plan-my-day'); if (template) copyTemplate(template); }}>Copy Plan my day</Button>}</div>
     </header>
     {announcement ? <p className="sr-only" role="status" aria-live="polite">{announcement}</p> : null}
@@ -150,7 +150,7 @@ export function SkillsWorkspace({ projectId, projectName, archived }: { readonly
     {loadStatus === 'loaded' && visibleSkills.length > 0 ? <section className="grid gap-4" aria-label="Your skills">{visibleSkills.map((skill) => <SkillCard key={skill.id} skill={skill} currentWorkspaceId={projectId} onEdit={() => editSkill(skill)} onCopy={() => copySkill(skill)} onRun={() => setRunTarget(skill)} onToggle={() => { void toggleEnabled(skill); }} onDelete={() => { setDeleteTarget(skill); setDeleteError(null); }} />)}</section> : null}
     {templatesStatus === 'loading' ? <section className="grid gap-3" aria-label="Loading templates"><Skeleton className="h-28" /></section> : null}
     {templatesStatus === 'error' ? <Alert tone="warning"><p>Starter templates could not be loaded.</p><Button type="button" variant="secondary" onClick={() => setAttempt((value) => value + 1)}>Try templates again</Button></Alert> : null}
-    {templatesStatus === 'loaded' ? <section className="grid gap-3" aria-labelledby="skill-templates-title"><h2 id="skill-templates-title" className="text-xl font-semibold">Starter templates</h2>{templates.map((template) => <Card key={template.id} className="grid gap-3 p-5 sm:grid-cols-[1fr_auto] sm:items-start"><div><h3 className="font-semibold">{template.title}</h3><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--color-text-muted)]">{template.instructions}</p><p className="mt-2 text-xs text-[var(--color-text-muted)]">Tools: {template.declaredTools.map(toolLabel).join(', ')}</p><p className="mt-1 text-xs">Read-only starter template</p></div><Button type="button" variant="secondary" onClick={() => copyTemplate(template)}>Copy</Button></Card>)}</section> : null}
+    {templatesStatus === 'loaded' ? <section className="grid gap-3" aria-labelledby="skill-templates-title"><h2 id="skill-templates-title" className="text-xl font-semibold">Starter templates</h2>{templates.map((template) => <Card key={template.id} className="grid gap-3 p-5 sm:grid-cols-[1fr_auto] sm:items-start"><div><h3 className="font-semibold">{template.title}</h3><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--color-text-muted)]">{template.instructions}</p><p className="mt-2 text-xs text-[var(--color-text-muted)]">Tools: {template.declaredTools.map(toolLabel).join(', ')}</p></div><Button type="button" variant="secondary" onClick={() => copyTemplate(template)}>Copy</Button></Card>)}</section> : null}
     {editor ? <SkillEditor key={editor.key} editor={editor} projects={projects} currentProjectId={projectId} csrfToken={csrfToken} onCancel={() => setEditor(null)} onSaved={onSaved} onRestoreFocus={() => editorTrigger.current?.focus()} /> : null}
     <AlertDialogRoot open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
       <AlertDialogContent aria-describedby="skill-delete-description">
@@ -161,7 +161,7 @@ export function SkillsWorkspace({ projectId, projectName, archived }: { readonly
       </AlertDialogContent>
     </AlertDialogRoot>
     {runTarget ? <RunSkillDialog key={`${runTarget.id}:${runTarget.version}`} skill={runTarget} projects={projects} currentProjectId={projectId} csrfToken={csrfToken} onClose={() => setRunTarget(null)} onOpen={(workspaceId, conversationId) => navigate(`/projects/${encodeURIComponent(workspaceId)}/planning-chat?conversation=${encodeURIComponent(conversationId)}`)} /> : null}
-  </main>;
+  </section>;
 }
 
 function SkillCard({ skill, currentWorkspaceId, onEdit, onCopy, onRun, onToggle, onDelete }: {
@@ -172,7 +172,7 @@ function SkillCard({ skill, currentWorkspaceId, onEdit, onCopy, onRun, onToggle,
   return <Card className="grid gap-4 p-5 sm:p-6" data-testid={`skill-card-${skill.id}`}>
     <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-semibold">{skill.title}</h2><p className="mt-1 text-sm text-[var(--color-text-muted)]">{skill.workspaceId === null ? 'Account-wide' : skill.workspaceId === currentWorkspaceId ? 'This workspace' : 'Another workspace'} · Version {skill.version} · {skill.enabled ? 'Enabled' : 'Disabled'}</p></div><Button type="button" disabled={!skill.enabled} onClick={onRun}>Run</Button></div>
     <p className="line-clamp-3 whitespace-pre-wrap text-sm">{skill.instructions}</p>
-    <p className="text-sm text-[var(--color-text-muted)]">Tools this skill may request: {skill.declaredTools.length ? skill.declaredTools.map(toolLabel).join(', ') : 'None'}</p>
+    <p className="text-sm text-[var(--color-text-muted)]">Tools: {skill.declaredTools.length ? skill.declaredTools.map(toolLabel).join(', ') : 'None'}</p>
     <details><summary className="cursor-pointer text-sm font-medium">Inspect full instructions</summary><p className="mt-2 whitespace-pre-wrap text-sm text-[var(--color-text-muted)]">{skill.instructions}</p></details>
     {!skill.enabled ? <p className="text-sm text-[var(--color-text-muted)]">Enable this skill to run it.</p> : null}
     <div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" onClick={onEdit}>Edit</Button><Button type="button" variant="secondary" onClick={onCopy}>Copy</Button><Button type="button" variant="ghost" onClick={onToggle}>{skill.enabled ? 'Disable' : 'Enable'}</Button><Button type="button" variant="ghost" onClick={onDelete}>Delete</Button></div>
@@ -266,7 +266,7 @@ function SkillEditor({ editor, projects, currentProjectId, csrfToken, onCancel, 
       <div className="grid gap-2"><Label htmlFor="skill-instructions">Instructions</Label><Textarea id="skill-instructions" rows={8} value={draft.instructions} aria-invalid={Boolean(fieldErrors.instructions)} aria-describedby="skill-instructions-help" onChange={(event) => change('instructions', event.target.value)} disabled={Boolean(pendingCreate.current)} /><p id="skill-instructions-help" className="text-xs text-[var(--color-text-muted)]">{instructionBytes.toLocaleString()} / 16,000 UTF-8 bytes</p>{fieldErrors.instructions ? <p role="alert" className="text-sm text-[var(--color-error)]">{fieldErrors.instructions}</p> : null}</div>
       <div className="grid gap-2"><Label htmlFor="skill-workspace">Workspace</Label><select id="skill-workspace" className="min-h-11 rounded-lg border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3" value={draft.workspaceId ?? ''} onChange={(event) => change('workspaceId', event.target.value || null)} disabled={Boolean(pendingCreate.current)}><option value="">Account-wide</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}{project.status === 'archived' ? ' (archived)' : ''}</option>)}{draft.workspaceId && !projects.some((project) => project.id === draft.workspaceId) ? <option value={draft.workspaceId}>{draft.workspaceId === currentProjectId ? 'Current workspace' : 'Existing workspace'}</option> : null}</select></div>
       <label className="flex items-center gap-3"><input type="checkbox" className="size-4 accent-[var(--color-primary)]" checked={draft.enabled} onChange={(event) => change('enabled', event.target.checked)} disabled={Boolean(pendingCreate.current)} /><span>Enabled</span></label>
-      <fieldset className="grid gap-3"><legend className="font-medium">Tools this skill may request</legend>{SKILL_TOOLS.map((tool) => <label key={tool.id} className="flex items-start gap-3"><input type="checkbox" className="mt-1 size-4 accent-[var(--color-primary)]" checked={draft.declaredTools.includes(tool.id)} onChange={(event) => change('declaredTools', event.target.checked ? [...draft.declaredTools, tool.id] : draft.declaredTools.filter((value) => value !== tool.id))} disabled={Boolean(pendingCreate.current)} /><span>{tool.label}</span></label>)}<p className="text-xs text-[var(--color-text-muted)]">The current account and workspace policy still decides which tools can run.</p></fieldset>
+      <fieldset className="m-0 grid min-w-0 gap-2 border-0 p-0"><legend className="mb-2 p-0 font-medium">Tools</legend>{SKILL_TOOLS.map((tool) => <label key={tool.id} className="flex min-h-11 items-center gap-3"><input type="checkbox" className="mt-1 size-4 accent-[var(--color-primary)]" checked={draft.declaredTools.includes(tool.id)} onChange={(event) => change('declaredTools', event.target.checked ? [...draft.declaredTools, tool.id] : draft.declaredTools.filter((value) => value !== tool.id))} disabled={Boolean(pendingCreate.current)} /><span>{tool.label}</span></label>)}<p className="text-xs text-[var(--color-text-muted)]">Only tools enabled for this workspace can run.</p></fieldset>
       </div>
       <div className="flex shrink-0 flex-wrap justify-end gap-3"><Button type="submit" disabled={!csrfToken || saving || Boolean(latest && !conflictResolved) || Boolean(pendingCreate.current)} aria-busy={saving}>{saving ? 'Saving…' : 'Save skill'}</Button>{pendingCreate.current ? <Button type="submit" variant="secondary" disabled={!csrfToken || saving} aria-busy={saving}>Retry same save</Button> : null}<Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>Cancel</Button></div>
     </form>
@@ -351,12 +351,12 @@ function RunSkillDialog({ skill, projects, currentProjectId, csrfToken, onClose,
     } finally { if (dialogActive.current) setRunning(false); }
   }
 
-  const readinessMessage = policyState === 'loading' ? 'Checking workspace execution policy and runtime…'
-    : policyState === 'error' ? 'Workspace policy or runtime availability is unknown. Refresh before running.'
-      : policy?.readiness.state === 'blocked' ? 'Workspace policy currently blocks assistant execution.'
-        : policy?.readiness.state === 'unavailable' ? 'Workspace execution is unavailable until policy and runtime readiness are confirmed.'
-          : policy?.policy?.enabled !== true ? 'Assistant execution is disabled for this workspace.'
-            : policy?.policy.provider === null ? 'A configured provider is not available for this workspace.' : null;
+  const readinessMessage = policyState === 'loading' ? 'Checking availability…'
+    : policyState === 'error' ? 'Availability could not be checked. Try again.'
+      : policy?.readiness.state === 'blocked' ? 'The assistant is disabled for this workspace.'
+        : policy?.readiness.state === 'unavailable' ? 'The assistant is temporarily unavailable. Try again.'
+          : policy?.policy?.enabled !== true ? 'The assistant is disabled for this workspace.'
+            : policy?.policy.provider === null ? 'The assistant is temporarily unavailable.' : null;
   const usageMessage = usage.state.status === 'success'
     ? usage.state.data.availability.status === 'available' && usage.state.data.availability.canSubmit ? null : usage.state.data.availability.reason ?? 'AI availability is not confirmed.'
     : usage.state.status === 'loading' ? 'Checking AI availability…' : 'AI availability could not be checked.';
@@ -364,15 +364,15 @@ function RunSkillDialog({ skill, projects, currentProjectId, csrfToken, onClose,
   return <DialogRoot open onOpenChange={(open) => { if (!open && !running) onClose(); }}>
     <DialogContent aria-describedby="skill-run-description" className="max-h-[90vh] overflow-y-auto" data-testid="skill-run-dialog">
       <DialogTitle className="text-xl font-semibold">Run {skill.title}</DialogTitle>
-      <DialogDescription id="skill-run-description" className="mt-2 text-sm text-[var(--color-text-muted)]">Run once in a workspace you own. The saved result opens in that workspace’s Home conversation history.</DialogDescription>
+      <DialogDescription id="skill-run-description" className="mt-2 text-sm text-[var(--color-text-muted)]">Choose a workspace. The result will open in its chat.</DialogDescription>
       <div className="mt-5 grid gap-4">
         {fixedWorkspace ? <p className="text-sm">Target workspace: {target?.name ?? 'Unavailable or inactive workspace'}</p> : <div className="grid gap-2"><Label htmlFor="skill-run-workspace">Target workspace</Label><select id="skill-run-workspace" className="min-h-11 rounded-lg border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3" value={workspaceId} onChange={(event) => { resetWorkspaceAttempt(); setWorkspaceId(event.target.value); }} disabled={running}><option value="">Choose an active workspace</option>{activeProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></div>}
         {!target ? <Alert tone="warning">This skill needs an active owned workspace before it can run.</Alert> : null}
-        <Card className="grid gap-2 p-4"><h3 className="font-medium">Context and tools</h3><p className="text-sm text-[var(--color-text-muted)]">The run may use tasks and saved workspace details allowed by the current policy. It will not receive tools beyond this skill’s declared needs and workspace policy.</p><p className="text-sm">Declared tools: {skill.declaredTools.length ? skill.declaredTools.map(toolLabel).join(', ') : 'None'}</p></Card>
+        <Card className="grid gap-2 p-4"><h3 className="font-medium">Context and tools</h3><p className="text-sm text-[var(--color-text-muted)]">Uses tasks and saved details from the selected workspace.</p><p className="text-sm">Tools: {skill.declaredTools.length ? skill.declaredTools.map(toolLabel).join(', ') : 'None'}</p></Card>
         <div className="grid gap-2"><Label htmlFor="skill-run-note">Optional request</Label><Textarea id="skill-run-note" rows={3} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Create today's plan." disabled={running} />{invokeRequest.current ? <p className="text-xs text-[var(--color-text-muted)]">Retry repeats the request submitted on the first attempt. Editing this note will not change that retry; close and start a new run to submit edited text.</p> : null}</div>
         {policyState === 'loading' ? <p role="status" className="text-sm">{readinessMessage}</p> : null}
         {readinessMessage && policyState !== 'loading' ? <Alert tone="warning"><p>{readinessMessage}</p><Button type="button" variant="secondary" onClick={() => setPolicyAttempt((value) => value + 1)}>Refresh availability</Button></Alert> : null}
-        {missingTools.length ? <Alert tone="warning">Workspace policy blocks: {missingTools.map(toolLabel).join(', ')}.</Alert> : null}
+        {missingTools.length ? <Alert tone="warning">Unavailable tools: {missingTools.map(toolLabel).join(', ')}.</Alert> : null}
         {usageMessage ? <Alert tone={usage.state.status === 'success' && usage.state.data.availability.status === 'available' ? 'warning' : 'warning'}><p>{usageMessage}</p><Link className="text-[var(--color-link)] underline underline-offset-4" to="/usage">View usage</Link></Alert> : null}
         {!csrfToken ? <Alert tone="warning">Your session needs to be refreshed before running a skill.</Alert> : null}
         {error ? <Alert tone="error" role="alert">{error}<div className="mt-3"><Button type="button" variant="secondary" disabled={!canRun} onClick={() => { void run(); }}>Retry same run</Button></div></Alert> : null}

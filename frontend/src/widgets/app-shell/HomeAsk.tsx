@@ -17,7 +17,9 @@ export function HomeAsk({ onSummaryRefreshRequested }: HomeAskProps): React.JSX.
   const location = useLocation();
   const [open, setOpen] = useState(false);
 
-  if (!principal || /^\/admin(?:\/|$)/u.test(location.pathname) || location.pathname === '/login') return null;
+  const workspaceChat = /^\/projects\/[^/]+(?:\/(?:conversations(?:\/[^/]+)?|planning-chat))?\/?$/u.test(location.pathname);
+
+  if (workspaceChat || !principal || /^\/admin(?:\/|$)/u.test(location.pathname) || location.pathname === '/login') return null;
 
   return <DialogRoot open={open} onOpenChange={setOpen}>
     <DialogTrigger asChild>

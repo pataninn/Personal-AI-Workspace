@@ -102,9 +102,9 @@ export function AutomationsPage(): React.JSX.Element {
   }
 
   return <div className="grid gap-6" data-testid="automations-page">
-    <header className="grid gap-2"><p className="product-label">Workspace tools</p><h1>Automations</h1><p className="text-[var(--color-text-muted)]">Set a daily briefing for one workspace and one saved read-only skill.</p></header>
+    <header className="grid gap-2"><p className="product-label">Workspace tools</p><h1>Automations</h1><p className="text-[var(--color-text-muted)]">Start your day with a scheduled workspace briefing.</p></header>
     {management.readyNotice ? <Alert tone="success" role="status" live="polite" data-testid="automation-ready-notice"><div className="flex flex-wrap items-center justify-between gap-3"><p>Your daily briefing is ready.</p><div className="flex flex-wrap items-center gap-3"><Link className="font-medium underline underline-offset-4" to={briefingUrl(management.readyNotice.schedule)}>Open briefing</Link><Button type="button" variant="ghost" onClick={management.dismissNotice}>Dismiss</Button></div></div></Alert> : null}
-    <div className="flex flex-wrap justify-between gap-3"><p className="text-sm text-[var(--color-text-muted)]">Schedules run on the server and keep their results in the workspace Home conversation.</p><Button type="button" onClick={openCreate}>Create daily briefing</Button></div>
+    <div className="flex flex-wrap justify-between gap-3"><p className="text-sm text-[var(--color-text-muted)]">Find each briefing in your workspace chat.</p>{management.schedules.length > 0 ? <Button type="button" onClick={openCreate}>Create daily briefing</Button> : null}</div>
     {formMode ? <AutomationScheduleForm
       key={`${formMode.kind}-${formMode.kind === 'edit' ? formMode.scheduleId : formMode.workspaceId}-${formEpoch}`}
       projects={projects}
@@ -122,7 +122,7 @@ export function AutomationsPage(): React.JSX.Element {
     /> : null}
     {management.scheduleStatus === 'loading' ? <div aria-busy="true" aria-label="Loading schedules"><Skeleton className="h-28" /><Skeleton className="h-28" /></div> : null}
     {management.scheduleStatus === 'error' ? <Alert tone="error" role="alert">{management.scheduleError ?? 'Schedules could not be loaded.'}<Button type="button" variant="secondary" className="mt-2" onClick={() => { void management.refresh(); }}>Try again</Button></Alert> : null}
-    {management.scheduleStatus === 'success' && management.schedules.length === 0 ? <Card className="grid gap-3 p-5"><h2 className="text-lg font-semibold">No daily briefings scheduled.</h2><p className="text-sm text-[var(--color-text-muted)]">Choose an active workspace and an enabled saved read-only skill to start.</p><Button type="button" className="w-fit" onClick={openCreate}>Create daily briefing</Button></Card> : null}
+    {management.scheduleStatus === 'success' && management.schedules.length === 0 ? <Card className="grid gap-3 p-5"><h2 className="text-lg font-semibold">No daily briefings scheduled.</h2><p className="text-sm text-[var(--color-text-muted)]">Choose a workspace and a saved skill to get started.</p><Button type="button" className="w-fit" onClick={openCreate}>Create daily briefing</Button></Card> : null}
     {management.scheduleStatus === 'success' ? management.schedules.map((schedule) => {
       const workspace = projects.find((project) => project.id === schedule.workspaceId);
       const history = management.histories[schedule.id] ?? EMPTY_HISTORY;

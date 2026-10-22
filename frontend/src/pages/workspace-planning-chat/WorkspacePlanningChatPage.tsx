@@ -6,7 +6,7 @@ import { loadProject, selectProjectDetail } from '@/entities/project';
 import { HomeChatWidget } from '@/widgets/home-chat';
 import { Alert, Button, ErrorState, Skeleton, Spinner } from '@/shared/ui';
 
-const ARCHIVED_WORKSPACE_REASON = 'This planning workspace is archived. Its conversation history is read-only.';
+const ARCHIVED_WORKSPACE_REASON = 'This workspace is archived. You can still read past conversations.';
 
 export function WorkspacePlanningChatPage(): React.JSX.Element {
   const { projectId = '' } = useParams();
@@ -41,7 +41,7 @@ function ProjectLoadError({ code, onRetry }: ProjectLoadErrorProps): React.JSX.E
   if (code === 'WORKSPACE_BOUNDARY_UNAVAILABLE') {
     return (
       <Alert tone="error" data-testid="workspace-boundary-error" role="alert">
-        <p>The authoritative workspace is unavailable. Planning chat cannot load safely until local workspace setup is available again.</p>
+        <p>This workspace is temporarily unavailable. Try again.</p>
         <Button type="button" variant="secondary" data-testid="planning-chat-boundary-retry" onClick={onRetry}>Try again</Button>
       </Alert>
     );

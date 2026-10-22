@@ -105,16 +105,16 @@ export function ProjectContextSettings({ projectId, archived }: { readonly proje
   return (
     <section className="project-context-settings" data-testid="project-context-settings">
       <AssistantPolicySummary status={assistantPolicy.status} policy={assistantPolicy.policy} />
-      {assistantPolicy.status === 'error' ? <Alert tone="error"><p>Assistant provider and storage details could not be loaded.</p><Button type="button" onClick={assistantPolicy.retry}>Try again</Button></Alert> : null}
+      {assistantPolicy.status === 'error' ? <Alert tone="error"><p>Assistant availability could not be checked.</p><Button type="button" onClick={assistantPolicy.retry}>Try again</Button></Alert> : null}
       <Card>
         <h2>Conversation history</h2>
         <label className="context-checkbox-row"><input type="checkbox" checked={includeHistory} disabled={disabled} onChange={(event) => { setIncludeHistory(event.target.checked); setAnnouncement(''); }} /> Include recent messages from previous chats in this project</label>
-        <p className="field-help">Recent messages are included by default, within the context size limit.</p>
+        <p className="field-help">Use past conversations to keep new chats in context.</p>
       </Card>
       <Card>
         <h2>Files for every chat</h2>
-        <p className="field-help">Supported project files, including new files, are selected automatically. Uncheck anything you do not want included, then apply your choices to all chats.</p>
-        <p className="field-help">Secrets, binary files (including PDFs), and files too large to read are excluded. Selected files may also be omitted to fit a run's context limit.</p>
+        <p className="field-help">New supported files are included automatically. Uncheck files to leave them out.</p>
+        <p className="field-help">Unsupported, sensitive or oversized files are skipped.</p>
         <Label htmlFor="context-file-filter">Find a file</Label>
         <Input id="context-file-filter" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter by file path" />
         {files.loading ? <p role="status">Loading files…</p> : null}
@@ -130,11 +130,11 @@ export function ProjectContextSettings({ projectId, archived }: { readonly proje
           {!files.loading && !files.error && shown.length === 0 ? <p>No matching files.</p> : null}
         </div>
         <div className="field-group">
-          <Label htmlFor="context-add-path">Add a relative file path</Label>
+          <Label htmlFor="context-add-path">Add a file path</Label>
           <Input id="context-add-path" value={additionalPath} disabled={disabled} onChange={(event) => setAdditionalPath(event.target.value)} placeholder="src/example.ts" />
           <Button type="button" variant="secondary" disabled={disabled || !additionalPath.trim() || selected.length >= 100} onClick={() => { const path = additionalPath.trim(); setSelected((current) => [...new Set([...current, path])]); setExcluded((current) => current.filter((item) => item !== path)); setAdditionalPath(''); setAnnouncement(''); }}>Add file</Button>
         </div>
-        <p className="field-help">{selected.length} files selected. Large files may be omitted to fit the context limit.</p>
+        <p className="field-help">{selected.length} files selected. Some files may be skipped to fit the conversation.</p>
       </Card>
       <p>Choose facts for every chat on <Link to={`/projects/${encodeURIComponent(projectId)}/memory`}>Memory</Link>.</p>
       {settings.error || needsContextReconcile ? <Alert tone={settings.error ? 'error' : 'warning'} role="alert">

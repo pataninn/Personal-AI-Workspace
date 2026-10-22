@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { ProjectTaskStatusLabel, TASK_IMPORTANCE_LABELS } from '@/entities/project-task';
 import { useAppSelector } from '@/app/store/hooks';
 import { selectPrincipal } from '@/entities/user-session';
 import { downloadShowcaseFile, getCurrentShowcase } from '@/entities/showcase';
@@ -60,7 +61,7 @@ function ShowcaseLoading(): React.JSX.Element {
     <section className="grid gap-4" data-testid="showcase-loading" aria-busy="true" aria-label="Loading published showcase">
       <Skeleton className="h-10 w-2/3" />
       <Skeleton className="h-24 w-full" />
-      <div className="grid gap-4 md:grid-cols-2"><Skeleton className="h-44" /><Skeleton className="h-44" /></div>
+      <div className="m-0 grid list-none gap-4 p-0 md:grid-cols-2"><Skeleton className="h-44" /><Skeleton className="h-44" /></div>
     </section>
   );
 }
@@ -69,7 +70,7 @@ function ShowcaseEmpty({ onTryAgain }: { readonly onTryAgain: () => void }): Rea
   return (
     <Card className="grid gap-3 p-6 sm:p-8" data-testid="showcase-unpublished">
       <h2 className="text-xl font-semibold">No showcase is available right now.</h2>
-      <p className="text-[var(--color-text-muted)]">A read-only project example will appear here after an administrator publishes one.</p>
+      <p className="text-[var(--color-text-muted)]">A sample project will appear here when it is ready.</p>
       <Button type="button" variant="secondary" className="w-fit" onClick={onTryAgain}>Try again</Button>
     </Card>
   );
@@ -91,25 +92,25 @@ function ShowcaseContent({ showcase }: { readonly showcase: CurrentShowcase }): 
   return (
     <div className="grid gap-8" data-testid="showcase-content">
       <Card className="grid gap-3 p-6 sm:p-8">
-        <p className="text-sm text-[var(--color-text-muted)]">Sanitized public snapshot · Published {formatPublishedAt(showcase.publishedAt)}</p>
+        <p className="text-sm text-[var(--color-text-muted)]">Public example · Published {formatPublishedAt(showcase.publishedAt)}</p>
         <h2 className="text-3xl font-semibold">{showcase.project.name}</h2>
         {showcase.project.objective ? <p className="max-w-3xl text-[var(--color-text-muted)]">{showcase.project.objective}</p> : null}
       </Card>
       <section className="grid gap-4" aria-labelledby="showcase-tasks-title">
         <div><p className="product-label">Selected work</p><h2 id="showcase-tasks-title" className="text-2xl font-semibold">Tasks</h2></div>
-        {showcase.tasks.length ? <ul className="grid gap-4 md:grid-cols-2">{showcase.tasks.map((task) => <li key={task.id}><TaskCard task={task} /></li>)}</ul> : <p className="text-[var(--color-text-muted)]">No tasks were included in this snapshot.</p>}
+        {showcase.tasks.length ? <ul className="m-0 grid list-none gap-4 p-0 md:grid-cols-2">{showcase.tasks.map((task) => <li key={task.id}><TaskCard task={task} /></li>)}</ul> : <p className="text-[var(--color-text-muted)]">No tasks were included in this snapshot.</p>}
       </section>
       <section className="grid gap-4" aria-labelledby="showcase-facts-title">
         <div><p className="product-label">Project notes</p><h2 id="showcase-facts-title" className="text-2xl font-semibold">Facts</h2></div>
-        {showcase.facts.length ? <ul className="grid gap-4 md:grid-cols-2">{showcase.facts.map((fact) => <li key={fact.id}><Card className="h-full p-5"><h3 className="font-semibold">{fact.title}</h3><p className="mt-2 whitespace-pre-wrap text-[var(--color-text-muted)]">{fact.content}</p></Card></li>)}</ul> : <p className="text-[var(--color-text-muted)]">No project facts were included in this snapshot.</p>}
+        {showcase.facts.length ? <ul className="m-0 grid list-none gap-4 p-0 md:grid-cols-2">{showcase.facts.map((fact) => <li key={fact.id}><Card className="h-full p-5"><h3 className="font-semibold">{fact.title}</h3><p className="mt-2 whitespace-pre-wrap text-[var(--color-text-muted)]">{fact.content}</p></Card></li>)}</ul> : <p className="text-[var(--color-text-muted)]">No project facts were included in this snapshot.</p>}
       </section>
       <section className="grid gap-4" aria-labelledby="showcase-skills-title">
         <div><p className="product-label">Reusable guidance</p><h2 id="showcase-skills-title" className="text-2xl font-semibold">Skills</h2></div>
-        {showcase.skills.length ? <ul className="grid gap-4 md:grid-cols-2">{showcase.skills.map((skill) => <li key={skill.id}><Card className="grid h-full gap-3 p-5"><h3 className="font-semibold">{skill.title}</h3><p className="whitespace-pre-wrap text-sm text-[var(--color-text-muted)]">{skill.instructions}</p><p className="text-xs text-[var(--color-text-muted)]">Declared tools: {skill.declaredTools.map((tool) => tool.replace(/^home_/u, '').replaceAll('_', ' ')).join(', ') || 'None'}</p></Card></li>)}</ul> : <p className="text-[var(--color-text-muted)]">No skills were included in this snapshot.</p>}
+        {showcase.skills.length ? <ul className="m-0 grid list-none gap-4 p-0 md:grid-cols-2">{showcase.skills.map((skill) => <li key={skill.id}><Card className="grid h-full gap-3 p-5"><h3 className="font-semibold">{skill.title}</h3><p className="whitespace-pre-wrap text-sm text-[var(--color-text-muted)]">{skill.instructions}</p><p className="text-xs text-[var(--color-text-muted)]">Tools: {skill.declaredTools.map((tool) => tool.replace(/^home_/u, '').replaceAll('_', ' ')).join(', ') || 'None'}</p></Card></li>)}</ul> : <p className="text-[var(--color-text-muted)]">No skills were included in this snapshot.</p>}
       </section>
       <section className="grid gap-4" aria-labelledby="showcase-files-title">
         <div><p className="product-label">Included documents</p><h2 id="showcase-files-title" className="text-2xl font-semibold">Files</h2></div>
-        {showcase.files.length ? <ul className="grid gap-3 md:grid-cols-2">{showcase.files.map((file) => <li key={file.id}><ShowcaseFileRow file={file} /></li>)}</ul> : <p className="text-[var(--color-text-muted)]">No files were included in this snapshot.</p>}
+        {showcase.files.length ? <ul className="m-0 grid list-none gap-3 p-0 md:grid-cols-2">{showcase.files.map((file) => <li key={file.id}><ShowcaseFileRow file={file} /></li>)}</ul> : <p className="text-[var(--color-text-muted)]">No files were included in this snapshot.</p>}
       </section>
     </div>
   );
@@ -118,8 +119,8 @@ function ShowcaseContent({ showcase }: { readonly showcase: CurrentShowcase }): 
 function TaskCard({ task }: { readonly task: ShowcaseTask }): React.JSX.Element {
   return (
     <Card className="grid h-full gap-3 p-5">
-      <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">{task.title}</h3><span className="rounded-full bg-[var(--color-surface-muted)] px-2.5 py-1 text-xs">{task.status.replaceAll('_', ' ')}</span></div>
-      <p className="text-sm text-[var(--color-text-muted)]">{task.importance} priority{task.deadline ? ` · Due ${task.deadline}` : ''}</p>
+      <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">{task.title}</h3><ProjectTaskStatusLabel status={task.status} /></div>
+      <p className="text-sm text-[var(--color-text-muted)]">{TASK_IMPORTANCE_LABELS[task.importance]} priority{task.deadline ? ` · Due ${task.deadline}` : ''}</p>
       {task.details ? <p className="whitespace-pre-wrap">{task.details}</p> : null}
       {task.checklist.length ? <ul className="grid gap-2 border-t border-[var(--color-border)] pt-3">{task.checklist.map((item) => <li key={item.id} className="flex gap-2"><span aria-hidden="true">{item.completed ? '✓' : '○'}</span><span>{item.title}</span><span className="sr-only">{item.completed ? 'completed' : 'not completed'}</span></li>)}</ul> : null}
     </Card>

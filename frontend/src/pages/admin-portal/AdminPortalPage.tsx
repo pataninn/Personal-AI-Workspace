@@ -81,9 +81,9 @@ export function AdminPortalPage(): React.JSX.Element {
     }
   }
 
-  return <main className="mx-auto grid w-full max-w-7xl gap-6 px-4 py-8" data-testid="admin-portal-page">
+  return <section className="grid w-full content-start gap-6" data-testid="admin-portal-page">
     <header className="flex flex-wrap items-end justify-between gap-4">
-      <div><p className="product-label">Administration</p><h1 className="text-3xl font-semibold">Admin portal</h1><p className="field-help">Manage account access and persisted AI allowances.</p></div>
+      <div><p className="product-label">Administration</p><h1 className="text-3xl font-semibold">Admin portal</h1><p className="field-help">Manage accounts, access and usage limits.</p></div>
       <div className="flex flex-wrap gap-3"><Link className="self-center text-[var(--color-link)] underline underline-offset-4" to="/dashboard">Back to workspace</Link><Link className="self-center text-[var(--color-link)] underline underline-offset-4" to="/admin/showcase">Showcase publishing</Link></div>
     </header>
     {error ? <Alert tone="error" role="alert" data-testid="admin-action-error">{error}</Alert> : null}
@@ -114,7 +114,7 @@ export function AdminPortalPage(): React.JSX.Element {
     </section>
 
     <section className="grid gap-3" aria-labelledby="admin-audit-heading">
-      <div><h2 id="admin-audit-heading" className="text-xl font-semibold">Recent admin changes</h2><p className="field-help">Safe metadata only. Passwords and user content are never shown.</p></div>
+      <div><h2 id="admin-audit-heading" className="text-xl font-semibold">Recent admin changes</h2><p className="field-help">Account and settings changes.</p></div>
       {loadState.audit === 'loading' ? <Skeleton className="h-16" aria-busy="true" /> : null}
       {loadState.audit === 'error' ? <Alert tone="error">Recent changes could not be loaded. <Button type="button" variant="secondary" onClick={() => setRefreshKey((key) => key + 1)}>Try again</Button></Alert> : null}
       {loadState.audit === 'success' && audit.length === 0 ? <Card className="p-5">No admin changes yet.</Card> : null}
@@ -134,7 +134,7 @@ export function AdminPortalPage(): React.JSX.Element {
         <div className="dialog-actions"><AlertDialogCancel asChild><Button type="button" variant="secondary">Cancel</Button></AlertDialogCancel><Button type="button" variant={confirmAction?.action === 'disable' ? 'destructive' : 'primary'} onClick={() => { void confirm(); }}>Confirm</Button></div>
       </AlertDialogContent>
     </AlertDialogRoot>
-  </main>;
+  </section>;
 }
 
 function AccountCard({ account, csrfToken, onAction, onConfirm }: {

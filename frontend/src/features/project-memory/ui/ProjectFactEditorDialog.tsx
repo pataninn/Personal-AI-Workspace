@@ -111,7 +111,7 @@ export function ProjectFactEditorDialog({ projectName, fact, saving, open, onOpe
       <DialogRoot open={open} onOpenChange={requestClose}>
         <DialogContent data-testid="project-fact-editor-dialog" aria-busy={saving || undefined} onOpenAutoFocus={(event) => { event.preventDefault(); titleRef.current?.focus(); }}>
           <DialogTitle>{isEditing ? 'Edit fact' : 'Add a fact'}</DialogTitle>
-          <DialogDescription>Saving updates this project fact and does not send a request. If included, the saved value is available to future permitted runs. Past messages and provider requests are unchanged.</DialogDescription>
+          <DialogDescription>Save a useful detail for future chats.</DialogDescription>
           <form className="project-fact-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
             <div className="field-group">
               <Label htmlFor="project-fact-title">Fact name</Label>

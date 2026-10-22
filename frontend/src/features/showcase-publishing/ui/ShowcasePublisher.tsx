@@ -181,7 +181,7 @@ export function ShowcasePublisher(): React.JSX.Element {
   return (
     <main className="mx-auto grid w-full max-w-5xl gap-7 px-4 py-8 sm:px-6 lg:px-8" data-testid="showcase-publisher">
       <header className="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--color-border)] pb-6">
-        <div><p className="product-label">Administrator</p><h1 className="text-3xl font-semibold">Publish a showcase</h1><p className="mt-2 max-w-2xl text-[var(--color-text-muted)]">Select public fields from one of your active projects, review every included value, then publish a fixed read-only snapshot.</p></div>
+        <div><p className="product-label">Administrator</p><h1 className="text-3xl font-semibold">Publish a showcase</h1><p className="mt-2 max-w-2xl text-[var(--color-text-muted)]">Choose a project, review the selected content, then publish a public read-only example.</p></div>
         <Link className="button button-secondary" to="/dashboard">Back to workspace</Link>
       </header>
       <CurrentPublication state={currentState} publication={published} />

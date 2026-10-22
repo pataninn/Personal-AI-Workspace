@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { listProjects, type ProjectSnapshot } from '@/entities/project';
 import { selectCsrfToken } from '@/entities/user-session';
-import { useAssistantExecutionPolicy } from '@/features/assistant-policy-status';
 import { ApiClientError } from '@/shared/api';
 import { useAppSelector } from '@/app/store/hooks';
 import { createIdempotencyKey } from '@/shared/lib/idempotency-key';
@@ -61,13 +60,6 @@ export function WorkspaceExportPanel(): React.JSX.Element {
   useEffect(() => { void loadProjects(); }, [loadProjects]);
 
   const selectedProject = useMemo(() => projects.find((project) => project.id === selectedId) ?? null, [projects, selectedId]);
-  const policy = useAssistantExecutionPolicy(selectedProject
-    ? { scope: 'workspace', projectId: selectedProject.id }
-    : { scope: 'home' });
-  const providerName = selectedProject && policy.status === 'loaded'
-    ? policy.policy?.policy?.provider?.name.trim() || 'Provider information unavailable'
-    : 'Provider information unavailable';
-
   async function prepareExport(): Promise<void> {
     if (!selectedProject || !csrfToken || activeRequestRef.current) return;
     const intent = intentRef.current?.workspaceId === selectedProject.id
@@ -135,7 +127,7 @@ export function WorkspaceExportPanel(): React.JSX.Element {
   return <Card className="grid gap-4 p-5" data-testid="workspace-export" aria-busy={listStatus === 'loading' || preparing}>
     <div>
       <h2 className="text-xl font-semibold">Export a workspace</h2>
-      <p className="field-help">Prepare one private JSON download. There is no import or restore action.</p>
+      <p className="field-help">Download a private copy of your workspace.</p>
     </div>
 
     {listStatus === 'loading' ? <div className="grid gap-3" data-testid="workspace-export-loading" aria-live="polite">
@@ -161,12 +153,14 @@ export function WorkspaceExportPanel(): React.JSX.Element {
         </select>
       </div>
 
-      <div className="grid gap-2 text-sm">
-        <p>Includes this workspace’s files, tasks, saved facts and context, project and Home conversations, workspace-bound skills, and schedule definitions. Schedule run history stays in its Home transcript.</p>
-        <p>Recognized credential-like text blocks the entire export; this check does not identify every possible secret. Other workspaces, account-wide skills, provider credentials, recovery data, and security or audit records are not exported. The canonical public showcase has no export action.</p>
-        <p>Credits continue to show the configured AI budget. Storage reports logical persistent workspace data, not physical disk use; temporary exports have separate size and expiry limits and do not count toward that total.</p>
-        <p>Workspace data is stored on the operator-controlled deployment. Selected AI context is sent to the configured inference provider: <strong>{providerName}</strong>. Export expiry removes this temporary application artifact only. Deployment backups and provider-side copies follow their own retention policies; editing or deleting workspace data does not promise erasure of copies already held by a provider or backup.</p>
-      </div>
+      <details className="text-sm text-[var(--color-text-muted)]">
+        <summary className="cursor-pointer py-3 font-medium">What is included?</summary>
+        <div className="grid gap-2 pt-2 [&>p]:m-0">
+          <p>Includes this workspace's files, tasks, saved facts, conversations, skills and schedules.</p>
+          <p>Account-wide skills, other workspaces and account security data are excluded. Exports containing recognized credentials are blocked; review the file before sharing it.</p>
+          <p>This is a JSON download. Import and restore are not supported. Download links last up to 15 minutes.</p>
+        </div>
+      </details>
 
       {createError ? <Alert tone="error" data-testid="workspace-export-create-error">{createError}</Alert> : null}
       {downloadError ? <Alert tone="error" data-testid="workspace-export-download-error">
@@ -180,7 +174,7 @@ export function WorkspaceExportPanel(): React.JSX.Element {
         <Button type="button" variant="secondary" disabled={downloading} aria-busy={downloading} onClick={() => { void downloadExport(); }}>
           {downloading ? 'Downloading…' : 'Download JSON'}
         </Button>
-        <p className="field-help">Clicking download does not guarantee that your browser saved the file.</p>
+
       </section> : null}
 
       <div>

@@ -7,7 +7,7 @@ export function NotFoundPage(): React.JSX.Element {
     <ErrorState
       testId="not-found-state"
       title="Page not found"
-      detail="The page you requested is not available in this workspace."
+      detail="This page may have moved or no longer exists."
       action={<Link className="button button-secondary" data-testid="back-to-workspace-link" to="/dashboard">Back to workspace</Link>}
     />
   );

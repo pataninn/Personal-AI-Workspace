@@ -1,5 +1,5 @@
 import { configureStore } from '@reduxjs/toolkit';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
@@ -446,6 +446,24 @@ describe('Home chat', () => {
     await user.click(screen.getByRole('button', { name: 'Stop response' }));
     await screen.findByRole('button', { name: 'Check status' });
     expect(api.cancelHomeTurn).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a confirmed stop state when an older running poll finishes afterward', async () => {
+    let finishPoll: ((turn: HomeTurnSnapshot) => void) | undefined;
+    const poll = new Promise<HomeTurnSnapshot>((resolve) => { finishPoll = resolve; });
+    api.listHomeConversations.mockResolvedValue({ conversations: [conversation], nextCursor: null });
+    api.listHomeTurns.mockResolvedValue({ turns: [{ ...pendingTurn, status: 'running' }], nextAfterSequence: null });
+    api.getHomeTurn.mockImplementationOnce(() => poll);
+    renderChat(`/dashboard?conversation=${CONVERSATION_ID}`);
+    await waitFor(() => expect(api.getHomeTurn).toHaveBeenCalled());
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Stop response' }));
+    expect(await screen.findByRole('button', { name: 'Check status' })).toBeEnabled();
+
+    await act(async () => { finishPoll?.({ ...pendingTurn, status: 'running' }); await poll; });
+
+    expect(screen.getByRole('button', { name: 'Check status' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Stop response' })).not.toBeInTheDocument();
+    expect(api.cancelHomeTurn).toHaveBeenCalledTimes(1);
   });
 
   it('keeps archived planning chat readable and disables all write controls', async () => {

@@ -181,7 +181,7 @@ describe('DashboardPage chat and task Home', () => {
   it('fails closed on workspace boundary errors and retries overview loading', async () => {
     getProjectOverviewMock.mockRejectedValue(new ApiClientError(503, 'WORKSPACE_BOUNDARY_UNAVAILABLE', 'absolute host detail'));
     renderDashboard();
-    expect(await screen.findByTestId('workspace-boundary-error')).toHaveTextContent('authoritative workspace is unavailable');
+    expect(await screen.findByTestId('workspace-boundary-error')).toHaveTextContent('Workspaces are temporarily unavailable');
     expect(screen.getByTestId('home-up-next-error')).toHaveTextContent('Up next is unavailable.');
     expect(screen.getByTestId(`home-workspace-link-${ACTIVE_PROJECT.id}`)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View all tasks' })).toHaveAttribute('href', '/tasks');

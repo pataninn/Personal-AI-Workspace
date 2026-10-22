@@ -99,7 +99,7 @@ export function SignInForm(): React.JSX.Element {
       <Card className="login-card">
         <p className="product-label">Personal AI Workspace</p>
         <h1>Sign in</h1>
-        <p className="supporting-copy">{import.meta.env.MODE === 'preview' ? 'Use any account identifier and non-empty made-up password. Do not enter real credentials.' : 'Use your account identifier and password.'}</p>
+        <p className="supporting-copy">{import.meta.env.MODE === 'preview' ? 'Use any account identifier and non-empty made-up password. Do not enter real credentials.' : 'Welcome back. Sign in to your workspace.'}</p>
         {notice ? <Alert tone={reason === 'signed-out' ? 'success' : 'info'} live="polite">{notice}</Alert> : null}
         <form data-testid="login-form" onSubmit={(event) => void handleSubmit(event)} noValidate>
           <div className="field-group">
@@ -150,7 +150,7 @@ export function SignInForm(): React.JSX.Element {
           </Button>
         </form>
         <DemoEntryAction />
-        <p className="privacy-note">{import.meta.env.MODE === 'preview' ? 'This browser preview uses temporary mock data on loopback HTTP.' : 'This is a local workspace. Your password is sent only to this app over its configured HTTPS origin.'}</p>
+        <p className="privacy-note">{import.meta.env.MODE === 'preview' ? 'Preview with sample data.' : 'Your sign-in stays private to this workspace.'}</p>
         <p className="sr-only" data-testid="login-status-message" aria-live="polite">{statusMessage}</p>
       </Card>
     </main>

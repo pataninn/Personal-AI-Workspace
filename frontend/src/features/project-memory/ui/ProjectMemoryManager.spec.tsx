@@ -102,7 +102,7 @@ describe('ProjectMemoryManager', () => {
     const user = userEvent.setup();
 
     expect(await screen.findByTestId('project-memory-empty')).toHaveTextContent('Add a fact to keep useful project information together.');
-    expect(screen.getByText('Files and file context remain unavailable in this planning-only workspace. You can still manage its saved project facts.')).toBeInTheDocument();
+    expect(screen.getByText('Saved facts are available here. Files are not enabled for this workspace.')).toBeInTheDocument();
     await waitFor(() => expect(getContextMock).toHaveBeenCalledWith(PROJECT_ID));
     await user.click(screen.getByTestId('project-memory-empty-add'));
     await user.type(screen.getByRole('textbox', { name: 'Fact name' }), baseFact.title);
