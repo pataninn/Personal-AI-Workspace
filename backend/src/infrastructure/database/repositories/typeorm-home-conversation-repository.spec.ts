@@ -188,7 +188,7 @@ describe('TypeOrmHomeConversationRepository', () => {
     });
 
     const insert = query.mock.calls.find(([statement]) => String(statement).startsWith('INSERT INTO "home_turns"'));
-    expect(insert?.[1]).toEqual([OWNER_ID, CONVERSATION_ID, 1, 'turn-request-1', 'fingerprint', 'running', '17', null, null]);
+    expect(insert?.[1]).toEqual([OWNER_ID, CONVERSATION_ID, 1, 'turn-request-1', 'fingerprint', 'running', '17', null, null, null]);
     expect(result.turn).toMatchObject({ homePolicyRevision: '17', workspacePolicyRevision: null, status: 'running' });
     expect(result.disclosure).toBeUndefined();
   });

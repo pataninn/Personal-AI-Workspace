@@ -13,6 +13,13 @@ import home_tools
 
 provider_credit.install_httpx_boundary()
 
+# The hosted route has no Ollama metadata API; titles belong to the application.
+from agent import model_metadata, title_generator
+
+model_metadata._query_ollama_api_show = lambda *args, **kwargs: None
+model_metadata.query_ollama_num_ctx = lambda *args, **kwargs: None
+title_generator._auto_title_enabled = lambda: False
+
 from run_agent import AIAgent
 
 PLANNING_CWD = Path(os.environ['PAI_PLANNING_CWD']).resolve()
@@ -55,11 +62,14 @@ def agent_init(self, *args, **kwargs):
     kwargs['checkpoints_enabled'] = False
     kwargs['quiet_mode'] = True
     kwargs['ephemeral_system_prompt'] = (
+        'A leading [new-conversation-title] application instruction requests hidden chat-title metadata; follow its format before answering the user. '
         'You are the Home planning assistant. Use only explicitly available typed Home tools. '
         'Never access files, run commands, use skills, or use project context. '
         'If no tool is available, answer only from the supplied conversation context.'
     )
     _init(self, *args, **kwargs)
+    # Home requests use complete responses so a closing stream cannot discard the usage receipt.
+    self._disable_streaming = True
 
 
 registry.dispatch = dispatch

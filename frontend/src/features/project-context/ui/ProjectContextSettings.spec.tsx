@@ -46,8 +46,6 @@ describe('ProjectContextSettings', () => {
     const readme = await screen.findByRole('checkbox', { name: 'README.md' });
     await waitFor(() => expect(readme).toBeChecked());
     expect(screen.getByRole('checkbox', { name: /Include recent messages/ })).toBeChecked();
-    expect(screen.getByRole('region', { name: 'Assistant policy summary' })).toHaveTextContent('Nebius Token Factory');
-    expect(screen.getByRole('region', { name: 'Assistant policy summary' })).toHaveTextContent('Workspace data is stored on the operator-managed deployment');
     await user.click(screen.getByRole('checkbox', { name: 'app.ts' }));
     await user.click(screen.getByRole('button', { name: 'Apply to all chats' }));
     await waitFor(() => expect(updateContextMock).toHaveBeenCalledWith('project-1', { relativePaths: ['README.md', 'app.ts'], excludedPaths: [], includeProjectConversations: true }, 'csrf'));

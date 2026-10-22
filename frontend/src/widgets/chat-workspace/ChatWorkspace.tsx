@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
-import { CreateConversationDialog } from '@/features/conversation-management';
+import { NewConversationButton } from '@/features/conversation-management';
 import { getConversation, listConversations } from '@/entities/conversation';
 import type { ConversationHistoryResponse, ConversationSnapshot } from '@/entities/conversation';
 import type { MessageSnapshot } from '@/entities/message';
@@ -35,7 +35,6 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
   const [history, setHistory] = useState<ConversationHistoryResponse | null>(null);
   const [olderHistoryStatus, setOlderHistoryStatus] = useState<OlderHistoryStatus>('idle');
   const [olderHistoryError, setOlderHistoryError] = useState<HistoryError | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
   const [createAnnouncement, setCreateAnnouncement] = useState('');
   const isArchived = project.status === 'archived';
 
@@ -145,7 +144,7 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
   }
 
   function handleCreated(conversation: ConversationSnapshot): void {
-    setCreateAnnouncement('Conversation created.');
+    setCreateAnnouncement('');
     setConversations((current) => [conversation, ...current.filter((candidate) => candidate.id !== conversation.id)]);
     navigate(`/projects/${projectId}/conversations/${conversation.id}`);
   }
@@ -155,7 +154,7 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
     setHistory((current) => current ? mergeReconciledHistory(current, result) : result);
     const lastMessage = result.messages.at(-1);
     if (lastMessage) {
-      setConversations((current) => sortConversations(current.map((candidate) => candidate.id === conversationId ? { ...candidate, lastActivityAt: lastMessage.createdAt, updatedAt: lastMessage.createdAt } : candidate)));
+      setConversations((current) => sortConversations(current.map((candidate) => candidate.id === conversationId ? { ...candidate, title: result.conversation.title, lastActivityAt: lastMessage.createdAt, updatedAt: lastMessage.createdAt } : candidate)));
     }
     window.dispatchEvent(new Event('project-files-changed'));
   }
@@ -168,9 +167,8 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
           <span className="conversation-welcome-icon"><Icon name="chat" size={24} /></span>
           <h2>Get started</h2>
           <p>Start a conversation to ask a question, plan your next task or work on your project.</p>
-          <Button type="button" data-testid="conversation-create-trigger" disabled={isArchived} aria-describedby={isArchived ? ARCHIVED_DESCRIPTION_ID : undefined} onClick={() => setCreateOpen(true)}>New conversation</Button>
+          <NewConversationButton projectId={projectId} disabled={isArchived} archivedDescriptionId={ARCHIVED_DESCRIPTION_ID} onCreated={handleCreated} />
         </Card>
-        <CreateConversationDialog projectId={projectId} open={createOpen} disabled={isArchived} archivedDescriptionId={ARCHIVED_DESCRIPTION_ID} onOpenChange={setCreateOpen} onCreated={handleCreated} />
       </section>
     );
   }
@@ -190,8 +188,6 @@ export function ChatWorkspace({ project }: ChatWorkspaceProps): React.JSX.Elemen
           error={listError}
           disabled={isArchived}
           archivedDescriptionId={ARCHIVED_DESCRIPTION_ID}
-          createOpen={createOpen}
-          onCreateOpenChange={setCreateOpen}
           onRetry={retryList}
           onCreated={handleCreated}
         />

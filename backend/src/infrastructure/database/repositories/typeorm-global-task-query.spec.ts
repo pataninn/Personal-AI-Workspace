@@ -52,7 +52,7 @@ describe('TypeOrmProjectTaskRepository global queries', () => {
     const [sql, values] = query.mock.calls[0] as [string, unknown[]];
     expect(sql).toContain('WHERE "owner_id" = $1');
     expect(sql).toContain('"project_id" IS NULL');
-    expect(sql).toContain('"status" <> \'archived\'');
+    expect(sql).not.toContain('"status" <> \'archived\'');
     expect(values).toEqual([OWNER]);
   });
 
@@ -81,7 +81,8 @@ describe('TypeOrmProjectTaskRepository global queries', () => {
     expect(sql).toContain('p."owner_id" = t."owner_id"');
     expect(sql).toContain('t."created_at", t."id"');
     expect(sql).toContain('ORDER BY t."created_at" DESC, t."id" DESC');
-    expect(sql).toContain('t."status" <> \'archived\'');
+    expect(sql).toContain('p."status" <> \'archived\'');
+    expect(sql).not.toContain('t."status" <> \'archived\'');
     expect(values).toEqual([OWNER, null, false, 'todo', 'high', '2026-10-01', '2026-10-31', '%50\\% off%', false, null, null, 2]);
   });
 
@@ -113,7 +114,8 @@ describe('TypeOrmProjectTaskRepository global queries', () => {
 
     const [sql, values] = query.mock.calls[0] as [string, unknown[]];
     expect(sql).toContain('WHERE t."owner_id" = $1 AND t."id" = $2');
-    expect(sql).toContain('t."status" <> \'archived\'');
+    expect(sql).toContain('p."status" <> \'archived\'');
+    expect(sql).not.toContain('t."status" <> \'archived\'');
     expect(sql).toContain('p."owner_id" = t."owner_id"');
     expect(values).toEqual([OWNER, WORKSPACE_TASK, false]);
   });

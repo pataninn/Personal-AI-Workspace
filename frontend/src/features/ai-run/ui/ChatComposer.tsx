@@ -12,7 +12,7 @@ import { useDirectChat } from '@/features/ai-run/model/use-direct-chat';
 import { AiRunTimeline } from '@/features/ai-run/ui/AiRunTimeline';
 import { RunStatusCard } from '@/features/ai-run/ui/RunStatusCard';
 import { createIdempotencyKey } from '@/shared/lib/idempotency-key';
-import { Alert, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogRoot, AlertDialogTitle, Button, Icon, Label, Textarea } from '@/shared/ui';
+import { Alert, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogRoot, AlertDialogTitle, Button, Icon, Label, Textarea, TypingIndicator } from '@/shared/ui';
 
 interface ChatComposerProps {
   readonly projectId: string;
@@ -76,7 +76,7 @@ export function ChatComposer({ projectId, conversationId, disabled, archivedDesc
       <AssistantPolicySummary compact status={policy.status} policy={policy.policy} />
       <AccountUsageGateNotice state={usage.state} />
       {policy.status === 'error' ? <Alert tone="error" role="alert" data-testid="workspace-policy-load-error">
-        <p>Workspace assistant policy could not be checked. Sending stays paused until it can be verified.</p>
+        <p>Unable to connect. Your draft is saved.</p>
         <Button type="button" variant="secondary" onClick={policy.retry}>Retry policy check</Button>
       </Alert> : null}
       {legacyPending ? <Alert tone="warning" role="status" data-testid="ai-run-legacy-pending">
@@ -97,21 +97,18 @@ export function ChatComposer({ projectId, conversationId, disabled, archivedDesc
           : <><p>Provider transmission remains unconfirmed. Refresh the saved run before resending; new sends stay blocked while status is unresolved.</p>
             <Button type="button" variant="secondary" data-testid="ai-run-restored-request-refresh" disabled={chat.restoring} onClick={() => { void chat.refreshStatus(); }}>Refresh run status</Button></>}
       </Alert> : null}
-      {chat.pending || chat.restoring && legacyPending ? <p className="form-status" data-testid="chat-send-status" role="status" aria-live="polite">
-        {chat.pending ? 'Starting assistant run...' : 'Checking saved run status...'}
-      </p> : null}
+      {chat.pending || chat.restoring && legacyPending ? <TypingIndicator testId="chat-send-status" /> : null}
       <form className="message-composer" onSubmit={(event) => { event.preventDefault(); if (quotaAvailable) void chat.send(); }}>
-        <Label htmlFor="chat-message">Message</Label>
+        <Label htmlFor="chat-message" className="sr-only">Message</Label>
         <Textarea id="chat-message" data-testid="message-input" placeholder="Message the assistant" rows={3} value={chat.content}
           onChange={(event) => chat.setContent(event.target.value)}
           onKeyDown={(event) => { if (quotaAvailable && event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void chat.send(); } }}
-          aria-describedby={disabled ? archivedDescriptionId : 'chat-send-help'} disabled={!canEditDraft || chat.pending} />
+          aria-describedby={disabled ? archivedDescriptionId : undefined} disabled={!canEditDraft || chat.pending} />
         <div className="composer-actions">
-          <p id="chat-send-help" className="field-help">Ctrl+Enter or Cmd+Enter to send.</p>
-          <Button ref={submitButton} type="submit" data-testid="ai-run-submit" aria-busy={chat.pending}
+          <Button ref={submitButton} type="submit" data-testid="ai-run-submit" aria-busy={chat.pending} aria-keyshortcuts="Control+Enter Meta+Enter"
             aria-describedby={disabled ? archivedDescriptionId : undefined}
             disabled={disabled || !quotaAvailable || !policy.ready || chat.busy || !csrfToken || !chat.content.trim()}>
-            {chat.pending ? 'Sending...' : 'Send'}<Icon name="arrow" size={18} />
+            {chat.pending ? <span className="sr-only">Sending</span> : 'Send'}<Icon name="arrow" size={18} />
           </Button>
         </div>
       </form>

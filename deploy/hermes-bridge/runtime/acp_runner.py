@@ -230,6 +230,39 @@ class PolicyCommands:
             return json.dumps(result, separators=(',', ':'))
 
 
+def verify_kernel_enforcement():
+    code = """import os,socket,resource
+assert resource.getrlimit(resource.RLIMIT_CPU) == (5,5)
+assert resource.getrlimit(resource.RLIMIT_AS) == (134217728,134217728)
+for action in (lambda: socket.socket(), lambda: os.fork()):
+    try: action()
+    except PermissionError: pass
+    else: raise AssertionError('kernel restriction missing')
+try: bytearray(200*1024*1024)
+except MemoryError: pass
+else: raise AssertionError('memory restriction missing')
+print('verified')
+"""
+    result = execute_bounded([sys.executable, '-I', '-S', '-c', code], '/tmp', threading.Event())
+    return result['exitCode'] == 0 and result['stdout'] == 'verified\n' and not result['timedOut'] and not result['outputTruncated']
+
+
+if __name__ == '__main__' and sys.argv[1:] == ['--policy-self-test']:
+    if not verify_kernel_enforcement():
+        sys.exit(70)
+    oversized = execute_bounded([sys.executable, '-I', '-S', '-c', "import os;os.write(1,b'x'*100000)"], '/tmp', threading.Event())
+    idle = execute_bounded([sys.executable, '-I', '-S', '-c', 'import time;time.sleep(20)'], '/tmp', threading.Event())
+    wall = execute_bounded([sys.executable, '-I', '-S', '-c', "import time\nwhile True:\n print('.',flush=True);time.sleep(0.05)"], '/tmp', threading.Event())
+    if not (oversized['outputTruncated'] and len(oversized['stdout'].encode()) <= 32768
+            and idle['timedOut'] and idle['exitCode'] < 0 and idle['durationMs'] < 10000
+            and wall['timedOut'] and wall['exitCode'] < 0 and 10000 <= wall['durationMs'] < 12000):
+        sys.exit(70)
+    print(json.dumps({'supported': True, 'profileVersion': PROFILE_VERSION, 'profileHash': PROFILE_HASH,
+                      'limits': COMMAND_LIMITS, 'unavailableReasons': [],
+                      'runnerSha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}))
+    sys.exit(0)
+
+
 if __name__ == '__main__' and len(sys.argv) == 4 and sys.argv[1] == '--policy-child':
     parent = int(sys.argv[2])
     libc = ctypes.CDLL(None, use_errno=True)
@@ -244,6 +277,16 @@ if __name__ == '__main__':
     sys.path.insert(0, '/opt/hermes')
     os.environ['HERMES_ACP_SKIP_CONFIGURED_MCP'] = '1'
 
+    import provider_credit
+    provider_credit.install_httpx_boundary()
+    from agent import model_metadata, title_generator
+    model_metadata._query_ollama_api_show = lambda *args, **kwargs: None
+    model_metadata.query_ollama_num_ctx = lambda *args, **kwargs: None
+    title_generator._auto_title_enabled = lambda: False
+    max_output_tokens = int(os.environ.get('PAI_PLANNING_MAX_TOKENS', '0'))
+    if not 1 <= max_output_tokens <= 512:
+        raise RuntimeError('The provider output limit is invalid.')
+
     import model_tools
     from tools.registry import registry
     from tools import terminal_tool
@@ -253,6 +296,8 @@ if __name__ == '__main__':
     ROOT = Path(os.environ['PAI_PROJECT_ROOT']).resolve()
     POLICY = PolicyCommands.from_environment(ROOT)
     if POLICY is not None:
+        if not verify_kernel_enforcement():
+            raise RuntimeError('The sandbox command restrictions could not be verified.')
         signal.signal(signal.SIGTERM, lambda *_: POLICY.cancelled.set())
         if hasattr(signal, 'SIGHUP'):
             signal.signal(signal.SIGHUP, lambda *_: POLICY.cancelled.set())
@@ -336,8 +381,19 @@ if __name__ == '__main__':
         kwargs['model'] = os.environ.get('PAI_MODEL', 'nvidia/nemotron-3-super-120b-a12b')
         kwargs['enabled_toolsets'] = ['file', 'terminal', 'skills', 'todo']
         kwargs['max_iterations'] = 24
-        kwargs['ephemeral_system_prompt'] = (Path('/opt/pai/instructions.md').read_text() + '\nProject copy: ' + str(ROOT))
+        kwargs['api_mode'] = 'chat_completions'
+        kwargs['max_tokens'] = max_output_tokens
+        kwargs['skip_context_files'] = True
+        kwargs['load_soul_identity'] = False
+        kwargs['skip_memory'] = True
+        kwargs['skip_background_review'] = True
+        kwargs['fallback_model'] = []
+        kwargs['credential_pool'] = None
+        kwargs['save_trajectories'] = False
+        kwargs['checkpoints_enabled'] = False
+        kwargs['ephemeral_system_prompt'] = (Path('/opt/pai/instructions.md').read_text() + '\nA leading [new-conversation-title] application instruction requests hidden chat-title metadata; follow its format before answering the user.\nProject copy: ' + str(ROOT))
         _init(self, *args, **kwargs)
+        self._disable_streaming = True
 
 
     registry.dispatch = dispatch
@@ -361,6 +417,7 @@ if __name__ == '__main__':
         kwargs['timeout'] = 300
         if len(args) >= 3:
             project_tasks.connect(args[0].__self__, args[1], args[2])
+            provider_credit.connect(args[0].__self__, args[1], args[2])
         return _approval(*args, **kwargs)
 
 

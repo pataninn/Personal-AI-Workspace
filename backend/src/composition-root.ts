@@ -291,7 +291,9 @@ export async function createApplication(
       rootMappings: storageRootMappingRepository
     });
     const taskTools = new HermesProjectTaskTools({ runs: aiRunRepository, principalAuthorization, list: new ListProjectTasksUseCase(projectRepository, projectTaskRepository), create: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases), update: new UpdateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases) });
-    const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository, logger, taskTools);
+    const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository, logger, taskTools, new HandleHomeProviderCreditReceiptUseCase(
+      providerCallCreditAdmission, config.providerCreditConfiguration, { profile: config.nimProfile, model: config.nimModel }, creditLedgerRepository, config.allowEstimatedHomeUsage, 'ai_run'
+    ));
     const homePlanningProvider: HomePlanningProvider = { profile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint };
     const homeProviderCreditConfiguration = config.providerCreditConfiguration
       ? { ...config.providerCreditConfiguration, maxOutputTokens: Math.min(config.providerCreditConfiguration.maxOutputTokens, MAX_HOME_PLANNING_OUTPUT_TOKENS) }
@@ -344,7 +346,7 @@ export async function createApplication(
       executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel
     }, automationRepository, new HandleHomeProviderCreditReceiptUseCase(
       providerCallCreditAdmission, homeProviderCreditConfiguration,
-      { profile: homePlanningProvider.profile, model: homePlanningProvider.model }, creditLedgerRepository
+      { profile: homePlanningProvider.profile, model: homePlanningProvider.model }, creditLedgerRepository, config.allowEstimatedHomeUsage
     ), homeTurnProviderUsage);
     const invokeSkill = new InvokeSkillUseCase(skillRepository, skillInvocationRepository, homeConversationRepository, submitHomeTurn);
     const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel, projectFactRepository, assistantExecutionPolicy);
@@ -719,13 +721,16 @@ function createAgentRuntime(
   conversationRepository: TypeOrmConversationRepository,
   projectFactRepository: TypeOrmProjectFactRepository,
   logger: AppLogger,
-  taskTools: HermesProjectTaskTools
+  taskTools: HermesProjectTaskTools,
+  providerCredits: HandleHomeProviderCreditReceiptUseCase
 ): IAgentRuntime {
   if (config.agentRuntimeMode === 'hermes') {
     return new HermesAgentRuntime(createHermesBridge(config), new ApprovedContextReader(workspaceGateway, projectFactRepository), {
       taskTools,
       providerProfile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint,
-      providerEgressAdmissionEnforced: false,
+      providerEgressAdmissionEnforced: Boolean(config.providerCreditConfiguration),
+      providerCredits,
+      maxOutputTokens: Math.min(config.providerCreditConfiguration?.maxOutputTokens ?? 512, 512),
       diagnose: (detail) => logger.error(detail, 'Hermes runtime operation could not be confirmed.')
     });
   }

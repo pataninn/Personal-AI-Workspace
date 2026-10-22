@@ -300,7 +300,8 @@ describe('TaskDetailPage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('delete outcome is uncertain');
     const firstKey = mocks.deleteGlobalTask.mock.calls[0]?.[3];
     await user.click(screen.getByRole('button', { name: 'Retry delete' }));
-    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/tasks'));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/tasks$/u));
+    expect(screen.queryByTestId('task-dirty-exit-confirmation')).not.toBeInTheDocument();
     expect(mocks.deleteGlobalTask).toHaveBeenCalledTimes(2);
     expect(mocks.deleteGlobalTask.mock.calls[0]).toEqual([TASK_ID, 1, 'csrf-token', firstKey]);
     expect(mocks.deleteGlobalTask.mock.calls[1]?.[3]).toBe(firstKey);
@@ -338,7 +339,8 @@ describe('TaskDetailPage', () => {
     expect(mocks.deleteGlobalTask).toHaveBeenCalledTimes(1);
 
     await act(async () => { deletion.resolve(deletedTask); });
-    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/tasks'));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/tasks$/u));
+    expect(screen.queryByTestId('task-dirty-exit-confirmation')).not.toBeInTheDocument();
     expect(mocks.deleteGlobalTask).toHaveBeenCalledTimes(1);
   });
 

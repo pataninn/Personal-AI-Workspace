@@ -28,9 +28,11 @@ export class AutomationWorker {
 
   private async process(item: ClaimedAutomationOccurrence): Promise<void> {
     let heartbeatRunning = true;
-    const heartbeat = async (): Promise<boolean> => heartbeatRunning
-      ? await this.repository.heartbeat(item.fence, LEASE_MILLISECONDS)
-      : false;
+    const heartbeat = async (): Promise<boolean> => {
+      if (!heartbeatRunning) return false;
+      try { return await this.repository.heartbeat(item.fence, LEASE_MILLISECONDS); }
+      catch { heartbeatRunning = false; return false; }
+    };
     const timer = setInterval(() => { void heartbeat(); }, HEARTBEAT_MILLISECONDS);
     timer.unref?.();
     const guard = {

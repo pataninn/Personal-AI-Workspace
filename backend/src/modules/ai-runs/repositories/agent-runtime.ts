@@ -21,6 +21,7 @@ export interface DirectRunPreparationInput {
 }
 
 export interface RuntimeRunInput {
+  readonly generateConversationTitle?: boolean;
   readonly runId: string;
   readonly ownerId: string;
   readonly projectId: string;

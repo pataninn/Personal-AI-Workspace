@@ -77,10 +77,13 @@ export function useDirectChat(input: UseDirectChatInput) {
       setRestoring(false);
       return undefined;
     }
-    if (run?.runId === runId) {
+    if (run?.runId === runId && run.projectId === projectId && run.conversationId === conversationId) {
       setRestoring(false);
       return undefined;
     }
+    setRun(null);
+    setManifest(null);
+    requestForRun.current = null;
     setRestoring(true);
     setError(null);
     void restoreRun(runId, projectId, conversationId)
@@ -98,24 +101,33 @@ export function useDirectChat(input: UseDirectChatInput) {
       })
       .finally(() => { if (!cancelled) setRestoring(false); });
     return () => { cancelled = true; };
-  }, [conversationId, projectId, refreshAttempt, run?.runId, runId]);
+  }, [conversationId, projectId, refreshAttempt, runId]);
 
   const refresh = useCallback((): void => {
     setRefreshAttempt((value) => value + 1);
   }, []);
 
-  const refreshRun = useCallback(async (): Promise<void> => {
+  async function refreshRun(): Promise<void> {
     if (!run?.runId) {
       refresh();
       return;
     }
-    await consent.refreshStatus();
-  }, [consent.refreshStatus, refresh, run?.runId]);
+    const refreshed = await consent.refreshStatus();
+    if (!isCurrentRoute(projectId, conversationId)) return;
+    if (!refreshed) {
+      setError('The current AI run could not be loaded. Refresh its status before sending again.');
+      setErrorAction('refresh-run');
+      return;
+    }
+    setError(null);
+    setErrorAction(null);
+    await reconcileHistory();
+  }
 
   function canSubmit(): boolean {
     return !disabled && permissionListReady && Boolean(csrfToken) && !pending && !restoring
       && !consent.decisionLoading && !consent.refreshing && !busyRef.current
-      && !(runId && !run) && !runBlocksNewSend(run);
+      && !(runId && run?.runId !== runId) && !runBlocksNewSend(run);
   }
 
   async function send(): Promise<void> {
@@ -217,7 +229,7 @@ export function useDirectChat(input: UseDirectChatInput) {
 
   const blockedByRun = runBlocksNewSend(run);
   const busy = pending || restoring || consent.decisionLoading || consent.refreshing || !permissionListReady
-    || Boolean(runId && !run) || blockedByRun;
+    || Boolean(runId && run?.runId !== runId) || blockedByRun;
   const safeRetryAvailable = Boolean(run && canSafelyRetry(run) && recoveryRequest());
   const separateRunAvailable = Boolean(run && requiresDuplicateConfirmation(run) && recoveryRequest());
   const restoredRecoveryNeedsReview = Boolean(run && runId === run.runId && !recoveryRequest()

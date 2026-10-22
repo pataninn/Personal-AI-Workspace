@@ -1,3 +1,4 @@
+import { DEFAULT_CONVERSATION_TITLE, GeneratedConversationTitle } from '@/modules/conversations/domain/generated-conversation-title';
 import { AiRunProviderPermissionRevokedError, AiRunStagingFailedError, AiRunStateConflictError } from '@/modules/ai-runs/domain/ai-run-errors';
 import { safeProviderFailureMessage } from '@/modules/ai-runs/domain/model-provider-errors';
 import { ChangeSetDomainError, ChangeSetReviewRequiredError } from '@/modules/ai-runs/domain/change-errors';
@@ -176,11 +177,15 @@ export class StartAiRunUseCase {
       await this.destroySafely(running);
       return;
     }
+    const conversation = this.conversationRepository.setGeneratedTitle
+      ? await this.conversationRepository.findWithMessagesForOwner({ ownerId: running.ownerId, projectId: running.projectId, conversationId: running.conversationId, limit: 1 }) : null;
+    const generateConversationTitle = conversation?.conversation.title === DEFAULT_CONVERSATION_TITLE;
+    const titleStream = new GeneratedConversationTitle(generateConversationTitle);
     let assistantText = '';
     let terminal: RuntimeInferenceEvent | undefined;
     const policyCommandTasks = new Map<string, Promise<PolicyCommandTaskResult>>();
     try {
-      for await (const event of this.agentRuntime.startRun({
+      for await (let event of this.agentRuntime.startRun({
         runId: running.id,
         ownerId: running.ownerId,
         projectId: running.projectId,
@@ -189,6 +194,7 @@ export class StartAiRunUseCase {
         storageKind: running.storageKind,
         request: running.request,
         manifest: running.manifest,
+        generateConversationTitle,
         ...(running.decision === 'policy_authorized' ? {
           beforeProviderAttempt: async (): Promise<void> => { await this.assertRunPolicy(running); },
           policyRevision: running.policyRevision
@@ -198,6 +204,14 @@ export class StartAiRunUseCase {
         const current = await this.aiRunRepository.findByIdForOwner(running.ownerId, running.id);
         if (!current || isStopState(current.status)) {
           return;
+        }
+        if (event.type === 'assistant.delta' || event.type === 'completed') {
+          const parsed = (event.type === 'assistant.delta' ? titleStream : new GeneratedConversationTitle(generateConversationTitle)).push(event.text);
+          if (parsed.title && await this.isRunProjectable(current.ownerId, current.id)) {
+            // Naming is optional: a quota or persistence failure must not discard the answer.
+            await this.conversationRepository.setGeneratedTitle?.({ ownerId: current.ownerId, projectId: current.projectId, conversationId: current.conversationId, title: parsed.title }).catch(() => false);
+          }
+          event = { ...event, text: parsed.text };
         }
         const result = await this.projectEvent(current, event, assistantText, policyCommandTasks);
         assistantText = result.assistantText;

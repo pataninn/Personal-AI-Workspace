@@ -29,7 +29,7 @@ export function UsagePage(): React.JSX.Element {
             {state.data.availability.status === 'unknown' ? <Button type="button" variant="secondary" onClick={refresh}>Check again</Button> : null}
           </Alert>}
       </section>
-      <p className="field-help">Updated {formatDate(state.data.asOf)}. Credits measure the configured AI budget. Storage is logical persistent data, not physical disk use.</p>
+      <p className="field-help">Updated {formatDate(state.data.asOf)}. Credits measure the configured AI budget and may include estimated token usage when a provider receipt is missing. Storage is logical persistent data, not physical disk use.</p>
     </> : null}
     <WorkspaceExportPanel />
   </main>;

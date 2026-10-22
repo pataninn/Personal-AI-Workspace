@@ -15,6 +15,43 @@ def openssl(*args):
     subprocess.run(['openssl', *args], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def verify_provider_credit_image(image, source):
+    image_paths = {
+        '/opt/pai/acp_runner.py': source / 'runtime' / 'acp_runner.py',
+        '/opt/pai/planning_acp_runner.py': source / 'runtime' / 'planning_acp_runner.py',
+        '/opt/pai/provider_credit.py': source / 'runtime' / 'provider_credit.py',
+    }
+    expected = {path: hashlib.sha256(file.read_bytes()).hexdigest() for path, file in image_paths.items()}
+    result = subprocess.run(
+        [
+            'docker', 'run', '--rm', '--pull', 'never', '--network', 'none', '--read-only',
+            '--cap-drop', 'ALL', '--user', '65534:65534', '--entrypoint', '/usr/bin/sha256sum',
+            image, *image_paths.keys()
+        ],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+    )
+    actual = {}
+    for line in result.stdout.splitlines():
+        fields = line.split(maxsplit=1)
+        if len(fields) == 2:
+            actual[fields[1].lstrip('*')] = fields[0]
+    if actual != expected:
+        raise RuntimeError('The pinned Hermes image does not contain the current Home provider receipt boundary.')
+
+
+def verify_policy_image(image):
+    result = subprocess.run([
+        'docker', 'run', '--rm', '--pull', 'never', '--network', 'none', '--read-only',
+        '--cap-drop', 'ALL', '--user', '65534:65534', '--memory', '256m', '--pids-limit', '64',
+        '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m', '--entrypoint', '/opt/hermes/.venv/bin/python',
+        image, '-I', '-S', '/opt/pai/acp_runner.py', '--policy-self-test'
+    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=45)
+    receipt = json.loads(result.stdout)
+    if receipt.get('supported') is not True:
+        raise RuntimeError('The pinned command policy could not be verified.')
+    return receipt
+
+
 def certificates(destination):
     tls = STATE / 'tls'
     tls.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -82,20 +119,23 @@ def main():
     previous = json.loads((STATE / 'profile.json').read_text()) if (STATE / 'profile.json').exists() else {}
     route = settings(sys.argv[3])
     changed = previous.get('bridgeSha256') != source_hash.hexdigest() or previous.get('image') != sys.argv[2] or any(previous.get(key) != value for key, value in route.items())
+    destination = Path(sys.argv[1]).resolve()
+    image = sys.argv[2]
+    if '@sha256:' not in image and not image.startswith('sha256:'):
+        raise RuntimeError('A digest-pinned application Hermes image is required')
+    verify_provider_credit_image(image, source)
+    policy_receipt = verify_policy_image(image)
+    policy = source / 'policy.json'
+    cli_hash = hashlib.sha256(Path(CLI).read_bytes()).hexdigest()
+    if cli_hash != '24e85062073d512d1951c76cd3890b7bce1ab01cc36a08f88b3b43c067a402da':
+        raise RuntimeError('The OpenShell binary differs from the pinned local release.')
     if any((STATE / 'runs').glob('pai-*/ledger.json')):
         raise RuntimeError('Finish or cancel active Hermes runs before updating the bridge.')
     subprocess.run(['systemctl', '--user', 'stop', 'personal-ai-hermes-bridge.service'], check=True)
     deployed = STATE / 'bridge'
     shutil.copytree(source, deployed, dirs_exist_ok=True, ignore=shutil.ignore_patterns('__pycache__'))
-    destination = Path(sys.argv[1]).resolve()
-    image = sys.argv[2]
-    if '@sha256:' not in image and not image.startswith('sha256:'):
-        raise RuntimeError('A digest-pinned application Hermes image is required')
-    policy = source / 'policy.json'
-    cli_hash = hashlib.sha256(Path(CLI).read_bytes()).hexdigest()
-    if cli_hash != '24e85062073d512d1951c76cd3890b7bce1ab01cc36a08f88b3b43c067a402da':
-        raise RuntimeError('The OpenShell binary differs from the pinned local release.')
     receipt = {'gateway': GATEWAY, 'image': image, 'policySha256': hashlib.sha256(policy.read_bytes()).hexdigest(), 'openshellSha256': cli_hash, 'hermesVersion': '0.20.6', 'bridgeSha256': source_hash.hexdigest()}
+    receipt['policyCommand'] = policy_receipt
     receipt.update(route)
     write_private(STATE / 'profile.json', json.dumps(receipt))
     certificates(destination)

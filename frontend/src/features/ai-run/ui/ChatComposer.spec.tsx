@@ -97,12 +97,8 @@ describe('ChatComposer', () => {
 
     await waitFor(() => expect(sendMock).toHaveBeenCalledWith(PROJECT_ID, CONVERSATION_ID, 'Continue our earlier chat', 'csrf', expect.any(String)));
     await waitFor(() => expect(screen.getByTestId('message-input')).toHaveValue(''));
-    const summary = screen.getByRole('region', { name: 'Assistant policy summary' });
-    expect(summary).toHaveTextContent('Project workspace');
-    expect(summary).toHaveTextContent('Workspace data is stored on the operator-managed deployment.');
-    expect(summary).toHaveTextContent('When you submit an assistant request, selected context is sent to NVIDIA hosted NIM for processing.');
-    expect(within(summary).getByRole('link', { name: 'Read NVIDIA API Trial Terms' })).toHaveAttribute('href', 'https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf');
-    expect(within(summary).queryByRole('button', { name: /approve|accept/u })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Assistant policy summary' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/operator-managed|NVIDIA hosted NIM|pinned-model/)).not.toBeInTheDocument();
     expect(screen.queryByTestId('provider-consent-alert-dialog')).not.toBeInTheDocument();
     expect(decideMock).not.toHaveBeenCalled();
     expect(startMock).not.toHaveBeenCalled();
@@ -115,7 +111,7 @@ describe('ChatComposer', () => {
     await user.type(screen.getByTestId('message-input'), 'Prepare a policy-bound request');
     await user.click(screen.getByTestId('ai-run-submit'));
 
-    expect(await screen.findByTestId('run-staging')).toHaveTextContent('Preparing the policy-bound context');
+    expect(await screen.findByTestId('run-staging')).toContainElement(screen.getByTestId('assistant-typing'));
     expect(screen.getByTestId('run-staging')).not.toHaveTextContent('approved context');
   });
 
@@ -127,7 +123,7 @@ describe('ChatComposer', () => {
 
     expect(screen.getByTestId('ai-run-submit')).toBeDisabled();
     await waitFor(() => expect(screen.getByTestId('assistant-policy-readiness')).toHaveTextContent(/unavailable/i));
-    expect(screen.getByRole('region', { name: 'Assistant policy summary' })).toHaveTextContent('The configured assistant runtime is unavailable, so no request is sent to the provider.');
+    expect(screen.getByTestId('assistant-policy-readiness')).toHaveTextContent('Assistant is temporarily unavailable.');
     expect(sendMock).not.toHaveBeenCalled();
     expect(screen.getByTestId('message-input')).toHaveValue('Keep this until policy is ready');
   });

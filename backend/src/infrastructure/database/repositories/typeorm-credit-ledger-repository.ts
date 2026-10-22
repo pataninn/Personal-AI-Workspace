@@ -74,9 +74,10 @@ export class TypeOrmCreditLedgerRepository implements ICreditLedgerRepository {
       readonly input_tokens: string | number | null;
       readonly output_tokens: string | number | null;
       readonly charged_units: string | null;
+      readonly is_estimated: boolean | null;
     }[] = await this.dataSource.query(`
       SELECT r."status",r."provider_profile",r."provider_model",
-        u."input_tokens",u."output_tokens",u."charged_units"
+        u."input_tokens",u."output_tokens",u."charged_units",u."is_estimated"
       FROM "credit_provider_call_reservations" r
       LEFT JOIN "credit_usage_entries" u ON u."reservation_id"=r."id" AND u."owner_id"=$1
         AND u."source_kind"='home_turn' AND u."source_id"=$2
@@ -87,7 +88,7 @@ export class TypeOrmCreditLedgerRepository implements ICreditLedgerRepository {
       const inputTokens = safeTokenCount(row.input_tokens);
       const outputTokens = safeTokenCount(row.output_tokens);
       const usage = inputTokens !== undefined && outputTokens !== undefined && row.charged_units !== null
-        ? { inputTokens, outputTokens, chargedUnits: row.charged_units }
+        ? { inputTokens, outputTokens, chargedUnits: row.charged_units, ...(row.is_estimated ? { estimated: true as const } : {}) }
         : undefined;
       return {
         status: row.status,
@@ -221,6 +222,9 @@ export class TypeOrmCreditLedgerRepository implements ICreditLedgerRepository {
       await this.lockPolicy(runner);
       const metadata = await this.findReservation(runner, command.reservationId, false);
       if (!metadata) throw new Error('The provider call reservation does not exist.');
+      if (command.estimated && metadata.account_kind !== 'regular') {
+        throw new Error('Estimated usage is only supported for regular accounts.');
+      }
       if (metadata.status === 'settled' || metadata.status === 'over_bound') {
         return { outcome: 'replayed', chargedUnits: BigInt(metadata.charged_units ?? '0') };
       }
@@ -272,14 +276,14 @@ export class TypeOrmCreditLedgerRepository implements ICreditLedgerRepository {
         `INSERT INTO "credit_usage_entries" (
            "reservation_id", "owner_id", "source_kind", "source_id", "call_id", "attempt_id",
            "input_tokens", "output_tokens", "total_tokens", "price_version",
-           "input_units_per_million_tokens", "output_units_per_million_tokens", "charged_units"
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+           "input_units_per_million_tokens", "output_units_per_million_tokens", "charged_units", "is_estimated"
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          ON CONFLICT ("reservation_id") DO NOTHING`,
         [
           reservation.id, reservation.owner_id, reservation.source_kind, reservation.source_id,
           reservation.call_id, reservation.attempt_id, inputTokens, outputTokens, actualTotalTokens,
           reservation.price_version, reservation.input_units_per_million_tokens,
-          reservation.output_units_per_million_tokens, charged.toString()
+          reservation.output_units_per_million_tokens, charged.toString(), command.estimated === true
         ]
       );
       await this.consumeReserved(runner, 'credit_account_totals', { owner_id: reservation.owner_id }, reserved, charged);

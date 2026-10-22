@@ -92,8 +92,8 @@ describeDatabase('Task 4.1 assistant scope policy PostgreSQL integration', () =>
     const policyMigrationIndex = configuredMigrations.findIndex(
       (migration) => migration === CreateAssistantScopePolicies1710000032000
     );
-    if (policyMigrationIndex !== configuredMigrations.length - 1) {
-      throw new Error('Task 4.1 migration 0032 must be the last registered migration for this fixture.');
+    if (policyMigrationIndex < 0) {
+      throw new Error('The assistant scope policy migration must be registered.');
     }
 
     const beforePolicyDataSource = new TypeOrmDataSource({
@@ -115,7 +115,10 @@ describeDatabase('Task 4.1 assistant scope policy PostgreSQL integration', () =>
       await beforePolicyDataSource.destroy();
     }
 
-    dataSource = createDataSource({ url: targetUrl });
+    dataSource = new TypeOrmDataSource({
+      ...configuredDataSource.options,
+      migrations: configuredMigrations.slice(0, policyMigrationIndex + 1)
+    });
     await dataSource.initialize();
     const registeredNames = dataSource.migrations.map((migration) => migration.name);
     expect(registeredNames.at(-1)).toBe(new CreateAssistantScopePolicies1710000032000().name);

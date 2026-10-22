@@ -44,6 +44,16 @@ export class HomeChatPreviewApi {
 
   async install(): Promise<void> {
     await this.page.route('**/*', async (route) => this.blockProviderOrBridge(route));
+    await this.page.route('**/api/v1/account/usage', async (route) => {
+      await this.respond(route, {
+        asOf: SYNTHETIC_TIME, expiresAt: null,
+        daily: { limitUnits: null, settledUnits: '0', reservedUnits: '0', remainingUnits: null, resetAt: SYNTHETIC_TIME, timeZone: 'UTC' },
+        lifetime: { limitUnits: null, settledUnits: '0', reservedUnits: '0', remainingUnits: null },
+        storage: { state: 'ready', unit: 'bytes', unitSystem: 'decimal-si', usedBytes: '0', reservedBytes: '0',
+          limitBytes: null, availableBytes: null, overLimit: false, asOf: SYNTHETIC_TIME },
+        availability: { status: 'available', reason: 'Synthetic browser fixture only.', canSubmit: true }
+      });
+    });
     await this.page.route('**/api/v1/home/conversations**', async (route) => this.handleHomeApi(route));
     await this.page.route('**/api/v1/assistant/execution-policy**', async (route) => this.readExecutionPolicy(route));
   }

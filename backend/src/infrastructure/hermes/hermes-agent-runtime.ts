@@ -10,6 +10,9 @@ import { redactEgressText } from '@/shared/egress/redaction';
 import type { HermesProjectTaskTools } from '@/infrastructure/hermes/hermes-project-task-tools';
 import { HermesPolicyCommand, POLICY_COMMAND_VERSION, legacyHermesCommandResult, policyCommandReceiptAvailable, policySnapshotHash } from '@/infrastructure/hermes/hermes-policy-command';
 
+import type { HandleProviderCreditReceiptUseCase } from '@/modules/credits/use-cases/handle-provider-credit-receipt';
+import { validProviderCreditRequest } from '@/infrastructure/hermes/hermes-home-planning-runtime';
+
 interface Permission {
   readonly identity: string;
   readonly command: string;
@@ -44,6 +47,8 @@ interface HermesRuntimeOptions {
   readonly endpoint: string;
   /** Must be enabled only after the bridge profile proves admission at the sole provider egress boundary. */
   readonly providerEgressAdmissionEnforced?: boolean;
+  readonly providerCredits?: Pick<HandleProviderCreditReceiptUseCase, 'handle' | 'hasAdmittedCall' | 'markInterrupted' | 'clearTurn'>;
+  readonly maxOutputTokens?: number;
   readonly diagnose?: (detail: { readonly runId: string; readonly category: string; readonly stage: string; readonly trace: string }) => void;
 }
 
@@ -52,9 +57,8 @@ export class HermesAgentRuntime implements IAgentRuntime {
   private readonly runs = new Map<string, ActiveRun>();
   public constructor(private readonly bridge: HermesBridgeClient, private readonly context: ApprovedContextReader, private readonly options: HermesRuntimeOptions) {}
 
-  public async supportsPolicyExecution(_input: { readonly providerProfile: string; readonly model: string }): Promise<boolean> {
-    // ACP does not expose a verified per-attempt admission hook for this runtime.
-    return false;
+  public async supportsPolicyExecution(input: { readonly providerProfile: string; readonly model: string }): Promise<boolean> {
+    return this.supportsPolicyCommandExecution(input);
   }
 
   public async supportsPolicyCommandExecution(input: { readonly providerProfile: string; readonly model: string }): Promise<boolean> {
@@ -67,10 +71,10 @@ export class HermesAgentRuntime implements IAgentRuntime {
   }
 
   public async checkAvailability(): Promise<void> {
-    if (this.options.providerEgressAdmissionEnforced !== true) throw new AiRunRuntimeUnavailableError();
+    if (this.options.providerEgressAdmissionEnforced !== true || !this.options.providerCredits || !Number.isSafeInteger(this.options.maxOutputTokens) || (this.options.maxOutputTokens ?? 0) < 1 || (this.options.maxOutputTokens ?? 0) > 512) throw new AiRunRuntimeUnavailableError();
     const { providerProfile, model, endpoint } = this.options;
     const receipt = await this.bridge.call('probe', undefined, undefined, { providerProfile, model, endpoint });
-    if (receipt.ready !== true || !isRecord(receipt.profile) || receipt.profile.hermesVersion !== '0.20.6'
+    if (receipt.providerReceiptVersion !== 1 || receipt.maxOutputTokens !== 512 || receipt.ready !== true || !isRecord(receipt.profile) || receipt.profile.hermesVersion !== '0.20.6'
       || receipt.profile.providerProfile !== this.options.providerProfile || receipt.profile.model !== this.options.model
       || receipt.profile.endpoint !== this.options.endpoint) throw new AiRunRuntimeUnavailableError();
   }
@@ -83,7 +87,7 @@ export class HermesAgentRuntime implements IAgentRuntime {
   public async create(): Promise<{ readonly kind: 'hermes'; readonly sandboxReady: true }> { return this.prepareDirectRun(); }
 
   public async *startRun(input: RuntimeRunInput): AsyncIterable<RuntimeInferenceEvent> {
-    if (this.options.providerEgressAdmissionEnforced !== true) {
+    if (this.options.providerEgressAdmissionEnforced !== true || !this.options.providerCredits) {
       yield { type: 'failed', message: 'The selected inference runtime is unavailable until per-call usage controls are verified.' };
       return;
     }
@@ -95,7 +99,7 @@ export class HermesAgentRuntime implements IAgentRuntime {
       if (input.policyRevision) active.policyCommands = new HermesPolicyCommand({ run: input, call: (operation, payload) => this.call(input.runId, operation, payload), cancelled: () => active.cancelled });
       yield { type: 'started' };
       if (active.cancelled) { yield { type: 'cancelled' }; return; }
-      active.startup = this.call(input.runId, 'create', { files: snapshot.files, prompt: snapshot.prompt, model: input.manifest.model, providerProfile: input.manifest.providerProfile, endpoint: this.options.endpoint,
+      active.startup = this.call(input.runId, 'create', { files: snapshot.files, prompt: snapshot.prompt, model: input.manifest.model, providerProfile: input.manifest.providerProfile, endpoint: this.options.endpoint, requiredProviderReceiptVersion: 1, maxOutputTokens: this.options.maxOutputTokens,
         ...(input.policyRevision ? { commandProfileVersion: POLICY_COMMAND_VERSION, manifestHash: input.manifest.manifestHash, snapshotHash: policySnapshotHash(snapshot.files) } : {}) });
       await active.startup;
       yield* this.follow(input.runId);
@@ -108,6 +112,7 @@ export class HermesAgentRuntime implements IAgentRuntime {
       }
       const status = await this.call(input.runId, 'poll', { cursor: active.cursor });
       if (status.status !== 'completed') return;
+      if (!this.options.providerCredits.hasAdmittedCall(input.runId)) throw new AiRunRuntimeUnavailableError();
       const exported = await this.call(input.runId, 'files');
       const changes = collectHermesChanges(exported.files, snapshot.files);
       await this.call(input.runId, 'delete');
@@ -123,6 +128,9 @@ export class HermesAgentRuntime implements IAgentRuntime {
           : active.cleaned ? { type: 'cancelled' } : { type: 'needs_manual_review', message: 'Hermes shutdown could not be confirmed.' };
       }
       else yield { type: 'needs_manual_review', message: 'The isolated Hermes run could not be confirmed. No generated changes were applied.' };
+    } finally {
+      await this.options.providerCredits?.markInterrupted(input.ownerId, input.runId);
+      this.options.providerCredits?.clearTurn(input.runId);
     }
   }
 
@@ -138,6 +146,16 @@ export class HermesAgentRuntime implements IAgentRuntime {
       for (const value of reply.events) {
         if (!isRecord(value) || typeof value.sequence !== 'number' || value.sequence <= active.cursor) throw new AiRunRuntimeUnavailableError();
         active.cursor = value.sequence;
+        if (value.type === 'home-provider-credit-request') {
+          if (typeof value.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(value.id) || !isRecord(value.params) || !validProviderCreditRequest(value.params.request) || !this.options.providerCredits) throw new AiRunRuntimeUnavailableError();
+          const request = value.params.request;
+          if (request.operation === 'reserve') await active.input.beforeProviderAttempt?.();
+          const result = await this.options.providerCredits.handle({ ownerId: active.input.ownerId, turnId: runId, providerProfile: active.input.manifest.providerProfile, model: active.input.manifest.model, request });
+          await this.call(runId, 'provider-credit-result', { requestId: value.id, result });
+          if (result.outcome === 'denied' || result.outcome === 'unknown') throw new AiRunRuntimeUnavailableError();
+          if (request.operation === 'settle' && result.outcome === 'settled') yield { type: 'provider.usage', usage: request.usage };
+          continue;
+        }
         if (value.type === 'project-task-request' && typeof value.id === 'string' && isRecord(value.params)) {
           yield* this.handleTaskRequest(runId, value.id, value.params);
           continue;
@@ -185,6 +203,7 @@ export class HermesAgentRuntime implements IAgentRuntime {
     if (!isRecord(update)) return;
     if (update.sessionUpdate === 'agent_message_chunk' && isRecord(update.content) && typeof update.content.text === 'string') {
       const active = this.requireRun(runId);
+      if (!this.options.providerCredits?.hasAdmittedCall(runId)) throw new AiRunRuntimeUnavailableError();
       if (!active.responseReceived) { active.responseReceived = true; yield { type: 'provider.response_received' }; }
       const text = redactEgressText(update.content.text);
       for (let offset = 0; offset < text.length; offset += 256) yield { type: 'assistant.delta', text: text.slice(offset, offset + 256) };

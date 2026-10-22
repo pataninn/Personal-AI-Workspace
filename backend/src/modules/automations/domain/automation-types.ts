@@ -73,6 +73,7 @@ export interface AutomationProviderUsageProjection {
     readonly inputTokens: number | null;
     readonly outputTokens: number | null;
     readonly chargedUnits: string | null;
+    readonly estimated?: true;
   }[];
 }
 

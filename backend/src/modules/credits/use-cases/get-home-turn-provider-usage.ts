@@ -32,7 +32,8 @@ export class GetHomeTurnProviderUsageUseCase implements IHomeTurnProviderUsageHi
           model: row.model,
           inputTokens: row.usage.inputTokens,
           outputTokens: row.usage.outputTokens,
-          chargedUnits: row.usage.chargedUnits
+          chargedUnits: row.usage.chargedUnits,
+          ...(row.usage.estimated ? { estimated: true } : {})
         });
       }
     }

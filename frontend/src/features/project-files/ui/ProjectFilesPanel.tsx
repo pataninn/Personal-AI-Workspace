@@ -41,9 +41,8 @@ export function ProjectFilesPanel({ projectId, paths, loading, error, limited = 
     {loading ? <p role="status">Loading files...</p> : null}
     {error || uploadError ? <p role="alert">{uploadError ?? error}</p> : null}
     {notice ? <p role="status">{notice}</p> : null}
-    <p className="supporting-copy">PDF, Word, PowerPoint, Excel, and EPUB documents are converted to Markdown when uploaded.</p>
-    {limited ? <p className="supporting-copy">The file list reached its discovery limit.</p> : null}
-    {!loading && !error && paths.length === 0 ? <p className="supporting-copy">No files in this list yet.</p> : null}
+    {limited ? <p className="supporting-copy">Showing the first available files.</p> : null}
+    {!loading && !error && paths.length === 0 ? <p className="supporting-copy">No files yet.</p> : null}
     <ProjectFileTree projectId={projectId} paths={paths} onChanged={onRefresh} />
   </section>;
 }

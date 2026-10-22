@@ -38,6 +38,19 @@ function headers(cookie, extra = {}) {
 const PROJECT_ID = '873c096a-bc57-4a0c-85da-10d4febde96b';
 const CONVERSATION_ID = '489541da-57a5-416d-afb6-45b19ad7bc98';
 
+test('preview usage requires a session and supplies the allowance needed by the mock composer', async () => {
+  const { origin } = await startPreview();
+  assert.equal((await fetch(`${origin}/api/v1/account/usage`)).status, 401);
+  const cookie = await signIn(origin);
+  const response = await fetch(`${origin}/api/v1/account/usage`, { headers: headers(cookie) });
+  const { data } = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(data.availability.canSubmit, true);
+  assert.match(data.availability.reason, /Synthetic preview/);
+  assert.equal(data.storage.unit, 'bytes');
+  assert.ok(Number.isFinite(Date.parse(data.daily.resetAt)));
+});
+
 test('Home overview ranks dated tasks before undated importance and updates activity', async () => {
   const { origin } = await startPreview(); const cookie = await signIn(origin);
   const response = await fetch(`${origin}/api/v1/projects/overview`, { headers: headers(cookie) });
@@ -153,7 +166,9 @@ test('global task edit receipts are safe to reload, replay, and undo only once',
   const metadataResponse = await fetch(`${origin}/api/v1/actions/${actionId}`, { headers: headers(cookie) });
   const metadata = (await metadataResponse.json()).data;
   assert.equal(metadataResponse.status, 200);
-  assert.deepEqual(Object.keys(metadata).sort(), ['actionKind', 'id', 'postVersion', 'targetId', 'targetKind', 'undoActionId', 'undoStatus'].sort());
+  assert.deepEqual(Object.keys(metadata).sort(), ['actionKind', 'actorKind', 'turnId', 'id', 'postVersion', 'targetId', 'targetKind', 'undoActionId', 'undoStatus'].sort());
+  assert.equal(metadata.actorKind, 'manual');
+  assert.equal(metadata.turnId, null);
   assert.equal(metadata.targetKind, 'task');
   assert.equal(metadata.targetId, taskId);
   assert.equal(metadata.undoStatus, 'available');
@@ -164,6 +179,9 @@ test('global task edit receipts are safe to reload, replay, and undo only once',
   const undoBody = (await undo.json()).data;
   assert.equal(undo.status, 200);
   assert.equal(undoBody.originalAction.undoStatus, 'undone');
+  assert.equal(undoBody.originalAction.actorKind, 'manual');
+  assert.equal(undoBody.undoReceipt.actorKind, 'manual');
+  assert.equal(undoBody.undoReceipt.turnId, null);
   assert.equal(undoBody.undoReceipt.actionKind, 'undo');
   assert.equal(undoBody.target.kind, 'task');
   assert.equal(undoBody.target.item.task.title, originalItem.task.title);
@@ -181,7 +199,7 @@ test('global task edit receipts are safe to reload, replay, and undo only once',
   assert.equal((await secondUndo.json()).data.reason, 'already_undone');
 });
 
-test('moves tasks to a planning-only workspace and reverses archive without changing the task id', async () => {
+test('moves tasks, undoes the move, and supports replay-safe permanent deletion instead of archive', async () => {
   const { origin } = await startPreview(); const cookie = await signIn(origin);
   const planningResponse = await fetch(`${origin}/api/v1/projects`, {
     method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Preview plan', workspaceMode: 'planning', objective: 'Move tasks here' })
@@ -217,21 +235,25 @@ test('moves tasks to a planning-only workspace and reverses archive without chan
   const archive = await fetch(`${origin}/api/v1/tasks/${taskId}/archive`, {
     method: 'POST', headers: headers(cookie, { 'If-Match': `"${taskItem.task.version + 2}"`, 'Idempotency-Key': 'task-archive-intent-1' }), body: '{}'
   });
-  const archived = (await archive.json()).data;
-  assert.equal(archive.status, 200);
-  assert.equal(archived.item.task.id, taskId);
-  assert.equal(archived.item.task.status, 'archived');
+  assert.equal(archive.status, 410);
+  const remove = () => fetch(`${origin}/api/v1/tasks/${taskId}`, {
+    method: 'DELETE', headers: headers(cookie, { 'If-Match': `"${taskItem.task.version + 2}"`, 'Idempotency-Key': 'task-delete-intent-1' })
+  });
+  const deleted = (await (await remove()).json()).data;
+  assert.equal(deleted.taskId, taskId);
+  assert.equal(deleted.receipt.actionKind, 'task.delete');
+  assert.equal(deleted.receipt.undoStatus, 'not_reversible');
+  assert.equal(deleted.receipt.outcome.targetVersion, null);
+  const replay = await remove();
+  assert.equal(replay.status, 200);
+  assert.equal((await replay.json()).data.replayed, true);
   assert.equal((await fetch(`${origin}/api/v1/tasks/${taskId}`, { headers: headers(cookie) })).status, 404);
-  assert.equal((await fetch(`${origin}/api/v1/tasks/${taskId}?includeArchived=true`, { headers: headers(cookie) })).status, 200);
+  assert.equal((await fetch(`${origin}/api/v1/tasks/${taskId}?includeArchived=true`, { headers: headers(cookie) })).status, 404);
 
-  const archiveUndo = await fetch(`${origin}/api/v1/actions/${archived.receipt.id}/undo`, {
+  const archiveUndo = await fetch(`${origin}/api/v1/actions/${deleted.receipt.id}/undo`, {
     method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'task-archive-undo-1' }), body: '{}'
   });
-  const unarchived = (await archiveUndo.json()).data;
-  assert.equal(archiveUndo.status, 200);
-  assert.equal(unarchived.target.item.task.id, taskId);
-  assert.equal(unarchived.target.item.task.status, taskItem.task.status);
-  assert.equal(unarchived.target.item.task.version, taskItem.task.version + 4);
+  assert.equal(archiveUndo.status, 409);
 });
 
 test('receipt and undo routes hide unknown action IDs and reject stale undo state', async () => {

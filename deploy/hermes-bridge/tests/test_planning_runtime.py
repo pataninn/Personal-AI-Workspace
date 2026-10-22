@@ -347,6 +347,9 @@ class PlanningRunnerPolicyTests(unittest.TestCase):
                 'acp_adapter': acp_adapter,
                 'acp_adapter.permissions': permissions,
                 'acp_adapter.entry': entry,
+                'agent': types.ModuleType('agent'),
+                'agent.model_metadata': types.ModuleType('agent.model_metadata'),
+                'agent.title_generator': types.ModuleType('agent.title_generator'),
             }
             environment = {
                 'PAI_PLANNING_CWD': str(cwd),
@@ -365,6 +368,7 @@ class PlanningRunnerPolicyTests(unittest.TestCase):
                     agent = Agent()
                     return {
                         'agent': agent.received,
+                        'disable_streaming': agent._disable_streaming,
                         'registered': registry.registered,
                         'blocked_dispatch': registry.dispatch('terminal', {}),
                         'allowed_dispatch': registry.dispatch('home_list_tasks', {'limit': 10}),
@@ -381,6 +385,7 @@ class PlanningRunnerPolicyTests(unittest.TestCase):
         self.assertEqual(result['agent']['max_tokens'], 64)
         self.assertTrue(result['agent']['skip_context_files'])
         self.assertTrue(result['agent']['skip_memory'])
+        self.assertTrue(result['disable_streaming'])
         self.assertTrue(result['agent']['skip_background_review'])
         self.assertEqual(result['agent']['fallback_model'], [])
         self.assertEqual([tool['name'] for tool in result['registered']], list(HOME_TOOL_NAMES))

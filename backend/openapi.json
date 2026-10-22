@@ -3839,74 +3839,26 @@
             }
           }
         }
-      },
-      "delete": {
+      }
+    },
+    "/api/v1/projects/{projectId}/task-order": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectIdPath"
+        }
+      ],
+      "patch": {
         "tags": [
-          "Workspace redesign"
+          "Project tasks"
         ],
-        "summary": "Permanently delete one user-selected project file",
+        "summary": "Move a project task by one position",
+        "description": "Swaps one task with its adjacent task in full project order. Requires the current order version in If-Match.",
+        "operationId": "reorderProjectTask",
         "security": [
           {
             "sessionCookie": []
           }
         ],
-        "responses": {
-          "204": {
-            "description": "File removed."
-          },
-          "400": {
-            "description": "Invalid path, body, query or version.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Session required.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Origin, CSRF or protected file denied.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Owned resource not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "409": { "$ref": "#/components/responses/StorageFileConflict" },
-          "500": {
-            "description": "Internal error.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
-        },
         "parameters": [
           {
             "$ref": "#/components/parameters/OriginHeader"
@@ -3915,79 +3867,61 @@
             "$ref": "#/components/parameters/CsrfHeader"
           },
           {
-            "$ref": "#/components/parameters/WorkspacePath"
-          },
-          {
-            "name": "If-Match",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^\"?[a-f0-9]{64}\"?$"
-            },
-            "description": "Current SHA-256 source hash."
-          }
-        ]
-      }
-    },
-    "/api/v1/projects/{projectId}/files/search": {
-      "parameters": [
-        {
-          "$ref": "#/components/parameters/ProjectIdPath"
-        }
-      ],
-      "get": {
-        "tags": [
-          "Workspace files"
-        ],
-        "summary": "Search approved UTF-8 text files",
-        "description": "Matches case-insensitive phrases or query terms. Exact phrases and lines containing more query terms rank first, with stable path and line tie-breaking. Results are redacted project-relative snippets from a bounded local scan.",
-        "operationId": "searchWorkspaceText",
-        "security": [
-          {
-            "sessionCookie": []
+            "$ref": "#/components/parameters/IfMatchTaskOrderVersionHeader"
           }
         ],
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/WorkspaceDirectory"
-          },
-          {
-            "$ref": "#/components/parameters/WorkspaceQuery"
-          },
-          {
-            "$ref": "#/components/parameters/WorkspaceMaxResults"
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderProjectTaskRequest"
+              }
+            }
           }
-        ],
+        },
         "responses": {
           "200": {
-            "description": "Ranked, redacted project-relative text matches. `truncated` is true when directory depth, file/line count, result count, or output size may omit matches. A timeout returns the existing safe error response.",
+            "description": "Tasks in the updated project order.",
+            "headers": {
+              "ETag": {
+                "description": "New project order version as a quoted integer.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[1-9][0-9]*\"$"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WorkspaceSearchEnvelope"
+                  "$ref": "#/components/schemas/ProjectTaskListEnvelope"
                 }
               }
             }
           },
           "400": {
-            "$ref": "#/components/responses/ValidationError"
+            "$ref": "#/components/responses/ProjectTaskBadRequest"
           },
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
           },
           "403": {
-            "$ref": "#/components/responses/WorkspaceForbidden"
+            "$ref": "#/components/responses/MutationForbidden"
           },
           "404": {
-            "$ref": "#/components/responses/ProjectNotFound"
+            "$ref": "#/components/responses/ProjectTaskNotFound"
           },
-          "413": {
-            "$ref": "#/components/responses/WorkspaceLimit"
+          "409": {
+            "$ref": "#/components/responses/ProjectTaskOrderConflict"
           },
-          "503": {
-            "$ref": "#/components/responses/WorkspaceUnavailable"
-          }
+          "428": {
+            "$ref": "#/components/responses/ProjectTaskPreconditionRequired"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
         }
       }
     },
@@ -4119,11 +4053,15 @@
           "409": {
             "$ref": "#/components/responses/ProjectTaskCreateConflict"
           },
+          "413": {
+            "$ref": "#/components/responses/StorageQuotaExceeded"
+          },
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
-          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
+          "503": {
+            "$ref": "#/components/responses/StorageWriteUnavailable"
+          }
         }
       }
     },
@@ -4207,90 +4145,8 @@
           "409": {
             "$ref": "#/components/responses/ProjectTaskUpdateConflict"
           },
-          "428": {
-            "$ref": "#/components/responses/ProjectTaskPreconditionRequired"
-          },
-          "500": {
-            "$ref": "#/components/responses/InternalError"
-          },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" },
-          "413": { "$ref": "#/components/responses/StorageQuotaExceeded" }
-        }
-      }
-    },
-    "/api/v1/projects/{projectId}/task-order": {
-      "parameters": [
-        {
-          "$ref": "#/components/parameters/ProjectIdPath"
-        }
-      ],
-      "patch": {
-        "tags": [
-          "Project tasks"
-        ],
-        "summary": "Move a project task by one position",
-        "description": "Swaps one task with its adjacent task in full project order. Requires the current order version in If-Match.",
-        "operationId": "reorderProjectTask",
-        "security": [
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/OriginHeader"
-          },
-          {
-            "$ref": "#/components/parameters/CsrfHeader"
-          },
-          {
-            "$ref": "#/components/parameters/IfMatchTaskOrderVersionHeader"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ReorderProjectTaskRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Tasks in the updated project order.",
-            "headers": {
-              "ETag": {
-                "description": "New project order version as a quoted integer.",
-                "schema": {
-                  "type": "string",
-                  "pattern": "^\"[1-9][0-9]*\"$"
-                }
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProjectTaskListEnvelope"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/ProjectTaskBadRequest"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthenticated"
-          },
-          "403": {
-            "$ref": "#/components/responses/MutationForbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/ProjectTaskNotFound"
-          },
-          "409": {
-            "$ref": "#/components/responses/ProjectTaskOrderConflict"
+          "413": {
+            "$ref": "#/components/responses/StorageQuotaExceeded"
           },
           "428": {
             "$ref": "#/components/responses/ProjectTaskPreconditionRequired"
@@ -4298,7 +4154,9 @@
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
+          "503": {
+            "$ref": "#/components/responses/StorageWriteUnavailable"
+          }
         }
       }
     },
@@ -11449,6 +11307,135 @@
       "AutomationOccurrenceListEnvelope": {
         "type": "object",
         "properties": { "data": { "type": "object", "properties": { "occurrences": { "type": "array", "items": { "$ref": "#/components/schemas/AutomationOccurrence" } }, "nextCursor": { "type": "string", "nullable": true } }, "required": ["occurrences", "nextCursor"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "SkillToolCapability": {
+        "type": "string",
+        "enum": ["home_task_read", "home_task_write", "home_workspace_read", "home_workspace_write", "home_action_undo"]
+      },
+      "Skill": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "workspaceId": { "$ref": "#/components/schemas/Uuid", "nullable": true },
+          "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "instructions": { "type": "string", "minLength": 1, "maxLength": 16000 },
+          "declaredTools": { "type": "array", "maxItems": 5, "uniqueItems": true, "items": { "$ref": "#/components/schemas/SkillToolCapability" } },
+          "enabled": { "type": "boolean" },
+          "version": { "type": "integer", "minimum": 1 },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "workspaceId", "title", "instructions", "declaredTools", "enabled", "version", "createdAt", "updatedAt"],
+        "additionalProperties": false
+      },
+      "SkillTemplate": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "enum": ["plan-my-day", "daily-briefing"] },
+          "title": { "type": "string" },
+          "instructions": { "type": "string" },
+          "declaredTools": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/components/schemas/SkillToolCapability" } }
+        },
+        "required": ["id", "title", "instructions", "declaredTools"],
+        "additionalProperties": false
+      },
+      "SkillCreateRequest": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/SkillTemplateCreateRequest" },
+          { "$ref": "#/components/schemas/CustomSkillCreateRequest" }
+        ]
+      },
+      "SkillTemplateCreateRequest": {
+        "type": "object",
+        "properties": {
+          "templateId": { "type": "string", "enum": ["plan-my-day", "daily-briefing"] },
+          "workspaceId": { "$ref": "#/components/schemas/Uuid", "nullable": true }
+        },
+        "required": ["templateId"],
+        "additionalProperties": false
+      },
+      "CustomSkillCreateRequest": {
+        "type": "object",
+        "properties": {
+          "workspaceId": { "$ref": "#/components/schemas/Uuid", "nullable": true },
+          "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "instructions": { "type": "string", "minLength": 1, "maxLength": 16000 },
+          "declaredTools": { "type": "array", "maxItems": 5, "uniqueItems": true, "items": { "$ref": "#/components/schemas/SkillToolCapability" } }
+        },
+        "required": ["title", "instructions", "declaredTools"],
+        "additionalProperties": false
+      },
+      "SkillUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "expectedVersion": { "type": "integer", "minimum": 1 },
+          "workspaceId": { "$ref": "#/components/schemas/Uuid", "nullable": true },
+          "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "instructions": { "type": "string", "minLength": 1, "maxLength": 16000 },
+          "declaredTools": { "type": "array", "maxItems": 5, "uniqueItems": true, "items": { "$ref": "#/components/schemas/SkillToolCapability" } },
+          "enabled": { "type": "boolean" }
+        },
+        "required": ["expectedVersion"],
+        "minProperties": 2,
+        "additionalProperties": false
+      },
+      "SkillInvocationRequest": {
+        "type": "object",
+        "properties": {
+          "conversationId": { "$ref": "#/components/schemas/Uuid" },
+          "expectedVersion": { "type": "integer", "minimum": 1 },
+          "request": { "type": "string", "minLength": 1, "maxLength": 20000 }
+        },
+        "required": ["conversationId", "expectedVersion", "request"],
+        "additionalProperties": false
+      },
+      "SkillContextRevision": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string", "enum": ["home_message", "project_fact"] },
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "revision": { "type": "integer", "minimum": 1 }
+        },
+        "required": ["kind", "id", "revision"],
+        "additionalProperties": false
+      },
+      "SkillInvocation": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "skillId": { "$ref": "#/components/schemas/Uuid" },
+          "skillVersion": { "type": "integer", "minimum": 1 },
+          "conversationId": { "$ref": "#/components/schemas/Uuid" },
+          "turnId": { "$ref": "#/components/schemas/Uuid", "nullable": true },
+          "contextRevisions": { "type": "array", "maxItems": 33, "items": { "$ref": "#/components/schemas/SkillContextRevision" } },
+          "state": { "type": "string", "enum": ["claimed", "bound", "dispatching", "accepted", "unknown", "denied", "pending", "running", "cancel_requested", "completed", "partial", "failed", "cancelled", "unsupported"] }
+        },
+        "required": ["id", "skillId", "skillVersion", "conversationId", "turnId", "contextRevisions", "state"],
+        "additionalProperties": false
+      },
+      "SkillInvocationEnvelope": {
+        "type": "object",
+        "properties": { "data": { "type": "object", "properties": { "invocation": { "$ref": "#/components/schemas/SkillInvocation" } }, "required": ["invocation"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "SkillEnvelope": {
+        "type": "object",
+        "properties": { "data": { "type": "object", "properties": { "skill": { "$ref": "#/components/schemas/Skill" } }, "required": ["skill"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "SkillListEnvelope": {
+        "type": "object",
+        "properties": { "data": { "type": "object", "properties": { "skills": { "type": "array", "items": { "$ref": "#/components/schemas/Skill" } } }, "required": ["skills"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
+        "required": ["data", "error"],
+        "additionalProperties": false
+      },
+      "SkillTemplatesEnvelope": {
+        "type": "object",
+        "properties": { "data": { "type": "object", "properties": { "templates": { "type": "array", "items": { "$ref": "#/components/schemas/SkillTemplate" } } }, "required": ["templates"], "additionalProperties": false }, "error": { "type": "object", "nullable": true } },
         "required": ["data", "error"],
         "additionalProperties": false
       },

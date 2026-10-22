@@ -153,6 +153,7 @@ export interface UpdateHomeToolResultDeliveryInput {
 
 /** Persistence contract for owner-scoped Home history. */
 export interface IHomeConversationRepository {
+  readonly setGeneratedTitle?: (input: { readonly ownerId: string; readonly conversationId: string; readonly title: string }) => Promise<boolean>;
   /** Lists one Home or workspace scope by activity, with a stable cursor. */
   listForOwner(input: ListHomeConversationsInput): Promise<HomeConversationPage>;
 

@@ -51,26 +51,28 @@ export function useDirectChatConsent({ projectId, conversationId, csrfToken, run
       && current.conversationId === scope.conversationId;
   }, []);
 
-  const refreshStatus = useCallback(async (): Promise<void> => {
+  const refreshStatus = useCallback(async (): Promise<boolean> => {
     const expectedRunId = run?.runId;
-    if (!expectedRunId || refreshing) return;
+    if (!expectedRunId || refreshing) return false;
     setRefreshing(true);
     try {
       const snapshot = await getAiRun(expectedRunId);
-      if (!isCurrentRun(expectedRunId)) return;
+      if (!isCurrentRun(expectedRunId)) return false;
       const disclosure = isPending(snapshot) ? await getEgressManifest(snapshot.runId) : null;
-      if (!isCurrentRun(expectedRunId)) return;
+      if (!isCurrentRun(expectedRunId)) return false;
       setRun(snapshot);
       setManifest(disclosure);
       decisionKey.current = null;
       setDecisionError(null);
       setDecisionOutcomeUnknown(false);
       if (snapshot.decision === 'approved') onApproved(snapshot.runId);
+      return true;
     } catch {
       if (isCurrentRun(expectedRunId)) {
         setDecisionError(AMBIGUOUS_DECISION_ERROR);
         setDecisionOutcomeUnknown(true);
       }
+      return false;
     } finally {
       setRefreshing(false);
     }

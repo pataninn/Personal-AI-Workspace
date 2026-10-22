@@ -1,3 +1,4 @@
+import { DEFAULT_CONVERSATION_TITLE, GeneratedConversationTitle } from '@/modules/conversations/domain/generated-conversation-title';
 import type { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
 import type { HomeConversationScope, HomeTurn } from '@/modules/home-assistant/domain/home-conversation-types';
 import { HomeConversationNotFoundError, HomeTurnNotFoundError } from '@/modules/home-assistant/domain/home-conversation-errors';
@@ -9,6 +10,7 @@ import type { HomeAutomationFence } from '@/modules/home-assistant/repositories/
 import type { IHomeAutomationSourceRecorder } from '@/modules/home-assistant/repositories/home-automation-source-recorder';
 import type { IHomeProviderCreditReceiptHandler } from '@/modules/home-assistant/repositories/home-provider-credit-receipt-handler';
 import type { IHomeTurnProviderUsageHistory } from '@/modules/credits/repositories/provider-call-usage-history';
+import { HOME_NEBIUS_NEMOTRON_BOUND } from '@/modules/credits/domain/home-provider-credit-bound';
 import { redactEgressText } from '@/shared/egress/redaction';
 
 const MAX_RUNTIME_EVENTS = 2000;
@@ -17,6 +19,7 @@ const MAX_ASSISTANT_BYTES = 256 * 1024;
 const MAX_POLL_PAGES_PER_READ = 8;
 
 interface RuntimePollState {
+  readonly titleStream?: GeneratedConversationTitle;
   cursor: number;
   lastEventSequence: number;
   events: number;
@@ -108,7 +111,9 @@ export class GetHomeTurnUseCase {
   }
 
   private async readRuntime(turn: HomeTurn, ownerId: string, conversationId: string, scope: HomeConversationScope, guard?: TrustedScheduledTurnGuard): Promise<void> {
-    const state = this.pollStates.get(turn.id) ?? newPollState();
+    const namingConversation = !this.pollStates.has(turn.id) && this.conversations.setGeneratedTitle
+      ? await this.conversations.findForOwner(ownerId, conversationId) : null;
+    const state = this.pollStates.get(turn.id) ?? { ...newPollState(), titleStream: new GeneratedConversationTitle(namingConversation?.title === DEFAULT_CONVERSATION_TITLE) };
     this.pollStates.set(turn.id, state);
     for (let pageIndex = 0; pageIndex < MAX_POLL_PAGES_PER_READ; pageIndex += 1) {
       if (!await this.isAuthorized(turn, ownerId, conversationId, scope, undefined, guard)) {
@@ -171,6 +176,14 @@ export class GetHomeTurnUseCase {
         if (page.hasMore) continue;
         if (!await this.isAuthorized(turn, ownerId, conversationId, scope, undefined, guard)) {
           await this.stopRuntimeAndMark(turn, ownerId, conversationId, guard);
+          return;
+        }
+        if (requiresHomeProviderAdmission(this.policyConfiguration)
+          && !this.providerCreditReceipts?.hasAdmittedCall(turn.id)) {
+          state.output = '';
+          state.outputBytes = 0;
+          const failed = await this.updateStatus(ownerId, conversationId, turn.id, 'failed');
+          if (failed?.status === 'failed') await this.deleteTerminalRuntime(ownerId, turn.id);
           return;
         }
         const completed = await this.conversations.completeTurnWithAssistant({
@@ -240,7 +253,12 @@ export class GetHomeTurnUseCase {
       state.historyBytes += encodedBytes(event);
       if (state.events > MAX_RUNTIME_EVENTS || state.historyBytes > MAX_RUNTIME_HISTORY_BYTES) return 'invalid';
       if (event.type === 'assistant.delta') {
-        const text = redactEgressText(event.text);
+        const parsed = state.titleStream?.push(event.text) ?? { text: event.text };
+        if (parsed.title) {
+          // Naming is optional: a storage limit must not discard a useful reply.
+          await this.conversations.setGeneratedTitle?.({ ownerId, conversationId, title: parsed.title }).catch(() => false);
+        }
+        const text = redactEgressText(parsed.text);
         const bytes = Buffer.byteLength(text, 'utf8');
         if (state.outputBytes + bytes > MAX_ASSISTANT_BYTES) {
           const room = Math.max(0, MAX_ASSISTANT_BYTES - state.outputBytes);
@@ -381,6 +399,11 @@ function hasPolicyBinding(turn: HomeTurn, scope: HomeConversationScope): boolean
     && (scope.kind === 'home'
       ? turn.workspacePolicyRevision === null
       : isRevision(turn.workspacePolicyRevision));
+}
+
+function requiresHomeProviderAdmission(configuration?: HomeTurnPolicyConfiguration): boolean {
+  return configuration?.providerProfile === HOME_NEBIUS_NEMOTRON_BOUND.providerProfile
+    && configuration.model === HOME_NEBIUS_NEMOTRON_BOUND.model;
 }
 
 function sameBinding(left: HomeTurn, right: HomeTurn): boolean {

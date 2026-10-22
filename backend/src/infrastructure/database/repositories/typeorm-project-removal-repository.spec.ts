@@ -25,7 +25,7 @@ function fixture(options: { readonly status?: string; readonly cleanup?: string;
     if (sql.includes('FROM "storage_filesystem_reservations"')) return [];
     if (sql.startsWith('SELECT "id", "version"')) return options.missing ? [] : [{ id: PROJECT_ID, version: options.version ?? 3, relative_root_key: ROOT_KEY }];
     if (sql.includes('FROM "project_removal_jobs"') && sql.includes('FOR UPDATE')) {
-      return jobInserted ? [{ owner_id: OWNER_ID, project_id: PROJECT_ID, storage_root_key: ROOT_KEY, run_ids: [RUN_ID] }] : [];
+      return jobInserted ? [{ owner_id: OWNER_ID, project_id: PROJECT_ID, storage_root_key: ROOT_KEY, run_ids: [RUN_ID], export_ids: [] }] : [];
     }
     if (sql.includes('FROM "ai_runs"')) return [{ id: RUN_ID, status: options.status ?? 'succeeded', cleanup: options.cleanup ?? 'complete' }];
     if (sql.includes('FROM "ai_run_change_sets"')) return [];
@@ -172,7 +172,7 @@ describe('TypeOrmProjectRemovalRepository', () => {
   it('restores pending jobs when the project row still exists at startup', async () => {
     const setup = fixture();
     setup.dataSourceQuery.mockImplementation(async (sql: string) => {
-      if (sql.startsWith('SELECT "owner_id"')) return [{ owner_id: OWNER_ID, project_id: PROJECT_ID, storage_root_key: ROOT_KEY, run_ids: [RUN_ID] }];
+      if (sql.startsWith('SELECT "owner_id"')) return [{ owner_id: OWNER_ID, project_id: PROJECT_ID, storage_root_key: ROOT_KEY, run_ids: [RUN_ID], export_ids: [] }];
       if (sql.startsWith('SELECT "id", "relative_root_key"')) return [{ id: PROJECT_ID, relative_root_key: ROOT_KEY }];
       if (sql.includes('AS "blocked"')) return [{ blocked: false }];
       if (sql.startsWith('DELETE FROM')) { setup.events.push('job-delete'); return []; }
@@ -187,7 +187,7 @@ describe('TypeOrmProjectRemovalRepository', () => {
   it('purges, releases recovery accounting, and then removes missing-project jobs on restart', async () => {
     const setup = fixture();
     setup.dataSourceQuery.mockImplementation(async (sql: string) => {
-      if (sql.startsWith('SELECT "owner_id"')) return [{ owner_id: OWNER_ID, project_id: PROJECT_ID, storage_root_key: ROOT_KEY, run_ids: [RUN_ID] }];
+      if (sql.startsWith('SELECT "owner_id"')) return [{ owner_id: OWNER_ID, project_id: PROJECT_ID, storage_root_key: ROOT_KEY, run_ids: [RUN_ID], export_ids: [] }];
       if (sql.startsWith('SELECT "id", "relative_root_key"')) return [];
       if (sql.includes('AS "blocked"')) return [{ blocked: false }];
       if (sql.includes('FROM "storage_root_mappings"')) return [{ root_key: ROOT_KEY }];

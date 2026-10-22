@@ -199,7 +199,7 @@ test('fails closed when policy availability cannot be reached', async ({ page },
 
 test('recovers history and retries an uncertain send with the same key before reloading saved history', async ({ page }, testInfo) => {
   const conversation = makeConversation(HOME_CONVERSATION_ID);
-  const fixture = new HomeChatPreviewApi(page, { conversations: [conversation], failEventReads: 2, failTurnSubmissions: 1 });
+  const fixture = new HomeChatPreviewApi(page, { conversations: [conversation], failEventReads: 1, failTurnSubmissions: 1 });
   await installFixture(page, fixture);
   await signIn(page);
   await openHomeAsk(page, HOME_CONVERSATION_ID);

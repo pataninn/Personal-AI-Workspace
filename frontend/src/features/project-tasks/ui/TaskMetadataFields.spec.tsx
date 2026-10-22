@@ -20,7 +20,7 @@ describe('TaskMetadataFields', () => {
     await user.type(screen.getByLabelText('Subtask 1'), 'Review changes');
     expect(screen.getByLabelText('Task metadata')).toHaveTextContent('"importance":"urgent"');
     expect(screen.getByLabelText('Task metadata')).toHaveTextContent('"subtasks":[{"title":"Review changes","completed":false}]');
-    await user.click(screen.getByRole('button', { name: 'Remove subtask 1' }));
+    await user.click(screen.getByRole('button', { name: 'Remove subtask Review changes' }));
     expect(screen.queryByLabelText('Subtask 1')).not.toBeInTheDocument();
   });
 

@@ -1,9 +1,10 @@
+import { DEFAULT_CONVERSATION_TITLE, validGeneratedTitle } from '@/modules/conversations/domain/generated-conversation-title';
 import { createHash } from 'node:crypto';
 
 import type { DataSource, QueryRunner } from 'typeorm';
 import { lockProjectWriteState } from '@/infrastructure/database/project-removal-write-barrier';
 import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
-import { requestFingerprintContentScope } from '@/infrastructure/database/storage-content-projections';
+import { fixedContentScope, requestFingerprintContentScope } from '@/infrastructure/database/storage-content-projections';
 
 import {
   ConversationNotFoundError,
@@ -124,6 +125,22 @@ export class TypeOrmConversationRepository implements IConversationRepository {
     private readonly dataSource: DataSource,
     private readonly storageAccounting = new TypeOrmStorageContentAccounting(dataSource)
   ) {}
+
+  public async setGeneratedTitle(input: { readonly ownerId: string; readonly projectId: string; readonly conversationId: string; readonly title: string }): Promise<boolean> {
+    const title = validGeneratedTitle(input.title);
+    if (!title) return false;
+    const runner = await this.startTransaction();
+    try {
+      const changed = await this.storageAccounting.runMutation(runner, input.ownerId, async () => {
+        await assertProjectWritable(runner, input.ownerId, input.projectId);
+        const rows: readonly { id: string }[] = await runner.query(`WITH changed AS (UPDATE "conversations" SET "title"=$4,"updated_at"=clock_timestamp() WHERE "owner_id"=$1 AND "project_id"=$2 AND "id"=$3 AND "title"=$5 AND "status"='active' RETURNING "id") SELECT "id" FROM changed`, [input.ownerId, input.projectId, input.conversationId, title, DEFAULT_CONVERSATION_TITLE]);
+        return rows.length === 1;
+      }, fixedContentScope([{ entity: 'conversations', id: input.conversationId }]));
+      await runner.commitTransaction();
+      return changed;
+    } catch (error) { await runner.rollbackTransaction(); throw error; }
+    finally { await runner.release(); }
+  }
 
   public async listByProjectForOwner(input: ListConversationsInput): Promise<ConversationPage> {
     const parameters: unknown[] = [input.ownerId, input.projectId];
@@ -282,7 +299,7 @@ export class TypeOrmConversationRepository implements IConversationRepository {
         );
         const row = rows[0];
         if (!row) throw new Error('The message could not be created.');
-        await queryRunner.query('UPDATE "conversations" SET "last_activity_at" = now(), "updated_at" = now() WHERE "id" = $1', [input.conversationId]);
+        await queryRunner.query(`UPDATE "conversations" SET "last_activity_at" = now(), "updated_at" = now() WHERE "id" = $1`, [input.conversationId]);
         const idempotencyId = await this.insertIdempotency(queryRunner, input, 'message', row.id, input.conversationId);
         return { resource: toMessage(row), replayed: false, idempotencyId };
       }, requestFingerprintContentScope({

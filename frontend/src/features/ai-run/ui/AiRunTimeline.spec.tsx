@@ -1,4 +1,5 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -123,13 +124,14 @@ const history: ConversationHistoryResponse = {
   nextBeforeSequence: null
 };
 
-function HookHarness({ initial = running, onHistory }: { readonly initial?: AiRunSnapshot; readonly onHistory?: (history: ConversationHistoryResponse) => void }): React.JSX.Element {
+function HookHarness({ initial = running, onHistory, onSnapshot }: { readonly initial?: AiRunSnapshot; readonly onHistory?: (history: ConversationHistoryResponse) => void; readonly onSnapshot?: (snapshot: AiRunSnapshot) => void }): React.JSX.Element {
   const timeline = useAiRunTimeline({
     snapshot: initial,
     projectId: PROJECT_ID,
     conversationId: CONVERSATION_ID,
     csrfToken: 'csrf-token',
     enabled: true,
+    onSnapshotChange: onSnapshot,
     onConversationReconciled: onHistory
   });
   return (
@@ -163,6 +165,20 @@ afterEach(() => {
 });
 
 describe('AiRunTimeline lifecycle', () => {
+  it('notifies its parent once for each stream snapshot in Strict Mode', async () => {
+    const onSnapshot = vi.fn();
+    render(<StrictMode><HookHarness onSnapshot={onSnapshot} /></StrictMode>);
+    await waitFor(() => expect(ControlledEventSource.instances.some((source) => !source.closed)).toBe(true));
+    const source = ControlledEventSource.instances.find((item) => !item.closed);
+    if (!source) throw new Error('Expected an active event stream');
+
+    act(() => source.emit('run.status_changed', eventPayload('run.status_changed', 1, { status: 'running', safeMessage: 'First update' })));
+    act(() => source.emit('run.status_changed', eventPayload('run.status_changed', 2, { status: 'running', safeMessage: 'Second update' })));
+
+    expect(onSnapshot).toHaveBeenCalledTimes(2);
+    expect(onSnapshot.mock.calls.map(([snapshot]) => snapshot.safeMessage)).toEqual(['First update', 'Second update']);
+  });
+
   it('shows one actionable failure message without repeating the status text', async () => {
     const message = 'NVIDIA rate or quota limit reached (HTTP 429). Wait before trying again.';
     const failed: AiRunSnapshot = { ...ready, status: 'failed', phase: 'terminal', safeMessage: message };

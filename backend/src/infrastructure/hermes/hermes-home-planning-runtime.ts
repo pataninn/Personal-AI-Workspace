@@ -280,7 +280,7 @@ function parsePoll(reply: Record<string, unknown>, cursor: number, homeToolNames
   return { status: reply.status as HomePlanningRuntimeStatus, events, nextCursor, hasMore: reply.hasMore, ...(code ? { code } : {}) };
 }
 
-function validProviderCreditRequest(value: unknown): value is Extract<HomePlanningRuntimeEvent, { readonly type: 'home.provider.credit.requested' }>['request'] {
+export function validProviderCreditRequest(value: unknown): value is Extract<HomePlanningRuntimeEvent, { readonly type: 'home.provider.credit.requested' }>['request'] {
   if (!isRecord(value) || !validUuid(value.callId) || !validUuid(value.attemptId)) return false;
   if (value.operation === 'reserve') return Object.keys(value).length === 7
     && typeof value.providerProfile === 'string' && value.providerProfile.length <= 128

@@ -292,7 +292,7 @@ describe('AiRunEntry', () => {
     await waitFor(() => expect(screen.getByTestId('run-connection-status')).toHaveTextContent('This older approved run is paused'));
     expect(startAiRunMock).not.toHaveBeenCalled();
     expect(screen.queryByTestId('provider-consent-alert-dialog')).not.toBeInTheDocument();
-    expect(await screen.findByTestId('ai-run-remembered-permission-notice')).toHaveTextContent('legacy record');
+    expect(screen.queryByTestId('ai-run-remembered-permission-notice')).not.toBeInTheDocument();
   });
 
   it('revokes the active permission with the current CSRF token', async () => {
@@ -353,7 +353,7 @@ describe('AiRunEntry', () => {
     await user.click(await screen.findByTestId('provider-consent-reject'));
 
     await waitFor(() => expect(decideEgressMock).toHaveBeenCalledWith(RUN_ID, { manifestHash: HASH, decision: 'reject' }, 'csrf-token', expect.any(String)));
-    expect(await screen.findByTestId('run-rejected')).toHaveTextContent('No project content was sent to the model provider.');
+    expect(await screen.findByTestId('run-rejected')).toHaveTextContent('Request cancelled.');
   });
 
   it('treats Escape as the safe rejection path instead of approval', async () => {
@@ -377,9 +377,8 @@ describe('AiRunEntry', () => {
     await user.click(await screen.findByTestId('provider-consent-approve'));
 
     await waitFor(() => expect(decideEgressMock).toHaveBeenCalledWith(RUN_ID, { manifestHash: HASH, decision: 'approve' }, 'csrf-token', expect.any(String)));
-    expect(await screen.findByTestId('run-ready')).toHaveTextContent('Provider access approved');
-    expect(screen.getByTestId('run-ready-status')).toHaveTextContent('server-side model request');
-    expect(screen.getByTestId('run-ready-status')).not.toHaveTextContent('Here is your answer');
+    expect(await screen.findByTestId('run-ready')).toContainElement(screen.getByTestId('assistant-typing'));
+    expect(screen.queryByTestId('run-ready-status')).not.toBeInTheDocument();
   });
 
   it('blocks approval until a changed manifest is refreshed', async () => {
@@ -403,7 +402,7 @@ describe('AiRunEntry', () => {
     await user.click(screen.getByTestId('ai-run-submit'));
     await user.click(await screen.findByTestId('provider-consent-approve'));
 
-    expect(await screen.findByTestId('run-error')).toHaveTextContent('The model provider is unavailable. No provider request was started.');
+    expect(await screen.findByTestId('run-error')).toHaveTextContent('Could not start this request. Please try again.');
     expect(screen.getByTestId('run-error')).not.toHaveTextContent('internal detail');
     expect(startAiRunMock).not.toHaveBeenCalled();
   });

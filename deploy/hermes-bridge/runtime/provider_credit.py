@@ -15,6 +15,8 @@ MAX_REQUEST_BYTES = 1024 * 1024
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 BOUND_OVERHEAD_TOKENS = 512
 MAX_PLANNING_OUTPUT_TOKENS = 512
+# OpenShell rewrites the configured public provider URL to its managed sandbox endpoint.
+MANAGED_INFERENCE_ENDPOINT = 'https://inference.local/v1/chat/completions'
 
 
 class ProviderBoundaryError(RuntimeError):
@@ -75,7 +77,7 @@ def _receipt(request):
         if result == {'outcome': 'denied', 'code': 'BUDGET_EXHAUSTED'}:
             raise ProviderBoundaryError('The Home provider budget is exhausted.')
         raise ProviderBoundaryError('The Home provider call was not admitted.')
-    if operation == 'settle' and result.get('outcome') == 'settled' and result.get('status') in ('settled', 'over_bound'):
+    if operation in ('settle', 'unknown') and result.get('outcome') == 'settled' and result.get('status') in ('settled', 'over_bound'):
         if result['status'] == 'over_bound':
             with LOCK:
                 BLOCKED = True
@@ -139,14 +141,12 @@ class _ReceiptStream:
                         self.bytes.clear()
                     else:
                         self.bytes.extend(chunk)
+                # OpenAI stops at [DONE] and closes without exhausting the HTTP iterator.
+                if not self.completed and any(line.strip() == b'data: [DONE]' for line in self.bytes.splitlines()):
+                    self._settle()
                 yield chunk
-            self.completed = True
-            usage = None if self.overflow else _usage_from_stream(self.bytes)
-            if usage is None:
-                _receipt({'operation': 'unknown', 'callId': self.call_id, 'attemptId': self.attempt_id,
-                          'reservationId': self.reservation_id, 'reason': 'provider_usage_missing'})
-            _receipt({'operation': 'settle', 'callId': self.call_id, 'attemptId': self.attempt_id,
-                      'reservationId': self.reservation_id, 'usage': usage})
+            if not self.completed:
+                self._settle()
         except Exception:
             if not self.completed:
                 try:
@@ -155,6 +155,16 @@ class _ReceiptStream:
                 except Exception:
                     pass
             raise
+
+    def _settle(self):
+        self.completed = True
+        usage = None if self.overflow else _usage_from_stream(self.bytes)
+        if usage is None:
+            _receipt({'operation': 'unknown', 'callId': self.call_id, 'attemptId': self.attempt_id,
+                      'reservationId': self.reservation_id, 'reason': 'provider_usage_missing'})
+            return
+        _receipt({'operation': 'settle', 'callId': self.call_id, 'attemptId': self.attempt_id,
+                  'reservationId': self.reservation_id, 'usage': usage})
 
     def close(self):
         try:
@@ -178,7 +188,7 @@ def _response_usage(response, call_id, attempt_id, reservation_id):
     if usage is None:
         _receipt({'operation': 'unknown', 'callId': call_id, 'attemptId': attempt_id,
                   'reservationId': reservation_id, 'reason': 'provider_usage_missing'})
-        raise ProviderBoundaryError('The Home provider did not return complete usage.')
+        return
     _receipt({'operation': 'settle', 'callId': call_id, 'attemptId': attempt_id,
               'reservationId': reservation_id, 'usage': usage})
 
@@ -193,7 +203,6 @@ def install_httpx_boundary():
     original_send = httpx.Client.send
 
     def guarded_send(client, request, *args, **kwargs):
-        endpoint = os.environ.get('PAI_PROVIDER_ENDPOINT', '').rstrip('/') + '/chat/completions'
         url = str(request.url).split('?', 1)[0]
         try:
             body = request.content
@@ -203,7 +212,7 @@ def install_httpx_boundary():
                 global BLOCKED
                 BLOCKED = True
             raise ProviderBoundaryError('The Home provider request could not be bounded.') from None
-        if (request.method != 'POST' or not endpoint or url != endpoint or len(body) > MAX_REQUEST_BYTES
+        if (request.method != 'POST' or url != MANAGED_INFERENCE_ENDPOINT or len(body) > MAX_REQUEST_BYTES
                 or not isinstance(value, dict) or value.get('model') != os.environ.get('PAI_MODEL')):
             with LOCK:
                 BLOCKED = True
@@ -253,7 +262,7 @@ def install_httpx_boundary():
         raise ProviderBoundaryError('The Home runtime does not admit asynchronous provider sends.')
 
     httpx.AsyncClient.send = reject_async_send
-    class HttpxReceiptStream(httpx.SyncByteStream, _ReceiptStream):
+    class HttpxReceiptStream(_ReceiptStream, httpx.SyncByteStream):
         def __init__(self, stream, reservation_id, call_id, attempt_id):
             _ReceiptStream.__init__(self, stream, reservation_id, call_id, attempt_id)
 

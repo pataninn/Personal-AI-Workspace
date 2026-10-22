@@ -216,7 +216,7 @@ async function installPlanningScenario(page: Page, options: { readonly includeIn
 
 async function verifyTwoHundredPercentEquivalent(browser: Browser, testInfo: TestInfo): Promise<void> {
   const context = await browser.newContext({
-    baseURL: process.env.PAI_PREVIEW_BASE_URL ?? 'http://127.0.0.1:5173',
+    baseURL: testInfo.project.use.baseURL,
     viewport: { width: 640, height: 450 },
     deviceScaleFactor: 2
   });

@@ -2,7 +2,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { createMemoryRouter, Outlet, RouterProvider, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { projectReducer } from '@/entities/project';
@@ -43,10 +43,11 @@ function renderAllTasks(initialEntry = '/tasks') {
   const store = configureStore({ reducer: { project: projectReducer, userSession: userSessionReducer }, preloadedState: {
     project: { listStatus: 'success' as const, projects: [WORKSPACE], errorCode: null, detailById: {} }, userSession: SESSION
   } });
-  render(<Provider store={store}><MemoryRouter initialEntries={[initialEntry]}><Routes>
-    <Route path="/tasks" element={<AllTasksPage />} />
-    <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
-  </Routes><LocationProbe /></MemoryRouter></Provider>);
+  const router = createMemoryRouter([{ element: <><Outlet /><LocationProbe /></>, children: [
+    { path: '/tasks', element: <AllTasksPage /> },
+    { path: '/tasks/:taskId', element: <TaskDetailPage /> }
+  ] }], { initialEntries: [initialEntry] });
+  render(<Provider store={store}><RouterProvider router={router} /></Provider>);
 }
 
 describe('AllTasksPage', () => {

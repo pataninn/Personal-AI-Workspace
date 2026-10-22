@@ -126,6 +126,19 @@ export function createPreviewApi() {
       sendData(response, previewSession());
       return;
     }
+    if (url.pathname === '/api/v1/account/usage' && method === 'GET') {
+      const asOf = now();
+      const credit = { limitUnits: null, settledUnits: '0', reservedUnits: '0', remainingUnits: null };
+      sendData(response, {
+        asOf, expiresAt: null,
+        daily: { ...credit, resetAt: new Date(Date.now() + 86400000).toISOString(), timeZone: 'UTC' },
+        lifetime: credit,
+        storage: { state: 'ready', unit: 'bytes', unitSystem: 'decimal-si', usedBytes: '0', reservedBytes: '0',
+          limitBytes: null, availableBytes: null, overLimit: false, asOf },
+        availability: { status: 'available', reason: 'Synthetic preview only; no provider calls are made.', canSubmit: true }
+      });
+      return;
+    }
     if (url.pathname === '/api/v1/auth/logout' && method === 'POST') {
       response.writeHead(204, { 'Set-Cookie': `${COOKIE_NAME}=; Max-Age=0; HttpOnly; SameSite=Lax; Path=/` });
       response.end();

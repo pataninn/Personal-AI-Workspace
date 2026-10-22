@@ -8,6 +8,7 @@ import type { HomePlanningRuntimeEvent } from '@/modules/home-assistant/reposito
 import type { IHomeAutomationSourceRecorder } from '@/modules/home-assistant/repositories/home-automation-source-recorder';
 import type { IHomeProviderCreditReceiptHandler } from '@/modules/home-assistant/repositories/home-provider-credit-receipt-handler';
 import type { IHomeTurnProviderUsageHistory } from '@/modules/credits/repositories/provider-call-usage-history';
+import { HOME_NEBIUS_NEMOTRON_BOUND } from '@/modules/credits/domain/home-provider-credit-bound';
 import { GetHomeTurnUseCase } from '@/modules/home-assistant/use-cases/get-home-turn';
 
 const OWNER = '11111111-1111-4111-8111-111111111111';
@@ -50,14 +51,17 @@ function setup(options: {
   readonly automationSources?: IHomeAutomationSourceRecorder;
   readonly providerCreditReceipts?: IHomeProviderCreditReceiptHandler;
   readonly providerUsageHistory?: IHomeTurnProviderUsageHistory;
+  readonly policyProvider?: { readonly profile: string; readonly model: string };
   readonly pollUnknown?: boolean;
+  readonly title?: string;
+  readonly setGeneratedTitle?: jest.Mock;
 } = {}) {
   let status: HomeTurn['status'] = options.initialStatus ?? 'running';
   const revisions = options.revisions ?? { home: '4', workspace: null };
-  const conversation = makeConversation(options.scope);
+  const conversation = { ...makeConversation(options.scope), ...(options.title ? { title: options.title } : {}) };
   const currentTurn = () => makeTurn(status, revisions, options.automationOccurrenceId);
   const conversations = {
-    findForOwner: jest.fn(async () => conversation),
+    ...(options.setGeneratedTitle ? { setGeneratedTitle: options.setGeneratedTitle } : {}),    findForOwner: jest.fn(async () => conversation),
     findTurnForOwner: jest.fn(async () => currentTurn()),
     completeTurnWithAssistant: jest.fn(async ({ status: nextStatus }: { status: 'completed' | 'partial' }) => {
       status = nextStatus;
@@ -96,7 +100,11 @@ function setup(options: {
     runtime as unknown as IHomePlanningRuntime,
     undefined,
     handler as unknown as IHomePlanningToolRequestHandler,
-    { executionPolicy: executionPolicy as unknown as Pick<AssertAssistantExecutionPolicyUseCase, 'assertHome'>, providerProfile: PROVIDER, model: MODEL },
+    {
+      executionPolicy: executionPolicy as unknown as Pick<AssertAssistantExecutionPolicyUseCase, 'assertHome'>,
+      providerProfile: options.policyProvider?.profile ?? PROVIDER,
+      model: options.policyProvider?.model ?? MODEL
+    },
     options.automationSources,
     options.providerCreditReceipts,
     options.providerUsageHistory
@@ -139,6 +147,49 @@ describe('GetHomeTurnUseCase', () => {
     });
     expect(result.status).toBe('completed');
     expect(runtime.delete).toHaveBeenCalledWith(TURN);
+  });
+
+  it('fails a paid Nebius Home turn without an admitted provider call and discards assistant output', async () => {
+    const receipts = {
+      handle: jest.fn(),
+      hasAdmittedCall: jest.fn(() => false),
+      markInterrupted: jest.fn(async () => undefined),
+      clearTurn: jest.fn()
+    };
+    const { useCase, conversations, runtime } = setup({
+      events: [{ sequence: 1, type: 'assistant.delta', text: 'Unadmitted answer.' }],
+      policyProvider: { profile: HOME_NEBIUS_NEMOTRON_BOUND.providerProfile, model: HOME_NEBIUS_NEMOTRON_BOUND.model },
+      providerCreditReceipts: receipts as unknown as IHomeProviderCreditReceiptHandler
+    });
+
+    const result = await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+
+    expect(receipts.hasAdmittedCall).toHaveBeenCalledWith(TURN);
+    expect(conversations.completeTurnWithAssistant).not.toHaveBeenCalled();
+    expect(conversations.updateTurnStatus).toHaveBeenCalledWith({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN, status: 'failed' });
+    expect(runtime.delete).toHaveBeenCalledWith(TURN);
+    expect(result.status).toBe('failed');
+  });
+
+  it('preserves a paid Nebius Home assistant result after a provider call was admitted', async () => {
+    const receipts = {
+      handle: jest.fn(),
+      hasAdmittedCall: jest.fn(() => true),
+      markInterrupted: jest.fn(async () => undefined),
+      clearTurn: jest.fn()
+    };
+    const { useCase, conversations } = setup({
+      events: [{ sequence: 1, type: 'assistant.delta', text: 'Admitted answer.' }],
+      policyProvider: { profile: HOME_NEBIUS_NEMOTRON_BOUND.providerProfile, model: HOME_NEBIUS_NEMOTRON_BOUND.model },
+      providerCreditReceipts: receipts as unknown as IHomeProviderCreditReceiptHandler
+    });
+
+    const result = await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+
+    expect(conversations.completeTurnWithAssistant).toHaveBeenCalledWith({
+      ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN, content: 'Admitted answer.', status: 'completed'
+    });
+    expect(result.status).toBe('completed');
   });
 
   it('sends an immediate tool result only after current policy checks and never asks for consent', async () => {
@@ -362,4 +413,15 @@ describe('GetHomeTurnUseCase', () => {
 
     expect(runtime.sendToolResult).not.toHaveBeenCalled();
   });
+});
+
+
+it('persists a generated Home chat title while keeping metadata out of the saved answer', async () => {
+  const setGeneratedTitle = jest.fn().mockResolvedValue(true);
+  const { useCase, conversations } = setup({ title: 'New chat', setGeneratedTitle, events: [
+    { sequence: 1, type: 'assistant.delta', text: '<chat_title>Plan tomorrow</chat_title>\nStart with your priorities.' }
+  ] });
+  await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+  expect(setGeneratedTitle).toHaveBeenCalledWith({ ownerId: OWNER, conversationId: CONVERSATION, title: 'Plan tomorrow' });
+  expect(conversations.completeTurnWithAssistant).toHaveBeenCalledWith(expect.objectContaining({ content: 'Start with your priorities.' }));
 });

@@ -58,9 +58,6 @@ function sameScope(left: HomeConversationScope, right: HomeConversationScope): b
   return left.kind === right.kind && (left.kind === 'home' || (right.kind === 'workspace' && left.workspaceId === right.workspaceId));
 }
 
-function normalizeTitle(message: string): string {
-  return message.trim().replace(/\s+/g, ' ').slice(0, 160);
-}
 
 function mergeMessages(current: readonly HomeMessageSnapshot[], incoming: readonly HomeMessageSnapshot[]): readonly HomeMessageSnapshot[] {
   const byId = new Map<string, HomeMessageSnapshot>();
@@ -417,7 +414,7 @@ export function useHomeChat({ scope, disabled = false, syncConversationInUrl = t
       if (cancelled || !current(requestKey)) return;
       if (!sameScope(conversation.scope, scopeRef.current)) throw new Error('Conversation is outside the selected scope.');
       setLoadedConversation(conversation);
-      setConversations((previous) => previous.some((item) => item.id === conversation.id) ? previous : [conversation, ...previous]);
+      setConversations((previous) => previous.some((item) => item.id === conversation.id) ? previous.map((item) => item.id === conversation.id ? conversation : item) : [conversation, ...previous]);
       setMessages((previous) => mergeMessages(previous, messagePage.messages));
       setMessageCursor(messagePage.nextBeforeSequence);
       setTurns((previous) => mergeTurns(previous, loadedTurns));
@@ -557,6 +554,13 @@ export function useHomeChat({ scope, disabled = false, syncConversationInUrl = t
     if (!current(requestKey)) return [];
     setMessages((previous) => mergeMessages(previous, page.messages));
     setMessageCursor((previous) => previous ?? page.nextBeforeSequence);
+    if (page.messages.some((message) => message.role === 'assistant')) {
+      const conversation = await getHomeConversation(conversationId);
+      if (current(requestKey)) {
+        setLoadedConversation(conversation);
+        setConversations((previous) => previous.map((item) => item.id === conversation.id ? conversation : item));
+      }
+    }
     return [...page.messages];
   }, [current]);
 
@@ -619,8 +623,8 @@ export function useHomeChat({ scope, disabled = false, syncConversationInUrl = t
     }
   }, [current, findCommittedSubmission, markUnsupported, refreshEventFeed]);
 
-  const createForCurrentDraft = useCallback(async (content: string, requestKey: string): Promise<HomeConversationSnapshot | null> => {
-    const title = normalizeTitle(content);
+  const createForCurrentDraft = useCallback(async (requestKey: string, content: string): Promise<HomeConversationSnapshot | null> => {
+    const title = 'New chat';
     let intent = createIntentRef.current;
     if (!intent || intent.scopeKey !== scopeIdRef.current || intent.title !== title) {
       intent = { scopeKey: scopeIdRef.current, title, key: createIdempotencyKey() };
@@ -735,7 +739,7 @@ export function useHomeChat({ scope, disabled = false, syncConversationInUrl = t
     setSendError(null);
     let conversationId = selectedConversationId;
     if (!conversationId) {
-      const created = await createForCurrentDraft(content, requestKey);
+      const created = await createForCurrentDraft(requestKey, content);
       if (!created) { endBusyOperation(operation); return; }
       conversationId = created.id;
       const targetKey = viewKey(scopeIdRef.current, conversationId, false);

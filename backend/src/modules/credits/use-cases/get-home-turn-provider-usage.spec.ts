@@ -22,6 +22,11 @@ describe('GetHomeTurnProviderUsageUseCase', () => {
     expect(ledger.listHomeTurnProviderCallUsage).toHaveBeenCalledWith('owner-1', 'turn-1');
   });
 
+  it('preserves the estimated usage label in the Home projection', async () => {
+    const { useCase } = setup([{ status: 'settled', providerProfile: 'p', model: 'm', usage: { inputTokens: 1024, outputTokens: 512, chargedUnits: '768', estimated: true } }]);
+    await expect(useCase.getForHomeTurn('owner-1', 'turn-1')).resolves.toMatchObject({ state: 'settled', calls: [{ estimated: true, inputTokens: 1024, outputTokens: 512 }] });
+  });
+
   it('keeps missing or unknown settlement usage unknown', async () => {
     const missing = setup([{ status: 'settled', providerProfile: 'p', model: 'm' }]);
     await expect(missing.useCase.getForHomeTurn('owner-1', 'turn-1')).resolves.toMatchObject({ state: 'unknown' });

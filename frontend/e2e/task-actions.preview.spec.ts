@@ -27,7 +27,7 @@ async function captureInboxTask(page: import('@playwright/test').Page, title: st
   await expect(page.getByTestId('task-detail-page')).toContainText(title);
 }
 
-test('edits, moves, archives, reloads the saved receipt, and undoes on the stable task URL', async ({ page }, testInfo) => {
+test('edits inline, moves, reloads and undoes the move, then permanently deletes the task', async ({ page }, testInfo) => {
   const title = `Task actions ${Date.now().toString().slice(-6)}`;
   const editedTitle = `${title} updated`;
   await signIn(page);
@@ -35,10 +35,9 @@ test('edits, moves, archives, reloads the saved receipt, and undoes on the stabl
   const taskId = new URL(page.url()).pathname.split('/').at(-1);
   expect(taskId).toBeTruthy();
 
-  await page.getByRole('button', { name: 'Edit' }).click();
-  await expect(page.getByRole('dialog', { name: 'Edit task' })).toBeVisible();
+  await expect(page.getByTestId('task-detail-editor')).toBeVisible();
   await page.getByLabel('Task title').fill(editedTitle);
-  await page.getByTestId('project-task-editor-save').click();
+  await page.getByTestId('task-detail-save').click();
   await expect(page.getByRole('heading', { name: editedTitle })).toBeVisible();
   await expect(page.getByTestId('task-action-receipt')).toContainText('Task changes saved');
 
@@ -50,27 +49,29 @@ test('edits, moves, archives, reloads the saved receipt, and undoes on the stabl
   await expect(page.locator('.task-detail-fields').getByText('Website redesign')).toBeVisible();
   await expect(page.getByTestId('task-action-receipt')).toContainText('Task move saved');
 
-  await page.getByRole('button', { name: 'Archive' }).click();
-  await expect(page.getByTestId('task-detail-archived')).toBeVisible();
-  await expect(page).toHaveURL(`/tasks/${taskId}?includeArchived=true`);
   await page.reload();
-  await expect(page.getByTestId('task-detail-archived')).toBeVisible();
-  await expect(page.getByTestId('task-action-receipt')).toContainText('Task archive saved');
+  await expect(page.getByTestId('task-action-receipt')).toContainText('Task move saved');
   await expect(page.getByTestId('task-undo')).toBeEnabled();
 
   await page.getByTestId('task-undo').click();
   await expect(page.getByTestId('task-undo-complete')).toBeVisible();
   await expect(page).toHaveURL(`/tasks/${taskId}`);
-  await expect(page.locator('.task-detail-fields').getByText('Website redesign')).toBeVisible();
+  await expect(page.locator('.task-detail-fields').getByText('Inbox')).toBeVisible();
   await expect(page.getByRole('heading', { name: editedTitle })).toBeVisible();
   await page.setViewportSize({ width: 375, height: 812 });
   const mobileScreenshot = testInfo.outputPath('task-actions-mobile-after-undo.png');
   await mkdir(dirname(mobileScreenshot), { recursive: true });
   await page.screenshot({ path: mobileScreenshot, fullPage: true });
-  await expect(page.getByRole('button', { name: 'Edit' })).toBeVisible();
+  await expect(page.getByTestId('task-detail-save')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Archive', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Delete', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Delete task', exact: true }).click();
+  await expect(page).toHaveURL(/\/tasks$/u);
+  const deleted = await page.request.get(`/api/v1/tasks/${taskId}`);
+  expect(deleted.status()).toBe(404);
 });
 
-test('preserves a local edit through a stale-version conflict and keeps the dialog keyboard accessible', async ({ page }, testInfo) => {
+test('preserves an inline edit through a stale-version conflict and keeps the move dialog keyboard accessible', async ({ page }, testInfo) => {
   const title = `Conflict task ${Date.now().toString().slice(-6)}`;
   const draftTitle = `${title} local draft`;
   await signIn(page);
@@ -101,12 +102,9 @@ test('preserves a local edit through a stale-version conflict and keeps the dial
     });
   });
 
-  await page.getByRole('button', { name: 'Edit' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Edit task' });
-  await expect(dialog).toBeVisible();
-  await expect(page.getByLabel('Task title')).toBeFocused();
+  await expect(page.getByTestId('task-detail-editor')).toBeVisible();
   await page.getByLabel('Task title').fill(draftTitle);
-  await page.getByTestId('project-task-editor-save').click();
+  await page.getByTestId('task-detail-save').click();
   await expect(page.getByTestId('project-task-version-conflict')).toBeVisible();
   const conflictScreenshot = testInfo.outputPath('task-edit-conflict-preserves-draft.png');
   await mkdir(dirname(conflictScreenshot), { recursive: true });
@@ -114,9 +112,9 @@ test('preserves a local edit through a stale-version conflict and keeps the dial
   await page.getByTestId('project-task-conflict-keep-editing').click();
   await expect(page.getByLabel('Task title')).toHaveValue(draftTitle);
   await expect(page.getByLabel('Details (optional)')).toHaveValue('Saved by another tab');
-  await page.getByTestId('project-task-editor-save').click();
+  await page.getByTestId('task-detail-save').click();
   await expect(page.getByRole('heading', { name: draftTitle })).toBeVisible();
-  await expect(page.getByText('Saved by another tab')).toBeVisible();
+  await expect(page.getByLabel('Details (optional)')).toHaveValue('Saved by another tab');
 
   await page.getByRole('button', { name: 'Move' }).click();
   const moveDialog = page.getByRole('dialog', { name: 'Move task' });

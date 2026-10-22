@@ -20,7 +20,8 @@ import {
   MarkdownContent,
   Skeleton,
   Spinner,
-  Textarea
+  Textarea,
+  TypingIndicator
 } from '@/shared/ui';
 
 import { useHomePlanningRecords } from '../model/use-home-planning-records';
@@ -93,9 +94,9 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
     <header className={`home-chat-header${isAsk ? ' home-chat-ask-header' : ''}`}>
       <div>
         <p className="product-label">{scopeLabel}</p>
-        {isAsk ? <DialogTitle className="home-chat-ask-title">Ask the Home assistant</DialogTitle> : <h2>{isWorkspace ? 'Planning chat' : 'Ask the Home assistant'}</h2>}
+        {isAsk ? <DialogTitle className="home-chat-ask-title">Assistant</DialogTitle> : <h2>{isWorkspace ? 'Chat' : 'Assistant'}</h2>}
         {isAsk
-          ? <DialogDescription className="home-chat-ask-description">Home scope. Assistant access follows the policy shown below.</DialogDescription>
+          ? <DialogDescription className="sr-only">Ask a question or plan your next step.</DialogDescription>
           : <p className="home-chat-current-title" title={currentTitle}>{currentTitle}</p>}
       </div>
       {isAsk ? <div className="home-chat-ask-actions">
@@ -137,18 +138,17 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
       </Button>}
     </header>
 
-    <AssistantPolicySummary status={chat.policyLoadStatus} policy={chat.policyStatus} compact={isAsk} />
+    {chat.policyLoadStatus === 'loading' ? <AssistantPolicySummary status={chat.policyLoadStatus} policy={chat.policyStatus} compact={isAsk} /> : null}
     {!quotaAvailable ? <Alert tone={usage.state.status === 'success' && usage.state.data.availability.status !== 'unknown' ? 'info' : 'warning'} data-testid="home-chat-usage-blocked">
       <span>{usage.state.status === 'success' ? usage.state.data.availability.reason ?? 'AI submissions are unavailable.' : 'AI availability could not be checked. Sending stays paused until your allowance is available.'}</span>
       <Link className="text-[var(--color-link)] underline underline-offset-4" to="/usage">View usage</Link>
     </Alert> : null}
     {(!chat.policyReady || chat.runtimeUnavailable) && chat.policyLoadStatus !== 'loading' ? <Alert tone="warning" data-testid="home-chat-policy-unavailable">
-      <span>Assistant execution is unavailable for this scope. Your draft is preserved until availability is confirmed.</span>
-      <Button type="button" variant="secondary" data-testid="home-chat-refresh-policy" onClick={chat.retryPolicy}>Refresh availability</Button>
+      <span>Unable to connect. Your draft is saved.</span>
+      <Button type="button" variant="secondary" data-testid="home-chat-refresh-policy" onClick={chat.retryPolicy}>Try again</Button>
     </Alert> : null}
     {disabled && disabledReason ? <Alert id={archivedId} tone="warning" data-testid="planning-chat-read-only">{disabledReason}</Alert> : null}
-    {isWorkspace ? <p className="home-chat-scope-note">Planning chat for this workspace.</p> : null}
-    {chat.runtimeUnavailable ? <Alert tone="error" data-testid="home-chat-runtime-unavailable" role="alert">The configured assistant runtime is unavailable. Refresh availability before trying again.</Alert> : null}
+    {chat.runtimeUnavailable ? <Alert tone="error" data-testid="home-chat-runtime-unavailable" role="alert">The configured assistant runtime is unavailable. Try again before trying again.</Alert> : null}
     {chat.reconnecting ? <p className="home-chat-reconnect" role="status" aria-live="polite"><Spinner label="Reconnecting" /> Reconnecting…</p> : null}
 
     <div className={`home-chat-layout${isAsk ? ' home-chat-layout-ask' : ''}`}>
@@ -175,10 +175,9 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
             {chat.messages.filter((message) => message.role === 'user' || message.role === 'assistant').map((message) => {
               const status = message.role === 'user' ? chat.loadStatus(message.turnId) : null;
               return <li className={`home-chat-message home-chat-message-${message.role}`} key={message.id} data-message-id={message.id}>
-                <span className="home-chat-message-role">{message.role === 'user' ? 'You' : 'Assistant'}</span>
+                <span className="home-chat-message-role sr-only">{message.role === 'user' ? 'You' : 'Assistant'}</span>
                 <div className="home-chat-message-body">{message.role === 'assistant' ? <MarkdownContent content={message.content} /> : <p>{message.content}</p>}</div>
-                {status ? <span className={`home-chat-turn-status home-chat-turn-status-${statusClass(status)}`} data-turn-id={message.turnId}>{status}</span> : null}
-                {message.role === 'assistant' ? <SkillRunDetails turn={chat.turns.find((turn) => turn.id === message.turnId)} /> : null}
+                {status && ['Failed', 'Partially completed', 'Cancelled', 'Needs review', 'Planning runtime unavailable'].includes(status) ? <span className={`home-chat-turn-status home-chat-turn-status-${statusClass(status)}`} data-turn-id={message.turnId}>{status}</span> : null}
                 {message.role === 'assistant' ? <HomePlanningRecords records={planningRecords} turnId={message.turnId} allowUndo={allowUndo} /> : null}
               </li>;
             })}
@@ -194,11 +193,7 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
             : null}
         </Alert> : null}
 
-        {chat.sendStatus === 'creating' ? <p className="home-chat-live-status" role="status" aria-live="polite">Saving conversation…</p> : null}
-        {chat.sendStatus === 'submitting' || chat.sendStatus === 'retrying' ? <p className="home-chat-live-status" role="status" aria-live="polite">Sending your message…</p> : null}
-        {chat.sendStatus === 'reconciling' ? <p className="home-chat-live-status" role="status" aria-live="polite">Checking whether your message was saved…</p> : null}
-        {chat.activeTurn?.status === 'running' && !chat.isLegacyTurn(chat.activeTurn.id) ? <p className="home-chat-live-status" role="status" aria-live="polite">Assistant is responding…</p> : null}
-        {chat.activeTurn?.status === 'cancel_requested' ? <p className="home-chat-live-status" role="status" aria-live="polite">Stopping…</p> : null}
+        {['creating', 'submitting', 'retrying', 'reconciling'].includes(chat.sendStatus) || chat.activeTurn?.status === 'running' && !chat.isLegacyTurn(chat.activeTurn.id) || chat.activeTurn?.status === 'cancel_requested' ? <TypingIndicator testId="home-chat-typing" /> : null}
         {chat.activeTurn?.status === 'unknown' && !chat.isLegacyTurn(chat.activeTurn.id) ? <Alert tone="warning" data-testid="home-chat-unknown-status">
           <span>This response stopped before its result was confirmed. Refresh its status before starting a fresh request.</span>
           <Button type="button" variant="secondary" data-testid="home-chat-check-turn-status" disabled={chat.statusCheckPending} onClick={() => { void chat.checkTurnStatus(); }}>Check status</Button>
@@ -219,7 +214,7 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
         {chat.activeTurn?.status === 'running' ? <div className="home-chat-stop-row"><Button type="button" variant="secondary" data-testid="home-chat-stop" disabled={disabled || chat.cancelPending} onClick={() => { void chat.cancel(); }}>{chat.cancelPending ? 'Stopping…' : 'Stop response'}</Button></div> : null}
 
         <form className="home-chat-composer" onSubmit={handleSubmit}>
-          <Label htmlFor={isWorkspace ? 'planning-chat-message' : 'home-chat-message'}>{isAsk ? 'Message' : 'Message the assistant'}</Label>
+          <Label className="sr-only" htmlFor={isWorkspace ? 'planning-chat-message' : 'home-chat-message'}>{isAsk ? 'Message' : 'Message the assistant'}</Label>
           <Textarea
             id={isWorkspace ? 'planning-chat-message' : 'home-chat-message'}
             data-testid="home-chat-input"
@@ -233,8 +228,8 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
             aria-describedby={`${isWorkspace && disabled ? archivedId : ''} ${isAsk ? 'home-chat-ask-help' : 'home-chat-help'}`.trim()}
           />
           <div className="home-chat-composer-footer">
-            <p id={isAsk ? 'home-chat-ask-help' : 'home-chat-help'} className="field-help">{isAsk ? 'Enter to send · Shift+Enter for a new line.' : 'Ctrl+Enter or Cmd+Enter to send.'}</p>
-            <span className="home-chat-character-count" aria-live="off">{chat.draft.length.toLocaleString()} / 20,000</span>
+            <p id={isAsk ? 'home-chat-ask-help' : 'home-chat-help'} className="sr-only">{isAsk ? 'Enter to send · Shift+Enter for a new line.' : 'Ctrl+Enter or Cmd+Enter to send.'}</p>
+            <span className="home-chat-character-count sr-only" aria-live="off">{chat.draft.length.toLocaleString()} / 20,000</span>
             <Button type="submit" data-testid="home-chat-send" disabled={!chat.canSend || !quotaAvailable} aria-busy={chat.sendStatus === 'submitting'}>Send</Button>
           </div>
         </form>
@@ -243,17 +238,6 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
 
   </section>;
   return isAsk ? <DialogContent className="home-ask-dialog" data-testid="home-ask-dialog">{panel}</DialogContent> : panel;
-}
-
-function SkillRunDetails({ turn }: { readonly turn: ReturnType<typeof useHomeChat>['turns'][number] | undefined }): React.JSX.Element | null {
-  if (!turn?.skillRun) return null;
-  return <details className="mt-3 rounded-lg border border-[var(--color-border)] p-3" data-testid={`skill-run-details-${turn.id}`}>
-    <summary className="cursor-pointer text-sm font-medium">Run details · {turn.skillRun.title} v{turn.skillRun.skillVersion} · {turn.skillRun.state}</summary>
-    <div className="mt-3 grid gap-2 text-sm"><h3 className="font-medium">Sources used</h3>
-      {turn.skillRun.sources.length ? <ul className="grid gap-1">{turn.skillRun.sources.map((source, index) => <li key={`${source.kind}-${source.revision}-${index}`}>{source.label ?? 'Source unavailable'} · {source.kind.replaceAll('_', ' ')} · revision {source.revision}</li>)}</ul> : <p>No recorded context sources.</p>}
-      <Link className="w-fit text-[var(--color-link)] underline underline-offset-4" to="/usage">View aggregate usage</Link>
-    </div>
-  </details>;
 }
 
 interface HistoryListProps {

@@ -12,18 +12,20 @@ import { CommandProposalCard } from '@/features/ai-run/ui/CommandProposalCard';
 
 interface CommandExecutionSurfaceProps {
   readonly run: AiRunSnapshot;
+  readonly compact?: boolean;
   readonly conversationHref?: string;
   readonly readOnly?: boolean;
 }
 
-export function CommandExecutionSurface({ run, conversationHref, readOnly = false }: CommandExecutionSurfaceProps): React.JSX.Element {
+export function CommandExecutionSurface({ run, conversationHref, readOnly = false, compact = false }: CommandExecutionSurfaceProps): React.JSX.Element | null {
   const csrfToken = useAppSelector(selectCsrfToken);
   const runtimeKind = run.runtime?.kind === 'fake' ? 'fake' : undefined;
   const commands = useSandboxCommands({ enabled: Boolean(run.runtime?.sandboxReady), polling: ['ready', 'queued', 'running', 'waiting_approval', 'cancel_requested'].includes(run.status), runId: run.runId, csrfToken });
   const canMutate = Boolean(csrfToken) && !readOnly && ['ready', 'queued', 'running', 'waiting_approval'].includes(run.status);
+  if (compact && commands.status !== 'error' && commands.commands.length === 0) return null;
   return (
     <section className="command-execution-surface" data-testid="command-execution-surface" aria-labelledby="command-surface-heading">
-      <h2 id="command-surface-heading" data-testid="command-surface-heading">Sandbox command history</h2>
+      <h2 id="command-surface-heading" data-testid="command-surface-heading">{compact ? 'Commands' : 'Sandbox command history'}</h2>
       {readOnly ? <Alert tone="warning" data-testid="command-project-read-only">This project is archived. Existing sandbox commands are read-only.</Alert> : null}
       {commands.status === 'loading' ? <LoadingState /> : null}
       {commands.status === 'error' ? <SurfaceError onRefresh={commands.refresh} /> : null}

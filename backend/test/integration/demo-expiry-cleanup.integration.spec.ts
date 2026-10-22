@@ -226,6 +226,7 @@ describeDatabase('Task 3.5 demo expiry cleanup with PostgreSQL and managed stora
     const source = requiredDataSource();
     await source.query('UPDATE "credit_runtime_policy" SET "inference_paused"=false,"demo_daily_limit_units"=1000000,"demo_campaign_limit_units"=1000000,"demo_campaign_id"=$1,"demo_max_concurrent_calls"=4 WHERE "id"=1', [CREDIT_CAMPAIGN_ID]);
     await seedDemo(source, { copy: false, expiresAt: new Date(Date.now() + 60_000) });
+    await source.query('UPDATE "account_limits" SET "demo_credit_limits_configured"=true WHERE "owner_id"=$1', [DEMO_OWNER_ID]);
     await seedRegularProject(source);
     const regularProjectRoot = path.join(workspaceRoot!, 'managed', REGULAR_OWNER_ID, 'projects', REGULAR_PROJECT_ID);
     await fs.mkdir(regularProjectRoot, { recursive: true });

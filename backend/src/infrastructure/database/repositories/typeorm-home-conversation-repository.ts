@@ -1,3 +1,4 @@
+import { DEFAULT_CONVERSATION_TITLE, validGeneratedTitle } from '@/modules/conversations/domain/generated-conversation-title';
 import { createHash } from 'node:crypto';
 import type { DataSource, QueryRunner } from 'typeorm';
 import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
@@ -345,6 +346,16 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
 
   private withAccountedTransaction<T>(ownerId: string, action: (queryRunner: QueryRunner) => Promise<T>, scope: import('@/infrastructure/database/storage-content-projections').StorageContentMutationScope<T>): Promise<T> {
     return withTransaction(this.dataSource, (queryRunner) => this.storageAccounting.runMutation(queryRunner, ownerId, () => action(queryRunner), scope));
+  }
+
+  public async setGeneratedTitle(input: { readonly ownerId: string; readonly conversationId: string; readonly title: string }): Promise<boolean> {
+    const title = validGeneratedTitle(input.title);
+    if (!title) return false;
+    return this.withAccountedTransaction(input.ownerId, async (runner) => {
+      await lockConversation(runner, input.ownerId, input.conversationId);
+      const rows: readonly { id: string }[] = await runner.query(`WITH changed AS (UPDATE "home_conversations" SET "title"=$3,"updated_at"=clock_timestamp() WHERE "owner_id"=$1 AND "id"=$2 AND "title"=$4 RETURNING "id") SELECT "id" FROM changed`, [input.ownerId, input.conversationId, title, DEFAULT_CONVERSATION_TITLE]);
+      return rows.length === 1;
+    }, homeConversationContentScope({ ownerId: input.ownerId, conversationId: input.conversationId }));
   }
 
   /** Lists conversations in one owner scope using stable activity pagination. */

@@ -42,6 +42,7 @@ export interface AutomationProviderCall {
   readonly inputTokens: number | null;
   readonly outputTokens: number | null;
   readonly chargedUnits: string | null;
+  readonly estimated?: true;
 }
 
 export interface AutomationProviderUsage {

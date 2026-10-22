@@ -1,3 +1,4 @@
+import { DEFAULT_CONVERSATION_TITLE, CONVERSATION_TITLE_INSTRUCTION } from '@/modules/conversations/domain/generated-conversation-title';
 import { HomeConversationInputInvalidError, HomeConversationNotFoundError, HomeTurnNotFoundError } from '@/modules/home-assistant/domain/home-conversation-errors';
 import { buildHomePlanningContext, HOME_PLANNING_CONTEXT_LIMITS, type HomePlanningContext, type HomePlanningContextMessage, type HomePlanningProjectFactSnapshot } from '@/modules/home-assistant/domain/home-planning-context';
 import type { HomeConversation, HomeConversationScope, HomeTurn, HomeTurnExecution, HomeTurnSubmission } from '@/modules/home-assistant/domain/home-conversation-types';
@@ -219,7 +220,7 @@ export class SubmitHomeTurnUseCase {
 
     let outcome: 'accepted' | 'unavailable' | 'unknown';
     try {
-      outcome = (await runtime.start({ turnId: submission.turn.id, prompt: planningContext.prompt, provider: runtimeConfiguration.provider })).outcome;
+      outcome = (await runtime.start({ turnId: submission.turn.id, prompt: `${conversation.title === DEFAULT_CONVERSATION_TITLE ? CONVERSATION_TITLE_INSTRUCTION : ''}${planningContext.prompt}`, provider: runtimeConfiguration.provider })).outcome;
     } catch {
       outcome = 'unknown';
     }

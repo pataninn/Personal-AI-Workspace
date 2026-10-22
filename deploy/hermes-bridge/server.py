@@ -43,7 +43,7 @@ def dispatch(body):
             raise BridgeError('The OpenShell binary changed')
         run_cli(['whoami', '--output', 'json'])
         assert_route(p, body.get('payload', {}))
-        return {'ready': True, 'profile': p, 'policyCommand': policy_capability()}
+        return {'ready': True, 'profile': p, 'policyCommand': policy_capability(), 'providerReceiptVersion': 1, 'maxOutputTokens': 512}
     if isinstance(operation, str) and operation.startswith('planning-'):
         return dispatch_planning(operation, body)
     identity = run_id(body.get('runId'))
@@ -56,9 +56,11 @@ def dispatch(body):
         if operation == 'create':
             if (not isinstance(payload, dict) or set(payload) - {
                     'prompt', 'model', 'providerProfile', 'endpoint', 'files',
-                    'commandProfileVersion', 'manifestHash', 'snapshotHash'}
+                    'commandProfileVersion', 'manifestHash', 'snapshotHash', 'requiredProviderReceiptVersion', 'maxOutputTokens'}
                     or (('manifestHash' in payload or 'snapshotHash' in payload) and 'commandProfileVersion' not in payload)):
                 raise BridgeError('Invalid run create payload')
+            if payload.get('requiredProviderReceiptVersion') != 1 or type(payload.get('maxOutputTokens')) is not int or not 1 <= payload['maxOutputTokens'] <= 512:
+                raise BridgeError('The bounded provider receipt protocol is required')
             if run or identity in PLANNING_RUNS:
                 raise BridgeError('This run was already created')
             if len(RUNS) + len(PLANNING_RUNS) >= 4:
@@ -76,6 +78,11 @@ def dispatch(body):
         raise BridgeError('The run capability does not match')
     if operation == 'poll':
         return run.poll(int(payload.get('cursor', 0)))
+    if operation == 'provider-credit-result':
+        if not isinstance(payload, dict) or set(payload) != {'requestId', 'result'} or not run.acp or run.cancelled.is_set():
+            raise BridgeError('The run cannot accept this provider receipt')
+        run.acp.provider_credit_result(payload['requestId'], payload['result'])
+        return {'accepted': True}
     if operation == 'files':
         if run.status != 'completed' or run.cancelled.is_set():
             raise BridgeError('Only completed runs can export changes')

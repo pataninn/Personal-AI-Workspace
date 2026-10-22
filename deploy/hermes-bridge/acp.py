@@ -35,6 +35,7 @@ class AcpSession:
         self.home_tool_lock = threading.Lock()
         self.provider_credit_requests = {}
         self.provider_credit_request_count = 0
+        self.provider_failed = False
         self.provider_credit_lock = threading.Lock()
         self.close_lock = threading.Lock()
         self.done = threading.Event()
@@ -76,6 +77,8 @@ class AcpSession:
     def prompt(self, text, timeout=900):
         result = self.call('session/prompt', {'sessionId': self.session_id, 'prompt': [{'type': 'text', 'text': text}]}, timeout=timeout)
         self.state.stop_reason = result.get('stopReason')
+        if getattr(self, 'provider_failed', False):
+            raise BridgeError('The provider call could not be completed')
         if self.state.stop_reason != 'end_turn':
             raise BridgeError('Hermes stopped without a confirmed complete result')
 
@@ -145,6 +148,8 @@ class AcpSession:
                 raise BridgeError('The provider credit request is no longer pending')
             value = self._validate_provider_credit_result(request['operation'], result)
             self.provider_credit_requests.pop(key, None)
+            if value.get('outcome') in ('denied', 'unknown') or value.get('status') == 'over_bound':
+                self.provider_failed = True
             self.send({'jsonrpc': '2.0', 'id': request['frame']['id'], 'result': value})
 
     @staticmethod
@@ -155,7 +160,7 @@ class AcpSession:
             return result
         if operation == 'reserve' and result.get('outcome') == 'denied' and set(result) == {'outcome', 'code'} and result['code'] in ('BUDGET_EXHAUSTED', 'ADMISSION_UNAVAILABLE'):
             return result
-        if operation == 'settle' and result.get('outcome') == 'settled' and set(result) == {'outcome', 'status'} and result['status'] in ('settled', 'over_bound'):
+        if operation in ('settle', 'unknown') and result.get('outcome') == 'settled' and set(result) == {'outcome', 'status'} and result['status'] in ('settled', 'over_bound'):
             return result
         if operation == 'release' and result == {'outcome': 'released'}:
             return result
@@ -229,6 +234,8 @@ class AcpSession:
                         self.state.push({'type': 'permission', 'id': str(frame['id']), 'params': frame['params']})
                     elif frame['method'] == 'session/update':
                         update = frame.get('params', {}).get('update', {})
+                        if getattr(self, 'provider_failed', False) and update.get('sessionUpdate') == 'agent_message_chunk':
+                            continue
                         is_planning = getattr(self.state, 'is_planning', False)
                         if is_planning:
                             if update.get('sessionUpdate') == 'agent_message_chunk':

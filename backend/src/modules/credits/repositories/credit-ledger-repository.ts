@@ -20,6 +20,7 @@ export interface CreditReservationCommand {
 export interface CreditSettlementCommand {
   readonly reservationId: string;
   readonly usage: ProviderTokenUsage;
+  readonly estimated?: boolean;
 }
 
 export interface AccountTimeZoneChangeCommand {
@@ -35,6 +36,7 @@ export interface HomeTurnProviderCallUsageRow {
     readonly inputTokens: number;
     readonly outputTokens: number;
     readonly chargedUnits: string;
+    readonly estimated?: true;
   };
 }
 

@@ -91,6 +91,8 @@ describeDatabase('Task 3.1 PostgreSQL credit ledger', () => {
     expect(identity).toEqual([{ database: DATABASE_NAME, user: 'home_test' }]);
     const applied = await dataSource.runMigrations({ transaction: 'all' });
     expect(applied).toHaveLength(dataSource.migrations.length);
+    await dataSource.undoLastMigration({ transaction: 'all' });
+    expect(await dataSource.runMigrations({ transaction: 'all' })).toHaveLength(1);
     repository = new TypeOrmCreditLedgerRepository(dataSource);
 
     await dataSource.query(`
@@ -146,6 +148,29 @@ describeDatabase('Task 3.1 PostgreSQL credit ledger', () => {
     } finally {
       await baseClient.end();
     }
+  });
+
+  it('persists estimated Home usage once and refuses estimates for demo accounts', async () => {
+    const home = await repository.reserveProviderCall({ ...reservation(REGULAR_ID, HOME_TURN_ID, 'estimated-home', '1'), sourceKind: 'home_turn' });
+    await repository.retainUnknown(home.reservationId, 'provider_usage_missing');
+    const command = { reservationId: home.reservationId, usage: { promptTokens: 2, completionTokens: 1 }, estimated: true };
+    await expect(repository.settleProviderCall(command)).resolves.toMatchObject({ outcome: 'settled' });
+    await expect(repository.settleProviderCall(command)).resolves.toMatchObject({ outcome: 'replayed' });
+    const entries = await dataSource!.query('SELECT "is_estimated" FROM "credit_usage_entries" WHERE "reservation_id"=$1', [home.reservationId]);
+    expect(entries).toEqual([{ is_estimated: true }]);
+    await expect(repository.listHomeTurnProviderCallUsage(REGULAR_ID, HOME_TURN_ID)).resolves.toEqual([expect.objectContaining({ status: 'settled', usage: expect.objectContaining({ estimated: true }) })]);
+    await expect(dataSource!.undoLastMigration({ transaction: 'all' })).rejects.toThrow('retain its provenance');
+    await dataSource!.query('INSERT INTO "account_limits" ("owner_id","demo_credit_limits_configured") VALUES ($1,true)', [DEMO_ID]);
+    const demo = await repository.reserveProviderCall({ ...reservation(DEMO_ID, OTHER_HOME_TURN_ID, 'demo-estimate', '1'), sourceKind: 'home_turn' });
+    await expect(repository.settleProviderCall({ ...command, reservationId: demo.reservationId })).rejects.toThrow('regular accounts');
+    await repository.releaseKnownNotSent(demo.reservationId);
+    await dataSource!.query('DELETE FROM "account_limits" WHERE "owner_id"=$1', [DEMO_ID]);
+    // Restore the shared fixture's baseline for the existing budget assertions.
+    await dataSource!.query('DELETE FROM "credit_usage_entries" WHERE "reservation_id"=$1', [home.reservationId]);
+    await dataSource!.query('DELETE FROM "credit_provider_call_reservations" WHERE "id" IN ($1,$2)', [home.reservationId, demo.reservationId]);
+    await dataSource!.query('DELETE FROM "credit_provider_run_budgets" WHERE "source_id" IN ($1,$2)', [HOME_TURN_ID, OTHER_HOME_TURN_ID]);
+    await dataSource!.query('DELETE FROM "credit_account_daily_windows" WHERE "owner_id"=$1', [REGULAR_ID]);
+    await dataSource!.query('DELETE FROM "credit_account_totals" WHERE "owner_id"=$1', [REGULAR_ID]);
   });
 
   it('serializes concurrent reservations against daily and lifetime limits', async () => {
@@ -226,8 +251,9 @@ describeDatabase('Task 3.1 PostgreSQL credit ledger', () => {
       'SELECT count(*)::integer AS "count" FROM "account_limits" WHERE "owner_id" = $1', [DEMO_ID]
     );
     expect(beforeLazyCreate).toEqual([{ count: 0 }]);
-    await dataSource!.query('UPDATE "account_limits" SET "daily_credit_limit_units" = NULL WHERE "owner_id" = $1', [DEMO_ID]);
-    await dataSource!.query('UPDATE "account_limits" SET "max_concurrent_inference_calls" = 1 WHERE "owner_id" = $1', [DEMO_ID]);
+    await expect(repository.reserveProviderCall(reservation(DEMO_ID, SOURCE_EIGHT, 'demo-unconfigured', '1')))
+      .rejects.toMatchObject({ reason: 'unconfigured' });
+    await dataSource!.query(`INSERT INTO "account_limits" ("owner_id","demo_credit_limits_configured") VALUES ($1,true),($2,true)`, [DEMO_ID, DEMO_ID_TWO]);
     await dataSource!.query('UPDATE "credit_runtime_policy" SET "demo_max_concurrent_calls" = 1 WHERE "id" = 1');
     const singleSlot = await repository.reserveProviderCall(reservation(DEMO_ID, SOURCE_EIGHT, 'demo-single-slot', '1'));
     const lazyDefaults: readonly { max_concurrent_inference_calls: number; credit_timezone: string; daily_credit_limit_units: string | null; lifetime_credit_limit_units: string | null }[] = await dataSource!.query(

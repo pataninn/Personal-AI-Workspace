@@ -29,28 +29,16 @@ export function AutomationRunHistory({ schedule, workspaceName, history, onRetry
 function OccurrenceCard({ occurrence, schedule }: { readonly occurrence: AutomationOccurrence; readonly schedule: AutomationSchedule }): React.JSX.Element {
   const resultUrl = `/projects/${encodeURIComponent(schedule.workspaceId)}/planning-chat?conversation=${encodeURIComponent(schedule.conversationId)}`;
   const usage = occurrence.providerUsage;
-  const hasSettledCall = usage.calls.some((call) => call.status === 'settled' || call.status === 'over_bound');
   const statusLabel = occurrence.status === 'succeeded' && usage.calls.some((call) => call.status === 'over_bound')
     ? 'Completed — usage exceeded the configured bound'
     : occurrenceStatusLabel(occurrence.status, occurrence.failureCode);
   return <Card className="grid gap-3 p-4" data-testid={`automation-occurrence-${occurrence.id}`}>
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><p className="font-medium">{occurrence.kind === 'manual' ? 'Run now' : 'Scheduled'} · {formatDateInTimeZone(occurrence.intendedFor, schedule.timeZone)} ({schedule.timeZone})</p><p className="text-sm text-[var(--color-text-muted)]">Skill version {occurrence.skillVersion}</p></div>
+      <div><p className="font-medium">{occurrence.kind === 'manual' ? 'Run now' : 'Scheduled'} · {formatDateInTimeZone(occurrence.intendedFor, schedule.timeZone)} ({schedule.timeZone})</p></div>
       <p className="rounded-full border border-[var(--color-border)] px-3 py-1 text-sm">{statusLabel}</p>
     </div>
     {occurrence.status === 'failed' ? <p className="text-sm text-[var(--color-text-muted)]">This run did not complete.</p> : null}
     {occurrence.homeTurnId ? <Link className="text-[var(--color-link)] underline underline-offset-4" to={resultUrl}>{occurrence.status === 'succeeded' ? 'Open briefing' : 'Open conversation'}</Link> : null}
-    <UsageSummary occurrence={occurrence} hasSettledCall={hasSettledCall} />
     {occurrence.taskSources.length ? <div className="grid gap-1"><h4 className="text-sm font-medium">Source tasks</h4><ul className="grid gap-1">{occurrence.taskSources.map((source) => <li key={`${source.taskId}:${source.revision}`} className="text-sm">{source.available && source.href ? <Link className="text-[var(--color-link)] underline underline-offset-4" to={source.href}>{source.title ?? 'Source task'} · revision {source.revision}</Link> : <span>Source unavailable · revision {source.revision}</span>}</li>)}</ul></div> : null}
   </Card>;
-}
-
-function UsageSummary({ occurrence, hasSettledCall }: { readonly occurrence: AutomationOccurrence; readonly hasSettledCall: boolean }): React.JSX.Element {
-  const usage = occurrence.providerUsage;
-  if (usage.state === 'not_started') return <p className="text-sm text-[var(--color-text-muted)]">No provider call was sent.</p>;
-  if (usage.state === 'pending' || usage.state === 'unknown') return <p className="text-sm text-[var(--color-text-muted)]">Usage pending reconciliation.</p>;
-  if (!hasSettledCall) return <p className="text-sm text-[var(--color-text-muted)]">Provider and usage unavailable.</p>;
-  return <ul className="grid gap-1 text-sm text-[var(--color-text-muted)]">{usage.calls.filter((call) => call.status === 'settled' || call.status === 'over_bound').map((call, index) => <li key={`${call.providerProfile}:${call.model}:${index}`}>
-    Provider: {call.providerProfile} · {call.model}; usage: {call.inputTokens ?? '—'} input / {call.outputTokens ?? '—'} output tokens; charged units: {call.chargedUnits ?? '—'}{call.status === 'over_bound' ? ' (over the configured bound)' : ''}
-  </li>)}</ul>;
 }

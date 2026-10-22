@@ -250,7 +250,7 @@ describe('Home chat', () => {
     renderChat(`/dashboard?conversation=${CONVERSATION_ID}`);
     const user = userEvent.setup();
     const input = await screen.findByRole('textbox', { name: 'Message the assistant' });
-    await screen.findByText('Assistant is available.');
+    await waitFor(() => expect(screen.queryByTestId('assistant-policy-readiness')).not.toBeInTheDocument());
     await waitFor(() => expect(input).toBeEnabled());
     await user.type(input, 'Keep this request while availability changes.');
     await user.click(await screen.findByRole('button', { name: 'Send' }));
@@ -261,8 +261,8 @@ describe('Home chat', () => {
     expect(api.submitHomeTurn).toHaveBeenCalledTimes(1);
     const originalKey = api.submitHomeTurn.mock.calls[0]?.[3];
 
-    await user.click(screen.getByRole('button', { name: 'Refresh availability' }));
-    await screen.findByText('Assistant is available.');
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByTestId('assistant-policy-readiness')).not.toBeInTheDocument());
     await user.click(await screen.findByRole('button', { name: 'Retry same send' }));
 
     await waitFor(() => expect(api.submitHomeTurn).toHaveBeenCalledTimes(2));
@@ -283,22 +283,18 @@ describe('Home chat', () => {
     renderChat();
     const user = userEvent.setup();
     await screen.findByTestId('home-chat-empty');
-    await screen.findByText('Assistant is available.');
-    const policySummary = screen.getByRole('region', { name: 'Assistant policy summary' });
-    expect(policySummary).toHaveTextContent('Workspace data is stored on the operator-managed deployment.');
-    expect(policySummary).toHaveTextContent('When you submit an assistant request, selected context is sent to NVIDIA hosted NIM for processing.');
-    expect(within(policySummary).getByRole('link', { name: 'Read NVIDIA API Trial Terms' })).toHaveAttribute('href', 'https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf');
-    expect(within(policySummary).queryByRole('button', { name: /approve|accept/u })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId('assistant-policy-readiness')).not.toBeInTheDocument());
+    expect(screen.queryByRole('region', { name: 'Assistant policy summary' })).not.toBeInTheDocument();
     const input = screen.getByRole('textbox', { name: 'Message the assistant' });
     await user.type(input, 'Plan a trip');
     await user.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => expect(api.submitHomeTurn).toHaveBeenCalledTimes(1));
-    expect(api.createHomeConversation).toHaveBeenCalledWith(HOME_SCOPE, 'Plan a trip', 'csrf', expect.any(String));
+    expect(api.createHomeConversation).toHaveBeenCalledWith(HOME_SCOPE, 'New chat', 'csrf', expect.any(String));
     expect(api.submitHomeTurn).toHaveBeenCalledWith(CONVERSATION_ID, 'Plan a trip', 'csrf', expect.any(String));
     expect(api.createHomeConversation.mock.calls[0]?.[3]).not.toBe(api.submitHomeTurn.mock.calls[0]?.[3]);
     await waitFor(() => expect(screen.getByTestId('home-chat-input')).toHaveValue(''));
-    expect(screen.getByText('NVIDIA hosted NIM · test-model')).toBeInTheDocument();
+    expect(screen.queryByText(/NVIDIA hosted NIM/)).not.toBeInTheDocument();
     expect(policyApi.getAssistantExecutionPolicy).toHaveBeenCalledWith({ scope: 'home' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(api.submitHomeTurn.mock.calls[0]?.[3]).toEqual(expect.any(String));
@@ -415,7 +411,7 @@ describe('Home chat', () => {
     const stop = await screen.findByRole('button', { name: 'Stop response' });
 
     await user.click(stop);
-    expect(await screen.findAllByText('Stopping…')).toHaveLength(2);
+    expect(await screen.findByTestId('home-chat-typing')).toBeInTheDocument();
     expect(await screen.findByRole('button', { name: 'Check status' })).toBeEnabled();
     expect(api.cancelHomeTurn).toHaveBeenCalledTimes(1);
 
@@ -457,7 +453,7 @@ describe('Home chat', () => {
     api.getHomeConversation.mockResolvedValue(workspaceConversation);
     renderChat(`/projects/${WORKSPACE_ID}/planning-chat?conversation=${CONVERSATION_ID}`, { kind: 'workspace', workspaceId: WORKSPACE_ID }, true);
     await screen.findByTestId('planning-chat-read-only');
-    expect(screen.getByText('Planning chat for this workspace.')).toBeInTheDocument();
+    expect(screen.queryByText('Planning chat for this workspace.')).not.toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Message the assistant' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
     expect(api.createHomeConversation).not.toHaveBeenCalled();

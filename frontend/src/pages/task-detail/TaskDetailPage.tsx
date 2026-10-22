@@ -372,6 +372,8 @@ export function TaskDetailPage(): React.JSX.Element {
       editDirtyRef.current = false;
       setEditDirty(false);
       setDeleteOpen(false);
+      deleteSavingRef.current = false;
+      setDeleteSaving(false);
       navigate(path, { replace: true });
     } catch (error: unknown) {
       if (!pageActiveRef.current || taskIdRef.current !== targetTaskId || locationPathRef.current !== targetLocationPath) return;

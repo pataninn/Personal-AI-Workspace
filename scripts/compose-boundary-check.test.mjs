@@ -6,6 +6,7 @@ const composePath = new URL('../compose.yaml', import.meta.url);
 const source = readFileSync(composePath, 'utf8');
 const managedComposePath = new URL('../compose.managed-storage.yaml', import.meta.url);
 const managedSource = readFileSync(managedComposePath, 'utf8');
+const directSource = readFileSync(new URL('../compose.direct.yaml', import.meta.url), 'utf8');
 
 function service(name) {
   const pattern = new RegExp(`^  ${name}:\\r?\\n([\\s\\S]*?)(?=^  [a-z][a-z0-9-]*:\\r?$|^networks:|^volumes:|^secrets:)`, 'm');
@@ -50,15 +51,32 @@ test('provider egress and recovery are app-only boundaries', () => {
   assert.doesNotMatch(postgres, /NVIDIA|nvidia/i);
 });
 
-test('the NVIDIA key is a read-only Docker secret visible only to the app', () => {
+test('the app receives optional provider credit bounds without requiring a configured profile', () => {
   const app = service('personal-ai-app');
+  for (const name of [
+    'NIM_CREDIT_PRICE_VERSION',
+    'NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS',
+    'NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS',
+    'NIM_MAX_INPUT_TOKENS',
+    'NIM_MAX_OUTPUT_TOKENS',
+    'NIM_MAX_PROVIDER_CALLS_PER_RUN'
+  ]) {
+    assert.match(app, new RegExp(`${name}: \\$\\{${name}:-\\}`));
+  }
+});
+
+test('the direct fallback mounts the NVIDIA secret only in the app and the default uses no NVIDIA secret', () => {
+  const app = directSource.match(/^  personal-ai-app:\r?\n([\s\S]*?)(?=^secrets:)/m)?.[1];
+  assert.ok(app);
   const postgres = service('postgres');
   assert.match(app, /    secrets:[\s\S]*?      - source: nvidia_api_key/);
   assert.match(app, /target: nvidia_api_key[\s\S]*?mode: 0440/);
   assert.match(app, /NVIDIA_API_KEY_FILE: \/run\/secrets\/nvidia_api_key/);
-  assert.match(source, /^secrets:[\s\S]*?^  nvidia_api_key:\r?\n    file: \$\{NVIDIA_API_KEY_FILE/m);
+  assert.match(directSource, /^secrets:[\s\S]*?^  nvidia_api_key:\r?\n    file: \$\{NVIDIA_API_KEY_FILE/m);
+  assert.doesNotMatch(source, /nvidia_api_key|NVIDIA_API_KEY/);
   assert.doesNotMatch(postgres, /secrets:|NVIDIA_API_KEY_FILE|nvidia_api_key/i);
   assert.doesNotMatch(source, /NVIDIA_API_KEY:\s*\$/);
+  assert.doesNotMatch(directSource, /NVIDIA_API_KEY:\s*\$/);
 });
 
 test('the local login password is a read-only Docker secret visible only to the app', () => {

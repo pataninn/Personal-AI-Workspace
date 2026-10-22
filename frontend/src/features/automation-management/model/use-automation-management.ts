@@ -60,7 +60,6 @@ export function useAutomationManagement(): {
   const [histories, setHistories] = useState<Readonly<Record<string, ScheduleHistoryState>>>({});
   const [runStates, setRunStates] = useState<Readonly<Record<string, RunState>>>({});
   const [readyNotice, setReadyNotice] = useState<{ readonly schedule: AutomationSchedule; readonly occurrence: AutomationOccurrence } | null>(null);
-  const [pollDelay, setPollDelay] = useState(5_000);
   const [pageVisible, setPageVisible] = useState(() => typeof document === 'undefined' || document.visibilityState !== 'hidden');
   const notifiedOccurrenceIds = useRef(new Set<string>());
   const occurrenceStatuses = useRef(new Map<string, AutomationOccurrence['status']>());
@@ -181,13 +180,18 @@ export function useAutomationManagement(): {
     .map(([scheduleId]) => scheduleId).join('\u0000');
   useEffect(() => {
     if (!pendingHistoryKey || !pageVisible) return undefined;
-    const timeout = window.setTimeout(() => {
-      const pendingIds = pendingHistoryKey.split('\u0000');
-      void Promise.all(pendingIds.map((scheduleId) => refreshOneHistory(scheduleId, true)))
-        .finally(() => setPollDelay((delay) => Math.min(delay * 2, 30_000)));
-    }, pollDelay);
-    return () => window.clearTimeout(timeout);
-  }, [pendingHistoryKey, pageVisible, pollDelay, refreshOneHistory]);
+    let stopped = false;
+    let delay = 5_000;
+    let timeout: number;
+    const poll = async (): Promise<void> => {
+      await Promise.all(pendingHistoryKey.split('\u0000').map((scheduleId) => refreshOneHistory(scheduleId, true)));
+      if (stopped) return;
+      delay = Math.min(delay * 2, 30_000);
+      timeout = window.setTimeout(() => { void poll(); }, delay);
+    };
+    timeout = window.setTimeout(() => { void poll(); }, delay);
+    return () => { stopped = true; window.clearTimeout(timeout); };
+  }, [pendingHistoryKey, pageVisible, refreshOneHistory]);
 
   useEffect(() => {
       const settledRunIds = Object.entries(runStates)
@@ -238,7 +242,6 @@ export function useAutomationManagement(): {
       if (hasUnresolvedOccurrence([occurrence])) pendingRunOccurrences.current.set(scheduleId, occurrence);
       runKeys.current.delete(scheduleId);
       setRunStates((current) => ({ ...current, [scheduleId]: { status: 'queued', message: 'Run queued. Check history for its current status.' } }));
-      setPollDelay(5_000);
       await refreshOneHistory(scheduleId);
     } catch (error: unknown) {
       if (error instanceof ApiClientError && error.code === 'SCHEDULE_BUSY') {

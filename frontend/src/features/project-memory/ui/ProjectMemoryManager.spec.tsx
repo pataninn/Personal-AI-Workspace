@@ -103,11 +103,6 @@ describe('ProjectMemoryManager', () => {
 
     expect(await screen.findByTestId('project-memory-empty')).toHaveTextContent('Add a fact to keep useful project information together.');
     expect(screen.getByText('Files and file context remain unavailable in this planning-only workspace. You can still manage its saved project facts.')).toBeInTheDocument();
-    const policySummary = screen.getByRole('region', { name: 'Assistant policy summary' });
-    expect(policySummary).toHaveTextContent('Workspace data is stored on the operator-managed deployment');
-    expect(policySummary).toHaveTextContent('Files and file tools are unavailable in this workspace. Task and planning assistance remain available where enabled.');
-    expect(policySummary).toHaveTextContent('Selected project facts');
-    expect(policySummary).not.toHaveTextContent('Read selected workspace files');
     await waitFor(() => expect(getContextMock).toHaveBeenCalledWith(PROJECT_ID));
     await user.click(screen.getByTestId('project-memory-empty-add'));
     await user.type(screen.getByRole('textbox', { name: 'Fact name' }), baseFact.title);

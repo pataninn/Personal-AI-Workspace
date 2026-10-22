@@ -151,6 +151,27 @@ describeDatabase('Project conversation storage quota PostgreSQL integration', ()
     await expect(quotaRepository.readUsage(OWNER_ID)).resolves.toMatchObject({ usedBytes: expectedUsage });
   });
 
+  it('accounts for generated titles, rejects denied growth and foreign owners, and preserves an existing name', async () => {
+    const source = requiredDataSource();
+    await source.query('DELETE FROM "project_removal_jobs" WHERE "project_id"=$1', [PROJECT_ID]);
+    await setStorageLimit(source, OWNER_ID, 10000n);
+    const created = await conversationRepository.create(createInput(OWNER_ID, 'New chat', 'generated-title-key-0001'));
+    const input = { ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: created.resource.id, title: 'Stacks and Queues Review' };
+    const before = await quotaRepository.readUsage(OWNER_ID);
+    if (before.usedBytes === null) throw new Error('Expected verified usage.');
+    await expect(conversationRepository.setGeneratedTitle({ ...input, ownerId: FOREIGN_OWNER_ID })).rejects.toBeDefined();
+    await setStorageLimit(source, OWNER_ID, before.usedBytes);
+    await expect(conversationRepository.setGeneratedTitle(input)).rejects.toMatchObject({ code: 'STORAGE_QUOTA_EXCEEDED' });
+    const unchanged = await conversationRepository.findWithMessagesForOwner({ ...input, limit: 1 });
+    expect(unchanged?.conversation.title).toBe('New chat');
+    await setStorageLimit(source, OWNER_ID, 10000n);
+    await expect(conversationRepository.setGeneratedTitle(input)).resolves.toBe(true);
+    await expect(quotaRepository.readUsage(OWNER_ID)).resolves.toMatchObject({ usedBytes: before.usedBytes + BigInt(Buffer.byteLength(input.title) - Buffer.byteLength('New chat')) });
+    await expect(conversationRepository.setGeneratedTitle({ ...input, title: 'Another title' })).resolves.toBe(false);
+    const saved = await conversationRepository.findWithMessagesForOwner({ ...input, limit: 1 });
+    expect(saved?.conversation.title).toBe(input.title);
+  });
+
   function requiredDataSource(): DataSource {
     if (!dataSource) throw new Error('The isolated conversation quota database was not initialized.');
     return dataSource;

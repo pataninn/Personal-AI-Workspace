@@ -196,20 +196,21 @@ describe('ChatWorkspace', () => {
     expect(screen.queryByText('Choose a conversation')).not.toBeInTheDocument();
     expect(screen.getAllByTestId('conversation-create-trigger')).toHaveLength(1);
     await user.click(await screen.findByTestId('conversation-create-trigger'));
-    await user.type(screen.getByLabelText('Conversation name'), 'New saved thread');
-    await user.click(screen.getByTestId('conversation-create-submit'));
-    expect(await screen.findByTestId('conversation-create-success-announcement')).toHaveTextContent('Conversation created.');
+    await waitFor(() => expect(createConversationMock).toHaveBeenCalledWith(activeProject.id, { title: 'New chat' }, expect.any(String), expect.any(String)));
+    expect(await screen.findByTestId('message-input')).toBeInTheDocument();
     expect(screen.queryByTestId('conversation-create-dialog')).not.toBeInTheDocument();
   });
 
   it('opens creation from the rail and keeps archived workspaces read-only', async () => {
+    createConversationMock.mockResolvedValue(firstConversation);
     listConversationsMock.mockResolvedValue(listResponse());
     getConversationMock.mockResolvedValue(emptyHistory);
     renderWorkspace();
     const user = userEvent.setup();
     await screen.findByTestId('conversation-create-trigger');
     await user.click(screen.getByTestId('conversation-create-trigger'));
-    expect(await screen.findByTestId('conversation-create-dialog')).toBeInTheDocument();
+    await waitFor(() => expect(createConversationMock).toHaveBeenCalled());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 
     cleanup();
     listConversationsMock.mockResolvedValue(listResponse([firstConversation]));

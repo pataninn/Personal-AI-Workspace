@@ -17,6 +17,12 @@ const validEnvironment: NodeJS.ProcessEnv = {
 };
 
 describe('loadConfig', () => {
+  it('requires explicit opt-in for estimated Home token accounting', () => {
+    expect(loadConfig(validEnvironment).allowEstimatedHomeUsage).toBe(false);
+    expect(loadConfig({ ...validEnvironment, NIM_ALLOW_ESTIMATED_HOME_USAGE: 'true' }).allowEstimatedHomeUsage).toBe(true);
+    expect(() => loadConfig({ ...validEnvironment, NIM_ALLOW_ESTIMATED_HOME_USAGE: 'yes' })).toThrow(ConfigurationError);
+  });
+
   it('returns a strict, normalized configuration', () => {
     const config = loadConfig(validEnvironment);
 
@@ -25,11 +31,31 @@ describe('loadConfig', () => {
     expect(config.accountWorkspacesIdentity).toBeUndefined();
     expect(config.nimModel).toBe(EXPECTED_NIM_MODEL);
     expect(config.agentRuntimeMode).toBe('direct');
+    expect(config.providerCreditConfiguration).toBeUndefined();
     expect(config.sessionSecret).toBe('a'.repeat(32));
     expect(config.demoSessionLifetimeMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.demoAbuseLimits).toBeUndefined();
     expect(config.trustedProxyCidrs).toBeUndefined();
     expect(config.storageDiskWarningFreeBytes).toBeUndefined();
+  });
+
+  it('treats empty Compose provider-credit values as absent and rejects a partial profile', () => {
+    const creditFields = [
+      'NIM_CREDIT_PRICE_VERSION',
+      'NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS',
+      'NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS',
+      'NIM_MAX_INPUT_TOKENS',
+      'NIM_MAX_OUTPUT_TOKENS',
+      'NIM_MAX_PROVIDER_CALLS_PER_RUN'
+    ];
+    const emptyProfile = Object.fromEntries(creditFields.map((field) => [field, '']));
+
+    expect(loadConfig({ ...validEnvironment, ...emptyProfile }).providerCreditConfiguration).toBeUndefined();
+    expect(() => loadConfig({
+      ...validEnvironment,
+      ...emptyProfile,
+      NIM_CREDIT_PRICE_VERSION: 'price-v1'
+    })).toThrow(ConfigurationError);
   });
 
   it('parses complete demo abuse settings and validated proxy CIDRs', () => {
@@ -122,6 +148,29 @@ describe('loadConfig', () => {
       maxOutputTokens: 8192,
       maxAttemptsForSource: 4
     });
+  });
+
+  it('requires the full Nemotron context reservation for configured Nebius Hermes Home inference', () => {
+    const nebiusHermesEnvironment = {
+      ...validEnvironment,
+      NIM_PROFILE: 'nebius-token-factory',
+      NIM_ENDPOINT: 'https://api.tokenfactory.nebius.com/v1',
+      NIM_CREDIT_PRICE_VERSION: 'price-v1',
+      NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS: '300000',
+      NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS: '900000',
+      NIM_MAX_INPUT_TOKENS: '262143',
+      NIM_MAX_OUTPUT_TOKENS: '512',
+      NIM_MAX_PROVIDER_CALLS_PER_RUN: '1',
+      AGENT_RUNTIME_MODE: 'hermes',
+      HERMES_BRIDGE_ENDPOINT: 'https://host.docker.internal:17871',
+      HERMES_BRIDGE_CA_FILE: '/run/hermes/ca.crt',
+      HERMES_BRIDGE_CERT_FILE: '/run/hermes/client.crt',
+      HERMES_BRIDGE_KEY_FILE: '/run/hermes/client.key'
+    };
+
+    expect(() => loadConfig(nebiusHermesEnvironment)).toThrow(ConfigurationError);
+    expect(loadConfig({ ...nebiusHermesEnvironment, NIM_MAX_INPUT_TOKENS: '262144' }).providerCreditConfiguration?.maxInputTokens)
+      .toBe(262_144);
   });
 
   it('rejects partial or out-of-range provider credit profiles', () => {

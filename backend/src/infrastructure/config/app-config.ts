@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { NEBIUS_PROVIDER_PROFILE, NVIDIA_PROVIDER_PROFILE } from '@/modules/ai-runs/domain/model-provider-profile';
+import { HOME_NEBIUS_NEMOTRON_BOUND } from '@/modules/credits/domain/home-provider-credit-bound';
 import { parseCreditRate, parseTokenLimit } from '@/modules/credits/domain/credit-calculation';
 import type { ProviderCallCreditConfiguration } from '@/modules/credits/repositories/provider-call-credit-admission';
 
@@ -14,11 +15,14 @@ import {
   type DatabaseConfig
 } from '@/infrastructure/config/database-config';
 
-const EXPECTED_NIM_MODEL = 'nvidia/nemotron-3-super-120b-a12b';
+const EXPECTED_NIM_MODEL = HOME_NEBIUS_NEMOTRON_BOUND.model;
 
 const booleanEnvironment = z
   .enum(['true', 'false'])
   .transform((value: 'true' | 'false') => value === 'true');
+
+const optionalEnvironmentValue = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess((value: unknown) => value === '' ? undefined : value, schema.optional());
 
 const appEnvironmentSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('production'),
@@ -86,12 +90,13 @@ const appEnvironmentSchema = z.object({
   NIM_PROFILE: z.enum([NVIDIA_PROVIDER_PROFILE, NEBIUS_PROVIDER_PROFILE]).default(NVIDIA_PROVIDER_PROFILE),
   NIM_ENDPOINT: z.string().url().default('https://integrate.api.nvidia.com/v1'),
   NIM_MODEL: z.string().default(EXPECTED_NIM_MODEL),
-  NIM_CREDIT_PRICE_VERSION: z.string().trim().min(1).max(64).optional(),
-  NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS: z.string().regex(/^[1-9][0-9]{0,18}$/u).optional(),
-  NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS: z.string().regex(/^[1-9][0-9]{0,18}$/u).optional(),
-  NIM_MAX_INPUT_TOKENS: z.string().regex(/^[1-9][0-9]{0,8}$/u).optional(),
-  NIM_MAX_OUTPUT_TOKENS: z.string().regex(/^[1-9][0-9]{0,8}$/u).optional(),
-  NIM_MAX_PROVIDER_CALLS_PER_RUN: z.string().regex(/^[1-9][0-9]?$/u).optional(),
+  NIM_CREDIT_PRICE_VERSION: optionalEnvironmentValue(z.string().trim().min(1).max(64)),
+  NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS: optionalEnvironmentValue(z.string().regex(/^[1-9][0-9]{0,18}$/u)),
+  NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS: optionalEnvironmentValue(z.string().regex(/^[1-9][0-9]{0,18}$/u)),
+  NIM_MAX_INPUT_TOKENS: optionalEnvironmentValue(z.string().regex(/^[1-9][0-9]{0,8}$/u)),
+  NIM_MAX_OUTPUT_TOKENS: optionalEnvironmentValue(z.string().regex(/^[1-9][0-9]{0,8}$/u)),
+  NIM_MAX_PROVIDER_CALLS_PER_RUN: optionalEnvironmentValue(z.string().regex(/^[1-9][0-9]?$/u)),
+  NIM_ALLOW_ESTIMATED_HOME_USAGE: z.enum(['true', 'false']).default('false'),
   HOME_PLANNING_TIME_ZONE: z.string().min(1).optional(),
   AGENT_RUNTIME_MODE: z.enum(['fake', 'direct', 'openshell', 'hermes']).default('direct'),
   HERMES_BRIDGE_ENDPOINT: z.string().url().optional(),
@@ -150,6 +155,7 @@ export interface AppConfig {
   readonly nimEndpoint: string;
   readonly nimModel: string;
   readonly providerCreditConfiguration?: ProviderCallCreditConfiguration;
+  readonly allowEstimatedHomeUsage?: boolean;
   readonly homePlanningTimeZone?: string;
   readonly agentRuntimeMode: 'fake' | 'direct' | 'openshell' | 'hermes';
   readonly hermesBridgeEndpoint?: string;
@@ -245,6 +251,13 @@ function validateCrossFieldConfiguration(value: z.infer<typeof appEnvironmentSch
   const creditConfigurationCount = creditConfigurationFields.filter((field) => field !== undefined).length;
   if (creditConfigurationCount > 0 && creditConfigurationCount < creditConfigurationFields.length) {
     details.push({ field: 'NIM_CREDIT_PRICE_VERSION', message: 'Provider prices, token bounds, and maximum call count must be configured together.' });
+  }
+  if (creditConfigurationCount === creditConfigurationFields.length
+    && value.NIM_PROFILE === HOME_NEBIUS_NEMOTRON_BOUND.providerProfile
+    && value.NIM_MODEL === HOME_NEBIUS_NEMOTRON_BOUND.model
+    && value.AGENT_RUNTIME_MODE === 'hermes'
+    && Number(value.NIM_MAX_INPUT_TOKENS) < HOME_NEBIUS_NEMOTRON_BOUND.maxInputTokens) {
+    details.push({ field: 'NIM_MAX_INPUT_TOKENS', message: 'The Nebius Home credit profile must reserve the full Nemotron context bound.' });
   }
   if (value.NIM_MAX_OUTPUT_TOKENS && Number(value.NIM_MAX_OUTPUT_TOKENS) > 16_384) {
     details.push({ field: 'NIM_MAX_OUTPUT_TOKENS', message: 'The provider output-token cap must be 16384 or less.' });
@@ -457,6 +470,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     nimEndpoint: parsed.data.NIM_ENDPOINT,
     nimModel: parsed.data.NIM_MODEL,
     ...(providerCreditConfiguration ? { providerCreditConfiguration } : {}),
+    allowEstimatedHomeUsage: parsed.data.NIM_ALLOW_ESTIMATED_HOME_USAGE === 'true',
     ...(parsed.data.HOME_PLANNING_TIME_ZONE ? { homePlanningTimeZone: parsed.data.HOME_PLANNING_TIME_ZONE } : {}),
     agentRuntimeMode: parsed.data.AGENT_RUNTIME_MODE,
     ...(parsed.data.HERMES_BRIDGE_ENDPOINT ? { hermesBridgeEndpoint: parsed.data.HERMES_BRIDGE_ENDPOINT } : {}),

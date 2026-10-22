@@ -731,3 +731,27 @@ describe('StartAiRunUseCase', () => {
     expect(conversations.assistantMessages[0]?.content.length).toBeLessThanOrEqual(64 * 1024);
   });
 });
+
+
+it('names a new chat from the same reply and never stores title metadata as the answer', async () => {
+  const repository = new InMemoryAiRunRepository();
+  const base = conversationRepository();
+  const page = await base.findWithMessagesForOwner({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, limit: 1 });
+  if (!page) throw new Error('Missing fixture conversation');
+  const setGeneratedTitle = jest.fn().mockResolvedValue(true);
+  const conversations = { ...base, setGeneratedTitle, findWithMessagesForOwner: jest.fn().mockResolvedValue({ ...page, conversation: { ...page.conversation, title: 'New chat' } }) };
+  const runtime = new FakeAgentRuntime();
+  runtime.runOptions = { events: [
+    { type: 'assistant.delta', text: '<chat_title>Data structures revision</chat_title>\nUse a stack.' },
+    { type: 'completed', text: '' }
+  ] };
+  const startRun = jest.spyOn(runtime, 'startRun');
+  const run = await readyRun(repository);
+  const useCase = createStartUseCase(repository, conversations, runtime, new InMemoryRunEventPublisher());
+  await useCase.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-auto-chat-title' });
+  await waitForStatus(repository, run.id, 'succeeded');
+  expect(startRun).toHaveBeenCalledTimes(1);
+  expect(startRun).toHaveBeenCalledWith(expect.objectContaining({ generateConversationTitle: true }));
+  expect(setGeneratedTitle).toHaveBeenCalledWith({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, title: 'Data structures revision' });
+  expect(conversations.assistantMessages[0]?.content).toBe('Use a stack.');
+});

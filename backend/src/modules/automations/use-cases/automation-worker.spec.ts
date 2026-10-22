@@ -46,6 +46,26 @@ function setup(item: ClaimedAutomationOccurrence) {
 }
 
 describe('AutomationWorker', () => {
+  it('stops trusting the lease when a background heartbeat fails without rejecting the timer', async () => {
+    jest.useFakeTimers();
+    try {
+      const { worker, repository, getHomeTurn } = setup(claimed(TURN_ID, 'running'));
+      (repository.heartbeat as jest.Mock).mockRejectedValue(new Error('database temporarily unavailable'));
+      let releasePoll: (() => void) | undefined;
+      getHomeTurn.execute.mockImplementation(async (input: { automationGuard: { isCurrent(): Promise<boolean> } }) => {
+        await new Promise<void>((resolve) => { releasePoll = resolve; });
+        expect(await input.automationGuard.isCurrent()).toBe(false);
+        return { status: 'unknown' };
+      });
+      const pass = worker.runOnce();
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(repository.heartbeat).toHaveBeenCalledTimes(1);
+      releasePoll?.();
+      await pass;
+      expect(repository.recordTurnStatus).toHaveBeenCalledWith(expect.objectContaining({ status: 'interrupted_unknown' }));
+    } finally { jest.useRealTimers(); }
+  });
+
   it('dispatches a new occurrence through the skill use case and records its existing Home turn result', async () => {
     const { worker, repository, invokeSkill, getHomeTurn } = setup(claimed(null));
     (repository.findOccurrence as jest.Mock).mockResolvedValueOnce(claimed(null).occurrence).mockResolvedValueOnce({ ...claimed(null).occurrence, homeTurnId: TURN_ID, status: 'running' });

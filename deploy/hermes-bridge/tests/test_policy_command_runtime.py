@@ -244,6 +244,10 @@ class RunnerPolicyTests(unittest.TestCase):
             terminal._check_all_guards = Mock()
             terminal._get_approval_callback = Mock()
             modules = {
+                'provider_credit': types.SimpleNamespace(install_httpx_boundary=Mock(), connect=Mock()),
+                'agent': types.ModuleType('agent'),
+                'agent.model_metadata': types.ModuleType('agent.model_metadata'),
+                'agent.title_generator': types.ModuleType('agent.title_generator'),
                 'model_tools': types.ModuleType('model_tools'),
                 'tools': types.ModuleType('tools'), 'tools.terminal_tool': terminal,
                 'tools.registry': types.SimpleNamespace(registry=registry),
@@ -257,9 +261,12 @@ class RunnerPolicyTests(unittest.TestCase):
             import base64
             binding = lifecycle.validate_policy_snapshot(RUN_ID, payload())
             with patch.dict(sys.modules, modules), patch.dict(os.environ, {
-                    'PAI_PROJECT_ROOT': str(root), 'PAI_POLICY_BINDING': base64.b64encode(json.dumps(binding).encode()).decode()}), \
+                    'PAI_PROJECT_ROOT': str(root), 'PAI_PLANNING_MAX_TOKENS': '512', 'PAI_POLICY_BINDING': ''}), \
                     patch.object(os, 'chdir'), patch.object(runner.signal, 'signal'), patch.object(sys, 'argv', ['acp_runner.py']):
                 namespace = runpy.run_path(str(BRIDGE_ROOT / 'runtime' / 'acp_runner.py'), run_name='__main__')
+            # Windows checks dispatch; the actual pinned-image self-test verifies kernel enforcement.
+            namespace['dispatch'].__globals__['POLICY'] = runner.PolicyCommands(root, binding)
+            namespace['POLICY'] = namespace['dispatch'].__globals__['POLICY']
             with patch.object(namespace['POLICY'], 'dispatch', return_value='policy-result') as dispatch:
                 self.assertEqual(registry.dispatch('terminal', {'command': 'pwd'}), 'policy-result')
                 dispatch.assert_called_once()
@@ -273,6 +280,15 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertEqual(receipt['profileHash'], runner.PROFILE_HASH)
         self.assertEqual(receipt['limits']['maxProcesses'], 4)
         self.assertTrue(receipt['unavailableReasons'])
+
+    def test_probe_accepts_only_a_current_runner_enforcement_receipt(self):
+        receipt = {'supported': True, 'profileVersion': runner.PROFILE_VERSION,
+                   'profileHash': runner.PROFILE_HASH, 'limits': runner.COMMAND_LIMITS,
+                   'unavailableReasons': [], 'runnerSha256': hashlib.sha256((BRIDGE_ROOT / 'runtime' / 'acp_runner.py').read_bytes()).hexdigest()}
+        with patch.object(lifecycle, 'profile', return_value={'policyCommand': receipt}):
+            self.assertTrue(lifecycle.policy_capability()['supported'])
+        with patch.object(lifecycle, 'profile', return_value={'policyCommand': {**receipt, 'runnerSha256': 'f' * 64}}):
+            self.assertFalse(lifecycle.policy_capability()['supported'])
 
 
 class BoundedExecutorTests(unittest.TestCase):

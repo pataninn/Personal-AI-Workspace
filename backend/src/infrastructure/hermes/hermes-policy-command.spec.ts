@@ -98,7 +98,7 @@ describe('private Hermes policy command protocol', () => {
     let stage = 0;
     let released = false;
     const call = jest.fn(async (operation: string): Promise<Record<string, unknown>> => {
-      if (operation === 'probe') return { ready: true, profile: { hermesVersion: '0.20.6', providerProfile: 'fixture', model: 'fixture', endpoint: 'https://provider.invalid' },
+      if (operation === 'probe') return { ready: true, providerReceiptVersion: 1, maxOutputTokens: 512, profile: { hermesVersion: '0.20.6', providerProfile: 'fixture', model: 'fixture', endpoint: 'https://provider.invalid' },
         policyCommand: { supported: true, profileVersion: POLICY_COMMAND_VERSION, profileHash: POLICY_COMMAND_PROFILE_HASH, limits: COMMAND_LIMITS, unavailableReasons: [] } };
       if (operation === 'poll') {
         if (stage++ === 0) return { status: 'running', events: [{ sequence: 1, type: 'policy-command-proposed', id: requestId, params: { ...binding, command: 'cat README.md' } }] };
@@ -111,7 +111,7 @@ describe('private Hermes policy command protocol', () => {
     });
     const runtime = new HermesAgentRuntime({ call } as unknown as HermesBridgeClient,
       { read: async () => ({ files: [], prompt: 'synthetic fixture' }) } as unknown as ApprovedContextReader,
-      { providerProfile: 'fixture', model: 'fixture', endpoint: 'https://provider.invalid', providerEgressAdmissionEnforced: true });
+      { providerProfile: 'fixture', model: 'fixture', endpoint: 'https://provider.invalid', providerEgressAdmissionEnforced: true, maxOutputTokens: 512, providerCredits: { hasAdmittedCall: () => true, handle: jest.fn(), markInterrupted: jest.fn(), clearTurn: jest.fn() } });
     const iterator = runtime.startRun(run)[Symbol.asyncIterator]();
     expect((await iterator.next()).value).toMatchObject({ type: 'started' });
     expect((await iterator.next()).value).toMatchObject({ type: 'provider.request_started' });

@@ -2,7 +2,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { Provider } from 'react-redux';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AutomationOccurrence, AutomationSchedule } from '@/entities/automation';
 import { userSessionReducer } from '@/entities/user-session';
@@ -50,6 +50,29 @@ beforeEach(() => {
 });
 
 describe('useAutomationManagement run reconciliation', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('continues polling long runs after the backoff reaches thirty seconds and stops on completion', async () => {
+    api.listAutomationOccurrences.mockResolvedValue({ occurrences: [QUEUED_OCCURRENCE], nextCursor: null });
+    const { result, unmount } = renderHook(() => useAutomationManagement(), { wrapper });
+    await waitFor(() => expect(result.current.histories[SCHEDULE_ID]?.status).toBe('success'));
+    vi.useFakeTimers();
+    // Begin a new polling effect under fake timers.
+    act(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); });
+    await act(async () => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' }); document.dispatchEvent(new Event('visibilitychange')); });
+    const initialCalls = api.listAutomationOccurrences.mock.calls.length;
+    for (const delay of [5_000, 10_000, 20_000, 30_000, 30_000]) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(delay); });
+    }
+    expect(api.listAutomationOccurrences).toHaveBeenCalledTimes(initialCalls + 5);
+    api.listAutomationOccurrences.mockResolvedValue({ occurrences: [{ ...QUEUED_OCCURRENCE, status: 'succeeded' }], nextCursor: null });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    const completedCalls = api.listAutomationOccurrences.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+    expect(api.listAutomationOccurrences).toHaveBeenCalledTimes(completedCalls);
+    unmount();
+  });
+
   it('keeps an acknowledged run visible when the immediate history read has not caught up and prevents a second run', async () => {
     let finishRun: ((occurrence: AutomationOccurrence) => void) | undefined;
     api.runAutomationNow.mockReturnValueOnce(new Promise<AutomationOccurrence>((resolve) => { finishRun = resolve; }));

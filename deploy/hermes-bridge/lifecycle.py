@@ -76,7 +76,7 @@ class Run:
             if self.cancelled.is_set():
                 return
             self._upload()
-            environment = ['PAI_PROJECT_ROOT=' + self.remote + '/project', 'PAI_MODEL=' + self.payload.get('model', 'nvidia/nemotron-3-super-120b-a12b')]
+            environment = ['PAI_PROJECT_ROOT=' + self.remote + '/project', 'PAI_MODEL=' + self.payload.get('model', 'nvidia/nemotron-3-super-120b-a12b'), 'PAI_PROVIDER_PROFILE=' + self.payload['providerProfile'], 'PAI_PLANNING_MAX_TOKENS=' + str(self.payload['maxOutputTokens'])]
             if self.is_policy:
                 environment.append('PAI_POLICY_BINDING=' + base64.b64encode(json.dumps(self.policy_binding, separators=(',', ':')).encode()).decode())
             self.acp = AcpSession(self.ssh_command('/usr/bin/env', *environment, '/opt/hermes/.venv/bin/python', '/opt/pai/acp_runner.py'), self)
@@ -243,6 +243,15 @@ class Run:
 
 
 def policy_capability():
+    try:
+        verified = profile().get('policyCommand', {})
+        runner_hash = hashlib.sha256((Path(__file__).parent / 'runtime' / 'acp_runner.py').read_bytes()).hexdigest()
+        if (verified.get('supported') is True and verified.get('profileVersion') == PROFILE_VERSION
+                and verified.get('profileHash') == PROFILE_HASH and verified.get('limits') == COMMAND_LIMITS
+                and verified.get('unavailableReasons') == [] and verified.get('runnerSha256') == runner_hash):
+            return verified
+    except (OSError, ValueError):
+        pass
     return {'supported': False, 'profileVersion': PROFILE_VERSION, 'profileHash': PROFILE_HASH,
             'limits': COMMAND_LIMITS,
             'unavailableReasons': ['Pinned sandbox command enforcement has no verified runtime receipt.']}

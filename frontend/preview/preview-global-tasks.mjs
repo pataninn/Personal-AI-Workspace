@@ -59,7 +59,11 @@ export async function handlePreviewGlobalTasks(request, response, seed, idempote
     return true;
   }
   if (method === 'POST' && parts.length === 5 && parts[4] === 'archive') {
-    await archiveTask(request, response, seed, idempotency, actionRecords, parts[3]);
+    sendError(response, 410, 'POLICY_ACTION_RETIRED', 'Task archiving is retired. Use permanent deletion.');
+    return true;
+  }
+  if (method === 'DELETE' && parts.length === 4) {
+    await deleteTask(request, response, seed, idempotency, actionRecords, parts[3]);
     return true;
   }
   sendError(response, 404, 'PREVIEW_NOT_FOUND', 'This task route is not part of the mock preview.');
@@ -168,47 +172,38 @@ async function moveTask(request, response, seed, idempotency, actionRecords, tas
   sendMutation(response, seed, task, record, false);
 }
 
-async function archiveTask(request, response, seed, idempotency, actionRecords, taskId) {
-  const body = await readBody(request);
-  if (!isRecord(body) || Object.keys(body).some((field) => field !== 'expectedOrderVersion') || !validOptionalVersion(body.expectedOrderVersion)) {
-    sendError(response, 400, 'VALIDATION_ERROR', 'The archive request is invalid.'); return;
-  }
+async function deleteTask(request, response, seed, idempotency, actionRecords, taskId) {
   const expectedVersion = readIfMatch(request, response);
   if (expectedVersion === null) return;
   const key = readMutationKey(request, response);
   if (!key) return;
-  const fingerprint = stableJson({ actionKind: 'task.archive', taskId, expectedVersion, body });
+  const fingerprint = stableJson({ actionKind: 'task.delete', taskId, expectedVersion });
   const replay = findReplay(idempotency, actionRecords, key, fingerprint, response);
   if (replay) {
     if (replay.handled) return;
-    const task = seed.tasks.find((candidate) => candidate.id === replay.record.targetId);
-    if (!task) { sendError(response, 404, 'PROJECT_TASK_NOT_FOUND', 'Task not found.'); return; }
-    sendMutation(response, seed, task, replay.record, true);
+    sendDeletion(response, replay.record, true);
     return;
   }
   const task = seed.tasks.find((candidate) => candidate.id === taskId);
   if (!task) { sendError(response, 404, 'PROJECT_TASK_NOT_FOUND', 'Task not found.'); return; }
   if (!canMutateTask(seed, task, response)) return;
   if (task.version !== expectedVersion) { sendError(response, 409, 'PROJECT_TASK_VERSION_CONFLICT', 'This task changed. Reload the latest version and try again.'); return; }
-  const currentOrderVersion = orderVersion(seed, task.projectId);
-  if (body.expectedOrderVersion !== undefined && body.expectedOrderVersion !== currentOrderVersion) {
-    sendError(response, 409, 'PROJECT_TASK_ORDER_CONFLICT', 'The task order changed. Reload the latest order and try again.'); return;
-  }
-  const before = snapshotTask(task);
-  task.status = 'archived';
-  task.archivedAt = new Date().toISOString();
-  task.version += 1;
-  task.updatedAt = task.archivedAt;
+  seed.tasks = seed.tasks.filter((candidate) => candidate.id !== task.id);
+  for (const suggestion of seed.taskSuggestions) if (suggestion.taskId === task.id) suggestion.taskId = null;
   compactPositions(seed, task.projectId);
   const postOrderVersion = bumpOrder(seed, task.projectId);
-  const fields = { status: { before: before.status, after: 'archived' }, archivedAt: { before: before.archivedAt, after: task.archivedAt } };
-  const record = makeRecord({
-    actionKind: 'task.archive', task, expectedVersion, preVersion: before.version, reversibleFields: fields,
-    outcome: { targetId: task.id, targetVersion: task.version, sourceOrderVersion: postOrderVersion }, undoStatus: 'available'
-  });
+  const record = { ...makeRecord({
+    actionKind: 'task.delete', task, expectedVersion, preVersion: task.version, reversibleFields: {},
+    outcome: { targetId: task.id, targetVersion: null, sourceOrderVersion: postOrderVersion }, undoStatus: 'not_reversible'
+  }), postVersion: null };
   actionRecords.set(record.id, record);
   idempotency.set(mutationSlot(key), { fingerprint, actionId: record.id });
-  sendMutation(response, seed, task, record, false);
+  sendDeletion(response, record, false);
+}
+
+function sendDeletion(response, record, replayed) {
+  sendData(response, { taskId: record.targetId, orderVersion: record.outcome.sourceOrderVersion,
+    receipt: serializeCompactReceipt(record), replayed });
 }
 
 async function handleActionRoute(request, response, seed, idempotency, actionRecords, parts, method) {
@@ -441,6 +436,7 @@ function makeRecord(input) {
 function serializeAction(record) {
   return {
     id: record.id, actionKind: record.actionKind, targetKind: record.targetKind, targetId: record.targetId,
+    actorKind: 'manual', turnId: null,
     preVersion: record.preVersion, postVersion: record.postVersion, outcome: record.outcome,
     undoStatus: record.undoStatus, undoActionId: record.undoActionId, createdAt: record.createdAt
   };
@@ -453,6 +449,7 @@ function serializeCompactReceipt(record) {
 function serializeReceiptMetadata(record) {
   return {
     id: record.id, actionKind: record.actionKind, targetKind: record.targetKind, targetId: record.targetId,
+    actorKind: 'manual', turnId: null,
     postVersion: record.postVersion, undoStatus: record.undoStatus, undoActionId: record.undoActionId
   };
 }
