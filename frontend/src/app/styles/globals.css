@@ -2335,8 +2335,14 @@ textarea:focus-visible {
   margin-block: 0 var(--space-2);
 }
 
-.task-detail-header > a {
+.task-detail-header > div:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.task-detail-header > .task-detail-toolbar {
   flex: 0 0 auto;
+  max-width: 100%;
 }
 
 .task-detail-actions {
@@ -2400,9 +2406,6 @@ textarea:focus-visible {
     flex: 1 1 auto;
   }
 
-  .task-detail-editor-actions > .button {
-    flex: 1 1 100%;
-  }
 }
 
 @media (max-width: 64rem) {
@@ -3314,12 +3317,6 @@ textarea:focus-visible {
 .task-detail-editor {
   width: min(100%, 50rem);
   min-width: 0;
-}
-
-.task-detail-editor-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
 }
 
 .task-checklist-completion {

@@ -449,10 +449,20 @@ export function TaskDetailPage(): React.JSX.Element {
   const visibleItem = current.item;
   const visibleTask = visibleItem.task;
   const historical = visibleItem.workspace?.status === 'archived';
+  const renderHeader = (editorActions?: React.ReactNode): React.JSX.Element => <header className="task-detail-header"><div><p className="product-label">{visibleItem.workspace?.name ?? 'Inbox'}{visibleItem.workspace?.status === 'archived' ? ' · Archived workspace' : ''}</p><h1 ref={pageHeadingRef} tabIndex={-1}>{visibleTask.title}</h1></div>
+    {canMutate ? <div className="task-detail-toolbar"><div className="task-detail-actions" aria-label="Task actions">{editorActions}
+      <Button ref={moveTriggerRef} type="button" variant="secondary" data-testid="task-move-open" aria-describedby={editDirty ? 'task-move-disabled-reason' : undefined} disabled={editDirty || editSaving} title={editDirty ? 'Save or cancel edits before moving this task' : undefined} onClick={openMove}>Move</Button>
+      <Button type="button" variant="destructive" data-testid="task-delete-open" disabled={deleteSaving || editSaving || taskUnavailable || !csrfToken} onClick={() => { setDeleteError(null); setDeleteOpen(true); }}>
+        Delete
+      </Button>
+    </div>
+    {editDirty ? <p id="task-move-disabled-reason" className="supporting-copy">Save or cancel edits before moving this task.</p> : null}
+    </div> : null}
+  </header>;
   return <article className="task-detail-page" data-testid="task-detail-page">
-    <header className="task-detail-header"><div><p className="product-label">{visibleItem.workspace?.name ?? 'Inbox'}{visibleItem.workspace?.status === 'archived' ? ' · Archived workspace' : ''}</p><h1 ref={pageHeadingRef} tabIndex={-1}>{visibleTask.title}</h1></div></header>
+    {!canMutate ? renderHeader() : null}
     {visibleItem.workspace?.status === 'archived' ? <Alert tone="warning" data-testid="task-detail-archived-workspace">This task belongs to an archived workspace and is read-only here.</Alert> : null}
-    {canMutate ? <TaskDetailEditor key={`${ownerId ?? 'anonymous'}:${visibleTask.id}`} task={visibleTask} saving={editSaving} resetNonce={editResetNonce} unavailable={taskUnavailable} onSave={saveTask} onDirtyChange={onEditorDirtyChange} onCancelRequest={() => { setExitPromptOpen(true); }} onTaskUnavailable={() => { setTaskUnavailable(true); }} /> : null}
+    {canMutate ? <TaskDetailEditor key={`${ownerId ?? 'anonymous'}:${visibleTask.id}`} task={visibleTask} saving={editSaving} resetNonce={editResetNonce} unavailable={taskUnavailable} renderHeader={renderHeader} onSave={saveTask} onDirtyChange={onEditorDirtyChange} onCancelRequest={() => { setExitPromptOpen(true); }} onTaskUnavailable={() => { setTaskUnavailable(true); }} /> : null}
     <dl className="task-detail-fields">
       <div><dt>Status</dt><dd><ProjectTaskStatusLabel status={visibleTask.status} /></dd></div>
       <div><dt>Location</dt><dd>{visibleItem.workspace ? `${visibleItem.workspace.name}${visibleItem.workspace.status === 'archived' ? ' (archived workspace)' : ''}` : 'Inbox'}</dd></div>
@@ -474,13 +484,6 @@ export function TaskDetailPage(): React.JSX.Element {
       </Alert>
       {undoError ? <Alert tone="error" role="alert" data-testid="task-undo-error"><p>{undoError.message}</p>{undoError.retryable ? <Button type="button" variant="secondary" data-testid="task-undo-refresh-receipt" onClick={() => { setReceiptReloadAttempt((value) => value + 1); }}>Refresh receipt</Button> : null}</Alert> : null}
     </section> : receiptLoading ? <p role="status" data-testid="task-receipt-loading">Checking saved receipt…</p> : receiptLoadError ? <Alert tone="warning" data-testid="task-receipt-load-error">The saved task is still available, but its receipt could not be checked. <Button type="button" variant="secondary" data-testid="task-receipt-refresh" onClick={() => { setReceiptReloadAttempt((value) => value + 1); }}>Refresh receipt</Button></Alert> : null}
-    {canMutate ? <div className="task-detail-actions" aria-label="Task actions">
-      <Button ref={moveTriggerRef} type="button" variant="secondary" data-testid="task-move-open" aria-describedby={editDirty ? 'task-move-disabled-reason' : undefined} disabled={editDirty || editSaving} title={editDirty ? 'Save or cancel edits before moving this task' : undefined} onClick={openMove}>Move</Button>
-      <Button type="button" variant="destructive" data-testid="task-delete-open" disabled={deleteSaving || editSaving || taskUnavailable || !csrfToken} onClick={() => { setDeleteError(null); setDeleteOpen(true); }}>
-        Delete
-      </Button>
-    </div> : null}
-    {canMutate && editDirty ? <p id="task-move-disabled-reason" className="supporting-copy">Save or cancel edits before moving this task.</p> : null}
     <Link className="button button-secondary" data-testid="task-detail-back-to-tasks" to={path}>Back to tasks</Link>
     <TaskConfirmationDialog open={deleteOpen} title="Delete task?" description={`“${visibleTask.title}” and its checklist will be deleted. This cannot be undone.${editDirty ? ' Your unsaved edits will also be discarded.' : ''}`}
       pendingLabel="Deleting…"

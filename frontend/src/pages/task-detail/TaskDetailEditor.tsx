@@ -9,6 +9,7 @@ import type { TaskEditorSaveResult } from '@/features/project-tasks/ui/TaskEdito
 import { AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogRoot, AlertDialogTitle, Button, Input, Label, Textarea } from '@/shared/ui';
 
 interface TaskDetailEditorProps {
+  readonly renderHeader: (actions: React.ReactNode) => React.ReactNode;
   readonly task: ProjectTask;
   readonly saving: boolean;
   readonly resetNonce: number;
@@ -19,7 +20,7 @@ interface TaskDetailEditorProps {
   readonly onTaskUnavailable: () => void;
 }
 
-export function TaskDetailEditor({ task, saving, resetNonce, unavailable, onSave, onDirtyChange, onCancelRequest, onTaskUnavailable }: TaskDetailEditorProps): React.JSX.Element {
+export function TaskDetailEditor({ renderHeader, task, saving, resetNonce, unavailable, onSave, onDirtyChange, onCancelRequest, onTaskUnavailable }: TaskDetailEditorProps): React.JSX.Element {
   const [baseline, setBaseline] = useState(task);
   const [title, setTitle] = useState(task.title);
   const [details, setDetails] = useState(task.details ?? '');
@@ -128,12 +129,16 @@ export function TaskDetailEditor({ task, saving, resetNonce, unavailable, onSave
   const saveLabel = saving ? 'Saving…' : error?.includes('uncertain') ? 'Retry save' : 'Save';
 
   return <>
+    {renderHeader(<>
+          <Button type="submit" form="task-detail-form" data-testid="task-detail-save" disabled={saveDisabled} aria-busy={saving || undefined}>{saveLabel}</Button>
+          <Button type="button" variant="secondary" data-testid="task-detail-cancel" disabled={!dirty || saving} onClick={onCancelRequest}>Cancel</Button>
+    </>)}
     <section className="task-detail-editor" data-testid="task-detail-editor" aria-busy={saving || undefined}>
       {notice ? <p className="project-task-editor-notice" role="status" data-testid="task-save-notice">{notice}</p> : null}
       {error ? <p className="project-task-editor-error" role="alert" data-testid="task-save-error">{error}</p> : null}
       {conflict !== undefined ? <TaskVersionConflict latest={conflict} draft={draft} onReload={() => { if (dirty) setReloadPrompt(true); else reloadLatest(); }} onKeepDraft={keepDraft} /> : null}
       {unavailable ? <p className="task-detail-unavailable-draft" role="alert" data-testid="task-unavailable-draft">This task was deleted. Your unsaved text is still shown.</p> : null}
-      <form className="project-task-editor-form" onSubmit={(event) => { void submit(event); }} noValidate>
+      <form id="task-detail-form" className="project-task-editor-form" onSubmit={(event) => { void submit(event); }} noValidate>
         <div className="field-group">
           <Label className="field-label" htmlFor="project-task-title">Task title <span aria-hidden="true">*</span></Label>
           <Input ref={titleRef} id="project-task-title" data-testid="project-task-title-input" value={title} onChange={(event) => { updateDraft({ ...draft, title: event.currentTarget.value }); }} required aria-required="true" aria-invalid={fieldErrors.title ? true : undefined} aria-describedby={fieldErrors.title ? 'project-task-title-error' : undefined} disabled={saving || unavailable} />
@@ -145,10 +150,7 @@ export function TaskDetailEditor({ task, saving, resetNonce, unavailable, onSave
           {fieldErrors.details ? <p id="project-task-details-error" className="field-error" role="alert">{fieldErrors.details}</p> : null}
         </div>
         <TaskMetadataFields checklistMode value={metadata} disabled={saving || unavailable} errors={fieldErrors} onChange={(value) => { updateDraft({ ...draft, metadata: value }); }} />
-        <div className="task-detail-editor-actions">
-          <Button type="submit" data-testid="task-detail-save" disabled={saveDisabled} aria-busy={saving || undefined}>{saveLabel}</Button>
-          <Button type="button" variant="secondary" data-testid="task-detail-cancel" disabled={!dirty || saving} onClick={onCancelRequest}>Cancel</Button>
-        </div>
+
       </form>
     </section>
     <AlertDialogRoot open={reloadPrompt} onOpenChange={setReloadPrompt}>
