@@ -51,6 +51,7 @@ export function SkillsWorkspace({ projectId, projectName, archived }: { readonly
   const [attempt, setAttempt] = useState(0);
   const [projects, setProjects] = useState<readonly ProjectSnapshot[]>([]);
   const [editor, setEditor] = useState<EditorState | null>(null);
+  const editorTrigger = useRef<HTMLElement | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<UserSkill | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [runTarget, setRunTarget] = useState<UserSkill | null>(null);
@@ -84,20 +85,25 @@ export function SkillsWorkspace({ projectId, projectName, archived }: { readonly
     return () => { active = false; };
   }, []);
 
+  function openEditor(next: EditorState): void {
+    editorTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setEditor(next);
+  }
+
   function openNewSkill(): void {
-    setEditor({ key: createIdempotencyKey(), skill: null, draft: { title: '', instructions: '', workspaceId: archived ? null : projectId, enabled: true, declaredTools: ['home_task_read'] } });
+    openEditor({ key: createIdempotencyKey(), skill: null, draft: { title: '', instructions: '', workspaceId: archived ? null : projectId, enabled: true, declaredTools: ['home_task_read'] } });
   }
 
   function copyTemplate(template: SkillTemplate): void {
-    setEditor({ key: createIdempotencyKey(), skill: null, draft: { title: template.title, instructions: template.instructions, workspaceId: archived ? null : projectId, enabled: true, declaredTools: [...template.declaredTools] } });
+    openEditor({ key: createIdempotencyKey(), skill: null, draft: { title: template.title, instructions: template.instructions, workspaceId: archived ? null : projectId, enabled: true, declaredTools: [...template.declaredTools] } });
   }
 
   function copySkill(skill: UserSkill): void {
-    setEditor({ key: createIdempotencyKey(), skill: null, draft: { title: `${skill.title} copy`.slice(0, 120), instructions: skill.instructions, workspaceId: archived ? null : projectId, enabled: true, declaredTools: [...skill.declaredTools] } });
+    openEditor({ key: createIdempotencyKey(), skill: null, draft: { title: `${skill.title} copy`.slice(0, 120), instructions: skill.instructions, workspaceId: archived ? null : projectId, enabled: true, declaredTools: [...skill.declaredTools] } });
   }
 
   function editSkill(skill: UserSkill): void {
-    setEditor({ key: createIdempotencyKey(), skill, draft: { title: skill.title, instructions: skill.instructions, workspaceId: skill.workspaceId, enabled: skill.enabled, declaredTools: [...skill.declaredTools] } });
+    openEditor({ key: createIdempotencyKey(), skill, draft: { title: skill.title, instructions: skill.instructions, workspaceId: skill.workspaceId, enabled: skill.enabled, declaredTools: [...skill.declaredTools] } });
   }
 
   function onSaved(skill: UserSkill): void {
@@ -145,7 +151,7 @@ export function SkillsWorkspace({ projectId, projectName, archived }: { readonly
     {templatesStatus === 'loading' ? <section className="grid gap-3" aria-label="Loading templates"><Skeleton className="h-28" /></section> : null}
     {templatesStatus === 'error' ? <Alert tone="warning"><p>Starter templates could not be loaded.</p><Button type="button" variant="secondary" onClick={() => setAttempt((value) => value + 1)}>Try templates again</Button></Alert> : null}
     {templatesStatus === 'loaded' ? <section className="grid gap-3" aria-labelledby="skill-templates-title"><h2 id="skill-templates-title" className="text-xl font-semibold">Starter templates</h2>{templates.map((template) => <Card key={template.id} className="grid gap-3 p-5 sm:grid-cols-[1fr_auto] sm:items-start"><div><h3 className="font-semibold">{template.title}</h3><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--color-text-muted)]">{template.instructions}</p><p className="mt-2 text-xs text-[var(--color-text-muted)]">Tools: {template.declaredTools.map(toolLabel).join(', ')}</p><p className="mt-1 text-xs">Read-only starter template</p></div><Button type="button" variant="secondary" onClick={() => copyTemplate(template)}>Copy</Button></Card>)}</section> : null}
-    {editor ? <SkillEditor key={editor.key} editor={editor} projects={projects} currentProjectId={projectId} csrfToken={csrfToken} onCancel={() => setEditor(null)} onSaved={onSaved} /> : null}
+    {editor ? <SkillEditor key={editor.key} editor={editor} projects={projects} currentProjectId={projectId} csrfToken={csrfToken} onCancel={() => setEditor(null)} onSaved={onSaved} onRestoreFocus={() => editorTrigger.current?.focus()} /> : null}
     <AlertDialogRoot open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
       <AlertDialogContent aria-describedby="skill-delete-description">
         <AlertDialogTitle className="text-xl font-semibold">Delete this skill?</AlertDialogTitle>
@@ -173,9 +179,9 @@ function SkillCard({ skill, currentWorkspaceId, onEdit, onCopy, onRun, onToggle,
   </Card>;
 }
 
-function SkillEditor({ editor, projects, currentProjectId, csrfToken, onCancel, onSaved }: {
+function SkillEditor({ editor, projects, currentProjectId, csrfToken, onCancel, onSaved, onRestoreFocus }: {
   readonly editor: EditorState; readonly projects: readonly ProjectSnapshot[]; readonly currentProjectId: string; readonly csrfToken: string | null;
-  readonly onCancel: () => void; readonly onSaved: (skill: UserSkill) => void;
+  readonly onCancel: () => void; readonly onSaved: (skill: UserSkill) => void; readonly onRestoreFocus: () => void;
 }): React.JSX.Element {
   const [draft, setDraft] = useState<SkillDraft>(editor.draft);
   const [saving, setSaving] = useState(false);
@@ -247,19 +253,25 @@ function SkillEditor({ editor, projects, currentProjectId, csrfToken, onCancel, 
     setConflictResolved(true); setError(null);
   }
 
-  return <Card className="grid gap-5 p-5 sm:p-6" data-testid="skill-editor">
-    <header><h2 className="text-xl font-semibold">{editor.skill ? `Edit ${editor.skill.title}` : 'New private skill'}</h2><p className="mt-1 text-sm text-[var(--color-text-muted)]">Editing saves a new version. Skills cannot grant capabilities beyond the current workspace policy.</p></header>
+  return <DialogRoot open onOpenChange={(open) => { if (!open && !saving) onCancel(); }}>
+    <DialogContent className="flex max-h-[90dvh] flex-col gap-5" data-testid="skill-editor" aria-describedby="skill-editor-description"
+      onPointerDownOutside={(event) => event.preventDefault()}
+      onCloseAutoFocus={(event) => { event.preventDefault(); onRestoreFocus(); }}>
+    <header><DialogTitle className="text-xl font-semibold">{editor.skill ? `Edit ${editor.skill.title}` : 'New skill'}</DialogTitle><DialogDescription id="skill-editor-description" className="mt-1 text-sm text-[var(--color-text-muted)]">Reusable instructions for your assistant.</DialogDescription></header>
     {error ? <Alert tone="error" role="alert">{error}{error.toLowerCase().includes('storage') ? <p className="mt-2"><Link className="underline" to="/usage">View usage</Link></p> : null}</Alert> : null}
     {latest && !conflictResolved ? <div className="grid gap-3 rounded-lg border border-[var(--color-border)] p-4"><p>Latest saved version: {latest.version} · {latest.title}</p><div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" onClick={keepDraft}>Keep my draft</Button><Button type="button" variant="secondary" onClick={reloadLatest}>Reload latest</Button></div></div> : null}
-    <form className="grid gap-5" onSubmit={(event) => { void save(event); }}>
+    <form className="flex min-h-0 flex-col gap-5" onSubmit={(event) => { void save(event); }}>
+      <div className="grid gap-5 overflow-y-auto px-1 pb-1">
       <div className="grid gap-2"><Label htmlFor="skill-title">Title</Label><Input id="skill-title" value={draft.title} maxLength={120} aria-invalid={Boolean(fieldErrors.title)} aria-describedby={fieldErrors.title ? 'skill-title-error' : undefined} onChange={(event) => change('title', event.target.value)} disabled={Boolean(pendingCreate.current)} />{fieldErrors.title ? <p id="skill-title-error" role="alert" className="text-sm text-[var(--color-error)]">{fieldErrors.title}</p> : null}</div>
       <div className="grid gap-2"><Label htmlFor="skill-instructions">Instructions</Label><Textarea id="skill-instructions" rows={8} value={draft.instructions} aria-invalid={Boolean(fieldErrors.instructions)} aria-describedby="skill-instructions-help" onChange={(event) => change('instructions', event.target.value)} disabled={Boolean(pendingCreate.current)} /><p id="skill-instructions-help" className="text-xs text-[var(--color-text-muted)]">{instructionBytes.toLocaleString()} / 16,000 UTF-8 bytes</p>{fieldErrors.instructions ? <p role="alert" className="text-sm text-[var(--color-error)]">{fieldErrors.instructions}</p> : null}</div>
       <div className="grid gap-2"><Label htmlFor="skill-workspace">Workspace</Label><select id="skill-workspace" className="min-h-11 rounded-lg border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3" value={draft.workspaceId ?? ''} onChange={(event) => change('workspaceId', event.target.value || null)} disabled={Boolean(pendingCreate.current)}><option value="">Account-wide</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}{project.status === 'archived' ? ' (archived)' : ''}</option>)}{draft.workspaceId && !projects.some((project) => project.id === draft.workspaceId) ? <option value={draft.workspaceId}>{draft.workspaceId === currentProjectId ? 'Current workspace' : 'Existing workspace'}</option> : null}</select></div>
       <label className="flex items-center gap-3"><input type="checkbox" className="size-4 accent-[var(--color-primary)]" checked={draft.enabled} onChange={(event) => change('enabled', event.target.checked)} disabled={Boolean(pendingCreate.current)} /><span>Enabled</span></label>
       <fieldset className="grid gap-3"><legend className="font-medium">Tools this skill may request</legend>{SKILL_TOOLS.map((tool) => <label key={tool.id} className="flex items-start gap-3"><input type="checkbox" className="mt-1 size-4 accent-[var(--color-primary)]" checked={draft.declaredTools.includes(tool.id)} onChange={(event) => change('declaredTools', event.target.checked ? [...draft.declaredTools, tool.id] : draft.declaredTools.filter((value) => value !== tool.id))} disabled={Boolean(pendingCreate.current)} /><span>{tool.label}</span></label>)}<p className="text-xs text-[var(--color-text-muted)]">The current account and workspace policy still decides which tools can run.</p></fieldset>
-      <div className="flex flex-wrap gap-3"><Button type="submit" disabled={!csrfToken || saving || Boolean(latest && !conflictResolved) || Boolean(pendingCreate.current)} aria-busy={saving}>{saving ? 'Saving…' : 'Save skill'}</Button>{pendingCreate.current ? <Button type="submit" variant="secondary" disabled={!csrfToken || saving} aria-busy={saving}>Retry same save</Button> : null}<Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>Cancel</Button></div>
+      </div>
+      <div className="flex shrink-0 flex-wrap justify-end gap-3"><Button type="submit" disabled={!csrfToken || saving || Boolean(latest && !conflictResolved) || Boolean(pendingCreate.current)} aria-busy={saving}>{saving ? 'Saving…' : 'Save skill'}</Button>{pendingCreate.current ? <Button type="submit" variant="secondary" disabled={!csrfToken || saving} aria-busy={saving}>Retry same save</Button> : null}<Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>Cancel</Button></div>
     </form>
-  </Card>;
+    </DialogContent>
+  </DialogRoot>;
 }
 
 function RunSkillDialog({ skill, projects, currentProjectId, csrfToken, onClose, onOpen }: {

@@ -1,5 +1,5 @@
 import { configureStore } from '@reduxjs/toolkit';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { Provider } from 'react-redux';
@@ -75,10 +75,38 @@ describe('SkillsWorkspace', () => {
     mocks.useAccountUsage.mockReset().mockReturnValue({ state: { status: 'success', data: { availability: { status: 'available', canSubmit: true, reason: null } } }, refresh: vi.fn() });
   });
 
+  it('opens the new skill editor as a focused modal and restores focus when dismissed', async () => {
+    const user = userEvent.setup();
+    renderSkills();
+    const trigger = await screen.findByRole('button', { name: 'New skill' });
+    await user.click(trigger);
+    const dialog = await screen.findByRole('dialog', { name: 'New skill' });
+    await waitFor(() => expect(within(dialog).getByLabelText('Title')).toHaveFocus());
+    await user.keyboard('{Shift>}{Tab}{/Shift}');
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
+  });
+
+  it('opens existing skills in the same modal and returns focus to Edit after cancelling', async () => {
+    const user = userEvent.setup();
+    mocks.listSkills.mockResolvedValue([skill]);
+    renderSkills();
+    const trigger = await screen.findByRole('button', { name: 'Edit' });
+    await user.click(trigger);
+    const dialog = await screen.findByRole('dialog', { name: 'Edit Plan my day' });
+    expect(within(dialog).getByLabelText('Title')).toHaveValue('Plan my day');
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
+  });
+
   it('copies a read-only template into an editable private skill', async () => {
     const user = userEvent.setup();
     renderSkills();
     await user.click((await screen.findAllByRole('button', { name: 'Copy' }))[0]);
+    expect(await screen.findByRole('dialog', { name: 'New skill' })).toBeInTheDocument();
     expect(await screen.findByLabelText('Title')).toHaveValue('Plan my day');
     await user.clear(screen.getByLabelText('Title'));
     await user.type(screen.getByLabelText('Title'), 'My daily plan');
