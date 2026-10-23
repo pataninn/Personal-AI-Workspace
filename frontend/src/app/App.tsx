@@ -1,8 +1,8 @@
+import { Suspense } from 'react';
 import { Outlet } from 'react-router-dom';
 
 import { AuthProvider } from '@/app/providers/AuthProvider';
 import '@/app/styles/globals.css';
-import '@/app/styles/reference-design.css';
 
 export function App(): React.JSX.Element {
   return (
@@ -12,7 +12,7 @@ export function App(): React.JSX.Element {
           Preview mode: mock data only; no real workspace or AI connection
         </div>
       ) : null}
-      <AuthProvider><Outlet /></AuthProvider>
+      <AuthProvider><Suspense fallback={<p role="status" className="p-6">Loading page...</p>}><Outlet /></Suspense></AuthProvider>
     </>
   );
 }

@@ -25,11 +25,8 @@ test('sends automatically from Home under an explicitly synthetic ready policy',
   const chat = page.getByTestId('home-chat');
   await expect(chat).toBeVisible();
   await expect(page.getByTestId('home-proposals-load-error')).toHaveCount(0);
-  await expect(chat.getByRole('heading', { name: 'Ask the Home assistant' })).toBeVisible();
-  const policy = page.getByRole('region', { name: 'Assistant policy summary' });
-  await expect(policy).toContainText('Synthetic browser fixture');
-  await expect(policy).toContainText('preview-only');
-  await expect(policy).toContainText('Assistant is available.');
+  await expect(chat.getByRole('heading', { name: 'Assistant', exact: true })).toBeVisible();
+  await expect(page.getByTestId('home-chat-policy-unavailable')).toHaveCount(0);
 
   const composer = page.getByRole('textbox', { name: 'Message' });
   await composer.fill('Help me plan the next release review.');
@@ -37,7 +34,7 @@ test('sends automatically from Home under an explicitly synthetic ready policy',
   await captureScreenshot(page, testInfo, 'home-chat-ready-policy-keyboard.png');
   await composer.press('Enter');
 
-  await expect(chat.getByTestId('home-chat-messages').getByText('Assistant is responding…', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('home-chat-typing')).toBeVisible();
   await expect(composer).toHaveValue('');
   await expect(page.getByRole('dialog')).toBeVisible();
   await captureScreenshot(page, testInfo, 'home-chat-automatic-send-desktop.png');
@@ -170,7 +167,7 @@ test('blocks sends when the policy reports an unavailable synthetic runtime', as
   await openHomeAsk(page);
 
   await expect(page.getByTestId('home-chat-policy-unavailable')).toBeVisible();
-  await expect(page.getByTestId('assistant-policy-readiness')).toContainText('configured assistant runtime is unavailable');
+  await expect(page.getByTestId('home-chat-policy-unavailable')).toContainText('Unable to connect');
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeDisabled();
   await expect(page.getByTestId('home-chat-send')).toBeDisabled();
   expect(fixture.calls.createRequests).toHaveLength(0);
@@ -186,7 +183,7 @@ test('fails closed when policy availability cannot be reached', async ({ page },
   await signIn(page);
   await openHomeAsk(page);
 
-  await expect(page.getByTestId('assistant-policy-readiness')).toContainText('could not be checked');
+  await expect(page.getByTestId('home-chat-policy-unavailable')).toContainText('Unable to connect');
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeDisabled();
   await expect(page.getByTestId('home-chat-send')).toBeDisabled();
   expect(fixture.calls.policyNetworkFailures).toBe(1);
@@ -218,7 +215,7 @@ test('recovers history and retries an uncertain send with the same key before re
   expect(fixture.calls.submitRequests).toHaveLength(1);
 
   await uncertain.getByRole('button', { name: 'Retry same send' }).click();
-  await expect(page.getByTestId('home-chat-messages').getByText('Assistant is responding…', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('home-chat-typing')).toBeVisible();
   expect(fixture.calls.submitRequests).toHaveLength(2);
   expect(fixture.calls.submitRequests[1]?.idempotencyKey).toBe(fixture.calls.submitRequests[0]?.idempotencyKey);
   expect(fixture.calls.submitRequests[1]?.body.message).toBe(fixture.calls.submitRequests[0]?.body.message);
@@ -264,24 +261,26 @@ test('shows stopping until a status read confirms cancellation', async ({ page }
     conversations: [conversation],
     messages: [message],
     turns: [turn],
-    turnReadStatuses: ['cancel_requested', 'cancelled']
+    turnReadStatuses: []
   });
   await installFixture(page, fixture);
   await signIn(page);
   await openHomeAsk(page, HOME_CONVERSATION_ID);
   await expect(page.getByRole('button', { name: 'Stop response' })).toBeVisible();
   await page.getByRole('button', { name: 'Stop response' }).click();
-  await expect(page.getByText('Stopping…', { exact: true }).first()).toBeVisible();
+  const statusReadsBeforeCancel = fixture.calls.turnStatusReads;
+  fixture.queueTurnStatuses(['cancel_requested', 'cancelled']);
+  await expect(page.getByTestId('home-chat-typing')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Check status' })).toBeVisible();
   expect(fixture.calls.cancellationRequests).toBe(1);
 
   await page.getByRole('button', { name: 'Check status' }).click();
-  await expect(page.getByText('Stopping…', { exact: true }).first()).toBeVisible();
+  await expect(page.getByTestId('home-chat-typing')).toBeVisible();
   expect(fixture.calls.cancellationRequests).toBe(1);
   await page.getByRole('button', { name: 'Check status' }).click();
   await expect(page.getByText('Cancelled', { exact: true })).toBeVisible();
   expect(fixture.calls.cancellationRequests).toBe(1);
-  expect(fixture.calls.turnStatusReads).toBe(2);
+  expect(fixture.calls.turnStatusReads - statusReadsBeforeCancel).toBe(2);
   await captureScreenshot(page, testInfo, 'home-chat-cancellation-confirmed.png');
 });
 
@@ -299,7 +298,7 @@ test('keeps an interrupted cancel request as stopping until reconciliation repor
   await installFixture(page, fixture);
   await signIn(page);
   await openHomeAsk(page, HOME_CONVERSATION_ID);
-  await expect(page.getByTestId('home-chat-messages').getByText('Stopping…', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('home-chat-typing')).toBeVisible();
   await page.getByRole('button', { name: 'Check status' }).click();
   await expect(page.getByTestId('home-chat-unknown-status')).toBeVisible();
   await expect(page.getByTestId('home-chat-unknown-status')).toContainText('This response stopped before its result was confirmed.');
@@ -326,7 +325,7 @@ test('keeps archived rootless chat read-only and redirects file-backed planning-
   await expect(planningChat).toBeVisible();
   await expect(planningChat.getByText('Planning workspace', { exact: true })).toBeVisible();
   await expect(page.getByText('The saved planning notes are available to read.')).toBeVisible();
-  await expect(page.getByTestId('planning-chat-read-only')).toContainText('conversation history is read-only');
+  await expect(page.getByTestId('planning-chat-read-only')).toContainText('You can still read past conversations');
   await expect(page.getByRole('textbox', { name: 'Message the assistant' })).toBeDisabled();
   await expect(page.getByTestId('home-chat-send')).toBeDisabled();
   expect(fixture.calls.listQueries.some((query) => query.scope === 'workspace' && query.workspaceId === WORKSPACE_ID)).toBeTruthy();

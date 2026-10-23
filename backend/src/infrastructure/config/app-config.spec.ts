@@ -3,6 +3,7 @@ import { EXPECTED_NIM_MODEL, loadConfig } from '@/infrastructure/config/app-conf
 
 const validEnvironment: NodeJS.ProcessEnv = {
   NODE_ENV: 'test',
+  AGENT_RUNTIME_MODE: 'fake',
   APP_PROTOCOL: 'http',
   ALLOW_INSECURE_HTTP: 'true',
   WORKSPACE_HOST_ROOT: 'C:\\PersonalAIWorkspace',
@@ -10,10 +11,6 @@ const validEnvironment: NodeJS.ProcessEnv = {
   SESSION_SECRET: 'a'.repeat(32),
   APP_ORIGIN: 'http://127.0.0.1:8443',
   DATABASE_URL: 'postgresql://pai_app:password@localhost:5432/personal_ai',
-  OPENSHELL_BASE_URL: 'http://openshell-gateway:8080',
-  OPENSHELL_CLIENT_ID: 'test-client',
-  OPENSHELL_CLIENT_TOKEN: 'a'.repeat(16),
-  OPENSHELL_NETWORK: 'sandbox-control'
 };
 
 describe('loadConfig', () => {
@@ -30,12 +27,13 @@ describe('loadConfig', () => {
     expect(config.workspaceRoot).toBe('/workspace');
     expect(config.accountWorkspacesIdentity).toBeUndefined();
     expect(config.nimModel).toBe(EXPECTED_NIM_MODEL);
-    expect(config.agentRuntimeMode).toBe('direct');
+    expect(config.agentRuntimeMode).toBe('fake');
     expect(config.providerCreditConfiguration).toBeUndefined();
     expect(config.sessionSecret).toBe('a'.repeat(32));
     expect(config.demoSessionLifetimeMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.demoAbuseLimits).toBeUndefined();
     expect(config.trustedProxyCidrs).toBeUndefined();
+    expect(loadConfig({ ...validEnvironment, TRUSTED_PROXY_CIDRS: '' }).trustedProxyCidrs).toBeUndefined();
     expect(config.storageDiskWarningFreeBytes).toBeUndefined();
   });
 
@@ -117,18 +115,10 @@ describe('loadConfig', () => {
     }
   });
 
-  it('accepts direct mode without deferred OpenShell settings', () => {
-    const environment: NodeJS.ProcessEnv = { ...validEnvironment };
-    delete environment.OPENSHELL_BASE_URL;
-    delete environment.OPENSHELL_CLIENT_ID;
-    delete environment.OPENSHELL_CLIENT_TOKEN;
-    delete environment.OPENSHELL_NETWORK;
-    environment.AGENT_RUNTIME_MODE = 'direct';
-
-    const config = loadConfig(environment);
-
-    expect(config.agentRuntimeMode).toBe('direct');
-    expect(config.openshellBaseUrl).toBeUndefined();
+  it('rejects retired direct and OpenShell modes instead of advertising a nonfunctional fallback', () => {
+    for (const mode of ['direct', 'openshell']) {
+      expect(() => loadConfig({ ...validEnvironment, AGENT_RUNTIME_MODE: mode })).toThrow(ConfigurationError);
+    }
   });
 
   it('parses only a complete operator-supplied provider credit profile using integer rates', () => {
@@ -201,30 +191,12 @@ describe('loadConfig', () => {
       .toBe('managed-fixture');
   });
 
-  it('requires deferred OpenShell settings only when that mode is selected', () => {
-    const environment: NodeJS.ProcessEnv = { ...validEnvironment, AGENT_RUNTIME_MODE: 'openshell' };
-    delete environment.OPENSHELL_BASE_URL;
-
-    expect(() => loadConfig(environment)).toThrow(ConfigurationError);
-  });
-
-  it('accepts a complete HTTPS bridge configuration without exposing its key value', () => {
-    const config = loadConfig({
-      ...validEnvironment,
-      OPEN_SHELL_BRIDGE_ENDPOINT: 'https://host.docker.internal:17871',
-      OPEN_SHELL_BRIDGE_CA_FILE: '/run/secrets/bridge-ca',
-      OPEN_SHELL_BRIDGE_CLIENT_CERT_FILE: '/run/secrets/bridge-client-cert',
-      OPEN_SHELL_BRIDGE_CLIENT_KEY_FILE: '/run/secrets/bridge-client-key',
-      OPEN_SHELL_BRIDGE_PROFILE_DIGEST: `sha256:${'b'.repeat(64)}`
-    });
-
-    expect(config.openshellBridgeEndpoint).toBe('https://host.docker.internal:17871');
-    expect(config.openshellBridgeClientKeyFile).toBe('/run/secrets/bridge-client-key');
-  });
-
-  it('rejects partial or plaintext bridge configuration', () => {
-    expect(() => loadConfig({ ...validEnvironment, OPEN_SHELL_BRIDGE_ENDPOINT: 'http://host.docker.internal:17871' })).toThrow(ConfigurationError);
-    expect(() => loadConfig({ ...validEnvironment, OPEN_SHELL_BRIDGE_ENDPOINT: 'https://host.docker.internal:17871', OPEN_SHELL_BRIDGE_PROFILE_DIGEST: `sha256:${'b'.repeat(64)}` })).toThrow(ConfigurationError);
+  it('requires dedicated TLS credentials for the supported Hermes runtime', () => {
+    expect(() => loadConfig({ ...validEnvironment, AGENT_RUNTIME_MODE: 'hermes' })).toThrow(ConfigurationError);
+    const config = loadConfig({ ...validEnvironment, AGENT_RUNTIME_MODE: 'hermes',
+      HERMES_BRIDGE_ENDPOINT: 'https://localhost:17871', HERMES_BRIDGE_CA_FILE: '/run/hermes/ca.crt',
+      HERMES_BRIDGE_CERT_FILE: '/run/hermes/client.crt', HERMES_BRIDGE_KEY_FILE: '/run/hermes/client.key' });
+    expect(config.agentRuntimeMode).toBe('hermes');
   });
 
   it('rejects an authority mount identity outside /workspace', () => {

@@ -82,16 +82,6 @@ export class AdminPortalUseCases {
     return this.repository.listAudit(limit);
   }
 
-  public async createAccount(actorId: string, input: { displayName: string; identifier: string; password: string }): Promise<unknown> {
-    const displayName = input.displayName.trim();
-    const identifier = normalizeAccountIdentifier(input.identifier);
-    if (displayName.length < 2 || displayName.length > 80) throw invalid('displayName');
-    if (!isValidAccountIdentifier(identifier)) throw invalid('identifier');
-    if (input.password.trim().length === 0 || input.password.length > 1024) throw invalid('password');
-    const passwordHash = await this.passwordHasher.hash(input.password);
-    return this.repository.createAccount(actorId, { displayName, identifier, passwordHash });
-  }
-
   public updateAccountLimits(actorId: string, accountId: string, input: AccountLimitsInput): Promise<unknown> {
     assertRevision(input.expectedRevision);
     assertUnits(input.dailyCreditLimitUnits, 'dailyCreditLimitUnits');

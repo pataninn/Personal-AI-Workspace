@@ -5,10 +5,6 @@ export async function getAdminAccounts(search: string): Promise<readonly AdminAc
   return (await getJson<{ accounts: readonly AdminAccountSummary[] }>(`/api/v1/admin/accounts?search=${encodeURIComponent(search)}`)).accounts;
 }
 
-export function createAdminAccount(csrfToken: string, input: { readonly displayName: string; readonly identifier: string; readonly password: string }): Promise<unknown> {
-  return postJson('/api/v1/admin/accounts', input, { 'X-CSRF-Token': csrfToken });
-}
-
 export function updateAdminAccountLimits(csrfToken: string, accountId: string, input: {
   readonly expectedRevision: number; readonly dailyCreditLimitUnits: string | null; readonly lifetimeCreditLimitUnits: string | null; readonly storageLimitBytes: string | null;
 }): Promise<unknown> {

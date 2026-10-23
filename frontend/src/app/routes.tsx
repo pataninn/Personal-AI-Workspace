@@ -1,29 +1,31 @@
+import { lazy } from 'react';
 import { createBrowserRouter, Navigate, Outlet, useLocation } from 'react-router-dom';
 
 import { App } from '@/app/App';
 import { AppShell } from '@/widgets/app-shell';
-import { DashboardPage } from '@/pages/dashboard';
-import { ProjectWorkspacePage } from '@/pages/project-workspace';
-import { ProjectMemoryPage } from '@/pages/project-memory';
-import { ProjectContextPage } from '@/pages/project-context';
-import { ProjectTasksPage } from '@/pages/project-tasks';
-import { ProjectActivityPage } from '@/pages/project-activity';
-import { ProjectFileHistoryPage } from '@/pages/project-file-history';
-import { WorkspacePlanningChatPage } from '@/pages/workspace-planning-chat';
-import { AllTasksPage } from '@/pages/all-tasks';
-import { TaskDetailPage } from '@/pages/task-detail';
-import { LoginPage } from '@/pages/login';
-import { NotFoundPage } from '@/pages/not-found';
-import { ShowcasePage } from '@/pages/showcase';
-import { AdminShowcasePage } from '@/pages/admin-showcase';
-import { AdminPortalPage } from '@/pages/admin-portal';
-import { SkillsPage } from '@/pages/skills';
-import { UsagePage } from '@/pages/usage';
-import { AutomationsPage } from '@/pages/automations';
 import { selectSessionErrorCode, selectSessionStatus } from '@/entities/user-session';
 import { useAppSelector } from '@/app/store/hooks';
 import { getSafeReturnTo, loginPath } from '@/shared/lib/navigation';
 import { DemoContentGate } from '@/widgets/demo-session-route';
+
+const DashboardPage = lazy(() => import('@/pages/dashboard').then((module) => ({ default: module.DashboardPage })));
+const ProjectWorkspacePage = lazy(() => import('@/pages/project-workspace').then((module) => ({ default: module.ProjectWorkspacePage })));
+const ProjectMemoryPage = lazy(() => import('@/pages/project-memory').then((module) => ({ default: module.ProjectMemoryPage })));
+const ProjectContextPage = lazy(() => import('@/pages/project-context').then((module) => ({ default: module.ProjectContextPage })));
+const ProjectTasksPage = lazy(() => import('@/pages/project-tasks').then((module) => ({ default: module.ProjectTasksPage })));
+const ProjectActivityPage = lazy(() => import('@/pages/project-activity').then((module) => ({ default: module.ProjectActivityPage })));
+const ProjectFileHistoryPage = lazy(() => import('@/pages/project-file-history').then((module) => ({ default: module.ProjectFileHistoryPage })));
+const WorkspacePlanningChatPage = lazy(() => import('@/pages/workspace-planning-chat').then((module) => ({ default: module.WorkspacePlanningChatPage })));
+const AllTasksPage = lazy(() => import('@/pages/all-tasks').then((module) => ({ default: module.AllTasksPage })));
+const TaskDetailPage = lazy(() => import('@/pages/task-detail').then((module) => ({ default: module.TaskDetailPage })));
+const LoginPage = lazy(() => import('@/pages/login').then((module) => ({ default: module.LoginPage })));
+const NotFoundPage = lazy(() => import('@/pages/not-found').then((module) => ({ default: module.NotFoundPage })));
+const ShowcasePage = lazy(() => import('@/pages/showcase').then((module) => ({ default: module.ShowcasePage })));
+const AdminShowcasePage = lazy(() => import('@/pages/admin-showcase').then((module) => ({ default: module.AdminShowcasePage })));
+const AdminPortalPage = lazy(() => import('@/pages/admin-portal').then((module) => ({ default: module.AdminPortalPage })));
+const SkillsPage = lazy(() => import('@/pages/skills').then((module) => ({ default: module.SkillsPage })));
+const UsagePage = lazy(() => import('@/pages/usage').then((module) => ({ default: module.UsagePage })));
+const AutomationsPage = lazy(() => import('@/pages/automations').then((module) => ({ default: module.AutomationsPage })));
 
 function RootRedirect(): React.JSX.Element {
   const status = useAppSelector(selectSessionStatus);

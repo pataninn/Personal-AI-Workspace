@@ -29,7 +29,6 @@ export interface IAdminPortalRepository {
   getDemoSettings(): Promise<unknown>;
   updateDemoSettings(actorId: string, input: DemoSettingsInput): Promise<unknown>;
   listAudit(limit: number): Promise<unknown>;
-  createAccount(actorId: string, input: { readonly displayName: string; readonly identifier: string; readonly passwordHash: string }): Promise<unknown>;
   updateAccountLimits(actorId: string, accountId: string, input: AccountLimitsInput): Promise<unknown>;
   setAccountEnabled(actorId: string, accountId: string, enabled: boolean): Promise<unknown>;
   resetPassword(actorId: string, accountId: string, passwordHash: string): Promise<void>;

@@ -10,7 +10,6 @@ import { sendData } from '@/shared/http/response';
 
 const uuid = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
 const nullableDecimal = z.string().regex(/^(0|[1-9][0-9]*)$/u).nullable();
-const accountSchema = z.object({ displayName: z.string().max(80), identifier: z.string().max(64), password: z.string().max(1024) }).strict();
 const limitsSchema = z.object({
   expectedRevision: z.number().int().positive(), dailyCreditLimitUnits: nullableDecimal,
   lifetimeCreditLimitUnits: nullableDecimal, storageLimitBytes: nullableDecimal
@@ -67,10 +66,9 @@ export function createAdminPortalRouter(dependencies: AdminPortalRouterDependenc
     const search = typeof request.query.search === 'string' ? request.query.search : '';
     sendData(response, await dependencies.portal.listAccounts(search));
   }));
-  router.post('/admin/accounts', ...writes, asyncHandler(async (request, response) => {
-    const parsed = accountSchema.safeParse(request.body);
-    if (!parsed.success) throw invalid();
-    sendData(response, await dependencies.portal.createAccount(requireAdmin(request), parsed.data), 201);
+  router.post('/admin/accounts', ...writes, asyncHandler(async (request) => {
+    requireAdmin(request);
+    throw new AppError('ACCOUNT_CREATION_RETIRED', 410, 'This workspace uses one owner account. Visitors can use the anonymous demo.');
   }));
   router.patch('/admin/accounts/:accountId/limits', ...writes, asyncHandler(async (request, response) => {
     const accountId = uuid.safeParse(request.params.accountId);

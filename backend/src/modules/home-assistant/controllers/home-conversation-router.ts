@@ -4,7 +4,6 @@ import { z } from 'zod';
 
 import { HomeConversationNotFoundError, HomeTurnNotFoundError } from '@/modules/home-assistant/domain/home-conversation-errors';
 import type { HomeConversation, HomeConversationEvent, HomeMessage, HomeTurn, HomeTurnSubmission } from '@/modules/home-assistant/domain/home-conversation-types';
-import type { DecideHomeConsentUseCase } from '@/modules/home-assistant/use-cases/decide-home-consent';
 import type { CreateHomeConversationUseCase } from '@/modules/home-assistant/use-cases/create-home-conversation';
 import type { GetHomeConversationUseCase } from '@/modules/home-assistant/use-cases/get-home-conversation';
 import type { ListHomeConversationsUseCase } from '@/modules/home-assistant/use-cases/list-home-conversations';
@@ -40,7 +39,6 @@ export interface HomeConversationRouterDependencies {
   readonly listTurns: ListHomeTurnsUseCase;
   readonly listSkillRunSummaries?: ListHomeSkillRunSummariesUseCase;
   readonly submitTurn: SubmitHomeTurnUseCase;
-  readonly decideConsent: DecideHomeConsentUseCase;
   readonly getTurn: GetHomeTurnUseCase;
   readonly cancelTurn: CancelHomeTurnUseCase;
   readonly listMessages: ListHomeMessagesUseCase;

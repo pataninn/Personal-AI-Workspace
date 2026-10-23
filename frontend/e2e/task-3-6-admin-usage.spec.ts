@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
-test.use({ baseURL: 'http://127.0.0.1:5193' });
+test.use({ baseURL: process.env.PAI_PREVIEW_BASE_URL ?? 'http://127.0.0.1:5193' });
 
 const ADMIN_ID = '11111111-1111-4111-8111-111111111111';
 const ACCOUNT_ID = '22222222-2222-4222-8222-222222222222';
@@ -39,12 +39,12 @@ function envelope(data: unknown): { readonly data: unknown; readonly error: null
 test('admin manages a mock account, while exhausted AI usage leaves manual tasks editable', async ({ page }, testInfo) => {
   test.setTimeout(45_000);
   let currentRole: 'admin' | 'user' = 'admin';
-  let accountCreated = false;
+  const accountCreated = true;
   let dailyLimit = null as string | null;
   let submittedResetPassword = false;
   const settings = {
     revision: 1, demoSettingsBootstrapped: true, defaultDailyLimitUnits: '1000', defaultLifetimeLimitUnits: '5000',
-    sessionTtlHours: 24, globalAdmissionMax: 80, globalAdmissionWindowSeconds: 3600, networkAdmissionMax: 20,
+    sessionTtlHours: 24, globalAdmissionMax: null, globalAdmissionWindowSeconds: 3600, networkAdmissionMax: 20,
     networkAdmissionWindowSeconds: 900, runStartMax: 30, runStartWindowSeconds: 3600, maxConcurrentCalls: 2,
     globalDailyLimitUnits: '10000', campaignId: 'browser-smoke', campaignLimitUnits: '5000', inferencePaused: false,
     usage: { dailySettledUnits: '0', dailyReservedUnits: '0', campaignSettledUnits: '0', campaignReservedUnits: '0', dailyTimeZone: 'UTC' }
@@ -82,11 +82,6 @@ test('admin manages a mock account, while exhausted AI usage leaves manual tasks
         old_values: {}, new_values: { allSessionsRevoked: true }, createdAt: '2026-10-19T12:00:00.000Z' }] : [] });
       return;
     }
-    if (url.pathname === '/api/v1/admin/accounts' && method === 'POST') {
-      accountCreated = true;
-      await data({ account: { id: ACCOUNT_ID, displayName: 'Browser smoke user', identifier: 'browser-smoke-user', accountKind: 'regular', role: 'user', enabled: true } }, 201);
-      return;
-    }
     if (url.pathname === `/api/v1/admin/accounts/${ACCOUNT_ID}/limits` && method === 'PATCH') {
       dailyLimit = request.postDataJSON().dailyCreditLimitUnits as string | null;
       await data({ accountId: ACCOUNT_ID, limitsRevision: 2 });
@@ -113,16 +108,17 @@ test('admin manages a mock account, while exhausted AI usage leaves manual tasks
   await page.goto('/admin');
   await expect(page.getByTestId('admin-portal-page')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Admin portal' })).toBeVisible();
-  const createAccount = page.getByRole('button', { name: 'Create account' }).first();
-  await createAccount.focus();
-  await page.keyboard.press('Enter');
-  await page.getByLabel('Display name').fill('Browser smoke user');
-  await page.getByLabel('Sign-in identifier').fill('browser-smoke-user');
-  await page.getByLabel('Initial password').fill(TEST_PASSWORD);
-  await page.getByLabel('Confirm password').fill(TEST_PASSWORD);
-  const submitAccount = page.getByRole('button', { name: 'Create account', exact: true });
-  await submitAccount.focus();
-  await page.keyboard.press('Enter');
+  await expect(page.getByRole('button', { name: 'Create account' })).toHaveCount(0);
+  await expect(page.getByLabel('Global admissions per window')).not.toBeVisible();
+  await page.getByText('Advanced limits and shared budget', { exact: true }).click();
+  await expect(page.getByLabel('Global admissions per window')).toBeVisible();
+  await expect(page.getByLabel('Global admissions per window')).toHaveValue('');
+  await page.getByRole('button', { name: 'Fill missing demo limits' }).click();
+  await expect(page.getByLabel('Global admissions per window')).toHaveValue('40');
+  await expect(page.getByLabel('Shared demo daily budget')).toHaveValue('10000');
+  await expect(page.getByLabel('New demo daily allowance')).toHaveValue('1000');
+  await expect(page.getByLabel('Emergency pause for all AI inference (all accounts)')).not.toBeChecked();
+  await page.getByText('Advanced limits and shared budget', { exact: true }).click();
   const accountCard = page.getByTestId(`admin-account-${ACCOUNT_ID}`);
   await expect(accountCard).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('task-5-4-admin-desktop.png'), fullPage: true });

@@ -3,7 +3,7 @@ import { Link, Navigate } from 'react-router-dom';
 
 import { useAppSelector } from '@/app/store/hooks';
 import {
-  createAdminAccount, getAdminAccounts, getAdminAudit, getAdminDemoSettings, resetAdminAccountPassword,
+  getAdminAccounts, getAdminAudit, getAdminDemoSettings, resetAdminAccountPassword,
   revokeAdminAccountSessions, saveAdminDemoSettings, setAdminAccountEnabled, updateAdminAccountLimits
 } from '@/entities/admin-portal';
 import type { AdminAccountSummary, AdminAuditEvent, AdminDemoSettings } from '@/entities/admin-portal';
@@ -34,7 +34,6 @@ export function AdminPortalPage(): React.JSX.Element {
   const [appliedSearch, setAppliedSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
 
   useEffect(() => {
@@ -83,15 +82,15 @@ export function AdminPortalPage(): React.JSX.Element {
 
   return <section className="grid w-full content-start gap-6" data-testid="admin-portal-page">
     <header className="flex flex-wrap items-end justify-between gap-4">
-      <div><p className="product-label">Administration</p><h1 className="text-3xl font-semibold">Admin portal</h1><p className="field-help">Manage accounts, access and usage limits.</p></div>
-      <div className="flex flex-wrap gap-3"><Link className="self-center text-[var(--color-link)] underline underline-offset-4" to="/dashboard">Back to workspace</Link><Link className="self-center text-[var(--color-link)] underline underline-offset-4" to="/admin/showcase">Showcase publishing</Link></div>
+      <div><p className="product-label">Administration</p><h1 className="text-3xl font-semibold">Admin portal</h1><p className="field-help">Manage your account and temporary demo visitors. No visitor signup is required.</p></div>
+      <div className="flex flex-wrap gap-3"><Link className="self-center text-[var(--color-link)] underline underline-offset-4" to="/dashboard">Back to workspace</Link><Link className="self-center text-[var(--color-link)] underline underline-offset-4" to="/admin/showcase">Demo content</Link></div>
     </header>
     {error ? <Alert tone="error" role="alert" data-testid="admin-action-error">{error}</Alert> : null}
     {notice ? <Alert tone="success" role="status" data-testid="admin-action-success">{notice}</Alert> : null}
 
     <section className="grid gap-4" aria-labelledby="admin-accounts-heading">
-      <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 id="admin-accounts-heading" className="text-xl font-semibold">Accounts</h2><p className="field-help">Search by sign-in identifier or display name.</p></div>
-        <Button type="button" onClick={() => setCreateOpen(true)}>Create account</Button></div>
+      <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 id="admin-accounts-heading" className="text-xl font-semibold">Accounts</h2><p className="field-help">Your owner account and temporary demo visitors.</p></div>
+        </div>
       <form className="flex flex-wrap items-end gap-3" onSubmit={(event) => { event.preventDefault(); setAppliedSearch(search); }}>
         <div className="grid min-w-60 flex-1 gap-1"><Label htmlFor="admin-account-search">Search accounts</Label><Input id="admin-account-search" value={search} maxLength={120} onChange={(event) => setSearch(event.target.value)} /></div>
         <Button type="submit" variant="secondary">Search</Button>
@@ -124,7 +123,6 @@ export function AdminPortalPage(): React.JSX.Element {
       </Card></li>)}</ol> : null}
     </section>
 
-    <CreateAccountDialog open={createOpen} onOpenChange={setCreateOpen} csrfToken={csrfToken} onSave={runAction} />
     <AlertDialogRoot open={confirmAction !== null} onOpenChange={(open) => { if (!open) setConfirmAction(null); }}>
       <AlertDialogContent data-testid="admin-account-confirm">
         <AlertDialogTitle>{confirmAction?.action === 'revoke' ? 'Revoke all sessions?' : confirmAction?.action === 'disable' ? 'Disable this account?' : 'Enable this account?'}</AlertDialogTitle>
@@ -207,37 +205,6 @@ function LimitField({ id, label, value, setValue }: { readonly id: string; reado
   return <div className="grid gap-1"><Label htmlFor={id}>{label}</Label><Input id={id} inputMode="numeric" pattern="0|[1-9][0-9]*" value={value} onChange={(event) => setValue(event.target.value)} placeholder="Unlimited" /></div>;
 }
 
-function CreateAccountDialog({ open, onOpenChange, csrfToken, onSave }: {
-  readonly open: boolean; readonly onOpenChange: (open: boolean) => void; readonly csrfToken: string | null;
-  readonly onSave: (action: () => Promise<unknown>, success: string) => Promise<boolean>;
-}): React.JSX.Element {
-  const [displayName, setDisplayName] = useState('');
-  const [identifier, setIdentifier] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmation, setConfirmation] = useState('');
-  const [message, setMessage] = useState<string | null>(null);
-  async function submit(event: FormEvent): Promise<void> {
-    event.preventDefault();
-    if (!csrfToken || password !== confirmation) { setMessage('Enter the same password twice.'); return; }
-    setMessage(null);
-    const saved = await onSave(() => createAdminAccount(csrfToken, { displayName, identifier, password }), 'Regular account created.');
-    if (saved) { setDisplayName(''); setIdentifier(''); setPassword(''); setConfirmation(''); onOpenChange(false); }
-  }
-  return <DialogRoot open={open} onOpenChange={(next) => { if (!next) { setPassword(''); setConfirmation(''); } onOpenChange(next); }}>
-    <DialogContent data-testid="create-account-dialog">
-      <DialogTitle>Create account</DialogTitle><DialogDescription>Creates a regular user account. Administrator access cannot be assigned here.</DialogDescription>
-      <form className="grid gap-3" onSubmit={(event) => { void submit(event); }}>
-        <div className="grid gap-1"><Label htmlFor="new-account-name">Display name</Label><Input id="new-account-name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} required maxLength={80} /></div>
-        <div className="grid gap-1"><Label htmlFor="new-account-identifier">Sign-in identifier</Label><Input autoComplete="username" id="new-account-identifier" value={identifier} onChange={(event) => setIdentifier(event.target.value)} required maxLength={64} /></div>
-        <div className="grid gap-1"><Label htmlFor="new-account-password">Initial password</Label><Input autoComplete="new-password" id="new-account-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required maxLength={1024} /></div>
-        <div className="grid gap-1"><Label htmlFor="new-account-confirm">Confirm password</Label><Input autoComplete="new-password" id="new-account-confirm" type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required maxLength={1024} /></div>
-        {message ? <Alert tone="error">{message}</Alert> : null}
-        <div className="dialog-actions"><Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="submit" disabled={!csrfToken}>Create account</Button></div>
-      </form>
-    </DialogContent>
-  </DialogRoot>;
-}
-
 function DemoSettingsForm({ settings, csrfToken, onSave }: {
   readonly settings: AdminDemoSettings; readonly csrfToken: string | null;
   readonly onSave: (action: () => Promise<unknown>, success: string) => Promise<boolean>;
@@ -268,11 +235,20 @@ function DemoSettingsForm({ settings, csrfToken, onSave }: {
   }
   return <Card className="grid gap-4 p-5" data-testid="admin-demo-settings">
     <p className="field-help">{settings.demoSettingsBootstrapped ? 'Settings are persisted in the database.' : 'Environment defaults have not been seeded; blank values remain unconfigured.'}</p>
+    <div><Button type="button" variant="secondary" onClick={() => setDraft((current) => ({ ...current,
+      sessionTtlHours: current.sessionTtlHours || '24', globalAdmissionMax: current.globalAdmissionMax || '40',
+      globalAdmissionWindowSeconds: current.globalAdmissionWindowSeconds || '3600', networkAdmissionMax: current.networkAdmissionMax || '5',
+      networkAdmissionWindowSeconds: current.networkAdmissionWindowSeconds || '3600', runStartMax: current.runStartMax || '10',
+      runStartWindowSeconds: current.runStartWindowSeconds || '3600'
+    }))}>Fill missing demo limits</Button><p className="field-help">Fills empty expiry and visitor limits. Review and save below. AI budgets and the emergency pause stay as configured.</p></div>
     <div className="grid gap-1"><strong>Current shared usage</strong><p className="field-help">Daily: {settings.usage.dailySettledUnits} settled + {settings.usage.dailyReservedUnits} reserved ({settings.usage.dailyTimeZone}). Campaign: {settings.usage.campaignSettledUnits} settled + {settings.usage.campaignReservedUnits} reserved.</p></div>
     <form className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" onSubmit={(event) => { void submit(event); }}>
       {field('defaultDailyLimitUnits', 'New demo daily allowance', 'units')}
       {field('defaultLifetimeLimitUnits', 'New demo lifetime allowance', 'units')}
       {field('sessionTtlHours', 'Session expiry (hours)')}
+      <details className="sm:col-span-2 lg:col-span-3" data-testid="demo-advanced-settings">
+        <summary className="cursor-pointer py-3">Advanced limits and shared budget</summary>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {field('globalAdmissionMax', 'Global admissions per window')}
       {field('globalAdmissionWindowSeconds', 'Global admission window (seconds)')}
       {field('networkAdmissionMax', 'Admissions per network')}
@@ -283,6 +259,8 @@ function DemoSettingsForm({ settings, csrfToken, onSave }: {
       {field('globalDailyLimitUnits', 'Shared demo daily budget', 'units')}
       {campaignField}
       {field('campaignLimitUnits', 'Campaign budget', 'units')}
+        </div>
+      </details>
       <label className="flex items-center gap-2 sm:col-span-2 lg:col-span-3"><input type="checkbox" checked={draft.inferencePaused} onChange={(event) => update('inferencePaused', event.target.checked)} />Emergency pause for all AI inference (all accounts)</label>
       <p className="field-help sm:col-span-2 lg:col-span-3">This emergency pause blocks AI inference for regular and demo accounts. Blank means unconfigured for optional settings. Per-demo allowance defaults affect new demo identities; demo budgets take effect on future AI admission. Changing a window preserves existing active counters.</p>
       <div className="sm:col-span-2 lg:col-span-3"><Button type="submit" disabled={!csrfToken}>Save demo settings</Button></div>

@@ -21,7 +21,6 @@ import { StorageQuotaRootScanner, type TrustedStorageRoot } from '@/infrastructu
 import { ActionUndoUseCases } from '@/modules/home-assistant/use-cases/action-undo-use-cases';
 import { CancelHomeTurnUseCase } from '@/modules/home-assistant/use-cases/cancel-home-turn';
 import { CreateHomeConversationUseCase } from '@/modules/home-assistant/use-cases/create-home-conversation';
-import { DecideHomeConsentUseCase } from '@/modules/home-assistant/use-cases/decide-home-consent';
 import { GetHomeConversationUseCase } from '@/modules/home-assistant/use-cases/get-home-conversation';
 import { GetHomeTurnUseCase } from '@/modules/home-assistant/use-cases/get-home-turn';
 import { HomeChangeProposalUseCases } from '@/modules/home-assistant/use-cases/home-change-proposal-use-cases';
@@ -345,7 +344,6 @@ describeDatabase('R1 release HTTP and PostgreSQL regression', () => {
         getConversation: new GetConversationHistoryUseCase(homeRepository),
         listTurns: new ListHomeTurnsUseCase(homeRepository),
         submitTurn: new SubmitHomeTurnUseCase(homeRepository),
-        decideConsent: new DecideHomeConsentUseCase(homeRepository),
         getTurn: new GetHomeTurnUseCase(homeRepository),
         cancelTurn: new CancelHomeTurnUseCase(homeRepository),
         listMessages: new ListHomeMessagesUseCase(homeRepository),

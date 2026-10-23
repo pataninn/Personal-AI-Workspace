@@ -28,6 +28,10 @@ export class HomeChatPreviewApi {
   private failTurnSubmissions: number;
   private failPolicyReads: number;
   private policyState: SyntheticPolicyState;
+  public queueTurnStatuses(statuses: SyntheticTurnStatus[]): void {
+    this.turnReadStatuses.push(...statuses);
+  }
+
   private turnReadStatuses: SyntheticTurnStatus[];
 
   constructor(private readonly page: Page, options: HomeChatFixtureOptions = {}) {

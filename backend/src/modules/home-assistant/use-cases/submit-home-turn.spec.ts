@@ -77,7 +77,8 @@ function setup(options: {
     cancel: jest.fn(async (): Promise<CancelHomePlanningRunResult> => ({ outcome: 'confirmed' })),
     delete: jest.fn(async () => undefined)
   };
-  const runtimeConfiguration: HomeTurnRuntimeConfiguration = { mode: 'hermes', provider, runtime };
+  const onAccepted = jest.fn();
+  const runtimeConfiguration: HomeTurnRuntimeConfiguration = { mode: 'hermes', provider, runtime, onAccepted };
   const projectMemory: jest.Mocked<IHomeProjectMemoryContextReader> = {
     readSelectedFacts: jest.fn(async (_ownerId: string, _projectId: string) => [])
   };
@@ -87,7 +88,7 @@ function setup(options: {
     { executionPolicy, providerProfile: provider.profile, model: provider.model },
     projectMemory
   );
-  return { useCase, conversations, runtime, executionPolicy, projectMemory, submission };
+  return { useCase, conversations, runtime, executionPolicy, projectMemory, submission, onAccepted };
 }
 
 function storedPolicy(scopeKind: AssistantScopePolicy['scopeKind'], policyProfile: AssistantScopePolicy['policyProfile']): AssistantScopePolicy {
@@ -100,7 +101,7 @@ function storedPolicy(scopeKind: AssistantScopePolicy['scopeKind'], policyProfil
 
 describe('SubmitHomeTurnUseCase', () => {
   it('persists the exact policy revisions before starting the runtime once', async () => {
-    const { useCase, conversations, runtime, projectMemory, submission } = setup();
+    const { useCase, conversations, runtime, projectMemory, submission, onAccepted } = setup();
 
     const result = await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, requestKey: 'request-1', message: 'Plan my day' });
 
@@ -108,6 +109,7 @@ describe('SubmitHomeTurnUseCase', () => {
       initialStatus: 'running', homePolicyRevision: '4', workspacePolicyRevision: null
     }));
     expect(runtime.start).toHaveBeenCalledTimes(1);
+    expect(onAccepted).toHaveBeenCalledWith({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
     expect(projectMemory.readSelectedFacts).not.toHaveBeenCalled();
     expect(result).toMatchObject({ turn: submission.turn, replayed: false, execution: { state: 'running' } });
   });

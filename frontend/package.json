@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit && vite build --config vite.config.mjs --configLoader runner",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
-    "dev": "vite",
+    "dev": "vite --config vite.config.mjs --configLoader runner",
     "preview:dev": "vite build --mode preview --config vite.config.mjs --configLoader runner && vite preview --mode preview --config vite.config.mjs --configLoader runner",
     "test:preview": "node --test preview/preview-api.test.mjs",
     "test:e2e": "playwright test --config playwright.config.ts",

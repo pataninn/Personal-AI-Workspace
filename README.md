@@ -2,9 +2,17 @@
 
 This repository contains the local Personal AI Workspace with projects,
 conversations, selected context, memory, tasks, live updates, and file history.
-Provider routes for Hermes and the direct NVIDIA adapter are preserved, but paid
-inference is fail-closed until a verified per-request input bound and all-send
-credit admission path are available.
+The supported setup is one owner account and an anonymous demo. Visitors choose
+**Try demo** without creating an account; each visitor receives an isolated,
+expiring copy of the content you publish. Extra named-account creation is retired.
+Existing accounts and saved data are preserved.
+
+One backend process runs the HTTP API, Home chat execution, scheduled jobs, and
+cleanup. A database ownership lock prevents another process from recovering or
+executing its live work. Home turns continue when you leave the page; status GETs
+only read saved progress. Local pages, tasks, and files remain available when the
+AI bridge is offline. Inference still requires a configured, healthy Hermes bridge
+and the existing policy and credit checks.
 
 ## Prepare the Hermes provider route
 
@@ -30,7 +38,7 @@ This model ID was confirmed in the authenticated Nebius catalog. The key is read
 locally and passed to OpenShell through the CLI's environment credential lookup;
 it is never included in command arguments or bridge payloads. Startup can prepare
 the provider route without generating a model response or spending inference
-tokens. Paid inference remains fail-closed in this release, as described below.
+tokens. Inference requires the credit configuration described below.
 Provider consent remains separate by provider; existing NVIDIA permissions do
 not authorize Nebius requests.
 
@@ -78,17 +86,9 @@ placeholders, and code references are allowed. This intentionally favors fewer
 false alarms and does not detect every secret. Context sent to the provider still
 uses the separate egress redaction policy.
 
-To prepare the NVIDIA direct route, configure `NVIDIA_API_KEY_FILE` and run
-`docker compose -p personal-ai-workspace -f compose.yaml -f compose.direct.yaml up -d --no-build --wait`.
-The override selects NVIDIA/direct mode and mounts only its NVIDIA secret. This
-configures the provider route; it does not enable a paid request. Normal Hermes
-Compose does not mount either provider key. Restart with the Hermes helper to
-return to Nebius. For Hermes on NVIDIA, set `NIM_PROFILE=nvidia-hosted-nim` and
-`NIM_ENDPOINT=https://integrate.api.nvidia.com/v1` in `.env`; the installed
-gateway's existing `compatible-endpoint` credential remains available. Hermes
-project and Home-planning sends remain blocked before bridge creation because the
-current bridge path cannot enforce admission and account for every model call,
-retry, and fallback.
+Hermes is the production runtime. The unsupported direct NVIDIA adapter and its
+Compose overlay have been removed; `fake` is reserved for development and tests.
+The WSL OpenShell gateway used by Hermes remains part of this deployment.
 
 ### Credit admission and paid inference status
 
@@ -98,7 +98,7 @@ account daily and lifetime limits default to `null` (unlimited), while missing
 demo campaign configuration denies demo sends. Do not infer that a provider key
 or provider profile enables inference.
 
-Before a direct NIM send can be enabled, an operator would need to provide the
+Before a paid Hermes send can be enabled, configure the
 following six configuration values together, using verified prices and bounds:
 
 - `NIM_CREDIT_PRICE_VERSION`
@@ -111,19 +111,19 @@ following six configuration values together, using verified prices and bounds:
 Rates are positive integer credit units per 1,000,000 tokens; one displayed
 credit equals 1,000,000 integer credit units. Prices and request limits have no
 application defaults. Partial configuration is rejected. These values alone
-still do not enable sends: the server also requires a verified model-specific
-input-token upper bound and a wired atomic reservation before every provider
-POST. The current hosted Nemotron endpoint has no verified bounder in this
-checkout, so direct provider calls fail closed. Hermes requires enforcement at
-the actual all-egress provider boundary and also fails closed. Do not guess rates,
-tokenizer parity, endpoint context limits, or budgets to bypass these checks.
+still do not bypass the global pause, account limits, or demo shared budgets.
+The supported Nebius/Nemotron path reserves the full 262,144-token input bound;
+`NIM_MAX_INPUT_TOKENS` must cover that bound. The bridge enforces admission and
+records usage at provider calls. Requests fail closed when the required policy,
+credit configuration, or bridge enforcement is unavailable. No provider prices,
+spending limits, or automatic unpause are supplied by this cleanup.
 
 ## Local prerequisites
 
 - Node.js 22.20 or newer in the 22.x line
 - pnpm 11.8 or newer
 - Docker Desktop with WSL2/Ubuntu 22.04 or newer
-- A Nebius Token Factory credential (NVIDIA credentials are optional for fallback)
+- A Nebius Token Factory credential for paid AI use
 
 Keep the active <code>.env</code> in this application repository. Copy
 <code>.env.example</code> to <code>.env</code> if needed, then fill in the settings.
@@ -138,6 +138,22 @@ storage mount described below. Planning-only projects remain usable without that
 
 ### Private demo admission
 
+For a small demo:
+
+1. Copy `.env.example`, fill your owner password and separate random secrets, and
+   complete the existing workspace/managed-storage setup below.
+2. Start the normal application. In **Admin > Demo content**, select only content
+   intended for visitors and publish it. Nothing is published automatically.
+3. Review **Admin > Demo settings**. Visitor limits have a starter preset;
+   advanced limits are collapsed. The emergency AI pause remains visible.
+4. Open the login page in a private browser window and choose **Try demo**.
+   Configure provider prices and explicit demo AI budgets only if you want paid AI.
+
+The demo still needs isolated records, expiry cleanup, and a published snapshot.
+File-backed demo workspaces also need the managed-storage mount.
+Those protect your owner workspace and other visitors. Snapshot history is retained
+so active demos can finish copying the version they were issued.
+
 The passwordless demo endpoint is `POST /api/v1/demo/session`. It accepts an empty
 request body, an exact configured `Origin`, and a high-entropy `Idempotency-Key`.
 The key is stored as a one-way digest, is globally unique across network changes,
@@ -150,8 +166,10 @@ New anonymous admission remains disabled until all six `DEMO_GLOBAL_ADMISSION_MA
 `DEMO_GLOBAL_ADMISSION_WINDOW_SECONDS`, `DEMO_NETWORK_ADMISSION_MAX`,
 `DEMO_NETWORK_ADMISSION_WINDOW_SECONDS`, `DEMO_RUN_START_MAX`, and
 `DEMO_RUN_START_WINDOW_SECONDS` values and `DEMO_NETWORK_HASH_SECRET` are configured
-together. Limits are bounded positive integers; this project does not choose
-production admission budgets. `DEMO_NETWORK_HASH_SECRET` must be a dedicated random
+together. Compose and `.env.example` now provide modest visitor limits (40/hour
+globally, 5/hour per network, 10 run starts/hour per demo). These are capacity
+limits, not permission to spend money. Existing persisted demo settings are not
+overwritten; use **Admin > Fill missing demo limits**, review, and save if needed. `DEMO_NETWORK_HASH_SECRET` must be a dedicated random
 secret of at least 32 bytes, kept private and separate from `SESSION_SECRET`. Rotating
 it while an old network window is still active temporarily blocks new admissions
 rather than resetting the existing counter. `DEMO_SESSION_TTL_HOURS` is optional,
@@ -427,12 +445,18 @@ command is development-only and is not used by production builds. Use
 The normal frontend <code>pnpm dev</code> command still needs the real backend API; the
 mock is enabled only by <code>preview:dev</code>.
 
-## Durable automation worker
+## Execution and shutdown
 
-Run the API and the scheduler as separate backend processes with the same database
-and application environment. After building the backend, start the API with
-<code>pnpm --filter personal-ai-workspace-backend start</code> and keep a worker
-running with <code>pnpm --filter personal-ai-workspace-backend start:worker</code>.
-The worker does not bind an HTTP port; it polls and claims due occurrences through
-PostgreSQL. For local development, use
-<code>pnpm --filter personal-ai-workspace-backend dev:worker</code>.
+Start the normal backend or Compose app; scheduled jobs start automatically.
+There is no separate `start:worker` process. A second application instance using
+the same database fails before recovery. Do not scale this personal deployment
+to multiple API replicas.
+
+Accepted Home turns run on the server without browser polling. Shutdown drains
+requests, cancels active work, and waits for cleanup before releasing ownership.
+If shutdown cannot finish within 30 seconds, the process exits and the next start
+recovers saved interrupted outcomes; it does not automatically replay paid work.
+
+Frontend pages load on demand. `vite.config.mjs`, `vitest.config.mjs`, and
+`src/app/styles/globals.css` are the authoritative configuration/style files.
+See `dev-summary.md` for verification results and remaining environment limits.

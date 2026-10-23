@@ -1,12 +1,18 @@
 {
   "compilerOptions": {
-    "composite": true,
     "skipLibCheck": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "allowSyntheticDefaultImports": true,
-    "types": ["node"],
-    "noEmit": true
+    "types": [
+      "node"
+    ],
+    "noEmit": true,
+    "allowJs": true
   },
-  "include": ["vite.config.ts", "vitest.config.ts"]
+  "include": [
+    "vite.config.mjs",
+    "vitest.config.mjs",
+    "preview/**/*.mjs"
+  ]
 }

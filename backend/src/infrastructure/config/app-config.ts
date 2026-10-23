@@ -76,17 +76,6 @@ const appEnvironmentSchema = z.object({
   LOCAL_USER_PASSWORD: z.string().min(1).max(1024).optional(),
   LOCAL_USER_PASSWORD_FILE: z.string().min(1).optional(),
   LOCAL_USER_DISPLAY_NAME: z.string().min(1).max(120).default('Local user'),
-  OPENSHELL_BASE_URL: z.string().url().optional(),
-  OPENSHELL_CLIENT_ID: z.string().min(1).optional(),
-  OPENSHELL_CLIENT_TOKEN: z.string().min(16).optional(),
-  OPENSHELL_NETWORK: z.string().min(1).optional(),
-  OPENSHELL_HEALTH_PATH: z.string().startsWith('/').default('/health'),
-  OPENSHELL_NIM_READINESS_PATH: z.string().startsWith('/').default('/v1/provider/readiness'),
-  OPEN_SHELL_BRIDGE_ENDPOINT: z.string().url().optional(),
-  OPEN_SHELL_BRIDGE_CA_FILE: z.string().min(1).optional(),
-  OPEN_SHELL_BRIDGE_CLIENT_CERT_FILE: z.string().min(1).optional(),
-  OPEN_SHELL_BRIDGE_CLIENT_KEY_FILE: z.string().min(1).optional(),
-  OPEN_SHELL_BRIDGE_PROFILE_DIGEST: z.string().regex(/^sha256:[0-9a-f]{64}$/u).optional(),
   NIM_PROFILE: z.enum([NVIDIA_PROVIDER_PROFILE, NEBIUS_PROVIDER_PROFILE]).default(NVIDIA_PROVIDER_PROFILE),
   NIM_ENDPOINT: z.string().url().default('https://integrate.api.nvidia.com/v1'),
   NIM_MODEL: z.string().default(EXPECTED_NIM_MODEL),
@@ -98,7 +87,7 @@ const appEnvironmentSchema = z.object({
   NIM_MAX_PROVIDER_CALLS_PER_RUN: optionalEnvironmentValue(z.string().regex(/^[1-9][0-9]?$/u)),
   NIM_ALLOW_ESTIMATED_HOME_USAGE: z.enum(['true', 'false']).default('false'),
   HOME_PLANNING_TIME_ZONE: z.string().min(1).optional(),
-  AGENT_RUNTIME_MODE: z.enum(['fake', 'direct', 'openshell', 'hermes']).default('direct'),
+  AGENT_RUNTIME_MODE: z.enum(['fake', 'hermes']).default('hermes'),
   HERMES_BRIDGE_ENDPOINT: z.string().url().optional(),
   HERMES_BRIDGE_CA_FILE: z.string().optional(),
   HERMES_BRIDGE_CERT_FILE: z.string().optional(),
@@ -140,24 +129,13 @@ export interface AppConfig {
   readonly localUserPassword?: string;
   readonly localUserPasswordFile?: string;
   readonly localUserDisplayName: string;
-  readonly openshellBaseUrl?: string;
-  readonly openshellClientId?: string;
-  readonly openshellClientToken?: string;
-  readonly openshellNetwork?: string;
-  readonly openshellHealthPath: string;
-  readonly openshellNimReadinessPath: string;
-  readonly openshellBridgeEndpoint?: string;
-  readonly openshellBridgeCaFile?: string;
-  readonly openshellBridgeClientCertFile?: string;
-  readonly openshellBridgeClientKeyFile?: string;
-  readonly openshellBridgeProfileDigest?: string;
   readonly nimProfile: string;
   readonly nimEndpoint: string;
   readonly nimModel: string;
   readonly providerCreditConfiguration?: ProviderCallCreditConfiguration;
   readonly allowEstimatedHomeUsage?: boolean;
   readonly homePlanningTimeZone?: string;
-  readonly agentRuntimeMode: 'fake' | 'direct' | 'openshell' | 'hermes';
+  readonly agentRuntimeMode: 'fake' | 'hermes';
   readonly hermesBridgeEndpoint?: string;
   readonly hermesBridgeCaFile?: string;
   readonly hermesBridgeCertFile?: string;
@@ -197,7 +175,7 @@ function configurationDetails(error: z.ZodError): readonly ErrorDetail[] {
 function validateCrossFieldConfiguration(value: z.infer<typeof appEnvironmentSchema>): readonly ErrorDetail[] {
   const details: ErrorDetail[] = [];
   const appOrigin = new URL(value.APP_ORIGIN);
-  if (value.TRUSTED_PROXY_CIDRS !== undefined && parseTrustedProxyCidrs(value.TRUSTED_PROXY_CIDRS) === null) {
+  if (value.TRUSTED_PROXY_CIDRS !== undefined && value.TRUSTED_PROXY_CIDRS !== '' && parseTrustedProxyCidrs(value.TRUSTED_PROXY_CIDRS) === null) {
     details.push({ field: 'TRUSTED_PROXY_CIDRS', message: 'Use a comma-separated list of IPv4/IPv6 CIDRs.' });
   }
   if (value.HOME_PLANNING_TIME_ZONE) {
@@ -276,15 +254,11 @@ function validateCrossFieldConfiguration(value: z.infer<typeof appEnvironmentSch
   if (value.NIM_PROFILE === NEBIUS_PROVIDER_PROFILE && (value.AGENT_RUNTIME_MODE !== 'hermes' || value.NIM_ENDPOINT !== 'https://api.tokenfactory.nebius.com/v1')) {
     details.push({ field: 'NIM_PROFILE', message: 'Nebius Token Factory requires Hermes mode and https://api.tokenfactory.nebius.com/v1.' });
   }
-  if (value.AGENT_RUNTIME_MODE === 'openshell') {
-    validateOpenShellConfiguration(value, details);
-  }
-  validateBridgeConfiguration(value, details);
   if (value.AGENT_RUNTIME_MODE === 'hermes' && (!value.HERMES_BRIDGE_ENDPOINT || new URL(value.HERMES_BRIDGE_ENDPOINT).protocol !== 'https:' || !value.HERMES_BRIDGE_CA_FILE || !value.HERMES_BRIDGE_CERT_FILE || !value.HERMES_BRIDGE_KEY_FILE)) {
     details.push({ field: 'HERMES_BRIDGE_ENDPOINT', message: 'Hermes mode requires an HTTPS bridge and dedicated mTLS files.' });
   }
   if (value.NODE_ENV === 'production' && value.AGENT_RUNTIME_MODE === 'fake') {
-    details.push({ field: 'AGENT_RUNTIME_MODE', message: 'Production deployments must use the direct provider or a verified deferred runtime.' });
+    details.push({ field: 'AGENT_RUNTIME_MODE', message: 'Production deployments must use Hermes.' });
   }
   return details;
 }
@@ -354,42 +328,6 @@ function parseBoundedPositiveIntegerAllowZero(value: string, maximum: number): n
   return Number.isSafeInteger(parsed) && parsed <= maximum ? parsed : null;
 }
 
-function validateOpenShellConfiguration(
-  value: z.infer<typeof appEnvironmentSchema>,
-  details: ErrorDetail[]
-): void {
-  const requiredFields: readonly [keyof typeof value, string][] = [
-    ['OPENSHELL_BASE_URL', 'OPENSHELL_BASE_URL'],
-    ['OPENSHELL_CLIENT_ID', 'OPENSHELL_CLIENT_ID'],
-    ['OPENSHELL_CLIENT_TOKEN', 'OPENSHELL_CLIENT_TOKEN'],
-    ['OPENSHELL_NETWORK', 'OPENSHELL_NETWORK']
-  ];
-  for (const [field, label] of requiredFields) {
-    if (!value[field]) {
-      details.push({ field: label, message: `${label} is required when AGENT_RUNTIME_MODE=openshell` });
-    }
-  }
-}
-
-function validateBridgeConfiguration(
-  value: z.infer<typeof appEnvironmentSchema>,
-  details: ErrorDetail[]
-): void {
-  const bridgeValues = [
-    value.OPEN_SHELL_BRIDGE_ENDPOINT,
-    value.OPEN_SHELL_BRIDGE_CA_FILE,
-    value.OPEN_SHELL_BRIDGE_CLIENT_CERT_FILE,
-    value.OPEN_SHELL_BRIDGE_CLIENT_KEY_FILE,
-    value.OPEN_SHELL_BRIDGE_PROFILE_DIGEST
-  ];
-  const configuredCount = bridgeValues.filter((item) => item !== undefined).length;
-  if (configuredCount > 0 && configuredCount < bridgeValues.length) {
-    details.push({ field: 'OPEN_SHELL_BRIDGE_ENDPOINT', message: 'Bridge endpoint, mTLS files, and profile digest must be configured together.' });
-  }
-  if (value.OPEN_SHELL_BRIDGE_ENDPOINT && new URL(value.OPEN_SHELL_BRIDGE_ENDPOINT).protocol !== 'https:') {
-    details.push({ field: 'OPEN_SHELL_BRIDGE_ENDPOINT', message: 'The private bridge endpoint must use HTTPS.' });
-  }
-}
 
 function isSameOrNestedPath(candidate: string, parent: string): boolean {
   const normalizedCandidate = candidate.replaceAll('\\', '/').replace(/\/+$/u, '') || '/';
@@ -451,21 +389,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     ...(demoAbuseLimits ? { demoAbuseLimits } : {}),
     ...(parsed.data.DEMO_NETWORK_HASH_SECRET ? { demoNetworkHashSecret: parsed.data.DEMO_NETWORK_HASH_SECRET } : {}),
     ...(showcaseLimits ? { showcaseLimits } : {}),
-    ...(parsed.data.TRUSTED_PROXY_CIDRS !== undefined ? { trustedProxyCidrs: parseTrustedProxyCidrs(parsed.data.TRUSTED_PROXY_CIDRS) ?? [] } : {}),
+    ...(parsed.data.TRUSTED_PROXY_CIDRS ? { trustedProxyCidrs: parseTrustedProxyCidrs(parsed.data.TRUSTED_PROXY_CIDRS) ?? [] } : {}),
     ...(parsed.data.LOCAL_USER_PASSWORD ? { localUserPassword: parsed.data.LOCAL_USER_PASSWORD } : {}),
     ...(parsed.data.LOCAL_USER_PASSWORD_FILE ? { localUserPasswordFile: parsed.data.LOCAL_USER_PASSWORD_FILE } : {}),
     localUserDisplayName: parsed.data.LOCAL_USER_DISPLAY_NAME,
-    ...(parsed.data.OPENSHELL_BASE_URL ? { openshellBaseUrl: parsed.data.OPENSHELL_BASE_URL } : {}),
-    ...(parsed.data.OPENSHELL_CLIENT_ID ? { openshellClientId: parsed.data.OPENSHELL_CLIENT_ID } : {}),
-    ...(parsed.data.OPENSHELL_CLIENT_TOKEN ? { openshellClientToken: parsed.data.OPENSHELL_CLIENT_TOKEN } : {}),
-    ...(parsed.data.OPENSHELL_NETWORK ? { openshellNetwork: parsed.data.OPENSHELL_NETWORK } : {}),
-    openshellHealthPath: parsed.data.OPENSHELL_HEALTH_PATH,
-    openshellNimReadinessPath: parsed.data.OPENSHELL_NIM_READINESS_PATH,
-    ...(parsed.data.OPEN_SHELL_BRIDGE_ENDPOINT ? { openshellBridgeEndpoint: parsed.data.OPEN_SHELL_BRIDGE_ENDPOINT } : {}),
-    ...(parsed.data.OPEN_SHELL_BRIDGE_CA_FILE ? { openshellBridgeCaFile: parsed.data.OPEN_SHELL_BRIDGE_CA_FILE } : {}),
-    ...(parsed.data.OPEN_SHELL_BRIDGE_CLIENT_CERT_FILE ? { openshellBridgeClientCertFile: parsed.data.OPEN_SHELL_BRIDGE_CLIENT_CERT_FILE } : {}),
-    ...(parsed.data.OPEN_SHELL_BRIDGE_CLIENT_KEY_FILE ? { openshellBridgeClientKeyFile: parsed.data.OPEN_SHELL_BRIDGE_CLIENT_KEY_FILE } : {}),
-    ...(parsed.data.OPEN_SHELL_BRIDGE_PROFILE_DIGEST ? { openshellBridgeProfileDigest: parsed.data.OPEN_SHELL_BRIDGE_PROFILE_DIGEST } : {}),
     nimProfile: parsed.data.NIM_PROFILE,
     nimEndpoint: parsed.data.NIM_ENDPOINT,
     nimModel: parsed.data.NIM_MODEL,

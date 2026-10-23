@@ -64,6 +64,86 @@
     }
   ],
   "paths": {
+    "/api/v1/projects/{projectId}/files/search": {
+      "get": {
+        "tags": [
+          "Workspace files"
+        ],
+        "summary": "Search project text files",
+        "operationId": "searchWorkspaceText",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/WorkspaceDirectory"
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "maxResults",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded search results.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceSearchEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/WorkspaceForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ProjectNotFound"
+          },
+          "413": {
+            "$ref": "#/components/responses/WorkspaceLimit"
+          },
+          "503": {
+            "$ref": "#/components/responses/WorkspaceUnavailable"
+          }
+        },
+        "description": "Search case-insensitive phrases or query terms in bounded text files. Exact phrase matches rank first, followed by matching query terms."
+      },
+      "parameters": [
+        {
+          "name": "projectId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ]
+    },
     "/api/v1/workspace-exports": {
       "post": {
         "tags": ["Workspace exports"],
@@ -340,36 +420,102 @@
     },
     "/api/v1/admin/accounts": {
       "get": {
-        "tags": ["Account administration"],
+        "tags": [
+          "Account administration"
+        ],
         "summary": "Search bounded account usage summaries",
         "operationId": "listAdminAccounts",
         "description": "Requires an active regular administrator. Returns at most 100 accounts and aggregate limits/usage; no resource content or credentials are exposed.",
-        "security": [{ "sessionCookie": [] }],
-        "parameters": [{ "name": "search", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 120 } }],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 120
+            }
+          }
+        ],
         "responses": {
-          "200": { "description": "Bounded account summaries.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminAccountsEnvelope" } } } },
-          "400": { "$ref": "#/components/responses/ValidationError" },
-          "401": { "$ref": "#/components/responses/Unauthenticated" },
-          "403": { "description": "An active regular administrator is required.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
-          "500": { "$ref": "#/components/responses/InternalError" }
+          "200": {
+            "description": "Bounded account summaries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAccountsEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "description": "An active regular administrator is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
         }
       },
       "post": {
-        "tags": ["Account administration"],
+        "tags": [
+          "Account administration"
+        ],
         "summary": "Create a regular user account",
         "operationId": "createAdminAccount",
         "description": "Requires an active regular administrator, exact Origin, and CSRF token. Role is always user; the initial password is hashed and never returned.",
-        "security": [{ "sessionCookie": [] }],
-        "parameters": [{ "$ref": "#/components/parameters/OriginHeader" }, { "$ref": "#/components/parameters/CsrfHeader" }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminCreateAccountRequest" } } } },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/OriginHeader"
+          },
+          {
+            "$ref": "#/components/parameters/CsrfHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminCreateAccountRequest"
+              }
+            }
+          }
+        },
         "responses": {
-          "201": { "description": "Created regular account; credentials are not returned.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminAccountCreatedEnvelope" } } } },
-          "400": { "$ref": "#/components/responses/ValidationError" },
-          "401": { "$ref": "#/components/responses/Unauthenticated" },
-          "403": { "description": "Origin/CSRF validation failed or an active regular administrator is required.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
-          "409": { "description": "The account identifier is already in use.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
-          "500": { "$ref": "#/components/responses/InternalError" }
-        }
+          "410": {
+            "description": "Account creation is retired. Use the owner account or an anonymous demo session."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "description": "Administrator and CSRF verification required."
+          }
+        },
+        "deprecated": true
       }
     },
     "/api/v1/admin/accounts/{accountId}/limits": {
@@ -3807,8 +3953,12 @@
               }
             }
           },
-          "409": { "$ref": "#/components/responses/StorageFileConflict" },
-          "413": { "$ref": "#/components/responses/StorageWriteTooLarge" },
+          "409": {
+            "$ref": "#/components/responses/StorageFileConflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/StorageWriteTooLarge"
+          },
           "500": {
             "description": "Internal error.",
             "content": {
@@ -3819,7 +3969,9 @@
               }
             }
           },
-          "503": { "$ref": "#/components/responses/StorageWriteUnavailable" }
+          "503": {
+            "$ref": "#/components/responses/StorageWriteUnavailable"
+          }
         },
         "parameters": [
           {
@@ -3837,6 +3989,74 @@
                 "$ref": "#/components/schemas/EditProjectFileRequest"
               }
             }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete a project file",
+        "operationId": "deleteProjectFile",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "SHA-256 of the current file, optionally quoted."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "File deleted after validating its current hash and recording a backup."
+          },
+          "400": {
+            "description": "Invalid path or hash."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "description": "Forbidden origin, path, or CSRF token."
+          },
+          "404": {
+            "description": "File or project not found."
+          },
+          "409": {
+            "$ref": "#/components/responses/StorageFileConflict"
+          },
+          "503": {
+            "$ref": "#/components/responses/StorageWriteUnavailable"
           }
         }
       }

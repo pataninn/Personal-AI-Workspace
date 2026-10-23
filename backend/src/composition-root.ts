@@ -2,6 +2,9 @@ import type { Express } from 'express';
 import type { DataSource } from 'typeorm';
 
 import { createApp } from '@/app';
+import { acquireApplicationLock } from '@/infrastructure/startup/application-lock';
+import { ProcessHomeTurnUseCase } from '@/modules/home-assistant/use-cases/process-home-turn';
+import { HomeTurnExecutor } from '@/modules/home-assistant/use-cases/home-turn-executor';
 import { TypeOrmProjectChatContextRepository } from '@/infrastructure/database/repositories/typeorm-project-chat-context-repository';
 import { ProjectChatContextUseCases } from '@/modules/ai-runs/use-cases/project-chat-context-use-cases';
 import { SendChatMessageUseCase } from '@/modules/ai-runs/use-cases/send-chat-message-use-case';
@@ -24,8 +27,6 @@ import { GetHomeConversationUseCase } from '@/modules/home-assistant/use-cases/g
 import { ListHomeConversationsUseCase } from '@/modules/home-assistant/use-cases/list-home-conversations';
 import { ListHomeTurnsUseCase } from '@/modules/home-assistant/use-cases/list-home-turns';
 import { SubmitHomeTurnUseCase } from '@/modules/home-assistant/use-cases/submit-home-turn';
-import { DecideHomeConsentUseCase } from '@/modules/home-assistant/use-cases/decide-home-consent';
-import { HomeToolResultConsentGate } from '@/modules/home-assistant/use-cases/home-tool-result-consent-gate';
 import { GetHomeTurnUseCase } from '@/modules/home-assistant/use-cases/get-home-turn';
 import { HomePlanningToolRequestHandler } from '@/modules/home-assistant/use-cases/home-planning-tool-request-handler';
 import { HomeChangeProposalUseCases } from '@/modules/home-assistant/use-cases/home-change-proposal-use-cases';
@@ -37,23 +38,17 @@ import { TypeOrmConversationRepository } from '@/infrastructure/database/reposit
 import { WorkspaceBoundaryAdapter } from '@/infrastructure/workspace/workspace-boundary';
 import { WorkspaceGatewayAdapter } from '@/infrastructure/workspace/workspace-gateway';
 import { readSecretFile } from '@/infrastructure/auth/read-secret-file';
-import { NvidiaHostedNimProvider } from '@/infrastructure/ai-provider/nvidia-hosted-nim-provider';
 import { ProviderCallCreditAdmission } from '@/modules/credits/use-cases/provider-call-credit-admission';
 import { GetHomeTurnProviderUsageUseCase } from '@/modules/credits/use-cases/get-home-turn-provider-usage';
 import { HandleHomeProviderCreditReceiptUseCase } from '@/modules/credits/use-cases/handle-home-provider-credit-receipt';
-import { DirectProviderAgentRuntime } from '@/infrastructure/ai-provider/direct-provider-agent-runtime';
 import { HermesAgentRuntime } from '@/infrastructure/hermes/hermes-agent-runtime';
 import { HermesBridgeClient } from '@/infrastructure/hermes/hermes-bridge-client';
 import { HermesHomePlanningRuntime, HOME_PLANNING_TOOL_NAMES, MAX_HOME_PLANNING_OUTPUT_TOKENS } from '@/infrastructure/hermes/hermes-home-planning-runtime';
 import { ApprovedContextReader } from '@/infrastructure/hermes/approved-context-reader';
 import { HermesProjectTaskTools } from '@/infrastructure/hermes/hermes-project-task-tools';
-import type { IModelProvider } from '@/modules/ai-runs/repositories/model-provider';
 import type { IAgentRuntime } from '@/modules/ai-runs/repositories/agent-runtime';
 import type { HomePlanningProvider } from '@/modules/home-assistant/repositories/home-planning-runtime';
-import { OpenShellGatewayClient } from '@/infrastructure/sandbox/openshell-gateway-client';
 import { FakeAgentRuntime } from '@/infrastructure/sandbox/fake-agent-runtime';
-import { UnsupportedOpenShellAgentRuntime } from '@/infrastructure/sandbox/unsupported-openshell-agent-runtime';
-import { LocalStagingGateway } from '@/infrastructure/staging/local-staging-gateway';
 import { TypeOrmAiRunRepository } from '@/infrastructure/database/repositories/typeorm-ai-run-repository';
 import { TypeOrmProviderPermissionRepository } from '@/infrastructure/database/repositories/typeorm-provider-permission-repository';
 import { TypeOrmSandboxCommandRepository } from '@/infrastructure/database/repositories/typeorm-sandbox-command-repository';
@@ -76,7 +71,7 @@ import { DEFAULT_WORKSPACE_INSPECTION_POLICY } from '@/modules/files/domain/work
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { runStartupChecks } from '@/infrastructure/startup/startup-checks';
 import { startPeriodicMaintenance, type PeriodicMaintenanceHandle } from '@/infrastructure/startup/periodic-maintenance';
-import { startApplicationMaintenance, type ApplicationLifecycleMode } from '@/infrastructure/startup/application-lifecycle';
+import { startApplicationMaintenance } from '@/infrastructure/startup/application-lifecycle';
 import { StorageQuotaStartupReconciler } from '@/infrastructure/startup/storage-quota-startup-reconciler';
 import { PhysicalStorageSpaceMonitor } from '@/infrastructure/startup/physical-storage-space-monitor';
 import { GetReadinessUseCase } from '@/modules/health';
@@ -142,8 +137,7 @@ const STORAGE_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;
 const AUTOMATION_WORK_INTERVAL_MS = 15 * 1000;
 
 export async function createApplication(
-  environment: NodeJS.ProcessEnv = process.env,
-  lifecycle: ApplicationLifecycleMode = 'api'
+  environment: NodeJS.ProcessEnv = process.env
 ): Promise<Application> {
   const config = loadConfig(environment);
   const logger = createLogger(config.logLevel);
@@ -151,14 +145,11 @@ export async function createApplication(
   const readiness = new InMemoryReadinessState();
   let maintenanceHandle: PeriodicMaintenanceHandle | undefined;
   let automationMaintenanceHandle: PeriodicMaintenanceHandle | undefined;
+  let ownership: Awaited<ReturnType<typeof acquireApplicationLock>> | undefined;
+  let homeExecutor: HomeTurnExecutor | undefined;
+  let drainRuns: (() => Promise<void>) | undefined;
   const creditLedgerRepository = new TypeOrmCreditLedgerRepository(dataSource);
   const providerCallCreditAdmission = new ProviderCallCreditAdmission(creditLedgerRepository);
-  const modelProvider = config.agentRuntimeMode === 'direct'
-    ? await createModelProvider(config, environment, providerCallCreditAdmission)
-    : undefined;
-  const gatewayClient = config.agentRuntimeMode === 'openshell'
-    ? createOpenShellGateway(config)
-    : undefined;
 
   try {
     await dataSource.initialize();
@@ -166,13 +157,11 @@ export async function createApplication(
       dataSource,
       workspaceRoot: config.workspaceRoot,
       workspaceIdentityFile: config.workspaceIdentityFile,
-      workspaceIdentity: config.workspaceIdentity,
-      ...(gatewayClient ? { gatewayClient } : {}),
-      nimProfile: config.nimProfile,
-      nimModel: config.nimModel,
-      agentRuntimeMode: config.agentRuntimeMode,
-      ...(modelProvider ? { providerCheck: () => modelProvider.checkAvailability() } : {}),
-      ...(config.agentRuntimeMode === 'hermes' ? { providerCheck: async () => { await createHermesBridge(config).call('probe', undefined, undefined, { providerProfile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint }); } } : {})
+      workspaceIdentity: config.workspaceIdentity
+    });
+    ownership = await acquireApplicationLock(dataSource, () => {
+      logger.fatal('Application ownership was lost; stopping before another process can execute work.');
+      process.exit(1);
     });
     const workspaceExportRepository = new TypeOrmWorkspaceExportRepository(dataSource);
     const workspaceExportArtifacts = new PrivateWorkspaceExportArtifactStore();
@@ -291,7 +280,7 @@ export async function createApplication(
       rootMappings: storageRootMappingRepository
     });
     const taskTools = new HermesProjectTaskTools({ runs: aiRunRepository, principalAuthorization, list: new ListProjectTasksUseCase(projectRepository, projectTaskRepository), create: new CreateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases), update: new UpdateProjectTaskUseCase(projectRepository, projectTaskRepository, taskMutationUseCases) });
-    const agentRuntime = createAgentRuntime(config, modelProvider, workspaceGateway, conversationRepository, projectFactRepository, logger, taskTools, new HandleHomeProviderCreditReceiptUseCase(
+    const agentRuntime = createAgentRuntime(config, workspaceGateway, projectFactRepository, logger, taskTools, new HandleHomeProviderCreditReceiptUseCase(
       providerCallCreditAdmission, config.providerCreditConfiguration, { profile: config.nimProfile, model: config.nimModel }, creditLedgerRepository, config.allowEstimatedHomeUsage, 'ai_run'
     ));
     const homePlanningProvider: HomePlanningProvider = { profile: config.nimProfile, model: config.nimModel, endpoint: config.nimEndpoint };
@@ -309,7 +298,6 @@ export async function createApplication(
     const assistantExecutionPolicy = new AssertAssistantExecutionPolicyUseCase(
       assistantScopePolicyRepository, projectRepository, principalAuthorization, assistantRuntimeCapability
     );
-    const homeToolResultConsentGate = new HomeToolResultConsentGate(homeConversationRepository, homePlanningProvider);
     const homeChangeProposals = new HomeChangeProposalUseCases(
       homeConversationRepository, homeChangeProposalRepository, new GetGlobalTaskUseCase(projectTaskRepository),
       taskMutationUseCases, workspacePlanning, actionLedgerRepository, config.homePlanningTimeZone
@@ -327,37 +315,42 @@ export async function createApplication(
       undo: new ActionUndoUseCases(actionLedgerRepository, projectTaskRepository, projectRepository),
       ...(config.homePlanningTimeZone ? { timeZone: config.homePlanningTimeZone } : {})
     });
-    const stagingGateway = config.agentRuntimeMode === 'openshell'
-      ? new LocalStagingGateway({ stagingRoot: config.stagingRoot })
-      : undefined;
     const runEvents = new InMemoryRunEventPublisher();
     const chatContextRepository = new TypeOrmProjectChatContextRepository(dataSource);
     const projectChatContext = new ProjectChatContextUseCases(projectRepository, chatContextRepository, projectFactRepository, workspaceGateway);
-    const submitHomeTurn = new SubmitHomeTurnUseCase(homeConversationRepository, {
-      mode: config.agentRuntimeMode,
-      provider: homePlanningProvider,
-      ...(homePlanningRuntime ? { runtime: homePlanningRuntime } : {})
-    }, { executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel }, {
-      readSelectedFacts: async (ownerId, projectId) => (await projectChatContext.getSelectedFacts(ownerId, projectId))
-        .map(({ id, version, title, content }) => ({ id, version, title, content }))
-    });
     const cancelHomeTurn = new CancelHomeTurnUseCase(homeConversationRepository, homePlanningRuntime);
-    const getHomeTurn = new GetHomeTurnUseCase(homeConversationRepository, homePlanningRuntime, homeToolResultConsentGate, homePlanningToolHandler, {
+    const processHomeTurn = new ProcessHomeTurnUseCase(homeConversationRepository, homePlanningRuntime, homePlanningToolHandler, {
       executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel
     }, automationRepository, new HandleHomeProviderCreditReceiptUseCase(
       providerCallCreditAdmission, homeProviderCreditConfiguration,
       { profile: homePlanningProvider.profile, model: homePlanningProvider.model }, creditLedgerRepository, config.allowEstimatedHomeUsage
     ), homeTurnProviderUsage);
+    homeExecutor = new HomeTurnExecutor({ process: processHomeTurn, cancel: cancelHomeTurn,
+      onError: (turnId) => logger.warn({ turnId }, 'Home turn processing could not be completed.') });
+    const getHomeTurn = new GetHomeTurnUseCase(homeConversationRepository);
+    const submitHomeTurn = new SubmitHomeTurnUseCase(homeConversationRepository, {
+      mode: config.agentRuntimeMode,
+      provider: homePlanningProvider,
+      onAccepted: (input) => homeExecutor?.start(input),
+      ...(homePlanningRuntime ? { runtime: homePlanningRuntime } : {})
+    }, { executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel }, {
+      readSelectedFacts: async (ownerId, projectId) => (await projectChatContext.getSelectedFacts(ownerId, projectId))
+        .map(({ id, version, title, content }) => ({ id, version, title, content }))
+    });
     const invokeSkill = new InvokeSkillUseCase(skillRepository, skillInvocationRepository, homeConversationRepository, submitHomeTurn);
     const createAiRun = new CreateAiRunUseCase(projectRepository, conversationRepository, workspaceGateway, aiRunRepository, config.nimProfile, config.nimModel, projectFactRepository, assistantExecutionPolicy);
     const proposeSandboxCommand = new ProposeSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger, assistantExecutionPolicy);
     const decideSandboxCommand = new DecideSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger, assistantExecutionPolicy);
     const collectProposedChangeSet = new CollectProposedChangeSetUseCase(aiRunRepository, projectRepository, workspaceMutationGateway, changeSetRepository);
     const decideProposedChangeSet = new DecideProposedChangeSetUseCase(aiRunRepository, projectRepository, changeSetRepository, workspaceMutationGateway, chatContextRepository, principalAuthorization, assistantExecutionPolicy);
-    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, demoAdmissionRepository, proposeSandboxCommand, projectRepository, collectProposedChangeSet, providerPermissionRepository, decideProposedChangeSet, principalAuthorization, stagingGateway, assistantExecutionPolicy, decideSandboxCommand);
-    const decideEgress = new DecideEgressUseCase(aiRunRepository, projectRepository, conversationRepository, workspaceGateway, stagingGateway, agentRuntime, config.workspaceRoot, projectFactRepository, providerPermissionRepository, assistantExecutionPolicy);
+    const startAiRun = new StartAiRunUseCase(aiRunRepository, conversationRepository, agentRuntime, runEvents, demoAdmissionRepository, proposeSandboxCommand, projectRepository, collectProposedChangeSet, providerPermissionRepository, decideProposedChangeSet, principalAuthorization, undefined, assistantExecutionPolicy, decideSandboxCommand);
+    drainRuns = async () => {
+      await startAiRun.stop((run) => cancelAiRun.execute({ ownerId: run.ownerId, runId: run.id, idempotencyKey: `shutdown-${run.id}` }));
+      await processHomeTurn.drainCleanup();
+    };
+    const decideEgress = new DecideEgressUseCase(aiRunRepository, projectRepository, conversationRepository, workspaceGateway, undefined, agentRuntime, config.workspaceRoot, projectFactRepository, providerPermissionRepository, assistantExecutionPolicy);
     const sendChatMessage = new SendChatMessageUseCase(projectChatContext, projectFactRepository, createAiRun, decideEgress, startAiRun);
-    const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository, commandRepository, stagingGateway);
+    const cancelAiRun = new CancelAiRunUseCase(aiRunRepository, agentRuntime, runEvents, projectRepository, commandRepository, undefined);
     const cancelSandboxCommand = new CancelSandboxCommandUseCase(aiRunRepository, commandRepository, agentRuntime, projectRepository, logger);
     const cleanupExpiredDemos = new CleanupExpiredDemosUseCase(demoExpiryCleanupRepository, cancelAiRun, cancelSandboxCommand, cancelHomeTurn);
     const passwordHasher = new BcryptPasswordHasher();
@@ -491,7 +484,6 @@ export async function createApplication(
           listTurns: new ListHomeTurnsUseCase(homeConversationRepository),
           listSkillRunSummaries: new ListHomeSkillRunSummariesUseCase(skillInvocationRepository),
           submitTurn: submitHomeTurn,
-          decideConsent: new DecideHomeConsentUseCase(homeConversationRepository, homePlanningRuntime, homePlanningProvider, homeToolResultConsentGate),
           getTurn: getHomeTurn,
           cancelTurn: cancelHomeTurn,
           listMessages: new ListHomeMessagesUseCase(homeConversationRepository),
@@ -618,14 +610,12 @@ export async function createApplication(
       ...(config.storageDiskWarningFreeBytes !== undefined ? { warningFreeBytes: config.storageDiskWarningFreeBytes } : {}),
       logger
     });
-    await startApplicationMaintenance(lifecycle, {
+    await startApplicationMaintenance({
       startApiMaintenance: async () => {
         maintenanceHandle = await startPeriodicMaintenance({
           task: { run: async () => {
-            const [cleanedStagingCount] = await Promise.all([
-              stagingGateway?.cleanupExpired() ?? Promise.resolve(0),
-              physicalStorageMonitor.observe()
-            ]);
+            await processHomeTurn.drainCleanup();
+            await physicalStorageMonitor.observe();
             try { await reconcileWorkspaceExports.reconcileStartup(); } catch {
               logger.warn({ operation: 'workspace export cleanup' }, 'Expired workspace exports remain pending and will retry.');
             }
@@ -638,7 +628,7 @@ export async function createApplication(
             try { await cleanupExpiredDemos.execute(); } catch {
               logger.warn({ operation: 'demo expiry cleanup' }, 'Demo expiry maintenance remains pending and will retry.');
             }
-            return cleanedStagingCount;
+            return 0;
           } },
           logger,
           intervalMs: STORAGE_MAINTENANCE_INTERVAL_MS,
@@ -646,7 +636,7 @@ export async function createApplication(
         });
       },
       startAutomationWorker: async () => {
-        const automationWorker = new AutomationWorker(automationRepository, invokeSkill, getHomeTurn, cancelHomeTurn);
+        const automationWorker = new AutomationWorker(automationRepository, invokeSkill, processHomeTurn, cancelHomeTurn);
         automationMaintenanceHandle = await startPeriodicMaintenance({
           task: { run: async () => await automationWorker.runOnce() },
           logger,
@@ -664,11 +654,17 @@ export async function createApplication(
       readiness,
       stopMaintenance: async () => {
         await Promise.all([maintenanceHandle?.stop(), automationMaintenanceHandle?.stop()]);
+        await homeExecutor?.stop();
+        await drainRuns?.();
+        await ownership?.release();
       }
     };
   } catch (error: unknown) {
     if (maintenanceHandle) await maintenanceHandle.stop();
     if (automationMaintenanceHandle) await automationMaintenanceHandle.stop();
+    await homeExecutor?.stop();
+    await drainRuns?.();
+    await ownership?.release();
     if (error instanceof StartupChecksError) {
       readiness.markFailed(error.failures);
       logger.error({ failures: error.failures }, 'Startup checks failed');
@@ -680,45 +676,9 @@ export async function createApplication(
   }
 }
 
-async function createModelProvider(
-  config: AppConfig,
-  environment: NodeJS.ProcessEnv,
-  creditAdmission: ProviderCallCreditAdmission
-): Promise<IModelProvider> {
-  const apiKey = await readProviderKey(environment);
-  return new NvidiaHostedNimProvider({
-    endpoint: config.nimEndpoint,
-    model: config.nimModel,
-    apiKey,
-    timeoutMs: config.startupCheckTimeoutMs * 30,
-    creditAdmission,
-    ...(config.providerCreditConfiguration ? { creditConfiguration: config.providerCreditConfiguration } : {})
-  });
-}
-
-function createOpenShellGateway(config: AppConfig): OpenShellGatewayClient {
-  if (!config.openshellBaseUrl || !config.openshellClientId || !config.openshellClientToken || !config.openshellNetwork) {
-    throw new StartupChecksError([{
-      check: 'openshell',
-      code: 'OPENSHELL_CONFIGURATION_INVALID',
-      message: 'The deferred runtime configuration is incomplete.'
-    }]);
-  }
-  return new OpenShellGatewayClient({
-    baseUrl: config.openshellBaseUrl,
-    clientId: config.openshellClientId,
-    clientToken: config.openshellClientToken,
-    healthPath: config.openshellHealthPath,
-    nimReadinessPath: config.openshellNimReadinessPath,
-    timeoutMs: config.startupCheckTimeoutMs
-  });
-}
-
 function createAgentRuntime(
   config: AppConfig,
-  modelProvider: IModelProvider | undefined,
   workspaceGateway: WorkspaceGatewayAdapter,
-  conversationRepository: TypeOrmConversationRepository,
   projectFactRepository: TypeOrmProjectFactRepository,
   logger: AppLogger,
   taskTools: HermesProjectTaskTools,
@@ -737,21 +697,7 @@ function createAgentRuntime(
   if (config.agentRuntimeMode === 'fake') {
     return new FakeAgentRuntime();
   }
-  if (config.agentRuntimeMode === 'openshell') {
-    return new UnsupportedOpenShellAgentRuntime();
-  }
-  if (!modelProvider) {
-    throw new StartupChecksError([{
-      check: 'nim',
-      code: 'NIM_PROVIDER_UNAVAILABLE',
-      message: 'The configured NVIDIA hosted provider is unavailable.'
-    }]);
-  }
-  return new DirectProviderAgentRuntime({ provider: modelProvider, workspaceGateway, conversationRepository, projectFactRepository });
-}
-
-async function readProviderKey(environment: NodeJS.ProcessEnv): Promise<string> {
-  return readSecretFile(environment.NVIDIA_API_KEY_FILE);
+  throw new StartupChecksError([{ check: 'nim', code: 'RUNTIME_UNSUPPORTED', message: 'Use Hermes for production execution.' }]);
 }
 
 function createHermesBridge(config: AppConfig): HermesBridgeClient {

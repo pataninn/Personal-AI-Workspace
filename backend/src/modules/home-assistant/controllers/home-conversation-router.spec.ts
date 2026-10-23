@@ -4,7 +4,6 @@ import request from 'supertest';
 
 import { HomeConversationCursorInvalidError, HomeConversationDomainError } from '@/modules/home-assistant/domain/home-conversation-errors';
 import type { HomeConversationEventPage, HomeMessage, HomeTurn, HomeTurnSubmission } from '@/modules/home-assistant/domain/home-conversation-types';
-import type { HomeConsentDecisionResponse } from '@/modules/home-assistant/use-cases/decide-home-consent';
 import { createHomeConversationRouter, type HomeConversationRouterDependencies } from '@/modules/home-assistant/controllers/home-conversation-router';
 import { AppError } from '@/shared/errors/app-error';
 
@@ -37,17 +36,7 @@ function buildApp(): {
   const listConversations = jest.fn();
   const listTurns = jest.fn();
   const listSkillRunSummaries = jest.fn();
-  const decideConsent = jest.fn(async (): Promise<HomeConsentDecisionResponse> => ({
-    turn: { ...turn, status: 'running' },
-    disclosure: {
-      disclosureId: '55555555-5555-4555-8555-555555555555', ownerId: OWNER_ID, conversationId: CONVERSATION_ID, turnId: TURN_ID,
-      phase: 'initial', providerProfile: 'nvidia-hosted-nim', providerName: 'NVIDIA hosted NIM', model: 'test-model', scope: { kind: 'home' },
-      categories: ['current_message'], itemCount: 1, byteLimit: 262144, runtimeRequestId: null, resultFingerprint: null, decision: 'allow', deliveryState: 'accepted',
-      createdAt: NOW, updatedAt: NOW
-    },
-    replayed: false,
-    execution: { state: 'running' }
-  }));
+  const decideConsent = jest.fn();
   const listEvents = jest.fn(async (): Promise<HomeConversationEventPage> => ({
     events: [{ sequence: 2, type: 'message.appended', turnId: TURN_ID, entityId: MESSAGE_ID, payload: { role: 'user', messageSequence: 1 }, createdAt: NOW }],
     nextAfterSequence: null,

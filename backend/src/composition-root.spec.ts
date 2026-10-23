@@ -33,7 +33,7 @@ describe('createApplication startup cleanup', () => {
     jest.mocked(createDataSource).mockReturnValue(dataSource);
     jest.mocked(runStartupChecks).mockRejectedValue(failure);
 
-    await expect(createApplication({}, 'automation-worker')).rejects.toBe(failure);
+    await expect(createApplication({})).rejects.toBe(failure);
 
     expect(dataSource.initialize).toHaveBeenCalledTimes(1);
     expect(dataSource.destroy).toHaveBeenCalledTimes(1);

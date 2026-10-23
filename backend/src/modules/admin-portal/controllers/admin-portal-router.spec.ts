@@ -78,13 +78,12 @@ describe('admin portal routes', () => {
     const reset = await request(app).post(`/api/v1/admin/accounts/${ACCOUNT_ID}/password-resets`)
       .set(mutationHeaders()).send({ password: RAW_PASSWORD });
 
-    expect(create.status).toBe(201);
+    expect(create.status).toBe(410);
+    expect(create.body.error.code).toBe('ACCOUNT_CREATION_RETIRED');
     expect(reset.status).toBe(200);
     expect(reset.body.data).toEqual({ reset: true, sessionsRevoked: true });
     expect(JSON.stringify({ create: create.body, reset: reset.body })).not.toContain(RAW_PASSWORD);
-    expect(portal.createAccount).toHaveBeenCalledWith(ADMIN_ID, {
-      displayName: 'New user', identifier: 'new_user', password: RAW_PASSWORD
-    });
+    expect(portal.createAccount).not.toHaveBeenCalled();
     expect(portal.resetPassword).toHaveBeenCalledWith(ADMIN_ID, ACCOUNT_ID, RAW_PASSWORD);
   });
 });

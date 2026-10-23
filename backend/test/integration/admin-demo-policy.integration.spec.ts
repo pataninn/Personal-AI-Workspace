@@ -108,11 +108,10 @@ describeDatabase('admin demo policy PostgreSQL integration', () => {
     expect(persisted).toEqual([{ demo_settings_bootstrapped: true, demo_session_ttl_hours: 24, demo_global_admission_max: 80 }]);
 
     const portal = new TypeOrmAdminPortalRepository(dataSource);
-    const created = await portal.createAccount(adminId, {
-      displayName: 'Zero quota member', identifier: 'quota-member', passwordHash: 'only-a-hash'
-    }) as { account: { id: string; identifier: string } };
-    expect(created.account).toMatchObject({ identifier: 'quota-member' });
-    expect(JSON.stringify(created)).not.toContain('only-a-hash');
+    // Existing accounts retain their quota controls; new named-account creation is retired.
+    const created = { account: { id: adminId } };
+    await queryRunner.query('INSERT INTO "account_limits" ("owner_id") VALUES ($1)', [adminId]);
+    await queryRunner.query('INSERT INTO "credit_account_totals" ("owner_id") VALUES ($1)', [adminId]);
     await portal.updateAccountLimits(adminId, created.account.id, {
       expectedRevision: 1, dailyCreditLimitUnits: '0', lifetimeCreditLimitUnits: null, storageLimitBytes: null
     });

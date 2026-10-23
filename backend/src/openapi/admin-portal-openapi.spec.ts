@@ -27,10 +27,11 @@ describe('admin portal and account usage OpenAPI contract', () => {
 
   it('parses and declares the complete account usage and administration routes', () => {
     expect(document.openapi).toBe('3.0.3');
+    expect(operation(document, '/api/v1/admin/accounts', 'post').deprecated).toBe(true);
     const expected: ReadonlyArray<readonly [string, string, readonly string[]]> = [
       ['/api/v1/account/usage', 'get', ['200', '401', '500', '503']],
       ['/api/v1/admin/accounts', 'get', ['200', '400', '401', '403', '500']],
-      ['/api/v1/admin/accounts', 'post', ['201', '400', '401', '403', '409', '500']],
+      ['/api/v1/admin/accounts', 'post', ['410', '401', '403']],
       ['/api/v1/admin/accounts/{accountId}/limits', 'patch', ['200', '400', '401', '403', '404', '409', '500', '503']],
       ['/api/v1/admin/accounts/{accountId}/status', 'patch', ['200', '400', '401', '403', '404', '409', '500']],
       ['/api/v1/admin/accounts/{accountId}/password-resets', 'post', ['200', '400', '401', '403', '404', '500']],
@@ -57,7 +58,6 @@ describe('admin portal and account usage OpenAPI contract', () => {
     expect(resolveRef(document, String(usageSchema.$ref)).type).toBe('object');
 
     const paths = [
-      ['/api/v1/admin/accounts', 'post', 'AdminCreateAccountRequest'],
       ['/api/v1/admin/accounts/{accountId}/limits', 'patch', 'AdminAccountLimitsRequest'],
       ['/api/v1/admin/accounts/{accountId}/status', 'patch', 'AdminAccountStatusRequest'],
       ['/api/v1/admin/accounts/{accountId}/password-resets', 'post', 'AdminPasswordResetRequest'],
@@ -78,7 +78,6 @@ describe('admin portal and account usage OpenAPI contract', () => {
 
     for (const [path, method, status, schema] of [
       ['/api/v1/admin/accounts', 'get', '200', 'AdminAccountsEnvelope'],
-      ['/api/v1/admin/accounts', 'post', '201', 'AdminAccountCreatedEnvelope'],
       ['/api/v1/admin/accounts/{accountId}/limits', 'patch', '200', 'AdminAccountLimitsEnvelope'],
       ['/api/v1/admin/accounts/{accountId}/status', 'patch', '200', 'AdminAccountStatusEnvelope'],
       ['/api/v1/admin/accounts/{accountId}/password-resets', 'post', '200', 'AdminPasswordResetEnvelope'],

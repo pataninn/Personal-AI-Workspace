@@ -485,6 +485,26 @@ describe('StartAiRunUseCase', () => {
     await expect(repository.findByIdForOwner(OWNER_ID, run.id)).resolves.toMatchObject({ status: 'pending_approval', decision: 'pending' });
   });
 
+  it('cancels and drains active work before releasing application ownership', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const conversations = conversationRepository();
+    const runtime = new FakeAgentRuntime();
+    runtime.runOptions = { response: 'An interrupted response', delayMs: 10 };
+    const events = new InMemoryRunEventPublisher();
+    const run = await readyRun(repository);
+    const start = createStartUseCase(repository, conversations, runtime, events);
+    const cancel = new CancelAiRunUseCase(repository, runtime, events);
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-before-shutdown' });
+    await waitUntil(async () => runtime.startedRuns.length > 0);
+    const stop = jest.fn((active: AiRun) => cancel.execute({ ownerId: active.ownerId, runId: active.id, idempotencyKey: 'shutdown-run' }));
+    await start.stop(stop);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect((await repository.findByIdForOwner(OWNER_ID, run.id))?.status).toBe('cancelled');
+    expect(conversations.assistantMessages).toHaveLength(0);
+    await start.stop(stop);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
   it('wins the cancellation race and never overwrites a cancelled run with a late result', async () => {
     const repository = new InMemoryAiRunRepository();
     const conversations = conversationRepository();

@@ -1,7 +1,7 @@
 import type { AutomationLeaseFence, AutomationOccurrenceStatus } from '@/modules/automations/domain/automation-types';
 import type { HomeTurnStatus } from '@/modules/home-assistant/domain/home-conversation-types';
 import type { IAutomationRepository, ClaimedAutomationOccurrence } from '@/modules/automations/repositories/automation-repository';
-import type { GetHomeTurnUseCase } from '@/modules/home-assistant/use-cases/get-home-turn';
+import type { ProcessHomeTurnUseCase } from '@/modules/home-assistant/use-cases/process-home-turn';
 import type { CancelHomeTurnUseCase } from '@/modules/home-assistant/use-cases/cancel-home-turn';
 import type { InvokeSkillUseCase } from '@/modules/skills/use-cases/invoke-skill';
 
@@ -15,7 +15,7 @@ export class AutomationWorker {
   public constructor(
     private readonly repository: IAutomationRepository,
     private readonly invokeSkill: InvokeSkillUseCase,
-    private readonly getHomeTurn: GetHomeTurnUseCase,
+    private readonly getHomeTurn: ProcessHomeTurnUseCase,
     private readonly cancelHomeTurn: CancelHomeTurnUseCase
   ) {}
 

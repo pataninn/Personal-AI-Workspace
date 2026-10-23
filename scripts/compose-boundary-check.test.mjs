@@ -6,7 +6,6 @@ const composePath = new URL('../compose.yaml', import.meta.url);
 const source = readFileSync(composePath, 'utf8');
 const managedComposePath = new URL('../compose.managed-storage.yaml', import.meta.url);
 const managedSource = readFileSync(managedComposePath, 'utf8');
-const directSource = readFileSync(new URL('../compose.direct.yaml', import.meta.url), 'utf8');
 
 function service(name) {
   const pattern = new RegExp(`^  ${name}:\\r?\\n([\\s\\S]*?)(?=^  [a-z][a-z0-9-]*:\\r?$|^networks:|^volumes:|^secrets:)`, 'm');
@@ -65,18 +64,14 @@ test('the app receives optional provider credit bounds without requiring a confi
   }
 });
 
-test('the direct fallback mounts the NVIDIA secret only in the app and the default uses no NVIDIA secret', () => {
-  const app = directSource.match(/^  personal-ai-app:\r?\n([\s\S]*?)(?=^secrets:)/m)?.[1];
-  assert.ok(app);
-  const postgres = service('postgres');
-  assert.match(app, /    secrets:[\s\S]*?      - source: nvidia_api_key/);
-  assert.match(app, /target: nvidia_api_key[\s\S]*?mode: 0440/);
-  assert.match(app, /NVIDIA_API_KEY_FILE: \/run\/secrets\/nvidia_api_key/);
-  assert.match(directSource, /^secrets:[\s\S]*?^  nvidia_api_key:\r?\n    file: \$\{NVIDIA_API_KEY_FILE/m);
-  assert.doesNotMatch(source, /nvidia_api_key|NVIDIA_API_KEY/);
-  assert.doesNotMatch(postgres, /secrets:|NVIDIA_API_KEY_FILE|nvidia_api_key/i);
-  assert.doesNotMatch(source, /NVIDIA_API_KEY:\s*\$/);
-  assert.doesNotMatch(directSource, /NVIDIA_API_KEY:\s*\$/);
+test('provider credentials remain outside the app container', () => {
+  assert.doesNotMatch(source, /nvidia_api_key|NVIDIA_API_KEY|NEBIUS_API_KEY/);
+});
+
+test('Compose forwards demo admission, publication, and proxy settings', () => {
+  for (const name of ['DEMO_NETWORK_HASH_SECRET', 'DEMO_GLOBAL_ADMISSION_MAX', 'SHOWCASE_MAX_ITEMS', 'TRUSTED_PROXY_CIDRS']) {
+    assert.ok(service('personal-ai-app').includes(`${name}:`));
+  }
 });
 
 test('the local login password is a read-only Docker secret visible only to the app', () => {

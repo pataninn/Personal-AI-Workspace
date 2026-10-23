@@ -14,7 +14,7 @@ import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/stora
 import { ProjectChatContextUseCases } from '@/modules/ai-runs/use-cases/project-chat-context-use-cases';
 import type { AssistantScopePolicy } from '@/modules/assistant-policy/domain/assistant-scope-policy';
 import type { AssistantExecutionAuthorization } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
-import { GetHomeTurnUseCase } from '@/modules/home-assistant/use-cases/get-home-turn';
+import { ProcessHomeTurnUseCase } from '@/modules/home-assistant/use-cases/process-home-turn';
 import { InvokeSkillUseCase } from '@/modules/skills/use-cases/invoke-skill';
 import { ListHomeSkillRunSummariesUseCase } from '@/modules/skills/use-cases/list-home-skill-run-summaries';
 import type { HomePlanningProvider, IHomePlanningRuntime } from '@/modules/home-assistant/repositories/home-planning-runtime';
@@ -326,7 +326,7 @@ describeDatabase('Task 6.2 skill definitions PostgreSQL integration', () => {
     expect(startedPrompts).toHaveLength(1);
     expect(startedPrompts[0]).toContain('Protect morning focus time for the migration.');
 
-    const getTurn = new GetHomeTurnUseCase(conversations, runtime, undefined, undefined, policyConfiguration);
+    const getTurn = new ProcessHomeTurnUseCase(conversations, runtime, undefined, policyConfiguration);
     await expect(getTurn.execute({ ownerId: OWNER_ID, conversationId: conversation.id, turnId })).resolves.toMatchObject({
       id: turnId, status: 'completed', homePolicyRevision: '1', workspacePolicyRevision: '2'
     });

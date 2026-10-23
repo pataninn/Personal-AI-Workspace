@@ -1,17 +1,10 @@
-export type ApplicationLifecycleMode = 'api' | 'automation-worker';
-
 export interface ApplicationMaintenanceStarters {
   startApiMaintenance(): Promise<void>;
   startAutomationWorker(): Promise<void>;
 }
 
-export async function startApplicationMaintenance(
-  mode: ApplicationLifecycleMode,
-  starters: ApplicationMaintenanceStarters
-): Promise<void> {
-  if (mode === 'api') {
-    await starters.startApiMaintenance();
-    return;
-  }
+/** One process owns both scheduled execution and ordinary workspace maintenance. */
+export async function startApplicationMaintenance(starters: ApplicationMaintenanceStarters): Promise<void> {
+  await starters.startApiMaintenance();
   await starters.startAutomationWorker();
 }

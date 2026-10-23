@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { sessionCleared, selectCsrfToken, selectPrincipal } from '@/entities/user-session';
@@ -122,7 +122,9 @@ export function AppShell(): React.JSX.Element {
         </header>
         <main ref={mainRef} className={`app-shell-main${principal ? ' home-ask-shell-main' : ''}`} data-testid="app-shell-main" tabIndex={-1}>
           <ProjectHeader onRemove={setRemoveTarget} />
-          <Outlet context={{ registerHomeSummaryRefresh, registerTaskEditorExitGuard } satisfies AppShellOutletContext} />
+          <Suspense fallback={<p role="status" className="p-6">Loading page...</p>}>
+            <Outlet context={{ registerHomeSummaryRefresh, registerTaskEditorExitGuard } satisfies AppShellOutletContext} />
+          </Suspense>
         </main>
       </div>
       <HomeAsk onSummaryRefreshRequested={requestHomeSummaryRefresh} />

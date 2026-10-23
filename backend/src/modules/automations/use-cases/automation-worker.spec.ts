@@ -1,6 +1,6 @@
 import { AutomationWorker } from '@/modules/automations/use-cases/automation-worker';
 import type { ClaimedAutomationOccurrence, IAutomationRepository } from '@/modules/automations/repositories/automation-repository';
-import type { GetHomeTurnUseCase } from '@/modules/home-assistant/use-cases/get-home-turn';
+import type { ProcessHomeTurnUseCase } from '@/modules/home-assistant/use-cases/process-home-turn';
 import type { CancelHomeTurnUseCase } from '@/modules/home-assistant/use-cases/cancel-home-turn';
 import type { InvokeSkillUseCase } from '@/modules/skills/use-cases/invoke-skill';
 
@@ -40,7 +40,7 @@ function setup(item: ClaimedAutomationOccurrence) {
     releaseSafeClaim: jest.fn(async () => true)
   } as unknown as IAutomationRepository & { recordTurnStatus: jest.Mock; beginDispatch: jest.Mock; finishWithoutTurn: jest.Mock; releaseSafeClaim: jest.Mock };
   const invokeSkill = { execute: jest.fn(async () => ({ invocation: { id: 'invoke-id', turnId: TURN_ID, state: 'running' } })) } as unknown as InvokeSkillUseCase & { execute: jest.Mock };
-  const getHomeTurn = { execute: jest.fn(async () => ({ id: TURN_ID, status: 'completed' })) } as unknown as GetHomeTurnUseCase & { execute: jest.Mock };
+  const getHomeTurn = { execute: jest.fn(async () => ({ id: TURN_ID, status: 'completed' })) } as unknown as ProcessHomeTurnUseCase & { execute: jest.Mock };
   const cancelHomeTurn = { execute: jest.fn() } as unknown as CancelHomeTurnUseCase;
   return { worker: new AutomationWorker(repository, invokeSkill, getHomeTurn, cancelHomeTurn), repository, invokeSkill, getHomeTurn };
 }

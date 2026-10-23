@@ -248,29 +248,6 @@ export class TypeOrmAdminPortalRepository implements IAdminPortalRepository {
       createdAt: asDate(event.created_at)?.toISOString() ?? null })) };
   }
 
-  public async createAccount(actorId: string, input: { displayName: string; identifier: string; passwordHash: string }): Promise<unknown> {
-    try {
-      return await this.dataSource.transaction(async (manager) => {
-        await this.lockPolicy(manager);
-        await this.lockAdmin(manager, actorId);
-        const inserted = rows<{ id: string; display_name: string; identifier: string }>(await manager.query(`
-          INSERT INTO "users" ("scope_key", "identifier", "account_kind", "role", "display_name", "password_hash")
-          VALUES ('account:' || replace(gen_random_uuid()::text, '-', ''), $1, 'regular', 'user', $2, $3)
-          RETURNING "id", "display_name", "identifier"
-        `, [input.identifier, input.displayName, input.passwordHash]))[0];
-        if (!inserted) throw new AppError('ADMIN_UNAVAILABLE', 503, 'The account could not be created.');
-        await manager.query('INSERT INTO "account_limits" ("owner_id") VALUES ($1)', [inserted.id]);
-        await manager.query('INSERT INTO "credit_account_totals" ("owner_id") VALUES ($1)', [inserted.id]);
-        await manager.query('INSERT INTO "storage_account_totals" ("owner_id", "accounting_state") VALUES ($1, \'reconciling\')', [inserted.id]);
-        await this.audit(manager, actorId, 'account.created', inserted.id, {}, { accountKind: 'regular', role: 'user' });
-        return { account: { id: inserted.id, displayName: inserted.display_name, identifier: inserted.identifier, accountKind: 'regular', role: 'user', enabled: true } };
-      });
-    } catch (error: unknown) {
-      if (isUniqueViolation(error)) throw new AppError('ACCOUNT_IDENTIFIER_CONFLICT', 409, 'An account with that identifier already exists.');
-      throw error;
-    }
-  }
-
   public async updateAccountLimits(actorId: string, accountId: string, input: AccountLimitsInput): Promise<unknown> {
     return this.dataSource.transaction(async (manager) => {
       await this.lockPolicy(manager);

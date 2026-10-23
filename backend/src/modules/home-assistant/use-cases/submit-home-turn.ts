@@ -18,6 +18,7 @@ const MAX_INITIAL_PROMPT_BYTES = HOME_PLANNING_CONTEXT_LIMITS.promptBytes;
 export interface HomeTurnRuntimeConfiguration {
   readonly mode: 'fake' | 'direct' | 'openshell' | 'hermes';
   readonly runtime?: IHomePlanningRuntime;
+  readonly onAccepted?: (input: { readonly ownerId: string; readonly conversationId: string; readonly turnId: string }) => void;
   readonly provider: HomePlanningProvider;
 }
 
@@ -242,6 +243,9 @@ export class SubmitHomeTurnUseCase {
       return resultWithTurn(submission, turn, cancelled
         ? { state: 'cancelled' }
         : { state: 'unknown', code: 'PLANNING_RUNTIME_OUTCOME_UNKNOWN' });
+    }
+    if (afterSend.status === 'running' && !afterSend.automationOccurrenceId) {
+      runtimeConfiguration.onAccepted?.({ ownerId: input.ownerId, conversationId: input.conversationId, turnId: afterSend.id });
     }
     return resultWithTurn(submission, afterSend, executionForTurn(afterSend));
   }

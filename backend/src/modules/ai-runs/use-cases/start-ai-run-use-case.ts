@@ -63,6 +63,8 @@ export interface StartAiRunInput {
 }
 
 export class StartAiRunUseCase {
+  private readonly active = new Map<string, { run: AiRun; task: Promise<void> }>();
+
   public constructor(
     private readonly aiRunRepository: IAiRunRepository,
     private readonly conversationRepository: IConversationRepository,
@@ -142,9 +144,21 @@ export class StartAiRunUseCase {
         throw error;
       }
       await this.publishStatus(result.resource, 'run.status_changed');
-      void this.runSafely(result.resource);
+      const task = this.runSafely(result.resource).finally(() => { this.active.delete(result.resource.id); });
+      this.active.set(result.resource.id, { run: result.resource, task });
+      // Keep a failed persistence attempt from becoming an unhandled rejection;
+      // startup recovery retains responsibility for unconfirmed outcomes.
+      void task.catch(() => undefined);
     }
     return result;
+  }
+
+  public async stop(cancel: (run: AiRun) => Promise<unknown>): Promise<void> {
+    const active = [...this.active.values()];
+    await Promise.allSettled(active.map(async ({ run, task }) => {
+      try { await cancel(run); }
+      finally { await task; }
+    }));
   }
 
   private async runSafely(run: AiRun): Promise<void> {

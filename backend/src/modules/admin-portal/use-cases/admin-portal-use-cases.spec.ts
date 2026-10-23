@@ -10,7 +10,6 @@ function repository(): jest.Mocked<IAdminPortalRepository> {
     getDemoSettings: jest.fn(async () => ({})),
     updateDemoSettings: jest.fn(async (_actorId: string, _input: DemoSettingsInput): Promise<unknown> => ({})),
     listAudit: jest.fn(async (_limit: number): Promise<unknown> => ({ events: [] })),
-    createAccount: jest.fn(async (_actorId: string, _input: { readonly displayName: string; readonly identifier: string; readonly passwordHash: string }): Promise<unknown> => ({ account: { id: 'account-id', displayName: 'Example', identifier: 'example@example.com' } })),
     updateAccountLimits: jest.fn(async (_actorId: string, _accountId: string, _input: AccountLimitsInput): Promise<unknown> => ({})),
     setAccountEnabled: jest.fn(async (_actorId: string, _accountId: string, _enabled: boolean): Promise<unknown> => ({})),
     resetPassword: jest.fn(async (_actorId: string, _accountId: string, _passwordHash: string): Promise<void> => undefined),
@@ -28,20 +27,6 @@ function useCases(repo: jest.Mocked<IAdminPortalRepository>, hash = jest.fn(asyn
 }
 
 describe('AdminPortalUseCases', () => {
-  it('creates regular accounts with a server-generated hash and never returns the submitted password', async () => {
-    const repo = repository();
-    const { instance, hash } = useCases(repo);
-    const rawPassword = 'first-login-secret';
-
-    const result = await instance.createAccount('admin-id', { displayName: ' Example User ', identifier: 'Example_User', password: rawPassword });
-
-    expect(hash).toHaveBeenCalledWith(rawPassword);
-    expect(repo.createAccount).toHaveBeenCalledWith('admin-id', {
-      displayName: 'Example User', identifier: 'example_user', passwordHash: `hash:${rawPassword}`
-    });
-    expect(JSON.stringify(result)).not.toContain(rawPassword);
-  });
-
   it('passes zero and null account limits distinctly through the CAS boundary', async () => {
     const repo = repository();
     const { instance } = useCases(repo);
