@@ -288,7 +288,7 @@ test('preserves edit values after a revision conflict and reloads only on explic
   expectBrowserErrors(consoleErrors, [/status of 409 \(Conflict\).*automations\/schedules/u]);
 });
 
-test('runs a paused schedule without consent and opens the saved Home result with persisted sources and usage', async ({ page }) => {
+test('runs a paused schedule without consent and opens the saved Home result with persisted sources', async ({ page }) => {
   const consoleErrors = watchBrowserErrors(page);
   const state = await installApi(page, { schedules: [schedule({ enabled: false, nextDueAt: null })], runModes: ['succeeded'] });
   await page.goto('/automations');
@@ -300,10 +300,6 @@ test('runs a paused schedule without consent and opens the saved Home result wit
   await expect(history).toBeVisible();
   const run = history.getByTestId(`automation-occurrence-${occurrence('succeeded').id}`);
   await expect(run).toContainText('Succeeded');
-  await expect(run).toContainText('preview-profile');
-  await expect(run).toContainText('preview-model');
-  await expect(run).toContainText('1200 input / 180 output tokens');
-  await expect(run).toContainText('charged units: 4');
   await expect(run.getByRole('link', { name: 'Prepare release note · revision 7' })).toHaveAttribute('href', `/tasks/${TASK_ID}`);
   expect(state.runRequests).toHaveLength(1);
   expect(state.runRequests[0]?.body).toEqual({});
@@ -375,6 +371,7 @@ test('keeps the mobile workspace navigation and form keyboard accessible without
   await page.setViewportSize({ width: 640, height: 360 });
   await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   const save = page.getByRole('button', { name: 'Save' });
+  await save.evaluate((element) => element.scrollIntoView({ block: 'center' }));
   await save.focus();
   const saveBounds = await save.boundingBox();
   expect(saveBounds && saveBounds.y >= 0 && saveBounds.y + saveBounds.height <= 360).toBe(true);

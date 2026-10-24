@@ -120,7 +120,7 @@ export function ProjectContextSettings({ projectId, archived }: { readonly proje
         {files.loading ? <p role="status">Loading files…</p> : null}
         {files.error ? <Alert tone="error"><p>{files.error}</p><Button type="button" onClick={files.reload}>Try again</Button></Alert> : null}
         {files.truncated || settings.context?.fileSelectionLimited ? <p className="field-help">The file list or selection reached a limit. A run includes at most 100 files within its context size limit. Deselect files you do not need, or add a missing relative path below.</p> : null}
-        <div className="composer-actions">
+        <div className="flex flex-wrap items-center gap-3">
           <Button type="button" variant="secondary" disabled={disabled} onClick={() => { setExcluded([]); setSelected(available.slice(0, 100)); setAnnouncement(''); }}>Select all</Button>
           <Button type="button" variant="secondary" disabled={disabled} onClick={() => { setExcluded([...new Set([...excluded, ...available])]); setSelected([]); setAnnouncement(''); }}>Deselect all</Button>
           <Button type="button" variant="secondary" disabled={disabled} onClick={() => { void reloadContext(); files.reload(); setAnnouncement(''); }}>Refresh files</Button>

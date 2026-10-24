@@ -121,7 +121,6 @@ async function openConversation(page: import('@playwright/test').Page): Promise<
   await signInToProjectChat(page);
   await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);
   await page.goto(`/projects/${PROJECT_ID}/conversations/${CONVERSATION_ID}`);
-  await expect(page.getByRole('region', { name: 'Assistant policy summary' })).toBeVisible();
   await expect(page.getByTestId('message-input')).toBeEnabled();
 }
 

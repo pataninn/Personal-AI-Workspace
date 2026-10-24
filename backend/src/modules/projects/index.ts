@@ -13,3 +13,4 @@ export { WorkspacePlanningUseCases } from '@/modules/projects/use-cases/workspac
 export type { IWorkspacePlanningUseCases } from '@/modules/projects/use-cases/workspace-planning-use-cases';
 export { DeleteProjectUseCase } from '@/modules/projects/use-cases/delete-project';
 export { GetProjectOverviewUseCase } from '@/modules/projects/use-cases/get-project-overview';
+export { RenameProjectUseCase } from '@/modules/projects/use-cases/rename-project';

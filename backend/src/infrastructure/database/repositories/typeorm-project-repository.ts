@@ -1,4 +1,5 @@
 import type { DataSource, QueryRunner } from 'typeorm';
+import type { RenameProjectRecord } from '@/modules/projects/repositories/project-rename-repository';
 import { lockProjectWriteState } from '@/infrastructure/database/project-removal-write-barrier';
 import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
 import { fixedContentScope } from '@/infrastructure/database/storage-content-projections';
@@ -359,6 +360,31 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
     } finally {
       await queryRunner.release();
     }
+  }
+
+  public async rename(input: RenameProjectRecord): Promise<Project | null> {
+    const runner = this.dataSource.createQueryRunner();
+    await runner.connect();
+    await runner.startTransaction();
+    try {
+      const updated = await this.storageAccounting.runMutation(runner, input.ownerId, async () => {
+        const state = await lockProjectWriteState(runner, input.ownerId, input.projectId);
+        if (!state) return null;
+        if (state.removalPending) throw new ProjectArchivedError();
+        const rows = asRows<ProjectRow>(await runner.query(
+          `UPDATE "projects" SET "name" = $1, "slug" = $2, "version" = "version" + 1, "updated_at" = now()
+           WHERE "owner_id" = $3 AND "id" = $4 AND "version" = $5 RETURNING *`,
+          [input.name, input.slug, input.ownerId, input.projectId, input.expectedVersion]
+        ));
+        return rows[0] ? toProject(rows[0]) : null;
+      }, fixedContentScope([{ entity: 'projects', id: input.projectId }]));
+      await runner.commitTransaction();
+      return updated;
+    } catch (error: unknown) {
+      await runner.rollbackTransaction();
+      if (isUniqueViolation(error)) throw new ProjectNameConflictError();
+      throw error;
+    } finally { await runner.release(); }
   }
 
   public async updateStatus(input: UpdateProjectStatusRecord): Promise<Project | null> {

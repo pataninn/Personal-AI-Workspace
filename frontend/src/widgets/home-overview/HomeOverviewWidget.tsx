@@ -4,7 +4,8 @@ import { Link } from 'react-router-dom';
 import { projectColor, type ProjectSnapshot, type HomeTaskSummary } from '@/entities/project';
 import { formatTaskDeadline, isTaskOverdue, TASK_IMPORTANCE_LABELS } from '@/entities/project-task';
 import { HomeTaskCapture } from '@/features/task-capture';
-import { Alert, Button, Card, ErrorState, Icon, Skeleton } from '@/shared/ui';
+import { Alert, Button, Card, DialogRoot, DialogTrigger, ErrorState, Icon, Skeleton } from '@/shared/ui';
+import { TaskPreviewContent } from '@/widgets/home-overview/TaskPreviewContent';
 
 export interface HomeWorkspaceSummary {
   readonly project: ProjectSnapshot;
@@ -95,11 +96,12 @@ function UpNextSection({
 }
 
 function TaskSummaryRow({ task }: { readonly task: HomeTaskSummary }): React.JSX.Element {
-  return <li><Link to={`/tasks/${encodeURIComponent(task.id)}`} className="home-task-link" data-testid={`home-up-next-task-${task.id}`}>
+  const [open, setOpen] = useState(false);
+  return <li><DialogRoot open={open} onOpenChange={setOpen}><DialogTrigger asChild><button type="button" className="home-task-link w-full border-0 bg-transparent text-left cursor-pointer" data-testid={`home-up-next-task-${task.id}`}>
     <TaskDate value={task.deadline} />
-    <div className="home-task-content"><strong className="break-words">{task.title}</strong><span className="home-task-description"><i style={{ background: projectColor(task.projectId) }} aria-hidden="true" />{task.projectName}<span aria-hidden="true"> · </span><span className={isTaskOverdue(task) ? 'task-overdue' : undefined}>{task.deadline ? `${isTaskOverdue(task) ? 'Overdue · ' : ''}${formatTaskDeadline(task.deadline)}` : 'No deadline'}</span><span aria-hidden="true"> · </span>{TASK_STATUS_LABELS[task.status]}</span></div>
+    <span className="home-task-content"><strong className="break-words">{task.title}</strong><span className="home-task-description"><i style={{ background: projectColor(task.projectId) }} aria-hidden="true" />{task.projectName}<span aria-hidden="true"> · </span><span className={isTaskOverdue(task) ? 'task-overdue' : undefined}>{task.deadline ? `${isTaskOverdue(task) ? 'Overdue · ' : ''}${formatTaskDeadline(task.deadline)}` : 'No deadline'}</span><span aria-hidden="true"> · </span>{TASK_STATUS_LABELS[task.status]}</span></span>
     <span className={`home-task-importance importance-${task.importance}`}><span className={`importance-bars importance-bars-${task.importance}`} aria-hidden="true"><i /><i /><i /></span>{TASK_IMPORTANCE_LABELS[task.importance]}</span>
-  </Link></li>;
+  </button></DialogTrigger>{open ? <TaskPreviewContent taskId={task.id} title={task.title} /> : null}</DialogRoot></li>;
 }
 
 function WorkspaceSection({

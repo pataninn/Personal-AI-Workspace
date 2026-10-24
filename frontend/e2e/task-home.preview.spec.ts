@@ -118,3 +118,61 @@ test('keeps an uncertain capture available for retry with the same idempotency k
   expect(idempotencyKeys[0]).toBeTruthy();
   expect(idempotencyKeys[1]).toBe(idempotencyKeys[0]);
 });
+
+
+test('previews Home tasks before editing and completes collapsed workspace tasks in one click', async ({ page }, testInfo) => {
+  await signIn(page);
+  const suffix = Date.now().toString(36);
+  const workspaceResponse = await page.request.post('/api/v1/projects', {
+    headers: { 'X-CSRF-Token': 'preview-only-csrf-token' },
+    data: { name: `Task interactions ${suffix}`, workspaceMode: 'planning' }
+  });
+  expect(workspaceResponse.status()).toBe(201);
+  const workspace = (await workspaceResponse.json()).data;
+  const title = `Preview then complete ${suffix}`;
+  const taskResponse = await page.request.post(`/api/v1/projects/${workspace.id}/tasks`, {
+    headers: { 'X-CSRF-Token': 'preview-only-csrf-token', 'Idempotency-Key': crypto.randomUUID() },
+    data: { title, details: 'Read these details before choosing to edit.', workspaceId: workspace.id, importance: 'urgent', deadline: '2026-01-01', subtasks: [] }
+  });
+  expect(taskResponse.status()).toBe(201);
+  const task = (await taskResponse.json()).data.task;
+  await page.reload();
+  const trigger = page.getByTestId(`home-up-next-task-${task.id}`);
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: title });
+  await expect(dialog).toContainText('Read these details before choosing to edit.');
+  await expect(page).toHaveURL(/\/dashboard$/u);
+  await expect(dialog.getByRole('textbox')).toHaveCount(0);
+  await saveScreenshot(page, testInfo, 'task-preview-desktop.png');
+  await page.keyboard.press('Escape');
+  await expect(trigger).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await trigger.click();
+  await expect(dialog).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await saveScreenshot(page, testInfo, 'task-preview-mobile.png');
+  await dialog.getByRole('link', { name: 'Edit task' }).click();
+  await expect(page).toHaveURL(`/tasks/${task.id}`);
+  await expect(page.getByTestId('task-detail-page')).toContainText(title);
+  await page.goto(`/projects/${workspace.id}`);
+  const row = page.getByTestId(`project-task-row-${task.id}`);
+  await expect(row.locator('details')).not.toHaveAttribute('open');
+  await saveScreenshot(page, testInfo, 'workspace-task-checkbox.png');
+  await row.getByRole('checkbox', { name: `Mark ${title} complete` }).click();
+  await expect(page.getByTestId('project-tasks-announcement')).toContainText('Task marked complete.');
+  await page.getByTestId('project-task-filter-completed').click();
+  await expect(row.getByRole('checkbox', { name: `Mark ${title} incomplete` })).toBeChecked();
+  await expect(row.locator('details')).not.toHaveAttribute('open');
+  const menuTrigger = page.getByTestId('mobile-nav-trigger');
+  await menuTrigger.click();
+  const drawer = page.getByTestId('mobile-nav-drawer');
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByRole('button', { name: 'Close menu' })).toHaveCount(0);
+  await expect(drawer).not.toContainText('Move between');
+  await saveScreenshot(page, testInfo, 'navigation-simplified.png');
+  await page.keyboard.press('Escape');
+  await expect(menuTrigger).toBeFocused();
+  await menuTrigger.click();
+  await page.locator('.drawer-scrim').click({ position: { x: 385, y: 200 } });
+  await expect(drawer).toBeHidden();
+});

@@ -8,15 +8,15 @@ export function UsagePage(): React.JSX.Element {
   const { state, refresh } = useAccountUsage();
   return <section className="grid w-full content-start gap-6" data-testid="usage-page">
     <header className="flex flex-wrap items-end justify-between gap-4">
-      <div><p className="product-label">Account</p><h1 className="text-3xl font-semibold">Usage</h1><p className="field-help">Track your AI usage and storage.</p></div>
+      <div className="grid gap-2 [&>h1]:m-0 [&>p]:m-0"><p className="product-label">Account</p><h1 className="text-3xl font-semibold">Usage</h1><p className="field-help">Track your AI usage and storage.</p></div>
       <Link className="text-[var(--color-link)] underline underline-offset-4" to="/dashboard">Back to workspace</Link>
     </header>
-    {state.status === 'loading' ? <div className="grid gap-4 md:grid-cols-3" aria-busy="true" data-testid="usage-loading">
+    {state.status === 'loading' ? <div className="grid gap-4 xl:grid-cols-3" aria-busy="true" data-testid="usage-loading">
       <Skeleton className="h-40" /><Skeleton className="h-40" /><Skeleton className="h-40" />
     </div> : null}
     {state.status === 'error' ? <Alert tone="error" data-testid="usage-error"><p>Usage could not be checked. Try again before sending an AI request.</p><Button type="button" variant="secondary" onClick={refresh}>Try again</Button></Alert> : null}
     {state.status === 'success' ? <>
-      <section className="grid gap-4 md:grid-cols-3" aria-label="Account usage totals">
+      <section className="grid gap-4 xl:grid-cols-3" aria-label="Account usage totals">
         <CreditCard title="Daily credits" usage={state.data.daily} />
         <CreditCard title="Lifetime credits" usage={state.data.lifetime} />
         <StorageCard usage={state.data.storage} />

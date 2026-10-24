@@ -81,7 +81,7 @@ test('keeps an uncertain retry on its workspace and ignores its late response af
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe(`workspace-export-${EXPORT_BETA}.json`);
   await expect(page.getByTestId('usage-daily-credits')).toContainText('No AI usage yet.');
-  await expect(page.getByTestId('usage-workspace-storage')).toContainText('17 bytes');
+  await expect(page.getByTestId('usage-workspace-storage')).toContainText('17 B');
 });
 
 test('shows bounded, capacity, and unavailable errors without leaving a stale download', async ({ page }, testInfo) => {
@@ -125,6 +125,8 @@ test('shows bounded, capacity, and unavailable errors without leaving a stale do
   await page.keyboard.press('ArrowDown');
   await expect(workspaceSelect).toHaveValue(ALPHA_ID);
   await page.keyboard.press('Tab');
+  await expect(page.getByText('What is included?', { exact: true })).toBeFocused();
+  await page.keyboard.press('Tab');
   const prepareExport = page.getByRole('button', { name: 'Prepare export' });
   await expect(prepareExport).toBeFocused();
   await page.keyboard.press('Enter');
@@ -162,7 +164,7 @@ test('shows bounded, capacity, and unavailable errors without leaving a stale do
   await expect(page.getByTestId('workspace-export-download-error')).toContainText('This export is unavailable. Prepare a new export.');
   await expect(page.getByTestId('workspace-export-ready')).toHaveCount(0);
   await expect(page.getByTestId('usage-lifetime-credits')).toContainText('No AI usage yet.');
-  await expect(page.getByTestId('usage-workspace-storage')).toContainText('17 bytes');
+  await expect(page.getByTestId('usage-workspace-storage')).toContainText('17 B');
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('task-5-4-export-unavailable-mobile.png'), fullPage: true });

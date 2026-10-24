@@ -53,6 +53,7 @@ test('opens the project activity page, filters a run, and expands safe detail', 
   await page.getByTestId('project-activity-link').click();
   await expect(page.getByTestId('project-activity-page')).toBeVisible();
   await expect(page.getByRole('heading', { name: item.requestPreview })).toBeVisible();
+  await page.getByText('Usage details', { exact: true }).click();
   await expect(page.getByText('27 tokens (estimate)')).toBeVisible();
   await expect(page.getByText('Prompt: 24 · Completion: Not available · Total: Not available')).toBeVisible();
   await expect(page.getByText('Cost: Unavailable — no rate configured')).toBeVisible();

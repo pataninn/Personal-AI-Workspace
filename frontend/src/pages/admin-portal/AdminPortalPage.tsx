@@ -82,7 +82,7 @@ export function AdminPortalPage(): React.JSX.Element {
 
   return <section className="grid w-full content-start gap-6" data-testid="admin-portal-page">
     <header className="flex flex-wrap items-end justify-between gap-4">
-      <div><p className="product-label">Administration</p><h1 className="text-3xl font-semibold">Admin portal</h1><p className="field-help">Manage your account and temporary demo visitors. No visitor signup is required.</p></div>
+      <div className="grid gap-2 [&>h1]:m-0 [&>p]:m-0"><p className="product-label">Administration</p><h1 className="text-3xl font-semibold">Admin portal</h1><p className="field-help">Manage your account and temporary demo visitors. No visitor signup is required.</p></div>
       <div className="flex flex-wrap gap-3"><Link className="self-center text-[var(--color-link)] underline underline-offset-4" to="/dashboard">Back to workspace</Link><Link className="self-center text-[var(--color-link)] underline underline-offset-4" to="/admin/showcase">Demo content</Link></div>
     </header>
     {error ? <Alert tone="error" role="alert" data-testid="admin-action-error">{error}</Alert> : null}

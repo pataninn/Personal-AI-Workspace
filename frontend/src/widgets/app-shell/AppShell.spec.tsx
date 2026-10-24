@@ -73,7 +73,9 @@ describe('AppShell', () => {
     const trigger = screen.getByRole('button', { name: 'Open navigation' });
     await user.click(trigger);
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByText('Move between the protected workspace areas.')).toBeInTheDocument();
+    expect(screen.queryByText('Move between the protected workspace areas.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Close menu' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Navigation' })).toHaveClass('sr-only');
 
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();

@@ -100,7 +100,7 @@ export function AiRunTimeline({ snapshot, projectId, conversationId, csrfToken, 
         {timeline.cancelError ? <Alert tone="error" role="alert" data-testid="run-cancel-error"><p>{timeline.cancelError}</p><Button type="button" variant="secondary" data-testid="run-cancel-error-refresh" disabled={refreshing || disabled} aria-busy={refreshing} onClick={refresh}>{refreshing ? 'Refreshing...' : 'Refresh run status'}</Button></Alert> : null}
         {timeline.error && timeline.connection !== 'disconnected' && timeline.snapshot.status !== 'review_required' ? <Alert tone="error" role="alert" data-testid="ai-run-timeline-error">{timeline.error}</Alert> : null}
         {!terminal && timeline.snapshot.status !== 'cancel_requested' ? <Button type="button" variant="secondary" data-testid="ai-run-cancel" disabled={timeline.cancelPending || disabled || !csrfToken} aria-busy={timeline.cancelPending} onClick={timeline.cancel}>{timeline.cancelPending ? <TypingIndicator /> : 'Stop'}</Button> : null}
-        {timeline.snapshot.status === 'cancel_requested' ? <p className="sr-only" data-testid="ai-run-cancel-status" role="status">Stopping assistant run...</p> : null}
+        {timeline.snapshot.status === 'cancel_requested' ? <p className="m-0 text-sm text-[var(--color-text-muted)]" data-testid="ai-run-cancel-status" role="status">Stopping assistant run...</p> : null}
       </Card>
     </section>
   );

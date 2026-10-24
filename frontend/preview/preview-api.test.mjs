@@ -38,6 +38,21 @@ function headers(cookie, extra = {}) {
 const PROJECT_ID = '873c096a-bc57-4a0c-85da-10d4febde96b';
 const CONVERSATION_ID = '489541da-57a5-416d-afb6-45b19ad7bc98';
 
+test('renaming preserves project identity and rejects stale or invalid updates', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const path = `${origin}/api/v1/projects/${PROJECT_ID}`;
+  const before = (await (await fetch(path, { headers: headers(cookie) })).json()).data;
+  const rename = (name, version) => fetch(`${path}/name`, { method: 'PATCH', headers: headers(cookie, { 'If-Match': String(version) }), body: JSON.stringify({ name }) });
+  const result = await rename('Reading Club 中文', before.version);
+  assert.equal(result.status, 200);
+  const after = (await result.json()).data;
+  assert.equal(after.id, before.id); assert.equal(after.name, 'Reading Club 中文');
+  assert.equal(after.slug, 'reading-club-中文'); assert.equal(after.version, before.version + 1);
+  assert.equal((await rename('Stale', before.version)).status, 409);
+  assert.equal((await rename(' ', after.version)).status, 400);
+  assert.equal((await (await fetch(path, { headers: headers(cookie) })).json()).data.name, after.name);
+});
+
 test('preview usage requires a session and supplies the allowance needed by the mock composer', async () => {
   const { origin } = await startPreview();
   assert.equal((await fetch(`${origin}/api/v1/account/usage`)).status, 401);

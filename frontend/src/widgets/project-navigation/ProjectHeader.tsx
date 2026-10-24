@@ -6,10 +6,11 @@ import { Button, DropdownMenuContent, DropdownMenuItem, DropdownMenuRoot, Dropdo
 
 interface ProjectHeaderProps {
   readonly onRemove: (project: ProjectSnapshot) => void;
+  readonly onRename?: (project: ProjectSnapshot) => void;
 }
 
 /** Keep existing project destinations in the reference's horizontal navigation. */
-export function ProjectHeader({ onRemove }: ProjectHeaderProps): React.JSX.Element | null {
+export function ProjectHeader({ onRemove, onRename }: ProjectHeaderProps): React.JSX.Element | null {
   const { projectId } = useParams();
   const { pathname } = useLocation();
   const project = useAppSelector(selectProjects).find((candidate) => candidate.id === projectId);
@@ -28,12 +29,10 @@ export function ProjectHeader({ onRemove }: ProjectHeaderProps): React.JSX.Eleme
       { suffix: 'file-history', label: 'History', testId: `project-file-history-nav-${projectId}` }
     ] : [])
   ];
-  const automationsHref = `/automations?workspaceId=${encodeURIComponent(projectId)}`;
   return <header className="reference-project-header">
-    <div className="reference-project-identity"><span className="project-tile" style={{ background: projectColor(project.id) }}><Icon name="folder" size={26} /></span><div><div className="project-title-actions"><h2>{project.name}</h2><DropdownMenuRoot><DropdownMenuTrigger asChild><Button type="button" variant="ghost" className="project-actions-trigger" data-testid="project-actions-trigger" aria-label="Project actions"><span aria-hidden="true">⋯</span></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem className="project-remove-menu-item" data-testid="project-remove-trigger" onSelect={() => { onRemove(project); }}>Remove project</DropdownMenuItem></DropdownMenuContent></DropdownMenuRoot></div><p>{hasFileAccess ? 'Files available' : 'Planning only'}</p></div></div>
+    <div className="reference-project-identity"><span className="project-tile" style={{ background: projectColor(project.id) }}><Icon name="folder" size={26} /></span><div><div className="project-title-actions"><h2>{project.name}</h2><DropdownMenuRoot><DropdownMenuTrigger asChild><Button type="button" variant="ghost" className="project-actions-trigger" data-testid="project-actions-trigger" aria-label="Project actions"><span aria-hidden="true">⋯</span></Button></DropdownMenuTrigger><DropdownMenuContent align="end">{onRename ? <DropdownMenuItem onSelect={() => { onRename(project); }}>Rename workspace</DropdownMenuItem> : null}<DropdownMenuItem className="project-remove-menu-item" data-testid="project-remove-trigger" onSelect={() => { onRemove(project); }}>Remove project</DropdownMenuItem></DropdownMenuContent></DropdownMenuRoot></div><p>{hasFileAccess ? 'Files available' : 'Planning only'}</p></div></div>
     <nav aria-label="Project sections" className="reference-project-tabs">
       <Link data-testid={`project-workspace-nav-${projectId}`} to={path} className={workspaceActive ? 'is-active' : undefined} aria-current={workspaceActive ? 'page' : undefined}>Workspace</Link>
-      <Link data-testid={`project-automations-nav-${projectId}`} to={automationsHref}>Automations</Link>
       {destinations.map((destination) => <NavLink key={destination.suffix} data-testid={destination.testId} to={`${path}/${destination.suffix}`} className={({ isActive }) => isActive ? 'is-active' : undefined} aria-label={destination.suffix === 'file-history' ? 'File history' : undefined}>{destination.label}</NavLink>)}
     </nav>
   </header>;

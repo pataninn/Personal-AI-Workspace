@@ -3,8 +3,12 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 
+import { getGlobalTask } from '@/entities/project-task';
+
 import type { ProjectSnapshot, HomeTaskSummary } from '@/entities/project';
 import { HomeOverviewWidget, type HomeWorkspaceSummary } from '@/widgets/home-overview';
+
+vi.mock('@/entities/project-task', async (importOriginal) => ({ ...await importOriginal<typeof import('@/entities/project-task')>(), getGlobalTask: vi.fn() }));
 
 const ACTIVE_WORKSPACE: ProjectSnapshot = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -65,7 +69,7 @@ function renderOverview(options: {
 }
 
 describe('HomeOverviewWidget', () => {
-  it('renders stable task links, status and date-only metadata with active and archived workspaces', () => {
+  it('renders task preview buttons, status and date-only metadata with active and archived workspaces', () => {
     renderOverview({
       tasks: [HOME_TASK],
       workspaces: [
@@ -74,8 +78,8 @@ describe('HomeOverviewWidget', () => {
       ]
     });
 
-    const taskLink = screen.getByRole('link', { name: /Confirm release checklist/ });
-    expect(taskLink).toHaveAttribute('href', '/tasks/task%2Falpha');
+    const taskButton = screen.getByRole('button', { name: /Confirm release checklist/ });
+    expect(taskButton).toHaveAttribute('aria-haspopup', 'dialog');
     expect(within(screen.getByTestId('home-up-next-section')).getByText(/Blocked/)).toBeInTheDocument();
     expect(within(screen.getByTestId('home-up-next-section')).getByText('Urgent')).toBeInTheDocument();
 
@@ -91,6 +95,38 @@ describe('HomeOverviewWidget', () => {
     expect(within(archivedCard).getByText('Archived · read only')).toBeInTheDocument();
     expect(within(archivedCard).queryByText(/Last active|Updated/)).not.toBeInTheDocument();
     expect(screen.queryByText('01')).not.toBeInTheDocument();
+  });
+
+  it('opens full task details before editing and restores focus when closed', async () => {
+    vi.mocked(getGlobalTask).mockResolvedValue({ collection: 'workspace', workspace: ACTIVE_WORKSPACE, task: {
+      ...HOME_TASK, details: 'Confirm the release with the team.', subtasks: [{ id: 'step', title: 'Check release notes', completed: true }],
+      position: 0, source: { kind: 'user', label: 'Added by you', suggestionId: null, runId: null, conversationId: null, acceptedAt: null },
+      createdAt: '2026-10-01', updatedAt: '2026-10-01', completedAt: null
+    } });
+    renderOverview({ tasks: [HOME_TASK] });
+    const user = userEvent.setup();
+    const trigger = screen.getByRole('button', { name: /Confirm release checklist/ });
+    await user.click(trigger);
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText('Confirm the release with the team.')).toBeInTheDocument();
+    expect(within(dialog).getByText('Check release notes')).toBeInTheDocument();
+    expect(within(dialog).queryByRole('textbox')).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('link', { name: 'Edit task' })).toHaveAttribute('href', '/tasks/task%2Falpha');
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it('offers retry after a failed task detail request', async () => {
+    vi.mocked(getGlobalTask).mockRejectedValue(new Error('Unavailable'));
+    renderOverview({ tasks: [HOME_TASK] });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Confirm release checklist/ }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Task details could not be loaded.');
+    expect(screen.queryByRole('link', { name: 'Edit task' })).not.toBeInTheDocument();
+    vi.mocked(getGlobalTask).mockClear();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(getGlobalTask).toHaveBeenCalledWith(HOME_TASK.id, true);
   });
 
   it('retries Up next without replacing or retrying the workspace section', async () => {

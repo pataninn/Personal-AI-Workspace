@@ -9,9 +9,9 @@
   z-index: calc(var(--z-overlay) - 1);
   min-height: 52px;
   gap: 9px;
-  border-radius: 999px;
+  border-radius: var(--radius-control);
   padding-inline: 18px;
-  box-shadow: var(--shadow-md);
+  box-shadow: none;
 }
 
 .dialog-content.home-ask-dialog {

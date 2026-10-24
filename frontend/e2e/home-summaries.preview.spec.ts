@@ -57,8 +57,8 @@ test('renders bounded Up next actions and complete active/archive workspace summ
 
   const upNext = page.getByTestId('home-up-next-section');
   await expect(upNext.getByRole('heading', { name: 'Up next' })).toBeVisible();
-  await expect(page.getByTestId(`home-up-next-task-${FIRST_UP_NEXT_TASK_ID}`)).toHaveAttribute('href', `/tasks/${FIRST_UP_NEXT_TASK_ID}`);
-  await expect(page.getByTestId(`home-up-next-task-${SECOND_UP_NEXT_TASK_ID}`)).toHaveAttribute('href', `/tasks/${SECOND_UP_NEXT_TASK_ID}`);
+  await expect(page.getByTestId(`home-up-next-task-${FIRST_UP_NEXT_TASK_ID}`)).toHaveAttribute('aria-haspopup', 'dialog');
+  await expect(page.getByTestId(`home-up-next-task-${SECOND_UP_NEXT_TASK_ID}`)).toHaveAttribute('aria-haspopup', 'dialog');
   await expect(upNext.getByText('High', { exact: true })).toBeVisible();
   await expect(upNext.getByText('No deadline', { exact: true })).toBeVisible();
   await expect(upNext).not.toContainText(/\b\d+\s+tasks?\b/iu);

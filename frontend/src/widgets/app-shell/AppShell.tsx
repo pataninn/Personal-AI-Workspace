@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'reac
 
 import { sessionCleared, selectCsrfToken, selectPrincipal } from '@/entities/user-session';
 import { signOut, AUTH_COPY } from '@/features/auth';
-import { RemoveProjectDialog, useProjectListLoader } from '@/features/project-management';
+import { RemoveProjectDialog, RenameProjectDialog, useProjectListLoader } from '@/features/project-management';
 import { ProjectHeader, ProjectNavigation } from '@/widgets/project-navigation';
 import { selectProjects } from '@/entities/project';
 import type { ProjectSnapshot } from '@/entities/project';
@@ -14,9 +14,7 @@ import {
   Alert,
   Button,
   Icon,
-  DrawerClose,
   DrawerContent,
-  DrawerDescription,
   DrawerRoot,
   DrawerTitle,
   DrawerTrigger
@@ -41,6 +39,7 @@ export function AppShell(): React.JSX.Element {
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [logoutError, setLogoutError] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<ProjectSnapshot | null>(null);
+  const [renameTarget, setRenameTarget] = useState<ProjectSnapshot | null>(null);
   useProjectListLoader();
   const displayName = principal?.displayName || 'Local user';
   const registerHomeSummaryRefresh = useCallback((refresh: (() => void) | null): void => {
@@ -99,13 +98,9 @@ export function AppShell(): React.JSX.Element {
                   <span>Menu</span>
                 </Button>
               </DrawerTrigger>
-              <DrawerContent data-testid="mobile-nav-drawer" aria-describedby="mobile-nav-description">
-                <DrawerTitle>Navigation</DrawerTitle>
-                <DrawerDescription id="mobile-nav-description">Move between the protected workspace areas.</DrawerDescription>
-                <DrawerClose asChild>
-                  <Button variant="ghost" data-testid="mobile-nav-close-button">Close menu</Button>
-                </DrawerClose>
-                <nav aria-label="Primary navigation"><WorkspaceNavigation currentPath={location.pathname} onNavigate={() => setDrawerOpen(false)} /></nav>
+              <DrawerContent data-testid="mobile-nav-drawer" aria-describedby={undefined}>
+                <DrawerTitle className="sr-only">Navigation</DrawerTitle>
+                <WorkspaceNavigation currentPath={location.pathname} onNavigate={() => setDrawerOpen(false)} />
               </DrawerContent>
             </DrawerRoot>
             <BrandLink />
@@ -121,7 +116,7 @@ export function AppShell(): React.JSX.Element {
           </div>
         </header>
         <main ref={mainRef} className={`app-shell-main${principal ? ' home-ask-shell-main' : ''}`} data-testid="app-shell-main" tabIndex={-1}>
-          <ProjectHeader onRemove={setRemoveTarget} />
+          <ProjectHeader onRemove={setRemoveTarget} onRename={setRenameTarget} />
           <Suspense fallback={<p role="status" className="p-6">Loading page...</p>}>
             <Outlet context={{ registerHomeSummaryRefresh, registerTaskEditorExitGuard } satisfies AppShellOutletContext} />
           </Suspense>
@@ -129,6 +124,7 @@ export function AppShell(): React.JSX.Element {
       </div>
       <HomeAsk onSummaryRefreshRequested={requestHomeSummaryRefresh} />
       <RemoveProjectDialog project={removeTarget} onOpenChange={(open) => { if (!open) setRemoveTarget(null); }} onRemoved={() => { setRemoveTarget(null); navigate('/dashboard'); }} />
+      {renameTarget ? <RenameProjectDialog key={renameTarget.id} project={renameTarget} onClose={() => setRenameTarget(null)} /> : null}
     </div>
   );
 }

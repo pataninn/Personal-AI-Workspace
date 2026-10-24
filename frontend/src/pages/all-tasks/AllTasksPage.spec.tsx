@@ -1,5 +1,5 @@
 import { configureStore } from '@reduxjs/toolkit';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { createMemoryRouter, Outlet, RouterProvider, useLocation } from 'react-router-dom';
@@ -54,6 +54,26 @@ describe('AllTasksPage', () => {
   beforeEach(() => {
     listGlobalTasksMock.mockReset().mockResolvedValue({ items: [workspaceTask], nextCursor: null });
     getGlobalTaskMock.mockReset();
+  });
+
+  it('shows labeled priority badges, checklist progress and overdue dates without flagging completed tasks', async () => {
+    listGlobalTasksMock.mockResolvedValue({ items: [
+      { ...workspaceTask, task: { ...workspaceTask.task, details: 'Check the budget and scope.', subtasks: [{ id: 'step-1', title: 'Read', completed: true }, { id: 'step-2', title: 'Reply', completed: false }] } },
+      { ...anotherTask, task: { ...anotherTask.task, importance: 'low', status: 'done' } },
+      { ...unassignedTask, task: { ...unassignedTask.task, importance: 'urgent', deadline: null } }
+    ], nextCursor: null });
+    renderAllTasks();
+    const high = await screen.findByRole('link', { name: /Review proposal/ });
+    expect(within(high).getByText('High')).toHaveClass('global-task-priority-badge', 'importance-high');
+    expect(high).toHaveTextContent('Check the budget and scope.');
+    expect(high).toHaveTextContent('1/2 subtasks');
+    expect(high).toHaveTextContent('Overdue');
+    const done = screen.getByRole('link', { name: /Send summary/ });
+    expect(done).toHaveClass('is-complete');
+    expect(done).not.toHaveTextContent('Overdue');
+    expect(within(done).getByText('Low')).toHaveClass('importance-low');
+    expect(within(screen.getByRole('link', { name: /Sort receipts/ })).getByText('Urgent')).toHaveClass('importance-urgent');
+    expect(screen.getByText('3 tasks shown')).toBeInTheDocument();
   });
 
   it('keeps applied filters in the URL and sends them to the global query', async () => {

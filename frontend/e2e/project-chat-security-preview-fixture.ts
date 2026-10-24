@@ -132,7 +132,15 @@ export class ProjectChatPreviewFixture {
     if (path === '/api/v1/auth/session' && method === 'GET') return this.respond(route, this.session(), this.signedIn ? 200 : 401, this.signedIn ? null : { code: 'UNAUTHENTICATED', message: 'Sign in to continue.' });
     if (path === '/api/v1/auth/login' && method === 'POST') { this.signedIn = true; return this.respond(route, this.session()); }
     if (path === '/api/v1/auth/logout' && method === 'POST') { this.signedIn = false; return route.fulfill({ status: 204, body: '' }); }
+    if (path === '/api/v1/demo/availability' && method === 'GET') return this.respond(route, { available: false });
     if (path === '/api/v1/home/conversations' && method === 'GET') return this.respond(route, { conversations: [], nextCursor: null });
+    if (path === '/api/v1/account/usage' && method === 'GET') return this.respond(route, {
+      asOf: PREVIEW_TIME, expiresAt: null,
+      daily: { limitUnits: null, settledUnits: '0', reservedUnits: '0', remainingUnits: null, resetAt: PREVIEW_TIME, timeZone: 'UTC' },
+      lifetime: { limitUnits: null, settledUnits: '0', reservedUnits: '0', remainingUnits: null },
+      storage: { state: 'ready', unit: 'bytes', unitSystem: 'decimal-si', usedBytes: '0', reservedBytes: '0', limitBytes: null, availableBytes: null, overLimit: false, asOf: PREVIEW_TIME },
+      availability: { status: 'available', reason: 'Synthetic browser fixture only.', canSubmit: true }
+    });
     if (path === '/api/v1/projects' && method === 'GET') return this.respond(route, { projects: [this.project()] });
     if (path === '/api/v1/projects/overview' && method === 'GET') return this.respond(route, { projects: [{ ...this.project(), lastActivityAt: PREVIEW_TIME }], tasks: [] });
     if (path === '/api/v1/tasks/inbox/count' && method === 'GET') return this.respond(route, { count: 0 });

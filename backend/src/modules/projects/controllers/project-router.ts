@@ -1,6 +1,7 @@
 import type { RequestHandler, Response } from 'express';
 import { Router } from 'express';
 import { z } from 'zod';
+import type { RenameProjectUseCase } from '@/modules/projects/use-cases/rename-project';
 
 import { ProjectNotFoundError, ProjectVersionRequiredError } from '@/modules/projects/domain/project-errors';
 import { projectWorkspaceMode, type Project } from '@/modules/projects/domain/project-types';
@@ -49,6 +50,7 @@ const attachRootSchema = z.object({}).strict();
 
 export interface ProjectRouterDependencies {
   readonly getSession: GetSessionUseCase;
+  readonly renameProject?: RenameProjectUseCase;
   readonly createProject: CreateProjectUseCase;
   readonly listProjects: ListProjectsUseCase;
   readonly getProject: GetProjectUseCase;
@@ -351,6 +353,18 @@ export function createProjectRouter(dependencies: ProjectRouterDependencies): Ro
   router.post('/reuse', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, reuseProjectHandler(dependencies));
   router.post('/planning', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, createPlanningProjectHandler(dependencies));
   router.patch('/:projectId/objective', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, updateProjectObjectiveHandler(dependencies));
+  if (dependencies.renameProject) router.patch('/:projectId/name', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, async (request, response, next) => {
+    try {
+      const body = parseBody(z.object({ name: z.string().max(120) }).strict(), request.body);
+      const project = await dependencies.renameProject!.execute({
+        ownerId: request.auth!.principal.id,
+        projectId: parseProjectId(routeProjectId(request.params.projectId)),
+        expectedVersion: parseVersion(request.header('if-match')),
+        name: body.name
+      });
+      sendData(response, await serializeProject(project, dependencies.workspaceBoundary));
+    } catch (error: unknown) { next(error); }
+  });
   router.patch('/:projectId/root-attachment', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, attachInitialProjectRootHandler(dependencies));
   router.get('/overview', authenticate, overviewHandler(dependencies));
   router.get('/:projectId', authenticate, getHandler(dependencies));

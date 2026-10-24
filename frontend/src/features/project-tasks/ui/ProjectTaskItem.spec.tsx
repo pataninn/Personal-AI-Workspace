@@ -18,12 +18,14 @@ describe('ProjectTaskItem', () => {
     const summary = screen.getByText('Review guide').closest('summary');
     expect(summary?.parentElement).not.toHaveAttribute('open');
     if (!summary) { throw new TypeError('Task summary is missing.'); }
+    await user.click(screen.getByRole('checkbox', { name: 'Mark Review guide complete' }));
+    expect(onTransition).toHaveBeenCalledWith(task, 'done');
+    expect(summary.parentElement).not.toHaveAttribute('open');
     await user.click(summary);
     expect(summary.parentElement).toHaveAttribute('open');
     await user.click(screen.getByLabelText('Check steps'));
     expect(onToggleSubtask).toHaveBeenCalledWith(task, 'child');
-    await user.click(screen.getByRole('button', { name: 'Mark complete' }));
-    expect(onTransition).toHaveBeenCalledWith(task, 'done');
+    expect(onTransition).toHaveBeenCalledOnce();
     expect(screen.queryByRole('button', { name: 'Move up' })).not.toBeInTheDocument();
   });
 
@@ -40,7 +42,7 @@ describe('ProjectTaskItem', () => {
   it('disables checklist mutations while a save is pending and retains visible row errors', () => {
     render(<ul><ProjectTaskItem task={task} targeted pending archivedProject={false} actionError="This task changed elsewhere." onEdit={vi.fn()} onDelete={vi.fn()} onToggleSubtask={vi.fn()} onTransition={vi.fn()} /></ul>);
     expect(screen.getByLabelText('Check steps')).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Mark complete' })).toBeDisabled();
+    expect(screen.getByRole('checkbox', { name: 'Mark Review guide complete' })).toBeDisabled();
     expect(screen.getByRole('alert')).toHaveTextContent('This task changed elsewhere.');
   });
 });

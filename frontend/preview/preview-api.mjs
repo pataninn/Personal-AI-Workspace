@@ -212,6 +212,18 @@ async function handleProjects(request, response, seed, idempotency, parts, metho
     sendData(response, serializeProject(project));
     return;
   }
+  if (parts[4] === 'name' && method === 'PATCH') {
+    const body = await readBody(request);
+    const name = typeof body?.name === 'string' ? body.name.trim() : '';
+    if (!name || name.length > 120 || /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(name)) { sendError(response, 400, 'PROJECT_NAME_INVALID', 'Enter a name between 1 and 120 characters.'); return; }
+    if (Number(request.headers['if-match']) !== project.version) { sendError(response, 409, 'PROJECT_VERSION_CONFLICT', 'Refresh the project and try again.'); return; }
+    const slug = name.normalize('NFKC').toLocaleLowerCase('en-US').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/gu, '');
+    if (!slug) { sendError(response, 400, 'PROJECT_NAME_INVALID', 'Enter a name containing letters or numbers.'); return; }
+    if (seed.projects.some((other) => other.id !== project.id && other.slug === slug)) { sendError(response, 409, 'PROJECT_NAME_CONFLICT', 'Choose a different workspace name.'); return; }
+    Object.assign(project, { name, slug, version: project.version + 1, updatedAt: now() });
+    sendData(response, serializeProject(project));
+    return;
+  }
   if (!parts[4] && method === 'PATCH') {
     const body = await readBody(request);
     if (!['active', 'archived'].includes(body?.status)) {

@@ -140,7 +140,7 @@ export function SkillsWorkspace({ projectId, projectName, archived }: { readonly
 
   return <section className="grid w-full content-start gap-6" data-testid="skills-page">
     <header className="flex flex-wrap items-end justify-between gap-4 border-b border-[var(--color-border)] pb-5">
-      <div><h1 className="text-3xl font-semibold">Skills</h1><p className="mt-2 max-w-2xl text-[var(--color-text-muted)]">Reusable instructions for the way you work.</p></div>
+      <div className="grid gap-2 [&>h1]:m-0 [&>p]:m-0"><h1 className="text-3xl font-semibold">Skills</h1><p className="mt-2 max-w-2xl text-[var(--color-text-muted)]">Reusable instructions for the way you work.</p></div>
       <div className="flex flex-wrap gap-3"><Button type="button" variant="secondary" onClick={openNewSkill}>New skill</Button>{visibleSkills.some((skill) => skill.title === 'Plan my day' && skill.enabled) ? <Button type="button" onClick={() => setRunTarget(visibleSkills.find((skill) => skill.title === 'Plan my day' && skill.enabled) ?? null)}>Plan my day</Button> : <Button type="button" variant="secondary" disabled={templatesStatus !== 'loaded' || !templates.some((template) => template.id === 'plan-my-day')} onClick={() => { const template = templates.find((item) => item.id === 'plan-my-day'); if (template) copyTemplate(template); }}>Copy Plan my day</Button>}</div>
     </header>
     {announcement ? <p className="sr-only" role="status" aria-live="polite">{announcement}</p> : null}

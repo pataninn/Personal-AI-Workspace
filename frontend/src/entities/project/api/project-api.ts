@@ -3,6 +3,10 @@ import type { ProjectListResponse, ProjectSnapshot, ProjectStatus, ProjectWorksp
 
 const PROJECTS_PATH = '/api/v1/projects';
 
+export function renameProject(projectId: string, name: string, version: number, csrfToken: string): Promise<ProjectSnapshot> {
+  return patchJson<ProjectSnapshot>(`${PROJECTS_PATH}/${encodeURIComponent(projectId)}/name`, { name }, { 'X-CSRF-Token': csrfToken, 'If-Match': String(version) });
+}
+
 export function removeProject(projectId: string, version: number, csrfToken: string): Promise<void> {
   return deleteNoContent(`${PROJECTS_PATH}/${encodeURIComponent(projectId)}`, { 'X-CSRF-Token': csrfToken, 'If-Match': String(version) });
 }

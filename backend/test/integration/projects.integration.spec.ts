@@ -1,4 +1,6 @@
 import express from 'express';
+import { RenameProjectUseCase } from '@/modules/projects/use-cases/rename-project';
+import type { RenameProjectRecord } from '@/modules/projects/repositories/project-rename-repository';
 import request from 'supertest';
 
 import { createApp } from '@/app';
@@ -52,6 +54,14 @@ const activeProject: Project = {
 class FixtureProjectRepository implements IProjectRepository {
   private readonly records = new Map<string, Project>([[activeProject.id, activeProject]]);
   public busy = false;
+
+  public async rename(input: RenameProjectRecord): Promise<Project | null> {
+    const current = await this.findByIdForOwner(input.ownerId, input.projectId);
+    if (!current || current.version !== input.expectedVersion) return null;
+    const updated = { ...current, name: input.name, slug: input.slug, version: current.version + 1 };
+    this.records.set(current.id, updated);
+    return updated;
+  }
 
   public async remove(input: RemoveProjectRecord): Promise<void> {
     const project = await this.findByIdForOwner(input.ownerId, input.projectId);
@@ -253,6 +263,7 @@ function buildApp(boundary: FixtureWorkspaceBoundary, projectRepository = new Fi
       listProjects: new ListProjectsUseCase(projectRepository),
       getProject: new GetProjectUseCase(projectRepository),
       updateProjectStatus: new UpdateProjectStatusUseCase(projectRepository, boundary),
+      renameProject: new RenameProjectUseCase(projectRepository),
       workspacePlanning,
       deleteProject: new DeleteProjectUseCase(projectRepository),
       getOverview: new GetProjectOverviewUseCase({ getOverview: async (ownerId) => ({
@@ -281,6 +292,20 @@ async function login(app: express.Express): Promise<{ cookie: string; csrf: stri
 }
 
 describe('projects API (integration)', () => {
+  it('protects workspace renaming and preserves identity across a persisted read', async () => {
+    const app = buildApp(new FixtureWorkspaceBoundary());
+    const endpoint = `/api/v1/projects/${PROJECT_ID}/name`;
+    await request(app).patch(endpoint).set('Origin', APP_ORIGIN).send({ name: 'Renamed' }).expect(401);
+    const session = await login(app);
+    await request(app).patch(endpoint).set('Cookie', session.cookie).set('Origin', APP_ORIGIN).send({ name: 'Renamed' }).expect(403);
+    const update = (version: string, name = 'Renamed') => request(app).patch(endpoint).set('Cookie', session.cookie).set('Origin', APP_ORIGIN).set('X-CSRF-Token', session.csrf).set('If-Match', version).send({ name });
+    await update('1', ' ').expect(400);
+    await update('2').expect(409);
+    await update('1').expect(200).expect(({ body }) => { expect(body.data.id).toBe(PROJECT_ID); expect(body.data.name).toBe('Renamed'); expect(body.data.version).toBe(2); });
+    await update('1').expect(409);
+    await request(app).get(`/api/v1/projects/${PROJECT_ID}`).set('Cookie', session.cookie).expect(200).expect(({ body }) => expect(body.data.name).toBe('Renamed'));
+    await request(app).patch('/api/v1/projects/99999999-9999-4999-8999-999999999999/name').set('Cookie', session.cookie).set('Origin', APP_ORIGIN).set('X-CSRF-Token', session.csrf).set('If-Match', '1').send({ name: 'Other' }).expect(404);
+  });
   it('returns the Home overview before the dynamic project route, without owner IDs', async () => {
     const app = buildApp(new FixtureWorkspaceBoundary());
     await request(app).get('/api/v1/projects/overview').expect(401);

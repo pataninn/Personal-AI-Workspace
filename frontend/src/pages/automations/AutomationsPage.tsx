@@ -102,7 +102,7 @@ export function AutomationsPage(): React.JSX.Element {
   }
 
   return <div className="grid gap-6" data-testid="automations-page">
-    <header className="grid gap-2"><p className="product-label">Workspace tools</p><h1>Automations</h1><p className="text-[var(--color-text-muted)]">Start your day with a scheduled workspace briefing.</p></header>
+    <header className="grid gap-2 [&>h1]:m-0 [&>p]:m-0"><p className="product-label">Workspace tools</p><h1>Automations</h1><p className="text-[var(--color-text-muted)]">Start your day with a scheduled workspace briefing.</p></header>
     {management.readyNotice ? <Alert tone="success" role="status" live="polite" data-testid="automation-ready-notice"><div className="flex flex-wrap items-center justify-between gap-3"><p>Your daily briefing is ready.</p><div className="flex flex-wrap items-center gap-3"><Link className="font-medium underline underline-offset-4" to={briefingUrl(management.readyNotice.schedule)}>Open briefing</Link><Button type="button" variant="ghost" onClick={management.dismissNotice}>Dismiss</Button></div></div></Alert> : null}
     <div className="flex flex-wrap justify-between gap-3"><p className="text-sm text-[var(--color-text-muted)]">Find each briefing in your workspace chat.</p>{management.schedules.length > 0 ? <Button type="button" onClick={openCreate}>Create daily briefing</Button> : null}</div>
     {formMode ? <AutomationScheduleForm

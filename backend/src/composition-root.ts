@@ -77,7 +77,7 @@ import { PhysicalStorageSpaceMonitor } from '@/infrastructure/startup/physical-s
 import { GetReadinessUseCase } from '@/modules/health';
 import { BootstrapLocalUserUseCase, clearSessionCookie, GetSessionUseCase, LoginUseCase, LogoutUseCase } from '@/modules/auth';
 import { PrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
-import { CreateProjectUseCase, GetProjectUseCase, ListProjectsUseCase, UpdateProjectStatusUseCase, WorkspacePlanningUseCases } from '@/modules/projects';
+import { CreateProjectUseCase, GetProjectUseCase, ListProjectsUseCase, RenameProjectUseCase, UpdateProjectStatusUseCase, WorkspacePlanningUseCases } from '@/modules/projects';
 import { AddUserMessageUseCase, CreateConversationUseCase, GetConversationUseCase, ListConversationsUseCase } from '@/modules/conversations';
 import { CancelAiRunUseCase, CancelSandboxCommandUseCase, CollectProposedChangeSetUseCase, CreateAiRunUseCase, DecideEgressUseCase, DecideProposedChangeSetUseCase, DecideSandboxCommandUseCase, GetAiRunUseCase, GetProposedChangeSetUseCase, GetSandboxCommandUseCase, ListProviderPermissionsUseCase, ListSandboxCommandsUseCase, ProposeSandboxCommandUseCase, RecoverInterruptedAiRunsUseCase, RevokeProviderPermissionUseCase, StartAiRunUseCase } from '@/modules/ai-runs';
 import { InMemoryRunEventPublisher } from '@/infrastructure/ai-runs/in-memory-run-event-publisher';
@@ -462,6 +462,7 @@ export async function createApplication(
           listProjects: new ListProjectsUseCase(projectRepository),
           getProject: new GetProjectUseCase(projectRepository),
           updateProjectStatus: new UpdateProjectStatusUseCase(projectRepository, workspaceBoundary),
+          renameProject: new RenameProjectUseCase(projectRepository),
           workspacePlanning,
           workspaceBoundary,
           appOrigin: config.appOrigin,

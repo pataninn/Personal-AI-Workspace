@@ -44,7 +44,7 @@ export function GlobalTaskFilters({ value, projects, workspacesLoading, workspac
         <option value="all">Any status</option><option value="todo">To do</option><option value="in_progress">In progress</option>
         <option value="blocked">Blocked</option><option value="done">Done</option>
       </select></div>
-      <div className="global-task-search"><Label htmlFor="global-task-search">Search</Label><Input id="global-task-search" type="search" value={value.q} maxLength={200} onChange={(event) => { onChange({ ...value, q: event.currentTarget.value }); }} /></div>
+      <div className="global-task-search"><Label htmlFor="global-task-search">Search</Label><Input id="global-task-search" type="search" placeholder="Find a task…" value={value.q} maxLength={200} onChange={(event) => { onChange({ ...value, q: event.currentTarget.value }); }} /></div>
     </div>
     <details open={value.importance !== 'all' || Boolean(value.deadlineFrom) || Boolean(value.deadlineTo) || value.includeArchived}>
       <summary className="cursor-pointer py-3 text-sm font-medium text-[var(--color-text-muted)]">More filters</summary>

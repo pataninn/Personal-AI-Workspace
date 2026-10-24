@@ -3,26 +3,17 @@ import { expect, test } from '@playwright/test';
 import { CONVERSATION_ID, PROJECT_ID } from './project-chat-security-preview-data';
 import { ProjectChatPreviewFixture, signInToProjectChat } from './project-chat-security-preview-fixture';
 
-test('shows the synthetic workspace policy and submits without a permission or decision step', async ({ page }, testInfo) => {
+test('keeps a ready synthetic policy unobtrusive and submits without a permission or decision step', async ({ page }, testInfo) => {
   const fixture = new ProjectChatPreviewFixture(page, 'policy');
   await fixture.install();
   try {
     await openConversation(page);
-    const summary = page.getByRole('region', { name: 'Assistant policy summary' });
-    await expect(summary.getByTestId('assistant-policy-readiness')).toHaveText('Assistant is available.');
-    await expect(summary).toContainText('Synthetic browser fixture');
-    await expect(summary).toContainText('preview-only');
-    await expect(summary).toContainText('Selected workspace files');
+    await expect(page.getByTestId('assistant-policy-readiness')).toHaveCount(0);
     await expect(page.getByTestId('provider-permission-manager')).toHaveCount(0);
     await expect(page.getByTestId('provider-consent-alert-dialog')).toHaveCount(0);
+    await page.getByTestId('ai-run-submit').scrollIntoViewIfNeeded();
     await expect(page.getByTestId('message-input')).toBeInViewport();
     await expect(page.getByTestId('ai-run-submit')).toBeInViewport();
-    const policyDetails = summary.locator('summary');
-    await policyDetails.focus();
-    await page.keyboard.press('Enter');
-    await expect(summary.getByRole('heading', { name: 'Included context' })).toBeVisible();
-    await page.keyboard.press('Enter');
-    await expect(summary.getByRole('heading', { name: 'Included context' })).not.toBeVisible();
     await fixture.screenshot(testInfo, 'workspace-policy-summary-desktop.png');
 
     const desktopViewport = page.viewportSize() ?? { width: 1280, height: 720 };
@@ -64,8 +55,7 @@ test('keeps the composer disabled when the synthetic runtime is unverified', asy
   await fixture.install();
   try {
     await openConversation(page);
-    const summary = page.getByRole('region', { name: 'Assistant policy summary' });
-    await expect(summary.getByTestId('assistant-policy-readiness')).toHaveText('The configured assistant runtime is unavailable.');
+    await expect(page.getByTestId('assistant-policy-readiness')).toHaveText('Assistant is temporarily unavailable. Try again shortly.');
     const draft = 'Keep this draft while the runtime is unavailable.';
     await page.getByTestId('message-input').fill(draft);
     await expect(page.getByTestId('ai-run-submit')).toBeDisabled();
@@ -84,6 +74,5 @@ async function openConversation(page: import('@playwright/test').Page): Promise<
   await signInToProjectChat(page);
   await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);
   await page.goto(`/projects/${PROJECT_ID}/conversations/${CONVERSATION_ID}`);
-  await expect(page.getByRole('region', { name: 'Assistant policy summary' })).toBeVisible();
   await expect(page.getByTestId('message-input')).toBeEnabled();
 }

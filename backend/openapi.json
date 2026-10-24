@@ -4597,6 +4597,90 @@
         ]
       }
     },
+    "/api/v1/projects/{projectId}/name": {
+      "patch": {
+        "tags": [
+          "Workspace redesign"
+        ],
+        "summary": "Rename a workspace",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          { "$ref": "#/components/parameters/ProjectIdPath" },
+          {
+            "$ref": "#/components/parameters/OriginHeader"
+          },
+          {
+            "$ref": "#/components/parameters/CsrfHeader"
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Workspace renamed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/MutationForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ProjectNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/MutationConflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "description": "Changes the workspace display name and slug; files, roots, chats, and workspace ID are preserved. Requires the current version in If-Match.",
+        "operationId": "renameProject"
+      }
+    },
     "/api/v1/projects/{projectId}": {
       "parameters": [{ "$ref": "#/components/parameters/ProjectIdPath" }],
       "parameters": [

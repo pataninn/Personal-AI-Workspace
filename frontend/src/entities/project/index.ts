@@ -1,4 +1,4 @@
-export { createProject, getProject, listProjects, removeProject, updateProjectStatus } from '@/entities/project/api/project-api';
+export { createProject, getProject, listProjects, removeProject, renameProject, updateProjectStatus } from '@/entities/project/api/project-api';
 export { getProjectChatContext, updateProjectChatContext } from '@/entities/project/api/project-chat-context-api';
 export type { ProjectChatContext } from '@/entities/project/api/project-chat-context-api';
 export { useProjectChatContext } from '@/entities/project/model/use-project-chat-context';

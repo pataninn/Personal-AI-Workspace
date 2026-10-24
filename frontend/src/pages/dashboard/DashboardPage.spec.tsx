@@ -91,18 +91,19 @@ describe('DashboardPage chat and task Home', () => {
     expect(screen.getByTestId('location-probe')).toHaveTextContent('/projects/project-4');
   });
 
-  it('shows six global task links with workspace, importance and deadline metadata', async () => {
+  it('shows six task preview buttons with workspace, importance and deadline metadata', async () => {
     const tasks: ProjectOverview['tasks'] = Array.from({ length: 6 }, (_, index) => ({ id: `task-${index}`, projectId: ACTIVE_PROJECT.id, projectName: ACTIVE_PROJECT.name, title: `Next task ${index + 1}`, status: 'todo', importance: index === 0 ? 'urgent' : 'medium', deadline: index === 5 ? null : '2099-10-05', version: 1 }));
     getProjectOverviewMock.mockResolvedValue({ ...overview(), tasks });
     renderDashboard();
     const list = await screen.findByTestId('home-task-list');
-    const links = within(list).getAllByRole('link');
-    expect(links).toHaveLength(6);
-    expect(links.map((link) => link.getAttribute('href'))).toEqual(tasks.map((task) => `/tasks/${task.id}`));
+    const buttons = within(list).getAllByRole('button');
+    expect(buttons).toHaveLength(6);
+    buttons.forEach((button, index) => {
+      expect(button).toHaveAttribute('aria-haspopup', 'dialog');
+      expect(button).toHaveTextContent(tasks[index].title);
+    });
     expect(within(list).getByText('Urgent')).toBeInTheDocument();
     expect(within(list).getByText('No deadline')).toBeInTheDocument();
-    await userEvent.setup().click(links[0]);
-    expect(screen.getByTestId('location-probe')).toHaveTextContent('/tasks/task-0');
   });
 
   it('selects a project and shows an empty task state', async () => {
