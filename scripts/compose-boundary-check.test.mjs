@@ -69,7 +69,7 @@ test('provider credentials remain outside the app container', () => {
 });
 
 test('Compose forwards demo admission, publication, and proxy settings', () => {
-  for (const name of ['DEMO_NETWORK_HASH_SECRET', 'DEMO_GLOBAL_ADMISSION_MAX', 'SHOWCASE_MAX_ITEMS', 'TRUSTED_PROXY_CIDRS']) {
+  for (const name of ['DEMO_NETWORK_HASH_SECRET', 'DEMO_GLOBAL_ADMISSION_MAX', 'SHOWCASE_MAX_ITEMS', 'TRUSTED_PROXY_CIDRS', 'STORAGE_DISK_WARNING_FREE_BYTES']) {
     assert.ok(service('personal-ai-app').includes(`${name}:`));
   }
 });

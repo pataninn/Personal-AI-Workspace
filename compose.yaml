@@ -38,7 +38,7 @@ services:
       APP_PROTOCOL: ${APP_PROTOCOL:-https}
       TLS_CERT_FILE: /run/tls/tls.crt
       TLS_KEY_FILE: /run/tls/tls.key
-      APP_ORIGIN: https://127.0.0.1:${APP_PORT:-8443}
+      APP_ORIGIN: ${APP_ORIGIN:-https://127.0.0.1:${APP_PORT:-8443}}
       DATABASE_URL: postgresql://pai_app:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/personal_ai
       WORKSPACE_HOST_ROOT: ${WORKSPACE_HOST_ROOT:?WORKSPACE_HOST_ROOT must be the verified host workspace path}
       WORKSPACE_ROOT: /workspace
@@ -60,6 +60,7 @@ services:
       SHOWCASE_MAX_RETAINED_VERSIONS: ${SHOWCASE_MAX_RETAINED_VERSIONS:-3}
       DEMO_SHOWCASE_COPY_MAX_ATTEMPTS: ${DEMO_SHOWCASE_COPY_MAX_ATTEMPTS:-3}
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
+      STORAGE_DISK_WARNING_FREE_BYTES: ${STORAGE_DISK_WARNING_FREE_BYTES:-}
       LOCAL_USER_PASSWORD_FILE: /run/secrets/local_user_password
       NIM_PROFILE: ${NIM_PROFILE:-nebius-token-factory}
       NIM_ENDPOINT: ${NIM_ENDPOINT:-https://api.tokenfactory.nebius.com/v1}

@@ -50,7 +50,12 @@ const appEnvironmentSchema = z.object({
   STATIC_DIR: z.string().min(1).default('/app/frontend/dist'),
   APP_VERSION: z.string().min(1).default('0.1.0'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
-  APP_ORIGIN: z.string().url().default('https://127.0.0.1:8443'),
+  APP_ORIGIN: z.string().url()
+    .transform((value: string) => new URL(value))
+    .refine((value: URL) => ['http:', 'https:'].includes(value.protocol) && value.pathname === '/' && !value.search && !value.hash && !value.username && !value.password,
+      'APP_ORIGIN must be an HTTP(S) browser origin without a path, query, fragment or credentials')
+    .transform((value: URL) => value.origin)
+    .default('https://127.0.0.1:8443'),
   WORKSPACE_HOST_ROOT: z
     .string()
     .min(1)
@@ -105,7 +110,7 @@ const appEnvironmentSchema = z.object({
   HERMES_BRIDGE_KEY_FILE: z.string().optional(),
   STAGING_ROOT: z.string().min(1).default('/var/lib/personal-ai/staging'),
   RECOVERY_ROOT: z.string().min(1).default('/var/lib/personal-ai/recovery'),
-  STORAGE_DISK_WARNING_FREE_BYTES: z.string().regex(/^[1-9][0-9]{0,38}$/u).optional(),
+  STORAGE_DISK_WARNING_FREE_BYTES: optionalEnvironmentValue(z.string().regex(/^[1-9][0-9]{0,38}$/u)),
   STARTUP_CHECK_TIMEOUT_MS: z
     .string()
     .default('3000')

@@ -625,7 +625,9 @@ export async function createApplication(
                 const result = await cancelHomeTurn.execute({ ownerId: turn.ownerId, conversationId: turn.conversationId, turnId: turn.turnId });
                 return result.resource.status;
               });
-            } catch { /* durable removal jobs remain demo-cleanup barriers */ }
+            } catch {
+              logger.warn({ operation: 'workspace removal cleanup' }, 'Workspace removals remain pending and will retry.');
+            }
             try { await cleanupExpiredDemos.execute(); } catch {
               logger.warn({ operation: 'demo expiry cleanup' }, 'Demo expiry maintenance remains pending and will retry.');
             }

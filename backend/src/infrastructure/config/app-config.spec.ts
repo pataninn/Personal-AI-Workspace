@@ -116,6 +116,8 @@ describe('loadConfig', () => {
   });
 
   it('accepts only a positive decimal process-visible disk warning threshold', () => {
+    expect(loadConfig({ ...validEnvironment, STORAGE_DISK_WARNING_FREE_BYTES: '' }).storageDiskWarningFreeBytes)
+      .toBeUndefined();
     expect(loadConfig({ ...validEnvironment, STORAGE_DISK_WARNING_FREE_BYTES: '536870912' }).storageDiskWarningFreeBytes)
       .toBe(536_870_912n);
     for (const invalid of ['0', '-1', '1.5', ' 10', '01', 'x']) {
@@ -245,6 +247,17 @@ describe('loadConfig', () => {
       TLS_KEY_FILE: '/run/tls/tls.key',
       ALLOW_INSECURE_HTTP: 'false'
     })).toThrow(ConfigurationError);
+  });
+
+  it('normalizes the configured origin to match the browser Origin header', () => {
+    expect(loadConfig({ ...validEnvironment, APP_ORIGIN: 'http://Example.COM:80/' }).appOrigin)
+      .toBe('http://example.com');
+  });
+
+  it('rejects URLs that contain more than a browser origin', () => {
+    for (const invalid of ['http://example.com/path', 'http://example.com/?query=1', 'http://example.com/#fragment', 'http://user:password@example.com', 'file:///', 'ftp://example.com/', 'not-a-url']) {
+      expect(() => loadConfig({ ...validEnvironment, APP_ORIGIN: invalid })).toThrow(ConfigurationError);
+    }
   });
 
   it('rejects a model outside the pinned Nemotron profile', () => {
