@@ -1,0 +1,9 @@
+[
+  { "ParameterKey": "VpcId", "ParameterValue": "REPLACE_WITH_EXISTING_VPC_ID" },
+  { "ParameterKey": "SubnetId", "ParameterValue": "REPLACE_WITH_PRIVATE_SUBNET_ID" },
+  { "ParameterKey": "ImageId", "ParameterValue": "REPLACE_WITH_VERIFIED_UBUNTU_AMI_ID" },
+  { "ParameterKey": "RootDeviceName", "ParameterValue": "REPLACE_WITH_AMI_ROOT_DEVICE" },
+  { "ParameterKey": "InstanceType", "ParameterValue": "REPLACE_WITH_APPROVED_INSTANCE_TYPE" },
+  { "ParameterKey": "RootVolumeGiB", "ParameterValue": "REPLACE_WITH_APPROVED_SIZE" },
+  { "ParameterKey": "DataVolumeGiB", "ParameterValue": "REPLACE_WITH_APPROVED_SIZE" }
+]
