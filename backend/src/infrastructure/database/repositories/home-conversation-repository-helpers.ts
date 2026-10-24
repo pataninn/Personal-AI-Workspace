@@ -31,12 +31,24 @@ export async function lockIntent(queryRunner: QueryRunner, intent: string): Prom
   await queryRunner.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [intent]);
 }
 
-/** Requires the selected workspace to be active, planning-only, and owned by the requested user. */
-export async function assertWorkspaceOwned(queryRunner: QueryRunner, ownerId: string, workspaceId: string): Promise<void> {
+/** Requires an active workspace with no pending removal, owned by the requested user. */
+async function requireActiveOwnedWorkspace(queryRunner: QueryRunner, ownerId: string, workspaceId: string) {
   const workspace = await lockProjectWriteState(queryRunner, ownerId, workspaceId);
-  if (!workspace || workspace.status !== 'active' || workspace.relativeRoot !== null || workspace.removalPending) {
+  if (!workspace || workspace.status !== 'active' || workspace.removalPending) {
     throw new HomeConversationNotFoundError();
   }
+  return workspace;
+}
+
+/** Public Home workspace conversations are limited to planning-only projects. */
+export async function assertWorkspaceOwned(queryRunner: QueryRunner, ownerId: string, workspaceId: string): Promise<void> {
+  const workspace = await requireActiveOwnedWorkspace(queryRunner, ownerId, workspaceId);
+  if (workspace.relativeRoot !== null) throw new HomeConversationNotFoundError();
+}
+
+/** Trusted scheduler conversations may target any active, owned workspace. */
+export async function assertScheduledWorkspaceOwned(queryRunner: QueryRunner, ownerId: string, workspaceId: string): Promise<void> {
+  await requireActiveOwnedWorkspace(queryRunner, ownerId, workspaceId);
 }
 
 /** Locks and returns a conversation only when it belongs to the supplied owner. */

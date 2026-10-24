@@ -14,6 +14,14 @@ const validEnvironment: NodeJS.ProcessEnv = {
 };
 
 describe('loadConfig', () => {
+  it.each(['/srv/pai-data/legacy', '/a', 'C:\\PersonalAIWorkspace', 'C:/PersonalAIWorkspace'])('accepts an absolute host workspace path: %s', (workspaceHostRoot) => {
+    expect(loadConfig({ ...validEnvironment, WORKSPACE_HOST_ROOT: workspaceHostRoot }).workspaceHostRoot).toBe(workspaceHostRoot);
+  });
+
+  it.each(['', '/', '/srv/..', '/srv/../etc', '/srv/./workspace', 'C:\\', 'C:/', 'C:\\workspace\\..', 'C:\\workspace\\..\\Windows', 'C:/workspace/./data', 'workspace', './workspace', '../workspace', 'C:workspace', '\\\\server\\share', '//server/share', '/srv\\workspace', '/srv/\u0000workspace'])('rejects a non-dedicated or invalid host workspace path: %s', (workspaceHostRoot) => {
+    expect(() => loadConfig({ ...validEnvironment, WORKSPACE_HOST_ROOT: workspaceHostRoot })).toThrow(ConfigurationError);
+  });
+
   it('requires explicit opt-in for estimated Home token accounting', () => {
     expect(loadConfig(validEnvironment).allowEstimatedHomeUsage).toBe(false);
     expect(loadConfig({ ...validEnvironment, NIM_ALLOW_ESTIMATED_HOME_USAGE: 'true' }).allowEstimatedHomeUsage).toBe(true);

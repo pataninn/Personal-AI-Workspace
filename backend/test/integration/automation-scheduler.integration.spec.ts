@@ -4,11 +4,20 @@ import type { DataSource } from 'typeorm';
 
 import { createDataSource } from '@/infrastructure/database/data-source';
 import { AddAutomationTaskSources1710000039000 } from '@/infrastructure/database/migrations/1710000039000-add-automation-task-sources';
+import { TypeOrmHomeConversationRepository } from '@/infrastructure/database/repositories/typeorm-home-conversation-repository';
 import { TypeOrmProjectRemovalRepository } from '@/infrastructure/database/repositories/typeorm-project-removal-repository';
+import { TypeOrmProjectRepository } from '@/infrastructure/database/repositories/typeorm-project-repository';
 import { TypeOrmAutomationRepository } from '@/infrastructure/database/repositories/typeorm-automation-repository';
+import { TypeOrmSkillInvocationRepository } from '@/infrastructure/database/repositories/typeorm-skill-invocation-repository';
+import { TypeOrmSkillRepository } from '@/infrastructure/database/repositories/typeorm-skill-repository';
 import { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
 import { TypeOrmStorageRootMappingRepository } from '@/infrastructure/database/repositories/typeorm-storage-root-mapping-repository';
+import { TypeOrmUserRepository } from '@/infrastructure/database/repositories/typeorm-auth-repositories';
 import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import { PrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
+import { SystemClock } from '@/infrastructure/auth/system-clock';
+import { CreateAutomationScheduleUseCase } from '@/modules/automations/use-cases/automation-use-cases';
+import { CreateHomeConversationUseCase } from '@/modules/home-assistant/use-cases/create-home-conversation';
 import { DeleteProjectUseCase } from '@/modules/projects/use-cases/delete-project';
 import type { IProjectRecoveryCleaner } from '@/modules/projects/repositories/project-removal-repository';
 
@@ -212,6 +221,101 @@ describeDatabase('Task 7.1 durable scheduler PostgreSQL integration', () => {
     await expect(automations.createManualOccurrence(manual)).resolves.toMatchObject({ replayed: true, occurrence: { id: firstRun.occurrence.id } });
     await expect(automations.createManualOccurrence({ ...manual, requestFingerprint: '6'.repeat(64) }))
       .rejects.toMatchObject({ code: 'IDEMPOTENCY_KEY_REUSED' });
+  });
+
+  it('creates an accounted schedule conversation for an owned file-backed workspace while keeping public planning creation fenced', async () => {
+    const source = requiredDataSource();
+    const relativeRoot = `projects/${WORKSPACE_ID}`;
+    await source.query(`UPDATE "projects" SET "relative_root"=$2,"relative_root_key"=$2,"storage_kind"='managed' WHERE "id"=$1`, [WORKSPACE_ID, relativeRoot]);
+    await source.query(`INSERT INTO "storage_root_mappings" ("owner_id","project_id","locator_project_id","root_key","storage_kind","relative_root","state")
+      VALUES ($1,$2,$2,$3,'managed',$3,'active')`, [OWNER_ID, WORKSPACE_ID, relativeRoot]);
+
+    const homeRepository = new TypeOrmHomeConversationRepository(source, accounting);
+    const createHomeConversation = new CreateHomeConversationUseCase(homeRepository);
+    const createSchedule = new CreateAutomationScheduleUseCase(
+      automations,
+      createHomeConversation,
+      new TypeOrmProjectRepository(source),
+      new TypeOrmSkillRepository(source, accounting),
+      new PrincipalAuthorization(new TypeOrmUserRepository(source), new SystemClock()),
+      new SystemClock()
+    );
+    const request = {
+      ownerId: OWNER_ID,
+      idempotencyKey: 'file-backed-schedule-1',
+      workspaceId: WORKSPACE_ID,
+      skillId: SKILL_ID,
+      skillVersion: 1,
+      localTime: '23:59',
+      timeZone: 'UTC'
+    };
+
+    const created = await createSchedule.execute(request);
+    expect(created).toMatchObject({ replayed: false, schedule: { ownerId: OWNER_ID, workspaceId: WORKSPACE_ID, skillId: SKILL_ID } });
+    await expect(createSchedule.execute(request)).resolves.toMatchObject({ replayed: true, schedule: { id: created.schedule.id } });
+
+    const linkedConversations: readonly { readonly id: string; readonly owner_id: string; readonly workspace_id: string }[] = await source.query(
+      `SELECT "id","owner_id","workspace_id" FROM "home_conversations" WHERE "id"=$1`, [created.schedule.conversationId]
+    );
+    expect(linkedConversations).toEqual([{ id: created.schedule.conversationId, owner_id: OWNER_ID, workspace_id: WORKSPACE_ID }]);
+
+    const manualRun = await automations.createManualOccurrence({
+      ownerId: OWNER_ID,
+      scheduleId: created.schedule.id,
+      expectedRevision: created.schedule.revision,
+      requestKeyDigest: '3'.repeat(64),
+      requestFingerprint: '4'.repeat(64)
+    });
+    const [claim] = await automations.claimBatch({ limit: 1, leaseMilliseconds: 30_000 });
+    expect(claim?.occurrence.id).toBe(manualRun.occurrence.id);
+    if (!claim) throw new Error('The test occurrence was not claimed.');
+    expect(await automations.beginDispatch(claim.fence)).toBe(true);
+
+    const invocation = await new TypeOrmSkillInvocationRepository(source).claim({
+      ownerId: OWNER_ID,
+      conversationId: created.schedule.conversationId,
+      skillId: SKILL_ID,
+      skillRevisionId: REVISION_ID,
+      skillVersion: 1,
+      requestKeyDigest: '5'.repeat(64),
+      requestFingerprint: '6'.repeat(64),
+      contextRevisions: []
+    });
+    const submission = await homeRepository.submitTurn({
+      ownerId: OWNER_ID,
+      conversationId: created.schedule.conversationId,
+      requestKey: `schedule-${manualRun.occurrence.id}`,
+      requestFingerprint: '7'.repeat(64),
+      message: 'Prepare the scheduled daily briefing.',
+      initialStatus: 'running',
+      homePolicyRevision: '1',
+      workspacePolicyRevision: '1',
+      skillInvocationId: invocation.id,
+      automationFence: claim.fence
+    });
+    expect(submission.turn.status).toBe('running');
+    const completed = await homeRepository.completeTurnWithAssistant({
+      ownerId: OWNER_ID,
+      conversationId: created.schedule.conversationId,
+      turnId: submission.turn.id,
+      content: 'The scheduled briefing is ready.',
+      status: 'completed',
+      automationFence: claim.fence
+    });
+    expect(completed?.status).toBe('completed');
+    expect(await automations.recordTurnStatus({ ...claim.fence, status: 'succeeded' })).toBe(true);
+
+    const readConversation = await homeRepository.findForOwner(OWNER_ID, created.schedule.conversationId);
+    const transcript = await homeRepository.listMessagesForOwner({ ownerId: OWNER_ID, conversationId: created.schedule.conversationId, limit: 10 });
+    expect(readConversation).toMatchObject({ id: created.schedule.conversationId, scope: { kind: 'workspace', workspaceId: WORKSPACE_ID } });
+    expect(transcript?.messages.map(({ role }) => role)).toEqual(['user', 'assistant']);
+
+    await expect(createHomeConversation.execute({
+      ownerId: OWNER_ID,
+      scope: { kind: 'workspace', workspaceId: WORKSPACE_ID },
+      title: 'Public planning chat',
+      requestKey: 'public-file-backed-1'
+    })).rejects.toMatchObject({ code: 'HOME_CONVERSATION_NOT_FOUND' });
   });
 
   it('allows one current lease under concurrent repository claims and rejects the expired fence', async () => {

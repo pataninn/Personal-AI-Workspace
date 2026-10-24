@@ -162,6 +162,8 @@ export interface IHomeConversationRepository {
 
   /** Creates a conversation or replays its matching creation request. */
   create(input: CreateHomeConversationInput): Promise<PersistedHomeResource<HomeConversation>>;
+  /** Creates the trusted schedule-owned conversation for an active workspace. */
+  createForAutomation(input: CreateHomeConversationInput): Promise<PersistedHomeResource<HomeConversation>>;
 
   /** Creates an ordered turn or replays its matching request. */
   createTurn(input: CreateHomeTurnInput): Promise<PersistedHomeResource<HomeTurn>>;

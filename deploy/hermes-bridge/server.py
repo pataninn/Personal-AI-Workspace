@@ -10,7 +10,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from common import BridgeError, CLI, MAX_BODY, STATE, profile, run_cli, run_id, sandbox_name
+from common import BridgeError, CLI, MAX_BODY, STATE, active_gateway_profile, profile, run_cli, run_id, sandbox_name
 from lifecycle import Run, policy_capability
 from planning_lifecycle import MAX_PLANNING_PROMPT, PlanningRun
 from provider import assert_route
@@ -312,6 +312,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    active_gateway_profile()
     recover_runs()
     tls = STATE / 'tls'
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

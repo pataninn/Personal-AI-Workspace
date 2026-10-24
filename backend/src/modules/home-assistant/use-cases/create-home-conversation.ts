@@ -15,16 +15,28 @@ export class CreateHomeConversationUseCase {
   public constructor(private readonly conversations: IHomeConversationRepository) {}
 
   public async execute(input: CreateHomeConversationCommand): Promise<PersistedHomeResource<HomeConversation>> {
+    return this.create(input, false);
+  }
+
+  /** Trusted scheduler-only entry point; the public Home router uses execute. */
+  public async executeForAutomation(input: CreateHomeConversationCommand): Promise<PersistedHomeResource<HomeConversation>> {
+    return this.create(input, true);
+  }
+
+  private async create(input: CreateHomeConversationCommand, forAutomation: boolean): Promise<PersistedHomeResource<HomeConversation>> {
     assertHomeIdempotencyKey(input.requestKey);
     const title = input.title.trim();
     if (title.length < 1 || title.length > 160) throw new HomeConversationInputInvalidError('The conversation title must be 1 to 160 characters.');
     const scope = input.scope.kind === 'home' ? { kind: 'home' as const } : { kind: 'workspace' as const, workspaceId: input.scope.workspaceId };
-    return this.conversations.create({
+    const createInput = {
       ownerId: input.ownerId,
       scope,
       title,
       requestKey: input.requestKey,
       requestFingerprint: homeRequestFingerprint({ scope, title })
-    });
+    };
+    return forAutomation
+      ? this.conversations.createForAutomation(createInput)
+      : this.conversations.create(createInput);
   }
 }

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
+import path from 'node:path';
 import { NEBIUS_PROVIDER_PROFILE, NVIDIA_PROVIDER_PROFILE } from '@/modules/ai-runs/domain/model-provider-profile';
 import { HOME_NEBIUS_NEMOTRON_BOUND } from '@/modules/credits/domain/home-provider-credit-bound';
 import { parseCreditRate, parseTokenLimit } from '@/modules/credits/domain/credit-calculation';
@@ -24,6 +25,16 @@ const booleanEnvironment = z
 const optionalEnvironmentValue = <T extends z.ZodTypeAny>(schema: T) =>
   z.preprocess((value: unknown) => value === '' ? undefined : value, schema.optional());
 
+function isDedicatedHostPath(value: string): boolean {
+  if (/[\u0000-\u001f\u007f]/u.test(value)) return false;
+  if (value.split(/[\\/]/u).some((segment) => segment === '.' || segment === '..')) return false;
+  if (/^[A-Za-z]:[\\/]/u.test(value)) {
+    const normalized = path.win32.normalize(value);
+    return normalized !== path.win32.parse(normalized).root;
+  }
+  return path.posix.isAbsolute(value) && !value.startsWith('//') && !value.includes('\\') && path.posix.normalize(value) !== '/';
+}
+
 const appEnvironmentSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('production'),
   HOST: z.string().min(1).default('0.0.0.0'),
@@ -42,8 +53,8 @@ const appEnvironmentSchema = z.object({
   APP_ORIGIN: z.string().url().default('https://127.0.0.1:8443'),
   WORKSPACE_HOST_ROOT: z
     .string()
-    .min(3)
-    .refine((value: string) => /^[A-Za-z]:\\/.test(value), 'WORKSPACE_HOST_ROOT must be a dedicated Windows path'),
+    .min(1)
+    .refine(isDedicatedHostPath, 'WORKSPACE_HOST_ROOT must be an absolute dedicated Linux or Windows drive path'),
   WORKSPACE_ROOT: z.string().default('/workspace'),
   WORKSPACE_IDENTITY_FILE: z.string().default('/workspace/.personal-ai-workspace-identity'),
   WORKSPACE_IDENTITY: z.string().min(1),

@@ -53,6 +53,7 @@ import type {
 } from '@/modules/home-assistant/repositories/home-conversation-repository';
 import {
   assertRequestFingerprint,
+  assertScheduledWorkspaceOwned,
   assertWorkspaceOwned,
   lockConversation,
   lockIntent,
@@ -239,7 +240,7 @@ async function lockAutomationDispatch(queryRunner: QueryRunner, input: SubmitHom
   const skills: readonly { readonly id: string }[] = await queryRunner.query(`
     SELECT s."id" FROM "skills" s JOIN "skill_revisions" r ON r."owner_id"=s."owner_id" AND r."skill_id"=s."id"
       AND r."version"=s."current_version"
-    WHERE s."owner_id"=$1 AND s."id"=$2 AND s."deleted_at" IS NULL AND s."enabled"=true
+    WHERE s."owner_id"=$1 AND s."id"=$2 AND s."deleted_at" IS NULL
       AND (s."workspace_id" IS NULL OR s."workspace_id"=$3) AND r."id"=$4 AND r."enabled"=true
       AND r."version"=$5 AND jsonb_typeof(r."declared_tools")='array'
       AND r."declared_tools" <@ '["home_task_read","home_workspace_read"]'::jsonb
@@ -302,7 +303,7 @@ async function lockAutomationCompletion(queryRunner: QueryRunner, input: Complet
   const skills: readonly { readonly id: string }[] = await queryRunner.query(`
     SELECT s."id" FROM "skills" s JOIN "skill_revisions" r ON r."owner_id"=s."owner_id" AND r."skill_id"=s."id"
       AND r."version"=s."current_version"
-    WHERE s."owner_id"=$1 AND s."id"=$2 AND s."deleted_at" IS NULL AND s."enabled"=true
+    WHERE s."owner_id"=$1 AND s."id"=$2 AND s."deleted_at" IS NULL
       AND (s."workspace_id" IS NULL OR s."workspace_id"=$3) AND r."id"=$4 AND r."enabled"=true
       AND r."version"=$5 AND jsonb_typeof(r."declared_tools")='array'
       AND r."declared_tools" <@ '["home_task_read","home_workspace_read"]'::jsonb
@@ -403,6 +404,15 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
 
   /** Creates an owner-scoped conversation or replays the matching request. */
   public async create(input: CreateHomeConversationInput): Promise<PersistedHomeResource<HomeConversation>> {
+    return this.createConversation(input, false);
+  }
+
+  /** Creates the scheduler-owned conversation for an active, owned workspace. */
+  public async createForAutomation(input: CreateHomeConversationInput): Promise<PersistedHomeResource<HomeConversation>> {
+    return this.createConversation(input, true);
+  }
+
+  private async createConversation(input: CreateHomeConversationInput, forAutomation: boolean): Promise<PersistedHomeResource<HomeConversation>> {
     return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       const workspaceId = input.scope.kind === 'workspace' ? input.scope.workspaceId : null;
       await lockIntent(queryRunner, JSON.stringify(['conversation', input.ownerId, input.scope.kind, workspaceId, input.requestKey]));
@@ -412,7 +422,8 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
         return { resource: toHomeConversation(existing), replayed: true };
       }
       if (input.scope.kind === 'workspace') {
-        await assertWorkspaceOwned(queryRunner, input.ownerId, input.scope.workspaceId);
+        if (forAutomation) await assertScheduledWorkspaceOwned(queryRunner, input.ownerId, input.scope.workspaceId);
+        else await assertWorkspaceOwned(queryRunner, input.ownerId, input.scope.workspaceId);
       }
       const rows: readonly HomeConversationRow[] = await queryRunner.query(
         `INSERT INTO "home_conversations" ("owner_id", "scope", "workspace_id", "title", "create_request_key", "create_request_fingerprint")

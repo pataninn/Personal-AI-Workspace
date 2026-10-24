@@ -70,7 +70,7 @@ export class CreateAutomationScheduleUseCase {
     await assertActiveWorkspace(this.projects, input.ownerId, workspaceId);
     const skill = await this.skills.findActiveById(input.ownerId, skillId);
     assertScheduledSkill(skill, workspaceId, skillVersion);
-    const conversation = await this.conversations.execute({
+    const conversation = await this.conversations.executeForAutomation({
       ownerId: input.ownerId,
       scope: { kind: 'workspace', workspaceId },
       title: 'Scheduled daily briefing',
