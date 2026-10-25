@@ -7,6 +7,7 @@ const network = JSON.parse(read('demo-network.template.json'));
 const host = JSON.parse(read('demo-host.template.json'));
 const proxy = read('nginx-demo.conf.example');
 const bootstrap = read('nginx-demo-bootstrap.conf.example');
+const httpsSetup = read('configure-demo-https.sh');
 
 test('the small demo has one internet route and no NAT, CloudFront, load balancer or paid endpoint', () => {
   const types = Object.values(network.Resources).map(({ Type }) => Type);
@@ -94,4 +95,25 @@ test('IP certificate renewal requires the retained mount and validates Nginx bef
   assert.match(timer, /OnCalendar=\*-\*-\* 00,12:00:00 UTC/);
   assert.match(timer, /OnBootSec=5min/);
   assert.match(timer, /Persistent=true/);
+});
+
+test('numeric EIP probes route locally while retaining the public IP URL for Host and TLS checks', () => {
+  assert.match(httpsSetup, /--connect-to "\$PUBLIC_IP:80:127\.0\.0\.1:80"[^\n]+"http:\/\/\$PUBLIC_IP\//);
+  assert.match(httpsSetup, /--connect-to "\$PUBLIC_IP:443:127\.0\.0\.1:443"[^\n]+"https:\/\/\$PUBLIC_IP\/health"/);
+  assert.doesNotMatch(httpsSetup, /--resolve "\$PUBLIC_IP:(?:80|443):127\.0\.0\.1"/);
+  assert.doesNotMatch(httpsSetup, /(^|\s)(-k|--insecure)(\s|$)/);
+});
+
+test('bootstrap reloads active Nginx before probing its listener and challenge route', () => {
+  const prepareStart = httpsSetup.indexOf('if [[ "$PHASE" == prepare ]]; then');
+  const prepareEnd = httpsSetup.indexOf('\nassert_mounted_data\n', prepareStart);
+  const prepare = httpsSetup.slice(prepareStart, prepareEnd);
+  const enabled = prepare.indexOf('/bin/systemctl enable --now nginx');
+  const active = prepare.indexOf('/bin/systemctl is-active --quiet nginx');
+  const reloaded = prepare.indexOf('/bin/systemctl reload nginx');
+  const listener = prepare.indexOf('assert_listener 80');
+  const probe = prepare.indexOf('probe_http_challenge');
+  assert.ok(prepareStart >= 0 && prepareEnd > prepareStart);
+  assert.ok(enabled >= 0 && enabled < active);
+  assert.ok(active < reloaded && reloaded < listener && listener < probe);
 });

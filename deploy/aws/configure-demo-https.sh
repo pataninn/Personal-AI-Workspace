@@ -224,7 +224,8 @@ probe_http_challenge() {
   PROBE_TOKEN_PATH=$token_file
   printf '%s' "$token" >"$token_file"
   chmod 0644 -- "$token_file"
-  if ! curl --noproxy '*' --silent --fail --connect-timeout 3 --max-time 5 --resolve "$PUBLIC_IP:80:127.0.0.1" --output "$WORK_DIR/http-probe" "http://$PUBLIC_IP/.well-known/acme-challenge/$token" 2>/dev/null || ! cmp -s -- "$WORK_DIR/http-probe" "$token_file"; then
+  # Keep the EIP in the URL for Host matching; redirect only the TCP connection locally.
+  if ! curl --noproxy '*' --silent --fail --connect-timeout 3 --max-time 5 --connect-to "$PUBLIC_IP:80:127.0.0.1:80" --output "$WORK_DIR/http-probe" "http://$PUBLIC_IP/.well-known/acme-challenge/$token" 2>/dev/null || ! cmp -s -- "$WORK_DIR/http-probe" "$token_file"; then
     die 'The local HTTP ACME challenge probe failed; keep provider traffic paused and inspect Nginx.'
   fi
   rm -f -- "$token_file"
@@ -331,7 +332,8 @@ install_renewal_units() {
 
 verify_final_https() {
   local status
-  status="$(curl --noproxy '*' --silent --fail --connect-timeout 3 --max-time 15 --resolve "$PUBLIC_IP:443:127.0.0.1" --output /dev/null --write-out '%{http_code}' "https://$PUBLIC_IP/health" 2>/dev/null)" || die 'Local verified HTTPS app health failed; browser traffic was not accepted.'
+  # connect-to leaves the HTTPS URL host unchanged for IP-SAN certificate validation.
+  status="$(curl --noproxy '*' --silent --fail --connect-timeout 3 --max-time 15 --connect-to "$PUBLIC_IP:443:127.0.0.1:443" --output /dev/null --write-out '%{http_code}' "https://$PUBLIC_IP/health" 2>/dev/null)" || die 'Local verified HTTPS app health failed; browser traffic was not accepted.'
   if [[ "$status" != 200 ]]; then
     die 'Local verified HTTPS app health failed; browser traffic was not accepted.'
   fi
@@ -356,6 +358,7 @@ if [[ "$PHASE" == prepare ]]; then
   nginx_test
   /bin/systemctl enable --now nginx || die 'Nginx could not be enabled and started.'
   /bin/systemctl is-active --quiet nginx || die 'Nginx is not active after startup.'
+  /bin/systemctl reload nginx || die 'Nginx could not load the validated bootstrap configuration.'
   assert_listener 80
   probe_http_challenge
   printf 'Bootstrap is listening and the local ACME challenge path passed. No AWS security-group rule was changed.\n'
