@@ -66,6 +66,8 @@
   },
   "Outputs": {
     "InstanceId": { "Value": { "Ref": "Host" } },
+    "PrivateIp": { "Description": "Private address for the separately configured VPC origin; this host has no public IP.", "Value": { "Fn::GetAtt": ["Host", "PrivateIp"] } },
+    "PrivateDnsName": { "Description": "AWS private hostname for the separately configured CloudFront VPC origin.", "Value": { "Fn::GetAtt": ["Host", "PrivateDnsName"] } },
     "DataVolumeId": { "Value": { "Ref": "DataVolume" } },
     "SecurityGroupId": { "Value": { "Ref": "HostSecurityGroup" } },
     "NextStep": { "Value": "Verify SSM connectivity, identify and mount the data volume, then complete the external task-8-1 runbook. This is not a running app deployment." }
