@@ -147,19 +147,90 @@ prepare_bridge_client_certificates() {
     LANG=C.UTF-8 \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     PAI_GATEWAY_MODE=packaged-linux \
-    PYTHONPATH="$APP_ROOT/deploy/hermes-bridge" \
-    python3 - "$HERMES_CERT_DIR" <<'PY' >/dev/null 2>&1 || fail 'Could not generate the bridge mTLS client files with the existing certificate helper.'
+    python3 -I - "$APP_ROOT/deploy/hermes-bridge" "$HERMES_CERT_DIR" <<'PY' >/dev/null 2>&1 || fail 'Could not generate the bridge mTLS client files with the existing certificate helper.'
 import sys
 from pathlib import Path
 
+sys.path.insert(0, sys.argv[1])
 from setup import certificates
 
-certificates(Path(sys.argv[1]))
+certificates(Path(sys.argv[2]))
 PY
   chown -R "$RUNTIME_USER:10001" "$HERMES_CERT_DIR" || fail 'Could not assign bridge certificate ownership.'
   chmod 0710 "$HERMES_CERT_DIR" || fail 'Could not set the bridge certificate directory permissions.'
   chmod 0640 "$HERMES_CERT_DIR/ca.crt" "$HERMES_CERT_DIR/client.crt" "$HERMES_CERT_DIR/client.key" \
     || fail 'Could not set bridge certificate permissions for app UID/GID 10001.'
+}
+
+ensure_bridge_source_access() {
+  python3 - "$APP_ROOT" <<'PY' >/dev/null 2>&1 || fail 'The transferred Hermes bridge source must be root-owned directories before preparation.'
+import os
+import stat
+import sys
+from pathlib import Path
+
+app_root = Path(sys.argv[1])
+deploy = app_root / 'deploy'
+source = deploy / 'hermes-bridge'
+for path in (app_root, deploy, source):
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or path.resolve(strict=True) != path:
+        raise SystemExit(1)
+
+directories = [app_root, deploy]
+def on_walk_error(error):
+    raise error
+
+for current, children, _ in os.walk(source, topdown=True, followlinks=False, onerror=on_walk_error):
+    directory = Path(current)
+    directories.append(directory)
+    for name in children:
+        child = directory / name
+        info = child.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or child.resolve(strict=True) != child:
+            raise SystemExit(1)
+
+# Only code-path directories are made traversable; private/runtime data is untouched.
+for directory in directories:
+    os.chmod(directory, 0o755)
+PY
+
+  runuser -u "$RUNTIME_USER" -- env -i \
+    HOME="$RUNTIME_HOME" \
+    LANG=C.UTF-8 \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PAI_GATEWAY_MODE=packaged-linux \
+    python3 -I - "$APP_ROOT/deploy/hermes-bridge" <<'PY' >/dev/null 2>&1 \
+    || fail 'The Hermes bridge source is not fully readable/importable by pai-runtime.'
+import os
+import stat
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+def on_walk_error(error):
+    raise error
+
+for current, directories, files in os.walk(source, topdown=True, followlinks=False, onerror=on_walk_error):
+    for name in directories:
+        info = (Path(current) / name).lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise SystemExit(1)
+    for name in files:
+        path = Path(current) / name
+        if not stat.S_ISREG(path.lstat().st_mode):
+            raise SystemExit(1)
+        with path.open('rb') as source_file:
+            while source_file.read(1024 * 1024):
+                pass
+
+sys.path.insert(0, str(source))
+from setup import certificates
+import server
+
+if not callable(certificates) or not callable(server.recover_runs):
+    raise SystemExit(1)
+PY
 }
 
 [[ "$EUID" -eq 0 ]] || fail 'Run as root through the already-authorized SSM session.'
@@ -223,6 +294,7 @@ for path in \
   "$APP_ROOT/secrets" "$APP_ROOT/private" "$APP_CA_ETC_FILE"; do
   [[ ! -e "$path" && ! -L "$path" ]] || fail "A staging destination already exists; refusing to overwrite it: $path."
 done
+ensure_bridge_source_access
 ensure_safe_system_dir /etc/personal-ai-workspace
 ensure_safe_system_dir "$APP_CA_ETC_DIR"
 [[ ! -e "$APP_CA_ETC_FILE" && ! -L "$APP_CA_ETC_FILE" ]] || fail 'An application CA file already exists; refusing to replace it.'
@@ -325,6 +397,7 @@ verified_target_image_id=$(docker image inspect --format '{{.Id}}' "$APP_IMAGE_T
 [[ "$verified_target_image_id" == "$source_image_id" ]] || fail 'The Compose default image tag does not match the preloaded patched image.'
 
 printf 'PASS  Fresh app secrets, empty legacy/managed workspace roots, TLS, and bridge client certificates are prepared on the verified EBS volume.\n'
+printf 'PASS  Only root-owned application/bridge code directories were made traversable; pai-runtime verified the full bridge source and imports.\n'
 printf 'PASS  The preloaded patched app image is tagged for the existing Compose service; no image build or container start was attempted.\n'
 printf 'PENDING  TRUSTED_PROXY_CIDRS is empty until the host observes and verifies the app container socket peer; then set only that /32 and recreate the app before public Nginx startup.\n'
 printf 'PENDING  The bridge client PKI exists, but no provider key or route was configured; do not run full Hermes setup until key approval.\n'

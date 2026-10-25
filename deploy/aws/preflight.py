@@ -302,17 +302,26 @@ def compose_base(project_root: Path, env_file: Path, managed: bool) -> list[str]
     return command
 
 
-def inspect_mounts(container_id: str) -> tuple[str, list[dict[str, object]]]:
+def inspect_mounts(container_id: str) -> tuple[str, list[dict[str, object]], dict[str, str]]:
     user = run_readonly(["docker", "inspect", "--format", "{{json .Config.User}}", container_id], service_label="Docker container inspection")
     mounts = run_readonly(["docker", "inspect", "--format", "{{json .Mounts}}", container_id], service_label="Docker container mount inspection")
+    tmpfs = run_readonly(["docker", "inspect", "--format", "{{json .HostConfig.Tmpfs}}", container_id], service_label="Docker container tmpfs configuration inspection")
     try:
         parsed_user = json.loads(user)
         parsed_mounts = json.loads(mounts)
+        parsed_tmpfs = json.loads(tmpfs)
     except (json.JSONDecodeError, TypeError) as error:
         raise PreflightError("Docker returned an unreadable container configuration.") from error
+    if parsed_tmpfs is None:
+        parsed_tmpfs = {}
     if not isinstance(parsed_user, str) or not isinstance(parsed_mounts, list) or any(not isinstance(item, dict) for item in parsed_mounts):
         raise PreflightError("Docker returned an invalid container mount list.")
-    return parsed_user, parsed_mounts
+    if not isinstance(parsed_tmpfs, dict) or any(
+        not isinstance(target, str) or not target.startswith("/") or not isinstance(options, str)
+        for target, options in parsed_tmpfs.items()
+    ):
+        raise PreflightError("Docker returned an invalid tmpfs configuration.")
+    return parsed_user, parsed_mounts, parsed_tmpfs
 
 
 def compose_mounts(config: dict[str, object], service_name: str, docker_root: Path) -> dict[str, ExpectedContainerMount]:
@@ -434,11 +443,52 @@ def verify_actual_mounts(actual_mounts: list[dict[str, object]], expected: dict[
                 raise PreflightError(f"The persistent Docker volume at {target} is outside the verified Docker data root.")
 
 
+def actual_mounts_with_tmpfs(
+    container_id: str,
+    mounts: list[dict[str, object]],
+    host_tmpfs: dict[str, str],
+    expected: dict[str, ExpectedContainerMount],
+) -> list[dict[str, object]]:
+    expected_tmpfs = {target: item for target, item in expected.items() if item.kind == "tmpfs"}
+    if set(host_tmpfs) != set(expected_tmpfs):
+        raise PreflightError("Docker HostConfig.Tmpfs targets must exactly match the reviewed Compose tmpfs mounts.")
+    if not expected_tmpfs:
+        return mounts
+
+    for target, options in host_tmpfs.items():
+        flags = {option.strip().lower().partition("=")[0] for option in options.split(",") if option.strip()}
+        if "ro" in flags:
+            raise PreflightError(f"The configured container tmpfs at {target} must be read-write.")
+
+    mountinfo = run_readonly(
+        [
+            "docker", "exec", "--user", "10001:10001", container_id, "node", "-e",
+            "process.stdout.write(require('node:fs').readFileSync('/proc/self/mountinfo','utf8'))",
+        ],
+        service_label="Docker container mount namespace inspection",
+    )
+    entries = parse_mountinfo(mountinfo)
+    normalized = list(mounts)
+    for target in expected_tmpfs:
+        if any(item.get("Destination") == target for item in normalized):
+            raise PreflightError(f"The actual container mount at {target} was reported more than once.")
+        matches = [entry for entry in entries if entry.target == Path(target)]
+        if len(matches) != 1:
+            raise PreflightError(f"The actual container tmpfs mount at {target} could not be identified safely.")
+        entry = matches[0]
+        if entry.filesystem != "tmpfs":
+            raise PreflightError(f"The actual container mount at {target} must be tmpfs.")
+        if "rw" not in entry.options or "ro" in entry.options or "ro" in entry.super_options:
+            raise PreflightError(f"The actual container tmpfs at {target} must be read-write.")
+        normalized.append({"Destination": target, "Type": "tmpfs", "RW": True, "Source": "tmpfs", "Name": ""})
+    return normalized
+
+
 def verify_container_bindings(container_id: str, expected: dict[str, ExpectedContainerMount], docker_root: Path, *, app_container: bool) -> None:
-    user, mounts = inspect_mounts(container_id)
+    user, mounts, host_tmpfs = inspect_mounts(container_id)
     if app_container and user != "10001:10001":
         raise PreflightError("The application container must run as UID:GID 10001:10001.")
-    verify_actual_mounts(mounts, expected, docker_root)
+    verify_actual_mounts(actual_mounts_with_tmpfs(container_id, mounts, host_tmpfs, expected), expected, docker_root)
 
 
 def verify_migration_command(command: object, entrypoint: object = None) -> None:

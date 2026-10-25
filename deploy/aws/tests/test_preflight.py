@@ -1,3 +1,4 @@
+import json
 import stat
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ from deploy.aws.preflight import (
     parse_mountinfo,
     read_marker,
     verify_actual_mounts,
+    verify_container_bindings,
     verify_ebs_mount,
     verify_migration_command,
 )
@@ -231,6 +233,7 @@ class PreflightTests(unittest.TestCase):
             "tls": root / "tls",
             "hermes": root / "hermes",
             "password": root / "password",
+            "managed": root / "managed",
         }
         config: dict[str, object] = {
             "services": {
@@ -343,6 +346,142 @@ class PreflightTests(unittest.TestCase):
             next(item for item in wrong_volume if item["Destination"] == "/var/lib/personal-ai/recovery")["Name"] = "other_recovery"
             with self.assertRaisesRegex(PreflightError, "Compose named volume"):
                 verify_actual_mounts(wrong_volume, expected, docker_root)
+
+    def test_running_container_tmpfs_is_verified_from_inspect_and_mountinfo(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config, paths, docker_root = self._compose_config(root)
+            config["services"]["personal-ai-app"]["volumes"].append({
+                "type": "bind", "source": str(paths["managed"]), "target": "/account-workspaces",
+            })
+            expected = expected_compose_mounts(
+                config,
+                docker_root,
+                workspace=paths["workspace"],
+                tls_dir=paths["tls"],
+                hermes_dir=paths["hermes"],
+                password_file=paths["password"],
+                managed_root=paths["managed"],
+            )["personal-ai-app"]
+            # Docker inspect .Mounts reports the five binds and recovery volume, but not HostConfig.Tmpfs.
+            inspected_mounts = [
+                {
+                    "Destination": target,
+                    "Type": item.kind,
+                    "RW": item.read_write,
+                    "Source": str(item.source) if item.source is not None else "",
+                    "Name": item.name or "",
+                }
+                for target, item in expected.items()
+                if item.kind != "tmpfs"
+            ]
+            self.assertEqual(len(inspected_mounts), 6)
+            self.assertNotIn("/tmp", {item["Destination"] for item in inspected_mounts})
+            live_mountinfo = (
+                "201 100 0:49 / /tmp rw,nosuid,nodev,noexec,relatime "
+                "- tmpfs tmpfs rw,size=65536k,nr_inodes=16384"
+            )
+
+            with patch("deploy.aws.preflight.run_readonly", side_effect=[
+                json.dumps("10001:10001"),
+                json.dumps(inspected_mounts),
+                json.dumps({"/tmp": "size=64m,noexec,nosuid,nodev"}),
+                live_mountinfo,
+            ]) as query:
+                verify_container_bindings("app-container", expected, docker_root, app_container=True)
+
+            self.assertEqual(query.call_count, 4)
+            self.assertEqual(
+                query.call_args_list[2].args[0],
+                ["docker", "inspect", "--format", "{{json .HostConfig.Tmpfs}}", "app-container"],
+            )
+            self.assertEqual(
+                query.call_args_list[-1].args[0][:5],
+                ["docker", "exec", "--user", "10001:10001", "app-container"],
+            )
+
+    def test_running_container_tmpfs_rejects_missing_wrong_read_only_and_extra_mounts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config, paths, docker_root = self._compose_config(root)
+            config["services"]["personal-ai-app"]["volumes"].append({
+                "type": "bind", "source": str(paths["managed"]), "target": "/account-workspaces",
+            })
+            expected = expected_compose_mounts(
+                config,
+                docker_root,
+                workspace=paths["workspace"],
+                tls_dir=paths["tls"],
+                hermes_dir=paths["hermes"],
+                password_file=paths["password"],
+                managed_root=paths["managed"],
+            )["personal-ai-app"]
+            inspected_mounts = [
+                {
+                    "Destination": target,
+                    "Type": item.kind,
+                    "RW": item.read_write,
+                    "Source": str(item.source) if item.source is not None else "",
+                    "Name": item.name or "",
+                }
+                for target, item in expected.items()
+                if item.kind != "tmpfs"
+            ]
+            tmpfs = {"/tmp": "size=64m,noexec,nosuid,nodev"}
+            read_write_mountinfo = (
+                "201 100 0:49 / /tmp rw,nosuid,nodev,noexec,relatime "
+                "- tmpfs tmpfs rw,size=65536k,nr_inodes=16384"
+            )
+            cases = (
+                ("missing inspect tmpfs", {}, read_write_mountinfo, inspected_mounts, "HostConfig.Tmpfs"),
+                ("missing live tmpfs", tmpfs, "", inspected_mounts, "could not be identified"),
+                (
+                    "wrong live filesystem",
+                    tmpfs,
+                    "201 100 0:49 / /tmp rw,relatime - ext4 /dev/root rw",
+                    inspected_mounts,
+                    "must be tmpfs",
+                ),
+                (
+                    "read-only HostConfig tmpfs",
+                    {"/tmp": "ro,size=64m,noexec,nosuid,nodev"},
+                    read_write_mountinfo,
+                    inspected_mounts,
+                    "configured container tmpfs.*read-write",
+                ),
+                (
+                    "read-only live tmpfs",
+                    tmpfs,
+                    "201 100 0:49 / /tmp ro,nosuid,nodev,noexec - tmpfs tmpfs ro,size=65536k",
+                    inspected_mounts,
+                    "read-write",
+                ),
+                (
+                    "unexpected host root bind",
+                    tmpfs,
+                    read_write_mountinfo,
+                    inspected_mounts + [{
+                        "Destination": "/host-root", "Type": "bind", "RW": True,
+                        "Source": "/", "Name": "",
+                    }],
+                    "exactly match",
+                ),
+                (
+                    "unexpected HostConfig tmpfs",
+                    {**tmpfs, "/host-root": "size=64m"},
+                    read_write_mountinfo,
+                    inspected_mounts,
+                    "HostConfig.Tmpfs",
+                ),
+            )
+            for label, host_tmpfs, mountinfo, actual, error in cases:
+                with self.subTest(case=label):
+                    response = [json.dumps("10001:10001"), json.dumps(actual), json.dumps(host_tmpfs)]
+                    if set(host_tmpfs) == {"/tmp"}:
+                        response.append(mountinfo)
+                    with patch("deploy.aws.preflight.run_readonly", side_effect=response):
+                        with self.assertRaisesRegex(PreflightError, error):
+                            verify_container_bindings("app-container", expected, docker_root, app_container=True)
 
 
 if __name__ == "__main__":
