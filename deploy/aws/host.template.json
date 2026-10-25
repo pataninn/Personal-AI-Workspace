@@ -1,12 +1,13 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
   "Description": "Private staging host foundation for Personal AI Workspace. No application installation, public ingress, DNS, or provider configuration.",
+  "Metadata": { "AWSToolsMetrics": { "AWSAgentToolkit": "aws-cloudformation@3" } },
   "Parameters": {
     "VpcId": { "Type": "AWS::EC2::VPC::Id" },
     "SubnetId": { "Type": "AWS::EC2::Subnet::Id", "Description": "Existing private subnet in the selected VPC with outbound HTTPS access to SSM and required registries/providers." },
     "ImageId": { "Type": "AWS::EC2::Image::Id", "Description": "Explicit verified Ubuntu x86_64 EBS-backed AMI with a working SSM agent. Record owner, release, architecture and root device before use." },
     "RootDeviceName": { "Type": "String", "AllowedPattern": "^/dev/[a-zA-Z0-9]+$", "Description": "RootDeviceName from the verified AMI; do not infer it from the OS name." },
-    "InstanceType": { "Type": "String", "AllowedValues": ["t3.large", "t3.xlarge", "m7i.large", "m7i.xlarge"], "Description": "Operator-selected x86_64 instance size after checking regional availability and cost. Capacity is not yet benchmarked." },
+    "InstanceType": { "Type": "String", "AllowedValues": ["t3.large", "t3.xlarge", "m7i.large", "m7i.xlarge", "m7i-flex.large"], "Description": "Operator-selected x86_64 instance size after checking regional availability and cost. Capacity is not yet benchmarked." },
     "RootVolumeGiB": { "Type": "Number", "MinValue": 20, "MaxValue": 500 },
     "DataVolumeGiB": { "Type": "Number", "MinValue": 20, "MaxValue": 2000 }
   },
