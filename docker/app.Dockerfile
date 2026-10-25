@@ -1,4 +1,4 @@
-FROM node:22.20.0-bookworm-slim AS build
+FROM node:22.23.4-bookworm-slim AS build
 
 ENV COREPACK_HOME=/tmp/corepack
 WORKDIR /app
@@ -18,7 +18,7 @@ COPY frontend frontend
 RUN pnpm --filter personal-ai-workspace-backend build
 RUN pnpm --filter personal-ai-workspace-frontend build
 
-FROM node:22.20.0-bookworm-slim AS runtime
+FROM node:22.23.4-bookworm-slim AS runtime
 
 ENV NODE_ENV=production
 WORKDIR /app

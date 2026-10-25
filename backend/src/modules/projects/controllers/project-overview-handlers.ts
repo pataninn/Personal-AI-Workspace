@@ -8,7 +8,7 @@ import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
 
 const taskLimitSchema = z.union([z.string().regex(/^\d+$/u).transform(Number), z.number()]).pipe(z.number().int().min(1).max(100));
-const projectIdSchema = z.string().uuid();
+const projectIdSchema = z.guid();
 
 /** Owner-scoped overview; the query controls only the bounded task count. */
 export function overviewHandler(dependencies: ProjectRouterDependencies): RequestHandler {

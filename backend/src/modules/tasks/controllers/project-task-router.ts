@@ -20,7 +20,7 @@ import {
 const planningFields = {
   importance: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
   deadline: z.string().nullable().optional(),
-  subtasks: z.array(z.object({ id: z.string().uuid().optional(), title: z.string(), completed: z.boolean().optional() }).strict()).max(50).optional()
+  subtasks: z.array(z.object({ id: z.guid().optional(), title: z.string(), completed: z.boolean().optional() }).strict()).max(50).optional()
 };
 const createTaskSchema = z.object({ title: z.string(), details: z.string().nullable().optional(), ...planningFields }).strict();
 const updateTextSchema = z.object({ title: z.string().optional(), details: z.string().nullable().optional(), ...planningFields }).strict().refine((value) => Object.keys(value).length > 0);

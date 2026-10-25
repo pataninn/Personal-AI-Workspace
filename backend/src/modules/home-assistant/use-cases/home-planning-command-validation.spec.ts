@@ -31,6 +31,13 @@ describe('Home planning command validation', () => {
       .toThrow(HomeConversationInputInvalidError);
   });
 
+  it('continues accepting UUID-shaped identifiers that are not RFC UUIDs', () => {
+    const taskId = '00000000-0000-0000-0000-000000000001';
+
+    expect(parseHomePlanningToolArgs(request('home_get_task', { taskId })))
+      .toEqual({ taskId });
+  });
+
   it('validates real calendar dates before passing them to canonical task commands', () => {
     expect(() => resolveDeadline({ kind: 'date', value: '2026-02-30' }, undefined))
       .toThrow(HomeConversationInputInvalidError);

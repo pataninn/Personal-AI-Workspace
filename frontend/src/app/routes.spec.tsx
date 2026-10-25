@@ -63,4 +63,35 @@ describe('ProtectedRoute', () => {
     );
     expect(screen.queryByRole('heading', { name: 'Workspace' })).not.toBeInTheDocument();
   });
+
+  it('omits a backslash current path from the login return target', async () => {
+    const store = configureStore({
+      reducer: { userSession: userSessionReducer },
+      preloadedState: {
+        userSession: {
+          status: 'unauthenticated' as const,
+          principal: null,
+          csrfToken: null,
+          expiresAt: null,
+          errorCode: 'SESSION_UNAUTHENTICATED'
+        }
+      }
+    });
+
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/\\attacker.example']}>
+          <Routes>
+            <Route element={<ProtectedRoute />}>
+              <Route path="*" element={<h1>Workspace</h1>} />
+            </Route>
+            <Route path="/login" element={<SignInForm />} />
+          </Routes>
+          <LocationProbe />
+        </MemoryRouter>
+      </Provider>
+    );
+
+    expect(await screen.findByTestId('route-location')).toHaveTextContent('/login?reason=session-expired');
+  });
 });

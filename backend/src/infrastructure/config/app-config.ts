@@ -22,7 +22,7 @@ const booleanEnvironment = z
   .enum(['true', 'false'])
   .transform((value: 'true' | 'false') => value === 'true');
 
-const optionalEnvironmentValue = <T extends z.ZodTypeAny>(schema: T) =>
+const optionalEnvironmentValue = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value: unknown) => value === '' ? undefined : value, schema.optional());
 
 function isDedicatedHostPath(value: string): boolean {
@@ -44,7 +44,7 @@ const appEnvironmentSchema = z.object({
     .transform((value: string) => Number(value))
     .refine((value: number) => Number.isInteger(value) && value > 0 && value < 65_536, 'PORT must be a valid TCP port'),
   APP_PROTOCOL: z.enum(['http', 'https']).default('https'),
-  ALLOW_INSECURE_HTTP: booleanEnvironment.default('false'),
+  ALLOW_INSECURE_HTTP: booleanEnvironment.prefault('false'),
   TLS_CERT_FILE: z.string().min(1).optional(),
   TLS_KEY_FILE: z.string().min(1).optional(),
   STATIC_DIR: z.string().min(1).default('/app/frontend/dist'),

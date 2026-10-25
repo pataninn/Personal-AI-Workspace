@@ -5,7 +5,7 @@ import { HomeProposalInputInvalidError } from '@/modules/home-assistant/domain/h
 import type { HomeProposalDeadlineResolution } from '@/modules/home-assistant/domain/home-change-proposal-types';
 import type { HomePlanningToolRequest } from '@/modules/home-assistant/repositories/home-planning-tool-request-handler';
 
-const UUID = z.string().uuid();
+const UUID = z.guid();
 const VERSION = z.number().int().positive().max(2147483647);
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/u);
 const IMPORTANCE = z.enum(['low', 'medium', 'high', 'urgent']);

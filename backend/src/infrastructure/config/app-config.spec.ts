@@ -223,6 +223,13 @@ describe('loadConfig', () => {
     })).toThrow(ConfigurationError);
   });
 
+  it('defaults the insecure HTTP opt-in to false when it is omitted', () => {
+    const environment = { ...validEnvironment };
+    delete environment.ALLOW_INSECURE_HTTP;
+
+    expect(() => loadConfig(environment)).toThrow(ConfigurationError);
+  });
+
   it('requires certificates for HTTPS', () => {
     expect(() => loadConfig({
       ...validEnvironment,

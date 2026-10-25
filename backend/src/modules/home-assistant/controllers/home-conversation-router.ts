@@ -21,7 +21,7 @@ import { AppError } from '@/shared/errors/app-error';
 import { PolicyActionRetiredError } from '@/modules/assistant-policy/domain/policy-action-retired-error';
 import { sendData } from '@/shared/http/response';
 
-const UUID = z.string().uuid();
+const UUID = z.guid();
 const createConversationBody = z.object({
   scope: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('home') }).strict(),

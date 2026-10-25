@@ -19,7 +19,7 @@ const booleanQuery = z.enum(['true', 'false']).transform((value) => value === 't
 const deadlineQuery = z.string().regex(DATE_ONLY).refine(isCalendarDate);
 
 const listQuerySchema = z.object({
-  workspaceId: z.string().uuid().optional(),
+  workspaceId: z.guid().optional(),
   inboxOnly: booleanQuery.optional(),
   status: z.enum(PROJECT_TASK_STATUSES).optional(),
   importance: z.enum(PROJECT_TASK_IMPORTANCES).optional(),
@@ -40,11 +40,11 @@ const listQuerySchema = z.object({
 
 const detailQuerySchema = z.object({ includeArchived: booleanQuery.optional() }).strict();
 const positiveVersion = z.number().int().positive().max(2147483647);
-const subtaskSchema = z.object({ id: z.string().uuid().optional(), title: z.string(), completed: z.boolean().optional() }).strict();
+const subtaskSchema = z.object({ id: z.guid().optional(), title: z.string(), completed: z.boolean().optional() }).strict();
 const createMutationSchema = z.object({
   title: z.string(),
   details: z.string().nullable().optional(),
-  workspaceId: z.string().uuid().nullable().optional(),
+  workspaceId: z.guid().nullable().optional(),
   importance: z.enum(PROJECT_TASK_IMPORTANCES).optional(),
   deadline: z.string().nullable().optional(),
   subtasks: z.array(subtaskSchema).max(50).optional(),
@@ -66,7 +66,7 @@ const updateMutationSchema = z.object({
   }
 });
 const moveMutationSchema = z.object({
-  workspaceId: z.string().uuid().nullable(),
+  workspaceId: z.guid().nullable(),
   expectedSourceOrderVersion: positiveVersion.optional(),
   expectedDestinationOrderVersion: positiveVersion.optional()
 }).strict();
@@ -86,7 +86,7 @@ function isCalendarDate(value: string): boolean {
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value && !value.startsWith('0000');
 }
 
-function parseQuery<T extends z.ZodTypeAny>(schema: T, value: unknown): z.infer<T> {
+function parseQuery<T extends z.ZodType>(schema: T, value: unknown): z.output<T> {
   const result = schema.safeParse(value);
   if (!result.success) {
     throw new AppError('VALIDATION_ERROR', 400, 'The global task query is invalid.', result.error.issues.map((issue) => ({
@@ -97,7 +97,7 @@ function parseQuery<T extends z.ZodTypeAny>(schema: T, value: unknown): z.infer<
   return result.data;
 }
 
-function parseMutationBody<T extends z.ZodTypeAny>(schema: T, value: unknown): z.infer<T> {
+function parseMutationBody<T extends z.ZodType>(schema: T, value: unknown): z.output<T> {
   const result = schema.safeParse(value);
   if (!result.success) {
     throw new AppError('VALIDATION_ERROR', 400, 'The task mutation request is invalid.', result.error.issues.map((issue) => ({

@@ -2,7 +2,7 @@ name: personal-ai-workspace
 
 services:
   postgres:
-    image: postgres:16.4-alpine
+    image: postgres:16.15-alpine3.24
     environment:
       POSTGRES_DB: personal_ai
       POSTGRES_USER: pai_app

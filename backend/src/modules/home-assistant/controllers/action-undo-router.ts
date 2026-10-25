@@ -13,7 +13,7 @@ import { AppError } from '@/shared/errors/app-error';
 import type { Response as ExpressResponse } from 'express';
 
 const undoBodySchema = z.object({
-  completedTaskCreateActionIds: z.array(z.string().uuid()).max(100).optional()
+  completedTaskCreateActionIds: z.array(z.guid()).max(100).optional()
 }).strict();
 
 export interface ActionUndoRouterDependencies {
@@ -109,7 +109,7 @@ function undoHandler(dependencies: ActionUndoRouterDependencies): RequestHandler
         return;
       }
       const actionId = request.params.actionId;
-      if (typeof actionId !== 'string' || !z.string().uuid().safeParse(actionId).success) {
+      if (typeof actionId !== 'string' || !z.guid().safeParse(actionId).success) {
         next(new AppError('VALIDATION_ERROR', 400, 'The action ID must be a UUID.'));
         return;
       }
@@ -152,7 +152,7 @@ function receiptHandler(dependencies: ActionUndoRouterDependencies): RequestHand
         return;
       }
       const actionId = request.params.actionId;
-      if (typeof actionId !== 'string' || !z.string().uuid().safeParse(actionId).success) {
+      if (typeof actionId !== 'string' || !z.guid().safeParse(actionId).success) {
         next(new AppError('VALIDATION_ERROR', 400, 'The action ID must be a UUID.'));
         return;
       }

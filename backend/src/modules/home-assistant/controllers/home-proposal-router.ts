@@ -12,7 +12,7 @@ import { AppError } from '@/shared/errors/app-error';
 import { PolicyActionRetiredError } from '@/modules/assistant-policy/domain/policy-action-retired-error';
 import { sendData } from '@/shared/http/response';
 
-const UUID = z.string().uuid();
+const UUID = z.guid();
 const revisionSchema = z.number().int().positive().max(2147483647);
 const cancelBody = z.object({ expectedRevision: revisionSchema }).strict();
 const listStates = z.enum(['review_required', 'accepted', 'executing', 'partial', 'completed', 'cancelled', 'unknown']);

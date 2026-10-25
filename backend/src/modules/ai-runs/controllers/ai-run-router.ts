@@ -33,8 +33,8 @@ const createRunSchema = z.object({
 }).strict();
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const chatContextSchema = z.object({ relativePaths: z.array(z.string()).optional(), excludedPaths: z.array(z.string()).max(1000).optional(), factIds: z.array(z.string().uuid()).optional(), includeProjectConversations: z.boolean().optional() }).strict();
-const chatMessageSchema = z.object({ conversationId: z.string().uuid(), request: z.string() }).strict();
+const chatContextSchema = z.object({ relativePaths: z.array(z.string()).optional(), excludedPaths: z.array(z.string()).max(1000).optional(), factIds: z.array(z.guid()).optional(), includeProjectConversations: z.boolean().optional() }).strict();
+const chatMessageSchema = z.object({ conversationId: z.guid(), request: z.string() }).strict();
 
 export interface AiRunRouterDependencies {
   readonly sendChatMessage?: SendChatMessageUseCase;

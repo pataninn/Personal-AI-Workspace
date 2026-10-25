@@ -9,7 +9,7 @@ import { AppError } from '@/shared/errors/app-error';
 import { redactEgressText } from '@/shared/egress/redaction';
 
 const createSchema = z.object({ title: z.string(), details: z.string().nullable().optional() }).strict();
-const statusSchema = z.object({ taskId: z.string().uuid(), expectedVersion: z.number().int().positive(), status: z.enum(['todo', 'in_progress', 'blocked', 'done']) }).strict();
+const statusSchema = z.object({ taskId: z.guid(), expectedVersion: z.number().int().positive(), status: z.enum(['todo', 'in_progress', 'blocked', 'done']) }).strict();
 
 interface TaskToolDependencies {
   readonly runs: IAiRunRepository;

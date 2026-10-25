@@ -139,4 +139,23 @@ describe('SignInForm', () => {
     expect(screen.getByTestId('location-probe')).toHaveTextContent('/dashboard');
     expect(mocks.signIn).toHaveBeenCalledWith(' OWNER ', 'correct-password');
   });
+
+  it('falls back to the dashboard instead of navigating to a backslash return target', async () => {
+    mocks.signIn.mockResolvedValue({
+      principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular', role: 'admin' },
+      csrfToken: 'csrf-value',
+      expiresAt: '2026-09-13T00:00:00.000Z'
+    });
+    const user = userEvent.setup();
+    renderForm('/login?returnTo=%2F%5Cattacker.example');
+
+    await user.type(screen.getByLabelText('Account identifier'), 'owner');
+    await user.type(screen.getByLabelText('Password'), 'correct-password');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    expect(await screen.findByTestId('login-status-message')).toHaveTextContent(
+      'Signed in. Loading your workspace.'
+    );
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('/dashboard');
+  });
 });

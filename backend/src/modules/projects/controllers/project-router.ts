@@ -37,7 +37,7 @@ const projectSearchSchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).optional()
 }).strict();
 
-const reuseProjectSchema = z.object({ projectId: z.string().uuid() }).strict();
+const reuseProjectSchema = z.object({ projectId: z.guid() }).strict();
 
 const planningProjectSchema = z.object({
   name: z.string().max(120),

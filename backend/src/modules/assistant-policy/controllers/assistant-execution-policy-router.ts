@@ -10,7 +10,7 @@ import { sendData } from '@/shared/http/response';
 
 const querySchema = z.object({
   scope: z.enum(['home', 'workspace']),
-  projectId: z.string().uuid().optional()
+  projectId: z.guid().optional()
 }).strict().superRefine((query, context) => {
   if (query.scope === 'home' && query.projectId !== undefined) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectId'], message: 'Home scope does not accept a project.' });

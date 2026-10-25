@@ -16,15 +16,15 @@ import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
 
 const createSchema = z.object({
-  workspaceId: z.string().uuid(),
-  skillId: z.string().uuid(),
+  workspaceId: z.guid(),
+  skillId: z.guid(),
   skillVersion: z.number().int().positive(),
   localTime: z.string(),
   timeZone: z.string()
 }).strict();
 const updateSchema = z.object({
   expectedRevision: z.number().int().positive(),
-  skillId: z.string().uuid().optional(),
+  skillId: z.guid().optional(),
   skillVersion: z.number().int().positive().optional(),
   localTime: z.string().optional(),
   timeZone: z.string().optional(),

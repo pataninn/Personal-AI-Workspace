@@ -16,21 +16,21 @@ import { sendData } from '@/shared/http/response';
 
 const createSchema = z.object({
   templateId: z.enum(['plan-my-day', 'daily-briefing']).optional(),
-  workspaceId: z.string().uuid().nullable().optional(),
+  workspaceId: z.guid().nullable().optional(),
   title: z.string().optional(),
   instructions: z.string().optional(),
   declaredTools: z.array(z.string()).optional()
 }).strict();
 const updateSchema = z.object({
   expectedVersion: z.number().int().positive(),
-  workspaceId: z.string().uuid().nullable().optional(),
+  workspaceId: z.guid().nullable().optional(),
   title: z.string().optional(),
   instructions: z.string().optional(),
   declaredTools: z.array(z.string()).optional(),
   enabled: z.boolean().optional()
 }).strict().refine((body) => Object.keys(body).some((key) => key !== 'expectedVersion'), 'Choose at least one skill field to update.');
 const invokeSchema = z.object({
-  conversationId: z.string().uuid(),
+  conversationId: z.guid(),
   expectedVersion: z.number().int().positive(),
   request: z.string()
 }).strict();
