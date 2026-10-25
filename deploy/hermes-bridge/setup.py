@@ -87,15 +87,15 @@ def stop_bridge_service_if_present():
     unit = 'personal-ai-hermes-bridge.service'
     subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     loaded = subprocess.run(
-        ['systemctl', '--user', 'list-units', '--all', '--type=service', '--no-legend', '--no-pager', unit],
+        ['systemctl', '--user', 'show', '--property=LoadState', '--value', unit],
         check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-    ).stdout
-    installed = subprocess.run(
-        ['systemctl', '--user', 'list-unit-files', '--type=service', '--no-legend', '--no-pager', unit],
-        check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-    ).stdout
-    if any(line.split(maxsplit=1)[0] == unit for line in (loaded + '\n' + installed).splitlines() if line.strip()):
-        subprocess.run(['systemctl', '--user', 'stop', unit], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ).stdout.strip()
+    # list-unit-files exits 1 for an absent unit on Ubuntu; LoadState is explicit.
+    if loaded == 'not-found':
+        return
+    if not loaded:
+        raise RuntimeError('Could not determine the bridge unit load state.')
+    subprocess.run(['systemctl', '--user', 'stop', unit], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def certificates(destination):

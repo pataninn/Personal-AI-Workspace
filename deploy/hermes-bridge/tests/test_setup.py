@@ -69,23 +69,20 @@ class ProviderCreditImageTests(unittest.TestCase):
         unit = 'personal-ai-hermes-bridge.service'
         with patch.object(hermes_setup.subprocess, 'run', side_effect=[
             SimpleNamespace(stdout=''),
-            SimpleNamespace(stdout=''),
-            SimpleNamespace(stdout=''),
+            SimpleNamespace(stdout='not-found\n'),
         ]) as run:
             hermes_setup.stop_bridge_service_if_present()
 
-        self.assertEqual(run.call_count, 3)
+        self.assertEqual(run.call_count, 2)
         self.assertEqual(run.call_args_list[0].args[0], ['systemctl', '--user', 'daemon-reload'])
-        self.assertIn('list-units', run.call_args_list[1].args[0])
-        self.assertIn('list-unit-files', run.call_args_list[2].args[0])
+        self.assertEqual(run.call_args_list[1].args[0], ['systemctl', '--user', 'show', '--property=LoadState', '--value', unit])
         self.assertNotIn(['systemctl', '--user', 'stop', unit], [call.args[0] for call in run.call_args_list])
 
     def test_existing_bridge_unit_is_stopped_before_replacement(self):
         unit = 'personal-ai-hermes-bridge.service'
         with patch.object(hermes_setup.subprocess, 'run', side_effect=[
             SimpleNamespace(stdout=''),
-            SimpleNamespace(stdout=f'{unit} loaded active running Existing bridge'),
-            SimpleNamespace(stdout=''),
+            SimpleNamespace(stdout='loaded\n'),
             SimpleNamespace(stdout=''),
         ]) as run:
             hermes_setup.stop_bridge_service_if_present()
@@ -95,10 +92,19 @@ class ProviderCreditImageTests(unittest.TestCase):
     def test_systemd_unit_query_errors_are_not_swallowed(self):
         with patch.object(hermes_setup.subprocess, 'run', side_effect=[
             SimpleNamespace(stdout=''),
-            subprocess.CalledProcessError(1, ['systemctl', '--user', 'list-units']),
+            subprocess.CalledProcessError(1, ['systemctl', '--user', 'show']),
         ]):
             with self.assertRaises(subprocess.CalledProcessError):
                 hermes_setup.stop_bridge_service_if_present()
+
+    def test_empty_load_state_is_not_treated_as_an_absent_unit(self):
+        with patch.object(hermes_setup.subprocess, 'run', side_effect=[
+            SimpleNamespace(stdout=''),
+            SimpleNamespace(stdout=''),
+        ]) as run:
+            with self.assertRaisesRegex(RuntimeError, 'load state'):
+                hermes_setup.stop_bridge_service_if_present()
+        self.assertEqual(run.call_count, 2)
 
 
 if __name__ == '__main__':
