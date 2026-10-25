@@ -63,7 +63,24 @@ systemctl stop docker.service docker.socket containerd.service
 [[ ! -e /mnt/pai-data/containerd/configured ]] || exit 12
 install -d /etc/containerd
 containerd config default > /etc/containerd/config.toml
-sed -i 's#root = "/var/lib/containerd"#root = "/mnt/pai-data/containerd"#' /etc/containerd/config.toml
+python3 - <<'PY'
+from pathlib import Path
+import re
+import tomllib
+
+def retained_containerd_root(source):
+    table = re.search(r'(?m)^[ \t]*\[', source)
+    boundary = table.start() if table else len(source)
+    global_options, count = re.subn(r'(?m)^root[ \t]*=.*$', 'root = "/mnt/pai-data/containerd"', source[:boundary])
+    updated = global_options + source[boundary:]
+    if count != 1 or tomllib.loads(updated).get('root') != '/mnt/pai-data/containerd':
+        raise RuntimeError('Cannot safely configure the retained containerd root')
+    return updated
+
+path = Path('/etc/containerd/config.toml')
+path.write_text(retained_containerd_root(path.read_text()))
+PY
+[[ $(containerd config dump | python3 -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.read())["root"])') == /mnt/pai-data/containerd ]] || exit 14
 touch /mnt/pai-data/containerd/configured
 systemctl daemon-reload
 systemctl enable --now containerd docker
