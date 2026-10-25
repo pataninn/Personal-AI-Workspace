@@ -1,0 +1,11 @@
+[Unit]
+Description=Renew the short-lived demo IP certificate and reload Nginx
+Wants=network-online.target
+After=network-online.target nginx.service
+RequiresMountsFor=/mnt/pai-data
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStartPre=/usr/bin/mountpoint -q /mnt/pai-data
+ExecStart=/snap/bin/certbot renew --quiet --config-dir /mnt/pai-data/letsencrypt --work-dir /mnt/pai-data/acme-work --logs-dir /mnt/pai-data/acme-logs --deploy-hook "/usr/sbin/nginx -t && /bin/systemctl reload nginx"

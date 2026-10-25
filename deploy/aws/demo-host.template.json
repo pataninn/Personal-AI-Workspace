@@ -1,0 +1,312 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Small direct-HTTPS demo host. Web ingress starts disabled. No NAT, CloudFront or load balancer. t3.small capacity remains an acceptance gate.",
+  "Metadata": {
+    "AWSToolsMetrics": {
+      "AWSAgentToolkit": "aws-cloudformation@3"
+    },
+    "com.aws.cloudformation.Context": {
+      "arch": "one EC2 with EIP, host Nginx TLS -> verified loopback app TLS; app and PostgreSQL on same host",
+      "must": [
+        "Use only with demo-network.template.json for a fresh deployment.",
+        "Keep EnableWebIngress=false until private setup; enable port80 only for ACME/HTTPS redirect and port443 for TLS.",
+        "No SSH, app8443, database5432 or runtime bridge ingress.",
+        "Small host is a low-traffic capacity candidate, not a validated production sizing claim.",
+        "Use a publicly trusted IP certificate and automatic renewal; never expose login over HTTP."
+      ]
+    }
+  },
+  "Parameters": {
+    "VpcId": {
+      "Type": "AWS::EC2::VPC::Id"
+    },
+    "SubnetId": {
+      "Type": "AWS::EC2::Subnet::Id",
+      "Description": "HostSubnetId from demo-network.template.json: direct Internet Gateway route, no NAT."
+    },
+    "ImageId": {
+      "Type": "AWS::EC2::Image::Id",
+      "Description": "Explicit verified Ubuntu x86_64 EBS-backed AMI with a working SSM agent. Record owner, release, architecture and root device before use."
+    },
+    "RootDeviceName": {
+      "Type": "String",
+      "AllowedPattern": "^/dev/[a-zA-Z0-9]+$",
+      "Description": "RootDeviceName from the verified AMI; do not infer it from the OS name."
+    },
+    "InstanceType": {
+      "Type": "String",
+      "AllowedValues": [
+        "t3.small",
+        "c7i-flex.large",
+        "m7i-flex.large"
+      ],
+      "Description": "Small x86_64 demo candidate (2 GiB); 4/8 GiB fallbacks are explicit. Capacity including OpenShell must be verified before release. T3 standard mode throttles instead of billing surplus CPU credits.",
+      "Default": "t3.small"
+    },
+    "RootVolumeGiB": {
+      "Type": "Number",
+      "MinValue": 20,
+      "MaxValue": 500,
+      "Default": 20
+    },
+    "DataVolumeGiB": {
+      "Type": "Number",
+      "MinValue": 20,
+      "MaxValue": 2000,
+      "Default": 20
+    },
+    "EnableWebIngress": {
+      "Type": "String",
+      "AllowedValues": [
+        "false",
+        "true"
+      ],
+      "Default": "false",
+      "Description": "Keep false during private preparation. True opens only80(ACME/redirect) and443(TLS); keep inference paused until acceptance."
+    }
+  },
+  "Resources": {
+    "HostSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "SSM administration; optional ACME/HTTPS only. No SSH, app, database or bridge public ingress.",
+        "VpcId": {
+          "Ref": "VpcId"
+        },
+        "SecurityGroupIngress": {
+          "Fn::If": [
+            "WebIngressEnabled",
+            [
+              {
+                "IpProtocol": "tcp",
+                "FromPort": 80,
+                "ToPort": 80,
+                "CidrIp": "0.0.0.0/0",
+                "Description": "ACME challenge and fixed-IP HTTPS redirect only; no app proxy."
+              },
+              {
+                "IpProtocol": "tcp",
+                "FromPort": 443,
+                "ToPort": 443,
+                "CidrIp": "0.0.0.0/0",
+                "Description": "Direct browser HTTPS."
+              }
+            ],
+            []
+          ]
+        },
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "HTTPS to SSM, CA, package registries and configured providers through the host EIP and Internet Gateway."
+          }
+        ]
+      }
+    },
+    "HostRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ec2.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+          }
+        ]
+      }
+    },
+    "HostProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "Roles": [
+          {
+            "Ref": "HostRole"
+          }
+        ]
+      }
+    },
+    "Host": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": {
+          "Ref": "ImageId"
+        },
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "IamInstanceProfile": {
+          "Ref": "HostProfile"
+        },
+        "MetadataOptions": {
+          "HttpEndpoint": "enabled",
+          "HttpTokens": "required",
+          "HttpPutResponseHopLimit": 1,
+          "InstanceMetadataTags": "disabled"
+        },
+        "NetworkInterfaces": [
+          {
+            "DeviceIndex": "0",
+            "AssociatePublicIpAddress": false,
+            "SubnetId": {
+              "Ref": "SubnetId"
+            },
+            "GroupSet": [
+              {
+                "Ref": "HostSecurityGroup"
+              }
+            ]
+          }
+        ],
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": {
+              "Ref": "RootDeviceName"
+            },
+            "Ebs": {
+              "VolumeType": "gp3",
+              "VolumeSize": {
+                "Ref": "RootVolumeGiB"
+              },
+              "Encrypted": true,
+              "DeleteOnTermination": true
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}-host"
+            }
+          }
+        ],
+        "CreditSpecification": {
+          "Fn::If": [
+            "IsT3",
+            {
+              "CPUCredits": "standard"
+            },
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        }
+      }
+    },
+    "DataVolume": {
+      "Type": "AWS::EC2::Volume",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "AvailabilityZone": {
+          "Fn::GetAtt": [
+            "Host",
+            "AvailabilityZone"
+          ]
+        },
+        "VolumeType": "gp3",
+        "Size": {
+          "Ref": "DataVolumeGiB"
+        },
+        "Encrypted": true,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}-data"
+            }
+          }
+        ]
+      }
+    },
+    "DataAttachment": {
+      "Type": "AWS::EC2::VolumeAttachment",
+      "Properties": {
+        "InstanceId": {
+          "Ref": "Host"
+        },
+        "VolumeId": {
+          "Ref": "DataVolume"
+        },
+        "Device": "/dev/sdf"
+      }
+    },
+    "PublicAddress": {
+      "Type": "AWS::EC2::EIP",
+      "Properties": {
+        "Domain": "vpc"
+      }
+    },
+    "PublicAddressAssociation": {
+      "Type": "AWS::EC2::EIPAssociation",
+      "Properties": {
+        "AllocationId": {
+          "Fn::GetAtt": [
+            "PublicAddress",
+            "AllocationId"
+          ]
+        },
+        "InstanceId": {
+          "Ref": "Host"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "InstanceId": {
+      "Value": {
+        "Ref": "Host"
+      }
+    },
+    "DataVolumeId": {
+      "Value": {
+        "Ref": "DataVolume"
+      }
+    },
+    "SecurityGroupId": {
+      "Value": {
+        "Ref": "HostSecurityGroup"
+      }
+    },
+    "PublicIp": {
+      "Description": "Stable IP for trusted IP certificate and exact https://IP APP_ORIGIN. EIP remains billed while allocated, including while host is stopped.",
+      "Value": {
+        "Ref": "PublicAddress"
+      }
+    },
+    "NextStep": {
+      "Value": "Verify SSM, retained EBS mount and runtime capacity. Install HTTPS/IP-certificate bootstrap and renewal before web acceptance; keep inference paused."
+    }
+  },
+  "Conditions": {
+    "IsT3": {
+      "Fn::Equals": [
+        {
+          "Ref": "InstanceType"
+        },
+        "t3.small"
+      ]
+    },
+    "WebIngressEnabled": {
+      "Fn::Equals": [
+        {
+          "Ref": "EnableWebIngress"
+        },
+        "true"
+      ]
+    }
+  }
+}
