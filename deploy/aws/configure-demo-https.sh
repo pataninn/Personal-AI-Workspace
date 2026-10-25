@@ -15,6 +15,8 @@ readonly STAGING_WORK=/mnt/pai-data/acme-staging-work
 readonly STAGING_LOGS=/mnt/pai-data/acme-staging-logs
 readonly LOCK_FILE=/run/lock/pai-configure-demo-https.lock
 readonly MARKER='# Managed by configure-demo-https.sh; regenerate from the shipped template.'
+readonly READINESS_ATTEMPTS=6
+readonly READINESS_RETRY_SECONDS=1
 
 WORK_DIR=
 PROBE_TOKEN_PATH=
@@ -128,7 +130,7 @@ if address.version != 4 or not address.is_global:
     raise SystemExit(1)
 PY
 
-for command in python3 install mountpoint curl openssl stat realpath flock ss od tr cmp find; do
+for command in python3 install mountpoint curl openssl stat realpath flock ss od tr cmp find sleep; do
   command -v "$command" >/dev/null 2>&1 || die "Required host utility is missing: $command."
 done
 [[ -x /usr/sbin/nginx && -x /bin/systemctl ]] || die 'Install the official Ubuntu Nginx package and systemd before running this script.'
@@ -217,7 +219,7 @@ ensure_webroot() {
 }
 
 probe_http_challenge() {
-  local token token_file
+  local token token_file attempt
   token="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
   [[ "$token" =~ ^[0-9a-f]{32}$ ]] || die 'Could not create a temporary ACME path probe.'
   token_file="$WEBROOT/.well-known/acme-challenge/$token"
@@ -225,11 +227,19 @@ probe_http_challenge() {
   printf '%s' "$token" >"$token_file"
   chmod 0644 -- "$token_file"
   # Keep the EIP in the URL for Host matching; redirect only the TCP connection locally.
-  if ! curl --noproxy '*' --silent --fail --connect-timeout 3 --max-time 5 --connect-to "$PUBLIC_IP:80:127.0.0.1:80" --output "$WORK_DIR/http-probe" "http://$PUBLIC_IP/.well-known/acme-challenge/$token" 2>/dev/null || ! cmp -s -- "$WORK_DIR/http-probe" "$token_file"; then
-    die 'The local HTTP ACME challenge probe failed; keep provider traffic paused and inspect Nginx.'
-  fi
-  rm -f -- "$token_file"
-  PROBE_TOKEN_PATH=
+  # Nginx may accept reload before the new workers serve this exact challenge path.
+  for ((attempt = 1; attempt <= READINESS_ATTEMPTS; attempt += 1)); do
+    rm -f -- "$WORK_DIR/http-probe"
+    if curl --noproxy '*' --silent --fail --connect-timeout 1 --max-time 3 --connect-to "$PUBLIC_IP:80:127.0.0.1:80" --output "$WORK_DIR/http-probe" "http://$PUBLIC_IP/.well-known/acme-challenge/$token" 2>/dev/null && cmp -s -- "$WORK_DIR/http-probe" "$token_file"; then
+      rm -f -- "$token_file"
+      PROBE_TOKEN_PATH=
+      return 0
+    fi
+    if (( attempt < READINESS_ATTEMPTS )); then
+      sleep "$READINESS_RETRY_SECONDS"
+    fi
+  done
+  die 'The local HTTP ACME challenge did not return the exact probe token before the readiness timeout; inspect Nginx.'
 }
 
 assert_nginx_include() {
@@ -242,9 +252,17 @@ nginx_test() {
 }
 
 assert_listener() {
-  local port=$1 listeners
-  listeners="$(ss -H -ltn "sport = :$port")" || die "Could not inspect TCP $port listeners."
-  [[ -n "$listeners" ]] || die "Nginx is not listening on TCP $port."
+  local port=$1 listeners attempt
+  for ((attempt = 1; attempt <= READINESS_ATTEMPTS; attempt += 1)); do
+    listeners="$(ss -H -ltn "sport = :$port")" || die "Could not inspect TCP $port listeners."
+    if [[ -n "$listeners" ]]; then
+      return 0
+    fi
+    if (( attempt < READINESS_ATTEMPTS )); then
+      sleep "$READINESS_RETRY_SECONDS"
+    fi
+  done
+  die "Nginx did not begin listening on TCP $port before the readiness timeout."
 }
 
 check_certbot_version() {
@@ -331,12 +349,19 @@ install_renewal_units() {
 }
 
 verify_final_https() {
-  local status
+  local status attempt
   # connect-to leaves the HTTPS URL host unchanged for IP-SAN certificate validation.
-  status="$(curl --noproxy '*' --silent --fail --connect-timeout 3 --max-time 15 --connect-to "$PUBLIC_IP:443:127.0.0.1:443" --output /dev/null --write-out '%{http_code}' "https://$PUBLIC_IP/health" 2>/dev/null)" || die 'Local verified HTTPS app health failed; browser traffic was not accepted.'
-  if [[ "$status" != 200 ]]; then
-    die 'Local verified HTTPS app health failed; browser traffic was not accepted.'
-  fi
+  # Wait for the new TLS config to serve a verified HTTP 200 after reload.
+  for ((attempt = 1; attempt <= READINESS_ATTEMPTS; attempt += 1)); do
+    status=''
+    if status="$(curl --noproxy '*' --silent --fail --connect-timeout 1 --max-time 3 --connect-to "$PUBLIC_IP:443:127.0.0.1:443" --output /dev/null --write-out '%{http_code}' "https://$PUBLIC_IP/health" 2>/dev/null)" && [[ "$status" == 200 ]]; then
+      return 0
+    fi
+    if (( attempt < READINESS_ATTEMPTS )); then
+      sleep "$READINESS_RETRY_SECONDS"
+    fi
+  done
+  die 'Local verified HTTPS app health did not return HTTP 200 before the readiness timeout; browser traffic was not accepted.'
 }
 
 if [[ "$PHASE" == prepare ]]; then

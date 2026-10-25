@@ -117,3 +117,21 @@ test('bootstrap reloads active Nginx before probing its listener and challenge r
   assert.ok(enabled >= 0 && enabled < active);
   assert.ok(active < reloaded && reloaded < listener && listener < probe);
 });
+
+test('Nginx readiness waits are bounded and require exact challenge content and HTTP 200', () => {
+  const challengeStart = httpsSetup.indexOf('probe_http_challenge() {');
+  const challengeEnd = httpsSetup.indexOf('\n}', challengeStart);
+  const challengeProbe = httpsSetup.slice(challengeStart, challengeEnd);
+  const listenerStart = httpsSetup.indexOf('assert_listener() {');
+  const listenerEnd = httpsSetup.indexOf('\n}', listenerStart);
+  const listenerProbe = httpsSetup.slice(listenerStart, listenerEnd);
+  const httpsStart = httpsSetup.indexOf('verify_final_https() {');
+  const httpsEnd = httpsSetup.indexOf('\n}', httpsStart);
+  const httpsProbe = httpsSetup.slice(httpsStart, httpsEnd);
+  assert.match(httpsSetup, /readonly READINESS_ATTEMPTS=6/);
+  assert.match(challengeProbe, /for \(\(attempt = 1; attempt <= READINESS_ATTEMPTS; attempt \+= 1\)\)/);
+  assert.match(challengeProbe, /cmp -s -- "\$WORK_DIR\/http-probe" "\$token_file"/);
+  assert.match(listenerProbe, /for \(\(attempt = 1; attempt <= READINESS_ATTEMPTS; attempt \+= 1\)\)/);
+  assert.match(httpsProbe, /for \(\(attempt = 1; attempt <= READINESS_ATTEMPTS; attempt \+= 1\)\)/);
+  assert.match(httpsProbe, /\[\[ "\$status" == 200 \]\]/);
+});
