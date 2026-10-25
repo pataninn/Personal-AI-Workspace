@@ -106,6 +106,14 @@ class ProviderCreditImageTests(unittest.TestCase):
                 hermes_setup.stop_bridge_service_if_present()
         self.assertEqual(run.call_count, 2)
 
+    def test_bridge_starts_after_user_target_to_avoid_packaged_gateway_cycle(self):
+        with patch.object(hermes_setup, 'write_private') as write, patch.object(hermes_setup.subprocess, 'run'):
+            hermes_setup.services(Path('/private/bridge'), {'mode': 'packaged-linux', 'serviceUnit': 'openshell-gateway.service'})
+        unit = write.call_args.args[1]
+        self.assertIn('After=default.target openshell-gateway.service\n', unit)
+        self.assertIn('Requires=openshell-gateway.service\n', unit)
+        self.assertIn('WantedBy=default.target\n', unit)
+
 
 if __name__ == '__main__':
     unittest.main()

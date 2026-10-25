@@ -139,7 +139,7 @@ WantedBy=default.target
         write_private(service_dir / 'personal-ai-hermes-gateway.service', unit)
     bridge = f'''[Unit]
 Description=Personal AI private Hermes bridge
-After={config['serviceUnit']}
+After=default.target {config['serviceUnit']}
 Requires={config['serviceUnit']}
 [Service]
 ExecStart=/usr/bin/python3 {source}/server.py
