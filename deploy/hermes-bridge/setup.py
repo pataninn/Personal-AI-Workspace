@@ -83,6 +83,21 @@ def verify_packaged_gateway_ready(gateway):
     run_cli(['whoami', '--output', 'json'])
 
 
+def stop_bridge_service_if_present():
+    unit = 'personal-ai-hermes-bridge.service'
+    subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    loaded = subprocess.run(
+        ['systemctl', '--user', 'list-units', '--all', '--type=service', '--no-legend', '--no-pager', unit],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+    ).stdout
+    installed = subprocess.run(
+        ['systemctl', '--user', 'list-unit-files', '--type=service', '--no-legend', '--no-pager', unit],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+    ).stdout
+    if any(line.split(maxsplit=1)[0] == unit for line in (loaded + '\n' + installed).splitlines() if line.strip()):
+        subprocess.run(['systemctl', '--user', 'stop', unit], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def certificates(destination):
     tls = STATE / 'tls'
     tls.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -170,7 +185,7 @@ def main():
     policy = source / 'policy.json'
     if any((STATE / 'runs').glob('pai-*/ledger.json')):
         raise RuntimeError('Finish or cancel active Hermes runs before updating the bridge.')
-    subprocess.run(['systemctl', '--user', 'stop', 'personal-ai-hermes-bridge.service'], check=True)
+    stop_bridge_service_if_present()
     deployed = STATE / 'bridge'
     shutil.copytree(source, deployed, dirs_exist_ok=True, ignore=shutil.ignore_patterns('__pycache__'))
     receipt = {'gateway': gateway['gateway'], 'gatewayMode': gateway['mode'], 'image': image, 'policySha256': hashlib.sha256(policy.read_bytes()).hexdigest(), **binary_hashes, 'hermesVersion': '0.20.6', 'bridgeSha256': source_hash.hexdigest()}

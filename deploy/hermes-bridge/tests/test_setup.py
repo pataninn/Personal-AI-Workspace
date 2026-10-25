@@ -1,8 +1,10 @@
 import hashlib
 import sys
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 BRIDGE_ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +64,41 @@ class ProviderCreditImageTests(unittest.TestCase):
         with patch.object(hermes_setup.subprocess, 'run', return_value=result):
             with self.assertRaisesRegex(RuntimeError, 'current Home provider receipt boundary'):
                 hermes_setup.verify_provider_credit_image('sha256:' + ('a' * 64), self.source)
+
+    def test_first_bridge_setup_skips_stop_when_user_unit_is_absent(self):
+        unit = 'personal-ai-hermes-bridge.service'
+        with patch.object(hermes_setup.subprocess, 'run', side_effect=[
+            SimpleNamespace(stdout=''),
+            SimpleNamespace(stdout=''),
+            SimpleNamespace(stdout=''),
+        ]) as run:
+            hermes_setup.stop_bridge_service_if_present()
+
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(run.call_args_list[0].args[0], ['systemctl', '--user', 'daemon-reload'])
+        self.assertIn('list-units', run.call_args_list[1].args[0])
+        self.assertIn('list-unit-files', run.call_args_list[2].args[0])
+        self.assertNotIn(['systemctl', '--user', 'stop', unit], [call.args[0] for call in run.call_args_list])
+
+    def test_existing_bridge_unit_is_stopped_before_replacement(self):
+        unit = 'personal-ai-hermes-bridge.service'
+        with patch.object(hermes_setup.subprocess, 'run', side_effect=[
+            SimpleNamespace(stdout=''),
+            SimpleNamespace(stdout=f'{unit} loaded active running Existing bridge'),
+            SimpleNamespace(stdout=''),
+            SimpleNamespace(stdout=''),
+        ]) as run:
+            hermes_setup.stop_bridge_service_if_present()
+
+        self.assertEqual(run.call_args_list[-1].args[0], ['systemctl', '--user', 'stop', unit])
+
+    def test_systemd_unit_query_errors_are_not_swallowed(self):
+        with patch.object(hermes_setup.subprocess, 'run', side_effect=[
+            SimpleNamespace(stdout=''),
+            subprocess.CalledProcessError(1, ['systemctl', '--user', 'list-units']),
+        ]):
+            with self.assertRaises(subprocess.CalledProcessError):
+                hermes_setup.stop_bridge_service_if_present()
 
 
 if __name__ == '__main__':
