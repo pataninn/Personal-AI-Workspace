@@ -318,13 +318,14 @@ export async function createApplication(
     const runEvents = new InMemoryRunEventPublisher();
     const chatContextRepository = new TypeOrmProjectChatContextRepository(dataSource);
     const projectChatContext = new ProjectChatContextUseCases(projectRepository, chatContextRepository, projectFactRepository, workspaceGateway);
-    const cancelHomeTurn = new CancelHomeTurnUseCase(homeConversationRepository, homePlanningRuntime);
     const processHomeTurn = new ProcessHomeTurnUseCase(homeConversationRepository, homePlanningRuntime, homePlanningToolHandler, {
       executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel
     }, automationRepository, new HandleHomeProviderCreditReceiptUseCase(
       providerCallCreditAdmission, homeProviderCreditConfiguration,
       { profile: homePlanningProvider.profile, model: homePlanningProvider.model }, creditLedgerRepository, config.allowEstimatedHomeUsage
-    ), homeTurnProviderUsage);
+    ));
+    const cancelHomeTurn = new CancelHomeTurnUseCase(homeConversationRepository, homePlanningRuntime,
+      (input) => processHomeTurn.queueAbandonedRuntime(input));
     homeExecutor = new HomeTurnExecutor({ process: processHomeTurn, cancel: cancelHomeTurn,
       onError: (turnId) => logger.warn({ turnId }, 'Home turn processing could not be completed.') });
     const getHomeTurn = new GetHomeTurnUseCase(homeConversationRepository);
@@ -332,6 +333,7 @@ export async function createApplication(
       mode: config.agentRuntimeMode,
       provider: homePlanningProvider,
       onAccepted: (input) => homeExecutor?.start(input),
+      onAbandoned: (input) => processHomeTurn.queueAbandonedRuntime(input),
       ...(homePlanningRuntime ? { runtime: homePlanningRuntime } : {})
     }, { executionPolicy: assistantExecutionPolicy, providerProfile: config.nimProfile, model: config.nimModel }, {
       readSelectedFacts: async (ownerId, projectId) => (await projectChatContext.getSelectedFacts(ownerId, projectId))

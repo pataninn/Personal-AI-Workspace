@@ -121,7 +121,7 @@ describe('demo admission HTTP boundary', () => {
     expect(setCookie).not.toContain('Domain=');
   });
 
-  it('returns cookie-less status for a replay and clears only an invalid cookie', async () => {
+  it('returns cookie-less replay status without deleting a potentially newer browser session', async () => {
     const deps = dependencies({ kind: 'status', state: 'pending' });
     const response = await request(appWith(deps)).post('/api/v1/demo/session')
       .set('Origin', ORIGIN)
@@ -131,10 +131,7 @@ describe('demo admission HTTP boundary', () => {
 
     expect(response.status).toBe(202);
     expect(response.body.data).toEqual({ state: 'pending' });
-    const setCookie = response.headers['set-cookie']?.[0] ?? '';
-    expect(setCookie).toContain(`${COOKIE}=`);
-    expect(setCookie).toContain('Max-Age=0');
-    expect(setCookie).not.toContain('expired-token-value');
+    expect(response.headers['set-cookie']).toBeUndefined();
   });
 
   it('requires an empty JSON object, exact Origin, and an idempotency key for anonymous requests', async () => {

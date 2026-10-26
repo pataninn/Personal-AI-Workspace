@@ -1,5 +1,6 @@
 import type { DataSource } from 'typeorm';
 import { createDataSource } from '@/infrastructure/database/data-source';
+import { AddEstimatedCreditUsage1710000041000 } from '@/infrastructure/database/migrations/1710000041000-add-estimated-credit-usage';
 import { TypeOrmCreditLedgerRepository } from '@/infrastructure/database/repositories/typeorm-credit-ledger-repository';
 import type { CreditReservationCommand } from '@/modules/credits/repositories/credit-ledger-repository';
 import { ProviderCreditAdmissionDeniedError } from '@/modules/credits/domain/credit-errors';
@@ -151,26 +152,37 @@ describeDatabase('Task 3.1 PostgreSQL credit ledger', () => {
   });
 
   it('persists estimated Home usage once and refuses estimates for demo accounts', async () => {
-    const home = await repository.reserveProviderCall({ ...reservation(REGULAR_ID, HOME_TURN_ID, 'estimated-home', '1'), sourceKind: 'home_turn' });
-    await repository.retainUnknown(home.reservationId, 'provider_usage_missing');
-    const command = { reservationId: home.reservationId, usage: { promptTokens: 2, completionTokens: 1 }, estimated: true };
-    await expect(repository.settleProviderCall(command)).resolves.toMatchObject({ outcome: 'settled' });
-    await expect(repository.settleProviderCall(command)).resolves.toMatchObject({ outcome: 'replayed' });
-    const entries = await dataSource!.query('SELECT "is_estimated" FROM "credit_usage_entries" WHERE "reservation_id"=$1', [home.reservationId]);
-    expect(entries).toEqual([{ is_estimated: true }]);
-    await expect(repository.listHomeTurnProviderCallUsage(REGULAR_ID, HOME_TURN_ID)).resolves.toEqual([expect.objectContaining({ status: 'settled', usage: expect.objectContaining({ estimated: true }) })]);
-    await expect(dataSource!.undoLastMigration({ transaction: 'all' })).rejects.toThrow('retain its provenance');
-    await dataSource!.query('INSERT INTO "account_limits" ("owner_id","demo_credit_limits_configured") VALUES ($1,true)', [DEMO_ID]);
-    const demo = await repository.reserveProviderCall({ ...reservation(DEMO_ID, OTHER_HOME_TURN_ID, 'demo-estimate', '1'), sourceKind: 'home_turn' });
-    await expect(repository.settleProviderCall({ ...command, reservationId: demo.reservationId })).rejects.toThrow('regular accounts');
-    await repository.releaseKnownNotSent(demo.reservationId);
-    await dataSource!.query('DELETE FROM "account_limits" WHERE "owner_id"=$1', [DEMO_ID]);
-    // Restore the shared fixture's baseline for the existing budget assertions.
-    await dataSource!.query('DELETE FROM "credit_usage_entries" WHERE "reservation_id"=$1', [home.reservationId]);
-    await dataSource!.query('DELETE FROM "credit_provider_call_reservations" WHERE "id" IN ($1,$2)', [home.reservationId, demo.reservationId]);
-    await dataSource!.query('DELETE FROM "credit_provider_run_budgets" WHERE "source_id" IN ($1,$2)', [HOME_TURN_ID, OTHER_HOME_TURN_ID]);
-    await dataSource!.query('DELETE FROM "credit_account_daily_windows" WHERE "owner_id"=$1', [REGULAR_ID]);
-    await dataSource!.query('DELETE FROM "credit_account_totals" WHERE "owner_id"=$1', [REGULAR_ID]);
+    try {
+      const home = await repository.reserveProviderCall({ ...reservation(REGULAR_ID, HOME_TURN_ID, 'estimated-home', '1'), sourceKind: 'home_turn' });
+      await repository.retainUnknown(home.reservationId, 'provider_usage_missing');
+      const command = { reservationId: home.reservationId, usage: { promptTokens: 2, completionTokens: 1 }, estimated: true };
+      await expect(repository.settleProviderCall(command)).resolves.toMatchObject({ outcome: 'settled' });
+      await expect(repository.settleProviderCall(command)).resolves.toMatchObject({ outcome: 'replayed' });
+      const entries = await dataSource!.query('SELECT "is_estimated" FROM "credit_usage_entries" WHERE "reservation_id"=$1', [home.reservationId]);
+      expect(entries).toEqual([{ is_estimated: true }]);
+      await expect(repository.listHomeTurnProviderCallUsage(REGULAR_ID, HOME_TURN_ID)).resolves.toEqual([expect.objectContaining({ status: 'settled', usage: expect.objectContaining({ estimated: true }) })]);
+      const rollback = dataSource!.createQueryRunner();
+      await rollback.connect();
+      await rollback.startTransaction();
+      try {
+        await expect(new AddEstimatedCreditUsage1710000041000().down(rollback)).rejects.toThrow('retain its provenance');
+      } finally {
+        await rollback.rollbackTransaction();
+        await rollback.release();
+      }
+      await dataSource!.query('INSERT INTO "account_limits" ("owner_id","demo_credit_limits_configured") VALUES ($1,true)', [DEMO_ID]);
+      const demo = await repository.reserveProviderCall({ ...reservation(DEMO_ID, OTHER_HOME_TURN_ID, 'demo-estimate', '1'), sourceKind: 'home_turn' });
+      await expect(repository.settleProviderCall({ ...command, reservationId: demo.reservationId })).rejects.toThrow('regular accounts');
+      await repository.releaseKnownNotSent(demo.reservationId);
+    } finally {
+      await dataSource!.query('DELETE FROM "account_limits" WHERE "owner_id"=$1', [DEMO_ID]);
+      // Restore the shared fixture's baseline for the existing budget assertions.
+      await dataSource!.query('DELETE FROM "credit_usage_entries" WHERE "reservation_id" IN (SELECT "id" FROM "credit_provider_call_reservations" WHERE "source_id" IN ($1,$2))', [HOME_TURN_ID, OTHER_HOME_TURN_ID]);
+      await dataSource!.query('DELETE FROM "credit_provider_call_reservations" WHERE "source_id" IN ($1,$2)', [HOME_TURN_ID, OTHER_HOME_TURN_ID]);
+      await dataSource!.query('DELETE FROM "credit_provider_run_budgets" WHERE "source_id" IN ($1,$2)', [HOME_TURN_ID, OTHER_HOME_TURN_ID]);
+      await dataSource!.query('DELETE FROM "credit_account_daily_windows" WHERE "owner_id"=$1', [REGULAR_ID]);
+      await dataSource!.query('DELETE FROM "credit_account_totals" WHERE "owner_id"=$1', [REGULAR_ID]);
+    }
   });
 
   it('serializes concurrent reservations against daily and lifetime limits', async () => {

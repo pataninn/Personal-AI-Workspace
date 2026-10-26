@@ -374,6 +374,32 @@ describeDatabase('Task 7.1 durable scheduler PostgreSQL integration', () => {
     expect(await automations.recordTurnStatus({ ...second.fence, status: 'succeeded' })).toBe(true);
   });
 
+  it('lets newer queued work progress while older uncertain turns remain unresolved', async () => {
+    const oldSchedule = await createSchedule();
+    const uncertain = await automations.createManualOccurrence({
+      ownerId: OWNER_ID, scheduleId: oldSchedule.id, expectedRevision: 1,
+      requestKeyDigest: 'd'.repeat(64), requestFingerprint: 'e'.repeat(64)
+    });
+    await seedLinkedTurn(uncertain.occurrence.id);
+    await requiredDataSource().query(`UPDATE "automation_occurrences" SET "status"='interrupted_unknown',
+      "intended_for_utc"=clock_timestamp()-interval '1 day',"updated_at"=clock_timestamp()-interval '1 day'
+      WHERE "id"=$1`, [uncertain.occurrence.id]);
+    const nextSchedule = await createSchedule('c');
+    const queued = await automations.createManualOccurrence({
+      ownerId: OWNER_ID, scheduleId: nextSchedule.id, expectedRevision: 1,
+      requestKeyDigest: 'f'.repeat(64), requestFingerprint: '1'.repeat(64)
+    });
+    const [first] = await automations.claimBatch({ limit: 1, leaseMilliseconds: 30_000 });
+    if (!first) throw new Error('Expected the old uncertain occurrence to be claimed.');
+    expect(first.occurrence.id).toBe(uncertain.occurrence.id);
+    expect(await automations.releasePollingClaim(first.fence)).toBe(true);
+    const [second] = await automations.claimBatch({ limit: 1, leaseMilliseconds: 30_000 });
+    expect(second?.occurrence.id).toBe(queued.occurrence.id);
+    expect(await automations.findOccurrence(OWNER_ID, uncertain.occurrence.id)).toMatchObject({
+      status: 'interrupted_unknown', homeTurnId: TURN_ID, attemptCount: 0
+    });
+  });
+
   it('records bounded task source revisions only under the current occurrence lease', async () => {
     const schedule = await createSchedule();
     const first = await automations.createManualOccurrence({
@@ -545,11 +571,11 @@ describeDatabase('Task 7.1 durable scheduler PostgreSQL integration', () => {
       .resolves.toHaveLength(0);
   });
 
-  async function createSchedule() {
+  async function createSchedule(key = 'a') {
     const result = await automations.createSchedule({
       ownerId: OWNER_ID, workspaceId: WORKSPACE_ID, conversationId: CONVERSATION_ID, skillId: SKILL_ID,
       skillRevisionId: REVISION_ID, skillVersion: 1, localTime: '08:30', timeZone: 'UTC',
-      nextDueAt: new Date(Date.now() + 86_400_000), createKeyDigest: 'a'.repeat(64), requestFingerprint: 'b'.repeat(64)
+      nextDueAt: new Date(Date.now() + 86_400_000), createKeyDigest: key.repeat(64), requestFingerprint: 'b'.repeat(64)
     });
     return result.schedule;
   }

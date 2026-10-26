@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-import { useAppDispatch, useAppSelector } from '@/app/store/hooks';
+import { useAppDispatch, useAppSelector, useAppStore } from '@/app/store/hooks';
 import { createProject, projectCreated, type ProjectWorkspaceMode } from '@/entities/project';
 import { selectCsrfToken } from '@/entities/user-session';
 import { ApiClientError, notifySessionExpiry } from '@/shared/api';
@@ -36,6 +36,7 @@ function messageForError(error: ApiClientError): string {
 
 export function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDialogProps): React.JSX.Element {
   const dispatch = useAppDispatch();
+  const appStore = useAppStore();
   const csrfToken = useAppSelector(selectCsrfToken);
   const nameRef = useRef<HTMLInputElement>(null);
   const [name, setName] = useState('');
@@ -64,14 +65,18 @@ export function CreateProjectDialog({ open, onOpenChange, onCreated }: CreatePro
     if (hasProjectDraftErrors(nextErrors) || !csrfToken || isCreating) return;
 
     setIsCreating(true);
+    const generation = appStore.getState().project.generation ?? 0;
+    const isCurrent = (): boolean => generation === (appStore.getState().project.generation ?? 0);
     try {
       const project = await createProject({ name, workspaceMode }, csrfToken);
-      dispatch(projectCreated(project));
+      if (!isCurrent()) return;
+      dispatch(projectCreated(project, generation));
       onOpenChange(false);
       onCreated(project.id);
       setName('');
       setWorkspaceMode('file_backed');
     } catch (error: unknown) {
+      if (!isCurrent()) return;
       if (error instanceof ApiClientError) {
         notifySessionExpiry(error.statusCode, error.code, error);
         setStorageUnavailable(error.code === 'WORKSPACE_STORAGE_UNAVAILABLE');
@@ -84,7 +89,7 @@ export function CreateProjectDialog({ open, onOpenChange, onCreated }: CreatePro
         setFormError('We could not create this project. Try again.');
       }
     } finally {
-      setIsCreating(false);
+      if (isCurrent()) setIsCreating(false);
     }
   }
 

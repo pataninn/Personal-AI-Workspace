@@ -198,6 +198,12 @@ export interface IHomeConversationRepository {
   /** Internal proof of no-send or confirmed runtime disposal; only an existing demo-expiry fence may settle. */
   settleExpiredTurnCancellation?(input: CancelHomeTurnInput): Promise<HomeTurn | null>;
 
+  /** Internal proof written only after authenticated runtime disposal, independent of provider receipts. */
+  recordRuntimeDisposal?(input: CancelHomeTurnInput): Promise<void>;
+
+  /** Reads runtime-only disposal proof for exactly the owned turn; never authorizes provider settlement. */
+  hasRuntimeDisposal?(input: CancelHomeTurnInput): Promise<boolean>;
+
   /** Commits the bounded assistant reply and terminal turn status only while the turn is active. */
   completeTurnWithAssistant(input: CompleteHomeTurnWithAssistantInput): Promise<HomeTurn | null>;
 

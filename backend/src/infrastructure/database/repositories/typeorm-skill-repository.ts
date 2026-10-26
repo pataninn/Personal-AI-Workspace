@@ -113,7 +113,7 @@ export class TypeOrmSkillRepository implements ISkillRepository {
 
   public async listActive(ownerId: string, workspaceId?: string): Promise<readonly Skill[]> {
     const rows: readonly SkillRow[] = await this.dataSource.query(
-      `${SKILL_SELECT} WHERE s."owner_id" = $1 AND s."deleted_at" IS NULL${workspaceId === undefined ? '' : ' AND s."workspace_id" = $2'} ORDER BY s."updated_at" DESC, s."id" ASC`,
+      `${SKILL_SELECT} WHERE s."owner_id" = $1 AND s."deleted_at" IS NULL${workspaceId === undefined ? '' : ' AND (s."workspace_id" IS NULL OR s."workspace_id" = $2)'} ORDER BY s."updated_at" DESC, s."id" ASC`,
       workspaceId === undefined ? [ownerId] : [ownerId, workspaceId]
     );
     return rows.map(toSkill);

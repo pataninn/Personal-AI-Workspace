@@ -8,6 +8,8 @@ import { TypeOrmDemoAdmissionRepository } from '@/infrastructure/database/reposi
 import { TypeOrmDemoExpiryCleanupRepository } from '@/infrastructure/database/repositories/typeorm-demo-expiry-cleanup-repository';
 import { TypeOrmHomeConversationRepository } from '@/infrastructure/database/repositories/typeorm-home-conversation-repository';
 import { CancelHomeTurnUseCase } from '@/modules/home-assistant/use-cases/cancel-home-turn';
+import { ProcessHomeTurnUseCase } from '@/modules/home-assistant/use-cases/process-home-turn';
+import { RecordHomeRuntimeDisposal1710000043000 } from '@/infrastructure/database/migrations/1710000043000-record-home-runtime-disposal';
 import type { IHomePlanningRuntime } from '@/modules/home-assistant/repositories/home-planning-runtime';
 import { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
 import { TypeOrmStorageRootMappingRepository } from '@/infrastructure/database/repositories/typeorm-storage-root-mapping-repository';
@@ -265,6 +267,57 @@ describeDatabase('Task 3.5 demo expiry cleanup with PostgreSQL and managed stora
     await expect(conversations.settleExpiredTurnCancellation({ ...input, conversationId: REGULAR_PROJECT_ID })).resolves.toBeNull();
     await expect(conversations.settleExpiredTurnCancellation(input)).resolves.toMatchObject({ status: 'cancelled' });
     await expect(conversations.settleExpiredTurnCancellation(input)).resolves.toBeNull();
+  });
+
+  it.each([false, true])('retains scoped runtime-disposal proof across restart without releasing unknown provider credit (%s)', async (unknownCredit) => {
+    const source = requiredDataSource();
+    await seedDemo(source, { copy: false, expiresAt: new Date(Date.now() + 60_000) });
+    await seedInteractiveHomeTurn(source);
+    await source.query('UPDATE "home_turns" SET "status"=\'unknown\' WHERE "id"=$1', [SCHEDULER_TURN_ID]);
+    let reservationId: string | undefined;
+    if (unknownCredit) {
+      await source.query(`UPDATE "credit_runtime_policy" SET "inference_paused"=false,"demo_daily_limit_units"=1000000,
+        "demo_campaign_limit_units"=1000000,"demo_campaign_id"=$1,"demo_max_concurrent_calls"=4 WHERE "id"=1`, [CREDIT_CAMPAIGN_ID]);
+      await source.query('UPDATE "account_limits" SET "demo_credit_limits_configured"=true WHERE "owner_id"=$1', [DEMO_OWNER_ID]);
+      const credit = new TypeOrmCreditLedgerRepository(source);
+      const reserved = await credit.reserveProviderCall(creditCommand(DEMO_OWNER_ID, CREDIT_SOURCE_ONE, 'disposed-runtime-unknown-credit'));
+      reservationId = reserved.reservationId;
+      await credit.retainUnknown(reservationId, 'receipt_lost');
+    }
+    const input = { ownerId: DEMO_OWNER_ID, conversationId: SCHEDULER_CONVERSATION_ID, turnId: SCHEDULER_TURN_ID };
+    const conversations = new TypeOrmHomeConversationRepository(source);
+    const runtime = { cancel: jest.fn(async () => ({ outcome: 'confirmed' })), delete: jest.fn(async () => undefined) };
+    const process = new ProcessHomeTurnUseCase(conversations, runtime as unknown as IHomePlanningRuntime);
+    await expect(process.queueAbandonedRuntime(input)).resolves.toBe(true);
+    const disposedTurn = await conversations.findTurnForOwner(DEMO_OWNER_ID, SCHEDULER_CONVERSATION_ID, SCHEDULER_TURN_ID);
+    expect(disposedTurn).toMatchObject({ status: 'unknown' });
+    expect(disposedTurn).not.toHaveProperty('runtimeDisposedAt');
+    expect(disposedTurn).not.toHaveProperty('runtime_disposed_at');
+    const restarted = new TypeOrmHomeConversationRepository(source);
+    await expect(restarted.hasRuntimeDisposal(input)).resolves.toBe(true);
+    await expect(restarted.hasRuntimeDisposal({ ...input, ownerId: REGULAR_OWNER_ID })).resolves.toBe(false);
+    await expect(restarted.hasRuntimeDisposal({ ...input, conversationId: REGULAR_PROJECT_ID })).resolves.toBe(false);
+    await restarted.recordRuntimeDisposal({ ...input, ownerId: REGULAR_OWNER_ID });
+    const migration = source.createQueryRunner();
+    await migration.connect();
+    await migration.startTransaction();
+    try { await expect(new RecordHomeRuntimeDisposal1710000043000().down(migration)).rejects.toThrow('retain its provenance'); }
+    finally { await migration.rollbackTransaction(); await migration.release(); }
+    // A fresh cancellation service has no runtime/capability, but the persisted proof is sufficient for runtime cleanup.
+    const cancel = new CancelHomeTurnUseCase(restarted);
+    await expect(cancel.cancelForExpiry(input)).resolves.toEqual({ status: 'cancelled' });
+    await source.query('UPDATE "users" SET "expires_at"=clock_timestamp()-interval \'1 second\' WHERE "id"=$1', [DEMO_OWNER_ID]);
+    await source.query('UPDATE "demo_admissions" SET "expires_at"=clock_timestamp()-interval \'1 second\' WHERE "id"=$1', [DEMO_ADMISSION_ID]);
+    const port: DemoExpiryCancellationPort = { cancelRun: jest.fn(), cancelCommand: jest.fn(),
+      cancelAutomationTurn: jest.fn(), cancelHomeTurn: (turn) => cancel.cancelForExpiry(turn) };
+    await expect(createCleanupRepository().runBatch(port, 1)).resolves.toBe(unknownCredit ? 0 : 1);
+    if (reservationId) {
+      await expect(source.query('SELECT "status" FROM "credit_provider_call_reservations" WHERE "id"=$1', [reservationId]))
+        .resolves.toEqual([{ status: 'unknown' }]);
+      await expect(scalarCount(source, 'users', DEMO_OWNER_ID)).resolves.toBe(1);
+    }
+    expect(runtime.cancel).toHaveBeenCalledTimes(1);
+    expect(runtime.delete).toHaveBeenCalledTimes(1);
   });
 
   it('retains settled demo credit history, waits on unresolved calls, and replays after owner detachment', async () => {

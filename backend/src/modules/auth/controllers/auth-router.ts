@@ -103,7 +103,6 @@ function logoutHandler(dependencies: AuthRouterDependencies): RequestHandler {
   return async (request, response, next): Promise<void> => {
     try {
       if (!request.auth) {
-        clearSessionCookie(response, dependencies.cookieSecure);
         next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
         return;
       }
@@ -118,13 +117,12 @@ function logoutHandler(dependencies: AuthRouterDependencies): RequestHandler {
 
 export function createAuthRouter(dependencies: AuthRouterDependencies): Router {
   const router = Router();
-  const clearCookie = (response: Response): void => clearSessionCookie(response, dependencies.cookieSecure);
   router.post('/login', sameOrigin(dependencies.appOrigin), loginHandler(dependencies));
-  router.get('/session', authenticateRequest(dependencies.getSession, clearCookie), sessionHandler(dependencies));
+  router.get('/session', authenticateRequest(dependencies.getSession), sessionHandler(dependencies));
   router.post(
     '/logout',
     sameOrigin(dependencies.appOrigin),
-    authenticateRequest(dependencies.getSession, clearCookie),
+    authenticateRequest(dependencies.getSession),
     requireCsrf,
     logoutHandler(dependencies)
   );

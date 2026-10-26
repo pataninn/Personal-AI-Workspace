@@ -147,15 +147,35 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
   }
 
   public async recoverUnattachedRoot(ownerId: string, projectId: string, discard: () => Promise<void>): Promise<void> {
+    return this.recoverRootAllocation({ ownerId, projectId, discard, requireMissing: false });
+  }
+
+  public async recoverUncreatedRoot(ownerId: string, projectId: string, discard: () => Promise<void>): Promise<void> {
+    return this.recoverRootAllocation({ ownerId, projectId, discard, requireMissing: true });
+  }
+
+  private async recoverRootAllocation(input: {
+    readonly ownerId: string; readonly projectId: string; readonly discard: () => Promise<void>; readonly requireMissing: boolean;
+  }): Promise<void> {
+    const { ownerId, projectId, discard } = input;
     const runner = this.dataSource.createQueryRunner('master');
     await runner.connect();
     await runner.startTransaction();
     try {
       // Wait for any ambiguous attachment commit and fence concurrent attachment
       // until the proven empty allocation has been discarded.
+      // Match ordinary write/expiry lock order even though compensation may follow expiry.
+      await runner.query('SELECT "id" FROM "users" WHERE "id"=$1 FOR SHARE', [ownerId]);
       await this.lockOwnerRoots(runner, ownerId);
       const current = await this.findByIdForOwnerForUpdate(runner, ownerId, projectId);
-      if (current?.relativeRoot === null) await discard();
+      if (!input.requireMissing && current?.relativeRoot === null) await discard();
+      if (input.requireMissing && current === null) {
+        const mappings: readonly { readonly locator_project_id: string }[] = await runner.query(
+          'SELECT "locator_project_id" FROM "storage_root_mappings" WHERE "owner_id"=$1 AND "locator_project_id"=$2 FOR UPDATE',
+          [ownerId, projectId]
+        );
+        if (mappings.length === 0) await discard();
+      }
       await runner.commitTransaction();
     } catch (error: unknown) {
       await runner.rollbackTransaction();

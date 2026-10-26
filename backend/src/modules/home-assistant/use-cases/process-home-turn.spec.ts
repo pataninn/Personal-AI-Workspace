@@ -7,9 +7,10 @@ import type { IHomePlanningToolRequestHandler } from '@/modules/home-assistant/r
 import type { HomePlanningRuntimeEvent } from '@/modules/home-assistant/repositories/home-planning-runtime';
 import type { IHomeAutomationSourceRecorder } from '@/modules/home-assistant/repositories/home-automation-source-recorder';
 import type { IHomeProviderCreditReceiptHandler } from '@/modules/home-assistant/repositories/home-provider-credit-receipt-handler';
-import type { IHomeTurnProviderUsageHistory } from '@/modules/credits/repositories/provider-call-usage-history';
 import { HOME_NEBIUS_NEMOTRON_BOUND } from '@/modules/credits/domain/home-provider-credit-bound';
 import { ProcessHomeTurnUseCase } from '@/modules/home-assistant/use-cases/process-home-turn';
+import { HermesHomePlanningRuntime } from '@/infrastructure/hermes/hermes-home-planning-runtime';
+import { HermesBridgeCallError, type HermesBridgeClient } from '@/infrastructure/hermes/hermes-bridge-client';
 
 const OWNER = '11111111-1111-4111-8111-111111111111';
 const CONVERSATION = '22222222-2222-4222-8222-222222222222';
@@ -50,7 +51,6 @@ function setup(options: {
   readonly automationOccurrenceId?: string;
   readonly automationSources?: IHomeAutomationSourceRecorder;
   readonly providerCreditReceipts?: IHomeProviderCreditReceiptHandler;
-  readonly providerUsageHistory?: IHomeTurnProviderUsageHistory;
   readonly policyProvider?: { readonly profile: string; readonly model: string };
   readonly pollUnknown?: boolean;
   readonly title?: string;
@@ -70,7 +70,9 @@ function setup(options: {
     updateTurnStatus: jest.fn(async ({ status: nextStatus }: { status: 'failed' | 'cancelled' | 'unknown' | 'unsupported' }) => {
       status = nextStatus;
       return currentTurn();
-    })
+    }),
+    recordRuntimeDisposal: jest.fn(async () => undefined),
+    hasRuntimeDisposal: jest.fn(async () => false)
   };
   const events = options.events ?? [];
   const runtime = {
@@ -105,13 +107,118 @@ function setup(options: {
       model: options.policyProvider?.model ?? MODEL
     },
     options.automationSources,
-    options.providerCreditReceipts,
-    options.providerUsageHistory
+    options.providerCreditReceipts
   );
   return { useCase, conversations, runtime, executionPolicy, handler };
 }
 
 describe('ProcessHomeTurnUseCase', () => {
+  it.each(['transport', 'provider_receipt'] as const)('releases an abandoned bridge allocation exactly once after %s uncertainty', async (failure) => {
+    const provider = { profile: HOME_NEBIUS_NEMOTRON_BOUND.providerProfile,
+      model: HOME_NEBIUS_NEMOTRON_BOUND.model, endpoint: 'https://api.tokenfactory.nebius.com/v1' };
+    let allocated = false;
+    const call = jest.fn(async (operation: string) => {
+      if (operation === 'planning-capabilities') return { providerReceiptVersion: 1, providerProfile: provider.profile, model: provider.model, maxOutputTokens: 512 };
+      if (operation === 'planning-create') { allocated = true; return { status: 'preparing' }; }
+      if (operation === 'planning-poll') {
+        if (failure === 'transport') throw new HermesBridgeCallError('unknown');
+        return { status: 'running', hasMore: false, events: [{ sequence: 1,
+          type: 'home-provider-credit-request', id: 'uncertain-receipt', params: { sessionId: 'session-1', request: { operation: 'unknown',
+            callId: PROJECT, attemptId: PROJECT, reservationId: PROJECT } } }] };
+      }
+      if (operation === 'planning-provider-credit-result') return { accepted: true };
+      if (operation === 'planning-cancel') { allocated = false; return { outcome: 'confirmed' }; }
+      if (operation === 'planning-delete') return { deleted: true };
+      throw new Error('Unexpected bridge operation');
+    });
+    const runtime = new HermesHomePlanningRuntime({ call } as unknown as HermesBridgeClient, provider,
+      { providerEgressAdmissionEnforced: true, maxOutputTokens: 512 });
+    await runtime.start({ turnId: TURN, prompt: 'Plan today.', provider });
+    const { conversations, executionPolicy } = setup();
+    const receipts: IHomeProviderCreditReceiptHandler = { handle: jest.fn(async () => ({ outcome: 'unknown' as const })),
+      hasAdmittedCall: () => true, markInterrupted: jest.fn(async () => undefined), clearTurn: jest.fn() };
+    const useCase = new ProcessHomeTurnUseCase(conversations as unknown as IHomeConversationRepository, runtime, undefined,
+      { executionPolicy, providerProfile: provider.profile, model: provider.model }, undefined, receipts);
+
+    expect((await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN })).status).toBe('unknown');
+    await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+    await useCase.drainCleanup();
+    expect(allocated).toBe(false);
+    expect(call.mock.calls.map(([operation]) => operation)).toEqual([
+      'planning-capabilities', 'planning-create', 'planning-poll',
+      ...(failure === 'provider_receipt' ? ['planning-provider-credit-result'] : []), 'planning-cancel', 'planning-delete'
+    ]);
+  });
+
+  it('cancels and deletes a runtime after an unknown poll without replaying or releasing provider uncertainty', async () => {
+    const receipts = { handle: jest.fn(), hasAdmittedCall: () => true,
+      markInterrupted: jest.fn(async () => undefined), clearTurn: jest.fn() };
+    const { useCase, runtime } = setup({ pollUnknown: true, providerCreditReceipts: receipts });
+
+    expect((await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN })).status).toBe('unknown');
+    await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+    await useCase.drainCleanup();
+
+    expect(runtime.cancel).toHaveBeenCalledWith(TURN);
+    expect(runtime.delete).toHaveBeenCalledTimes(1);
+    expect(runtime.poll).toHaveBeenCalledTimes(1);
+    expect(receipts.markInterrupted).toHaveBeenCalledWith(OWNER, TURN);
+    expect(receipts.handle).not.toHaveBeenCalled();
+  });
+
+  it('retries unknown cancellation even when provider usage remains unknown, then retries deletion without recancelling', async () => {
+    const { useCase, runtime } = setup({ pollUnknown: true, cancelConfirmed: false });
+    await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+    expect(runtime.delete).not.toHaveBeenCalled();
+    runtime.cancel.mockResolvedValue({ outcome: 'confirmed' });
+    runtime.delete.mockRejectedValueOnce(new Error('delete interrupted'));
+
+    await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+    await useCase.drainCleanup();
+
+    expect(runtime.cancel).toHaveBeenCalledTimes(2);
+    expect(runtime.delete).toHaveBeenCalledTimes(2);
+    expect(runtime.poll).toHaveBeenCalledTimes(1);
+  });
+
+  it('still disposes the sandbox if persisting provider interruption fails', async () => {
+    const receipts = { handle: jest.fn(), hasAdmittedCall: () => true,
+      markInterrupted: jest.fn(async () => { throw new Error('ledger unavailable'); }), clearTurn: jest.fn() };
+    const { useCase, runtime } = setup({ pollUnknown: true, providerCreditReceipts: receipts });
+    await expect(useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN })).rejects.toThrow('ledger unavailable');
+    expect(runtime.cancel).toHaveBeenCalledWith(TURN);
+    expect(runtime.delete).toHaveBeenCalledWith(TURN);
+  });
+
+  it('still disposes the sandbox if recording the unknown turn status fails', async () => {
+    const { useCase, runtime, conversations } = setup({ pollUnknown: true });
+    conversations.updateTurnStatus.mockRejectedValueOnce(new Error('turn write unavailable'));
+    await expect(useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN })).rejects.toThrow('turn write unavailable');
+    expect(runtime.cancel).toHaveBeenCalledWith(TURN);
+    expect(runtime.delete).toHaveBeenCalledWith(TURN);
+  });
+
+  it('retries disposal-proof persistence without recancelling a runtime already deleted', async () => {
+    const { useCase, runtime, conversations } = setup({ pollUnknown: true });
+    conversations.recordRuntimeDisposal.mockRejectedValueOnce(new Error('proof write unavailable'));
+    await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+    expect(runtime.delete).toHaveBeenCalledTimes(1);
+    await useCase.drainCleanup();
+    expect(runtime.cancel).toHaveBeenCalledTimes(1);
+    expect(runtime.delete).toHaveBeenCalledTimes(1);
+    expect(conversations.recordRuntimeDisposal).toHaveBeenCalledTimes(2);
+    await useCase.drainCleanup();
+    expect(conversations.recordRuntimeDisposal).toHaveBeenCalledTimes(2);
+  });
+
+  it('disposes invalid runtime pages as well as transport failures', async () => {
+    const { useCase, runtime } = setup();
+    runtime.poll.mockResolvedValue({ status: 'completed', events: [], nextCursor: -1, hasMore: false });
+    await useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+    expect(runtime.cancel).toHaveBeenCalledWith(TURN);
+    expect(runtime.delete).toHaveBeenCalledWith(TURN);
+  });
+
   it('returns a persisted answer while sandbox deletion is still pending', async () => {
     const { useCase, conversations, runtime } = setup({ events: [{ sequence: 1, type: 'assistant.delta', text: 'Hello' }] });
     let finishDeletion: (() => void) | undefined;
@@ -385,22 +492,14 @@ describe('ProcessHomeTurnUseCase', () => {
       markInterrupted: jest.fn(async () => undefined),
       clearTurn: jest.fn()
     };
-    const usageHistory = {
-      getForHomeTurn: jest.fn(async () => ({
-        state: 'unknown' as const,
-        calls: [{ status: 'unknown' as const, providerProfile: 'p', model: 'm', inputTokens: null, outputTokens: null, chargedUnits: null }]
-      }))
-    };
     const restarted = setup({
       initialStatus: 'unknown',
-      providerCreditReceipts: restartedReceipts as unknown as IHomeProviderCreditReceiptHandler,
-      providerUsageHistory: usageHistory
+      providerCreditReceipts: restartedReceipts as unknown as IHomeProviderCreditReceiptHandler
     });
 
     const stillUnknown = await restarted.useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
 
     expect(restartedReceipts.markInterrupted).toHaveBeenCalledWith(OWNER, TURN);
-    expect(usageHistory.getForHomeTurn).toHaveBeenCalledWith(OWNER, TURN);
     expect(restarted.runtime.poll).not.toHaveBeenCalled();
     expect(restartedReceipts.handle).not.toHaveBeenCalled();
     expect(stillUnknown.status).toBe('unknown');

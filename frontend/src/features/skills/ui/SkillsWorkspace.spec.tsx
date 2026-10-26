@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { sessionAuthenticated, userSessionReducer } from '@/entities/user-session';
 import { SkillsWorkspace } from '@/features/skills/ui/SkillsWorkspace';
 import type { UserSkill } from '@/entities/skill';
+import { ApiClientError } from '@/shared/api';
 
 const WORKSPACE_ID = '11111111-1111-4111-8111-111111111111';
 const SECOND_WORKSPACE_ID = '44444444-4444-4444-8444-444444444444';
@@ -116,6 +117,58 @@ describe('SkillsWorkspace', () => {
       title: 'My daily plan', workspaceId: WORKSPACE_ID, declaredTools: ['home_task_read']
     }), 'csrf-token', expect.any(String)));
     expect(await screen.findByText('Skill saved as version 1.')).toBeInTheDocument();
+  });
+
+  it('explains enabled-at-create and keeps the enabled control for saved skills', async () => {
+    const user = userEvent.setup();
+    mocks.listSkills.mockResolvedValue([skill]);
+    renderSkills();
+    await user.click(await screen.findByRole('button', { name: 'New skill' }));
+    expect(screen.queryByRole('checkbox', { name: 'Enabled' })).not.toBeInTheDocument();
+    expect(screen.getByText(/New skills are enabled when saved/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Enabled' }));
+    await user.click(screen.getByRole('button', { name: 'Save skill' }));
+    await waitFor(() => expect(mocks.updateSkill).toHaveBeenCalledWith(skill.id, expect.objectContaining({ enabled: false }), 'csrf-token'));
+  });
+
+  it('preserves an editable draft after a definite rejection and uses a fresh request key', async () => {
+    const user = userEvent.setup();
+    const projects = await mocks.listProjects();
+    mocks.listProjects.mockResolvedValue({ projects: [...projects.projects, { ...projects.projects[0], id: SECOND_WORKSPACE_ID, name: 'Archived workspace', status: 'archived' }] });
+    mocks.createSkill.mockRejectedValueOnce(new ApiClientError(404, 'SKILL_WORKSPACE_NOT_FOUND', 'The selected workspace is unavailable.'));
+    renderSkills();
+    await user.click(await screen.findByRole('button', { name: 'New skill' }));
+    expect(screen.queryByRole('option', { name: /Archived workspace/ })).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('Title'), 'Retained draft');
+    await user.type(screen.getByLabelText('Instructions'), 'Read my tasks.');
+    await user.click(screen.getByRole('button', { name: 'Save skill' }));
+    await waitFor(() => expect(mocks.createSkill).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByLabelText('Workspace')).toBeEnabled());
+    expect(screen.getByLabelText('Title')).toHaveValue('Retained draft');
+    expect(screen.queryByRole('button', { name: 'Retry same save' })).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText('Workspace'), '');
+    await user.click(screen.getByRole('button', { name: 'Save skill' }));
+    await waitFor(() => expect(mocks.createSkill).toHaveBeenCalledTimes(2));
+    expect(mocks.createSkill.mock.calls[1]?.[0]).toMatchObject({ workspaceId: null, title: 'Retained draft', instructions: 'Read my tasks.' });
+    expect(mocks.createSkill.mock.calls[1]?.[2]).not.toBe(mocks.createSkill.mock.calls[0]?.[2]);
+  });
+
+  it('preserves the exact frozen request and key after an uncertain create result', async () => {
+    const user = userEvent.setup();
+    mocks.createSkill.mockRejectedValueOnce(new Error('Lost response'));
+    renderSkills();
+    await user.click(await screen.findByRole('button', { name: 'New skill' }));
+    await user.type(screen.getByLabelText('Title'), 'Uncertain draft');
+    await user.type(screen.getByLabelText('Instructions'), 'Read my tasks.');
+    await user.click(screen.getByRole('button', { name: 'Save skill' }));
+    const retry = await screen.findByRole('button', { name: 'Retry same save' });
+    expect(screen.getByLabelText('Title')).toBeDisabled();
+    expect(screen.getByLabelText('Workspace')).toBeDisabled();
+    await user.click(retry);
+    await waitFor(() => expect(mocks.createSkill).toHaveBeenCalledTimes(2));
+    expect(mocks.createSkill.mock.calls[1]).toEqual(mocks.createSkill.mock.calls[0]);
   });
 
   it('creates one workspace conversation and invokes Plan my day with the same saved target', async () => {

@@ -12,6 +12,7 @@ import type { IHomeProjectMemoryContextReader } from '@/modules/home-assistant/r
 import { assertHomeIdempotencyKey, homeRequestFingerprint } from '@/modules/home-assistant/use-cases/home-conversation-command-helpers';
 import { redactEgressText } from '@/shared/egress/redaction';
 import type { SkillContextRevision, SkillInvocationState } from '@/modules/skills/domain/skill-invocation-types';
+import { MAX_SKILL_MESSAGE_CHARACTERS } from '@/modules/skills/domain/skill-invocation-message';
 
 const MAX_INITIAL_PROMPT_BYTES = HOME_PLANNING_CONTEXT_LIMITS.promptBytes;
 
@@ -19,6 +20,7 @@ export interface HomeTurnRuntimeConfiguration {
   readonly mode: 'fake' | 'direct' | 'openshell' | 'hermes';
   readonly runtime?: IHomePlanningRuntime;
   readonly onAccepted?: (input: { readonly ownerId: string; readonly conversationId: string; readonly turnId: string }) => void;
+  readonly onAbandoned?: (input: { readonly ownerId: string; readonly conversationId: string; readonly turnId: string }) => Promise<boolean>;
   readonly provider: HomePlanningProvider;
 }
 
@@ -59,8 +61,9 @@ export class SubmitHomeTurnUseCase {
 
   public async execute(input: SubmitHomeTurnCommand): Promise<HomeTurnSubmission> {
     assertHomeIdempotencyKey(input.requestKey);
-    if (input.message.trim().length === 0 || input.message.length > 20000) {
-      throw new HomeConversationInputInvalidError('The message must be non-empty and no longer than 20000 characters.');
+    const maximumMessageCharacters = input.skillInvocation ? MAX_SKILL_MESSAGE_CHARACTERS : 20_000;
+    if (input.message.trim().length === 0 || input.message.length > maximumMessageCharacters) {
+      throw new HomeConversationInputInvalidError(`The message must be non-empty and no longer than ${maximumMessageCharacters} characters.`);
     }
     const redacted = redactEgressText(input.message);
     if (Buffer.byteLength(redacted, 'utf8') > MAX_INITIAL_PROMPT_BYTES) {
@@ -236,8 +239,10 @@ export class SubmitHomeTurnUseCase {
         dispatchAttempted = false;
         return await this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'PLANNING_RUNTIME_UNAVAILABLE', input.skillInvocation);
       }
+      let runtimeDisposed = false;
       try {
         if (outcome === 'unknown') {
+          runtimeDisposed = await this.cleanupUnsupervisedStart(runtime, { ownerId: input.ownerId, conversationId: input.conversationId, turnId: submission.turn.id });
           if (input.skillInvocation) await input.skillInvocation.updateState('unknown');
           const turn = await this.updateStatus(input.ownerId, input.conversationId, submission.turn.id, 'unknown');
           return resultWithTurn(submission, turn, { state: 'unknown', code: 'PLANNING_RUNTIME_OUTCOME_UNKNOWN' });
@@ -246,7 +251,8 @@ export class SubmitHomeTurnUseCase {
         const afterSend = await this.findCurrentTurn(input.ownerId, input.conversationId, submission.turn.id);
         if (!afterSend) throw new HomeTurnNotFoundError();
         if (afterSend.status === 'cancel_requested') {
-          const cancelled = await cancelStartedRun(runtime, afterSend);
+          const cancelled = await this.cleanupUnsupervisedStart(runtime, { ownerId: input.ownerId, conversationId: input.conversationId, turnId: afterSend.id });
+          runtimeDisposed = cancelled;
           const turn = await this.updateStatus(input.ownerId, input.conversationId, submission.turn.id, cancelled ? 'cancelled' : 'unknown');
           return resultWithTurn(submission, turn, cancelled
             ? { state: 'cancelled' }
@@ -255,13 +261,14 @@ export class SubmitHomeTurnUseCase {
         if (afterSend.status === 'running' && !afterSend.automationOccurrenceId) {
           runtimeConfiguration.onAccepted?.({ ownerId: input.ownerId, conversationId: input.conversationId, turnId: afterSend.id });
         } else if (afterSend.status !== 'running') {
-          if (await this.cleanupUnsupervisedStart(runtime, submission.turn.id)) {
+          runtimeDisposed = await this.cleanupUnsupervisedStart(runtime, { ownerId: input.ownerId, conversationId: input.conversationId, turnId: submission.turn.id });
+          if (runtimeDisposed) {
             await this.settleExpiredCancellation(input.ownerId, input.conversationId, submission.turn.id);
           }
         }
         return resultWithTurn(submission, afterSend, executionForTurn(afterSend));
       } catch (error: unknown) {
-        const cleaned = await this.cleanupUnsupervisedStart(runtime, submission.turn.id);
+        const cleaned = runtimeDisposed || await this.cleanupUnsupervisedStart(runtime, { ownerId: input.ownerId, conversationId: input.conversationId, turnId: submission.turn.id });
         if (cleaned) {
           await this.updateStatus(input.ownerId, input.conversationId, submission.turn.id, 'cancelled').catch(() => null);
         } else {
@@ -279,10 +286,11 @@ export class SubmitHomeTurnUseCase {
     }
   }
 
-  private async cleanupUnsupervisedStart(runtime: IHomePlanningRuntime, turnId: string): Promise<boolean> {
+  private async cleanupUnsupervisedStart(runtime: IHomePlanningRuntime, input: { readonly ownerId: string; readonly conversationId: string; readonly turnId: string }): Promise<boolean> {
     try {
-      if ((await runtime.cancel(turnId)).outcome !== 'confirmed') return false;
-      await runtime.delete(turnId);
+      if (this.runtimeConfiguration?.onAbandoned) return await this.runtimeConfiguration.onAbandoned(input);
+      if ((await runtime.cancel(input.turnId)).outcome !== 'confirmed') return false;
+      await runtime.delete(input.turnId);
       return true;
     } catch {
       return false;
@@ -299,7 +307,7 @@ export class SubmitHomeTurnUseCase {
       if (turn.status === 'pending') {
         turn = await this.updateStatus(ownerId, conversationId, turn.id, 'unsupported');
       } else if (turn.status === 'running' || turn.status === 'cancel_requested') {
-        const cancelled = await cancelStartedRun(runtime, turn);
+        const cancelled = await this.cleanupUnsupervisedStart(runtime, { ownerId, conversationId, turnId: turn.id });
         turn = await this.updateStatus(ownerId, conversationId, turn.id, cancelled ? 'cancelled' : 'unknown');
       }
     }
@@ -468,14 +476,6 @@ function isRevision(value: unknown): value is string {
 
 function samePolicyBinding(turn: HomeTurn, binding: { readonly home: string; readonly workspace: string | null }): boolean {
   return turn.homePolicyRevision === binding.home && turn.workspacePolicyRevision === binding.workspace;
-}
-
-async function cancelStartedRun(runtime: IHomePlanningRuntime, turn: HomeTurn): Promise<boolean> {
-  try {
-    return (await runtime.cancel(turn.id)).outcome === 'confirmed';
-  } catch {
-    return false;
-  }
 }
 
 function executionForTurn(turn: HomeTurn): HomeTurnExecution {

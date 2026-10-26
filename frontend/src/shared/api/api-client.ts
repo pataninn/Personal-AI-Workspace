@@ -1,5 +1,5 @@
 import type { ApiEnvelope, ApiErrorDetail } from '@/shared/api/api-response';
-import { notifySessionExpiry } from '@/shared/api/session-expiry';
+import { getRequestSessionGeneration, notifySessionExpiry } from '@/shared/api/session-expiry';
 
 export class ApiClientError extends Error {
   public readonly statusCode: number;
@@ -52,6 +52,7 @@ export async function requestJson<T>(
   options: ApiRequestOptions,
   fetchImplementation: typeof fetch = fetch
 ): Promise<T> {
+  const generation = getRequestSessionGeneration();
   const headers = new Headers(options.headers);
   headers.set('Accept', 'application/json');
   if (options.body !== undefined) {
@@ -67,7 +68,7 @@ export async function requestJson<T>(
   try {
     body = await parseEnvelope<T>(response);
   } catch (error: unknown) {
-    notifySessionExpiry(response.status, 'INVALID_RESPONSE');
+    notifySessionExpiry(response.status, 'INVALID_RESPONSE', error instanceof Error ? error : undefined, generation);
     throw error;
   }
   if (!response.ok || body?.error) {
@@ -78,7 +79,7 @@ export async function requestJson<T>(
       body?.error?.details ?? [],
       body?.data ?? undefined
     );
-    notifySessionExpiry(clientError.statusCode, clientError.code, clientError);
+    notifySessionExpiry(clientError.statusCode, clientError.code, clientError, generation);
     throw clientError;
   }
   if (!body || body.data === null) {
@@ -122,6 +123,7 @@ async function requestNoContent(
   headers?: HeadersInit,
   fetchImplementation: typeof fetch = fetch
 ): Promise<void> {
+  const generation = getRequestSessionGeneration();
   const response = await fetchImplementation(url, {
     method,
     credentials: 'include',
@@ -131,7 +133,7 @@ async function requestNoContent(
   try {
     body = await parseEnvelope<never>(response);
   } catch (error: unknown) {
-    notifySessionExpiry(response.status, 'INVALID_RESPONSE');
+    notifySessionExpiry(response.status, 'INVALID_RESPONSE', error instanceof Error ? error : undefined, generation);
     throw error;
   }
   if (!response.ok || body?.error) {
@@ -142,7 +144,7 @@ async function requestNoContent(
       body?.error?.details ?? [],
       body?.data ?? undefined
     );
-    notifySessionExpiry(clientError.statusCode, clientError.code, clientError);
+    notifySessionExpiry(clientError.statusCode, clientError.code, clientError, generation);
     throw clientError;
   }
 }

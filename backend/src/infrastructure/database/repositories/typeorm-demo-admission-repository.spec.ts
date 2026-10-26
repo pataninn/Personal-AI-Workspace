@@ -24,6 +24,7 @@ describe('TypeOrmDemoAdmissionRepository bootstrap', () => {
     const ownerId = '11000000-0000-4000-8000-000000000001';
     const expiresAt = new Date(Date.now() + 86_400_000);
     const query = jest.fn(async (sql: string, _parameters?: readonly unknown[]) => {
+      if (sql.includes('AS "retained_demo_owners"')) return [{ retained_demo_owners: 0 }];
       if (sql.includes('SELECT * FROM "credit_runtime_policy"')) return [{
         demo_settings_bootstrapped: true, demo_session_ttl_hours: 24,
         demo_global_admission_max: 40, demo_global_admission_window_seconds: 3600,

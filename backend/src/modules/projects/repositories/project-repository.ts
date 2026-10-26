@@ -23,5 +23,7 @@ export interface IProjectRepository {
   findByIdForOwner(ownerId: string, projectId: string): Promise<Project | null>;
   listActiveRoots(ownerId: string, storageKind?: ProjectStorageKind | null): Promise<readonly string[]>;
   create(input: CreateProjectRecord): Promise<Project>;
+  /** Compensates a new allocation only after a primary locked read proves creation did not commit. */
+  recoverUncreatedRoot?(ownerId: string, projectId: string, discard: () => Promise<void>): Promise<void>;
   updateStatus(input: UpdateProjectStatusRecord): Promise<Project | null>;
 }

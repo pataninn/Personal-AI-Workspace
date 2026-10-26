@@ -6,6 +6,7 @@ import type { HomePlanningProvider, IHomePlanningRuntime, StartHomePlanningRunRe
 import type { IHomeProjectMemoryContextReader } from '@/modules/home-assistant/repositories/home-project-memory-context-reader';
 import { SubmitHomeTurnUseCase, type HomeTurnRuntimeConfiguration } from '@/modules/home-assistant/use-cases/submit-home-turn';
 import { HermesHomePlanningRuntime } from '@/infrastructure/hermes/hermes-home-planning-runtime';
+import { ProcessHomeTurnUseCase } from '@/modules/home-assistant/use-cases/process-home-turn';
 import type { HermesBridgeClient } from '@/infrastructure/hermes/hermes-bridge-client';
 
 const OWNER = '11111111-1111-4111-8111-111111111111';
@@ -103,6 +104,37 @@ function storedPolicy(scopeKind: AssistantScopePolicy['scopeKind'], policyProfil
 }
 
 describe('SubmitHomeTurnUseCase', () => {
+  it('queues unknown startup disposal for maintenance without restarting or settling its outcome', async () => {
+    const { conversations, runtime, executionPolicy } = setup({ startOutcome: 'unknown' });
+    jest.mocked(runtime.cancel).mockResolvedValueOnce({ outcome: 'unknown' });
+    const processing = new ProcessHomeTurnUseCase(conversations as unknown as IHomeConversationRepository, runtime);
+    const onAccepted = jest.fn();
+    const submit = new SubmitHomeTurnUseCase(conversations as unknown as IHomeConversationRepository,
+      { mode: 'hermes', provider, runtime, onAccepted, onAbandoned: (input) => processing.queueAbandonedRuntime(input) },
+      { executionPolicy, providerProfile: provider.profile, model: provider.model });
+
+    const result = await submit.execute({ ownerId: OWNER, conversationId: CONVERSATION, requestKey: 'unknown-start', message: 'Plan today' });
+    expect(result.execution?.state).toBe('unknown');
+    expect(runtime.delete).not.toHaveBeenCalled();
+    await processing.drainCleanup();
+    expect(runtime.cancel).toHaveBeenCalledTimes(2);
+    expect(runtime.delete).toHaveBeenCalledWith(TURN);
+    expect(runtime.start).toHaveBeenCalledTimes(1);
+    expect(onAccepted).not.toHaveBeenCalled();
+  });
+
+  it('retains successful disposal proof when recording an unknown startup outcome then fails', async () => {
+    const { conversations, runtime, executionPolicy } = setup({ startOutcome: 'unknown' });
+    conversations.updateTurnStatus.mockRejectedValueOnce(new Error('expired before status persistence'));
+    const onAbandoned = jest.fn(async () => true);
+    const submit = new SubmitHomeTurnUseCase(conversations as unknown as IHomeConversationRepository,
+      { mode: 'hermes', provider, runtime, onAbandoned },
+      { executionPolicy, providerProfile: provider.profile, model: provider.model });
+    await expect(submit.execute({ ownerId: OWNER, conversationId: CONVERSATION, requestKey: 'unknown-record', message: 'Plan today' }))
+      .rejects.toThrow('expired before status persistence');
+    expect(onAbandoned).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['cancel_requested', 'unknown'] as const)('settles a proven no-send %s turn fenced during context loading', async (status) => {
     const { useCase, conversations, runtime } = setup();
     conversations.listMessagesForOwner.mockImplementation(async () => {

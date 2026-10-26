@@ -1,11 +1,10 @@
 import { timingSafeEqual } from 'node:crypto';
-import type { CookieOptions, RequestHandler, Response } from 'express';
+import type { CookieOptions, RequestHandler } from 'express';
 import { Router } from 'express';
 import { z } from 'zod';
 
 import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
 import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
-import { clearSessionCookie as clearAuthSessionCookie } from '@/modules/auth/controllers/auth-router';
 import { SESSION_COOKIE_NAME, sameOrigin } from '@/modules/auth/controllers/request-auth';
 import type { DemoAdmissionAttemptResult } from '@/modules/demo/domain/demo-admission-types';
 import type { DemoShowcaseCopyDto, IDemoShowcaseCopyManager } from '@/modules/demo/domain/demo-showcase-copy-types';
@@ -34,10 +33,6 @@ function cookieOptions(secure: boolean, expiresAt?: Date, maxAge?: number): Cook
   };
 }
 
-function clearCookie(response: Response, secure: boolean): void {
-  clearAuthSessionCookie(response, secure);
-}
-
 function parseEmptyBody(body: unknown): void {
   const result = emptyRequestSchema.safeParse(body);
   if (!result.success) {
@@ -54,7 +49,6 @@ function csrfMatches(expected: string, provided: string | undefined): boolean {
 
 function handler(dependencies: DemoAdmissionRouterDependencies): RequestHandler {
   return async (request, response, next): Promise<void> => {
-    let invalidCookie = false;
     try {
       parseEmptyBody(request.body);
       const rawToken = request.cookies?.[SESSION_COOKIE_NAME];
@@ -76,7 +70,6 @@ function handler(dependencies: DemoAdmissionRouterDependencies): RequestHandler 
           return;
         } catch (error: unknown) {
           if (!(error instanceof UnauthenticatedError)) throw error;
-          invalidCookie = true;
         }
       }
 
@@ -93,11 +86,9 @@ function handler(dependencies: DemoAdmissionRouterDependencies): RequestHandler 
         }, 201);
         return;
       }
-      if (invalidCookie) clearCookie(response, dependencies.cookieSecure);
       if (result.state === 'failed') throw new DemoProvisioningFailedError();
       sendData(response, { state: result.state }, result.state === 'pending' ? 202 : 200);
     } catch (error: unknown) {
-      if (invalidCookie) clearCookie(response, dependencies.cookieSecure);
       next(mapDemoError(error));
     }
   };
@@ -125,7 +116,6 @@ export function createDemoAdmissionRouter(dependencies: DemoAdmissionRouterDepen
         const result = await dependencies.showcaseCopy!.getStatus(session.principal.id);
         sendData(response, result, result.state === 'pending' ? 202 : 200);
       } catch (error: unknown) {
-        if (error instanceof UnauthenticatedError) clearCookie(response, dependencies.cookieSecure);
         next(mapDemoError(error));
       }
     });
@@ -139,7 +129,6 @@ export function createDemoAdmissionRouter(dependencies: DemoAdmissionRouterDepen
         const result: DemoShowcaseCopyDto = await dependencies.showcaseCopy!.retry(session.principal.id);
         sendData(response, result, result.state === 'pending' ? 202 : 200);
       } catch (error: unknown) {
-        if (error instanceof UnauthenticatedError) clearCookie(response, dependencies.cookieSecure);
         next(mapDemoError(error));
       }
     });

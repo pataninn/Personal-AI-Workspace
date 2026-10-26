@@ -69,6 +69,13 @@ export function useAutomationManagement(): {
   const runInFlight = useRef(new Set<string>());
   const scheduleRef = useRef<readonly AutomationSchedule[]>([]);
   const historiesRef = useRef<Readonly<Record<string, ScheduleHistoryState>>>({});
+  const historyHeads = useRef(new Map<string, string>());
+  const metadataDirty = useRef(false);
+  const metadataRequest = useRef<Promise<void> | null>(null);
+  const metadataGeneration = useRef(0);
+  const mounted = useRef(true);
+
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   useEffect(() => { scheduleRef.current = schedules; }, [schedules]);
   useEffect(() => { historiesRef.current = histories; }, [histories]);
@@ -99,6 +106,10 @@ export function useAutomationManagement(): {
   }, [rememberOccurrenceStatuses]);
 
   const setHistoryPage = useCallback((scheduleId: string, page: AutomationOccurrencePage, loadingMore = false): void => {
+    const latest = page.occurrences[0];
+    const head = latest ? `${latest.id}:${latest.status}` : '';
+    if (historyHeads.current.has(scheduleId) ? historyHeads.current.get(scheduleId) !== head : Boolean(latest)) metadataDirty.current = true;
+    historyHeads.current.set(scheduleId, head);
     noteReadyResults(scheduleId, page.occurrences);
     setHistories((current) => ({ ...current, [scheduleId]: {
       status: 'success', occurrences: page.occurrences, nextCursor: page.nextCursor, errorMessage: null, loadingMore
@@ -139,15 +150,52 @@ export function useAutomationManagement(): {
     }
   }, [setHistoryPage]);
 
+  const refreshMetadata = useCallback(async (): Promise<void> => {
+    if (!metadataDirty.current || !mounted.current) return;
+    if (metadataRequest.current) return metadataRequest.current;
+    metadataDirty.current = false;
+    const generation = metadataGeneration.current;
+    const request = (async () => {
+      try {
+        const nextSchedules = await listAutomationSchedules();
+        if (!mounted.current) return;
+        if (generation !== metadataGeneration.current) { metadataDirty.current = true; return; }
+        const reconciled = nextSchedules.map((schedule) => {
+          const current = scheduleRef.current.find((candidate) => candidate.id === schedule.id);
+          return current && (current.revision > schedule.revision
+            || current.revision === schedule.revision && Date.parse(current.updatedAt) > Date.parse(schedule.updatedAt)) ? current : schedule;
+        });
+        scheduleRef.current = reconciled;
+        setSchedules(reconciled);
+        setReadyNotice((notice) => {
+          const updated = notice && reconciled.find((schedule) => schedule.id === notice.schedule.id);
+          return notice && updated ? { ...notice, schedule: updated } : notice;
+        });
+      } catch {
+        // Keep successful history visible and retry metadata with the next foreground history pass.
+        metadataDirty.current = true;
+      }
+    })();
+    metadataRequest.current = request;
+    try { await request; } finally { metadataRequest.current = null; }
+  }, []);
+
+  const refreshHistories = useCallback(async (scheduleIds: readonly string[], quiet = false): Promise<void> => {
+    await Promise.all(scheduleIds.map((scheduleId) => refreshOneHistory(scheduleId, quiet)));
+    await refreshMetadata();
+  }, [refreshOneHistory, refreshMetadata]);
+
   const refreshAllHistories = useCallback(async (nextSchedules: readonly AutomationSchedule[], quiet = false): Promise<void> => {
-    await Promise.all(nextSchedules.map((schedule) => refreshOneHistory(schedule.id, quiet)));
-  }, [refreshOneHistory]);
+    await refreshHistories(nextSchedules.map((schedule) => schedule.id), quiet);
+  }, [refreshHistories]);
 
   const refresh = useCallback(async (): Promise<readonly AutomationSchedule[]> => {
+    const generation = ++metadataGeneration.current;
     setScheduleStatus('loading');
     setScheduleError(null);
     try {
       const nextSchedules = await listAutomationSchedules();
+      if (!mounted.current || generation !== metadataGeneration.current) return scheduleRef.current;
       scheduleRef.current = nextSchedules;
       setSchedules(nextSchedules);
       setScheduleStatus('success');
@@ -155,6 +203,7 @@ export function useAutomationManagement(): {
       await refreshAllHistories(nextSchedules);
       return nextSchedules;
     } catch {
+      if (!mounted.current || generation !== metadataGeneration.current) return scheduleRef.current;
       setScheduleStatus('error');
       setScheduleError('Schedules could not be loaded. Try again.');
       return [];
@@ -184,14 +233,14 @@ export function useAutomationManagement(): {
     let delay = 5_000;
     let timeout: number;
     const poll = async (): Promise<void> => {
-      await Promise.all(pendingHistoryKey.split('\u0000').map((scheduleId) => refreshOneHistory(scheduleId, true)));
+      await refreshHistories(pendingHistoryKey.split('\u0000'), true);
       if (stopped) return;
       delay = Math.min(delay * 2, 30_000);
       timeout = window.setTimeout(() => { void poll(); }, delay);
     };
     timeout = window.setTimeout(() => { void poll(); }, delay);
     return () => { stopped = true; window.clearTimeout(timeout); };
-  }, [pendingHistoryKey, pageVisible, refreshOneHistory]);
+  }, [pendingHistoryKey, pageVisible, refreshHistories]);
 
   const discoveryHistoryKey = schedules.filter((schedule) => schedule.enabled
     && !hasUnresolvedOccurrence(histories[schedule.id]?.occurrences ?? []))
@@ -201,12 +250,12 @@ export function useAutomationManagement(): {
     let stopped = false;
     let timeout: number;
     const poll = async (): Promise<void> => {
-      await Promise.all(discoveryHistoryKey.split('\u0000').map((scheduleId) => refreshOneHistory(scheduleId, true)));
+      await refreshHistories(discoveryHistoryKey.split('\u0000'), true);
       if (!stopped) timeout = window.setTimeout(() => { void poll(); }, 30_000);
     };
     timeout = window.setTimeout(() => { void poll(); }, 30_000);
     return () => { stopped = true; window.clearTimeout(timeout); };
-  }, [discoveryHistoryKey, pageVisible, refreshOneHistory]);
+  }, [discoveryHistoryKey, pageVisible, refreshHistories]);
 
   useEffect(() => {
       const settledRunIds = Object.entries(runStates)
@@ -223,6 +272,7 @@ export function useAutomationManagement(): {
 
   async function create(request: CreateAutomationScheduleRequest, idempotencyKey: string): Promise<AutomationSchedule> {
     if (!csrfToken) throw new ApiClientError(401, 'SESSION_UNAUTHENTICATED', 'The local session is not available.');
+    metadataGeneration.current += 1;
     const created = await createAutomationSchedule(request, csrfToken, idempotencyKey);
     await refresh();
     return created;
@@ -230,6 +280,7 @@ export function useAutomationManagement(): {
 
   async function update(scheduleId: string, request: UpdateAutomationScheduleRequest): Promise<AutomationSchedule> {
     if (!csrfToken) throw new ApiClientError(401, 'SESSION_UNAUTHENTICATED', 'The local session is not available.');
+    metadataGeneration.current += 1;
     const updated = await updateAutomationSchedule(scheduleId, request, csrfToken);
     await refresh();
     return updated;
@@ -257,11 +308,11 @@ export function useAutomationManagement(): {
       if (hasUnresolvedOccurrence([occurrence])) pendingRunOccurrences.current.set(scheduleId, occurrence);
       runKeys.current.delete(scheduleId);
       setRunStates((current) => ({ ...current, [scheduleId]: { status: 'queued', message: 'Run queued. Check history for its current status.' } }));
-      await refreshOneHistory(scheduleId);
+      await refreshHistories([scheduleId]);
     } catch (error: unknown) {
       if (error instanceof ApiClientError && error.code === 'SCHEDULE_BUSY') {
         runKeys.current.delete(scheduleId);
-        await refreshOneHistory(scheduleId);
+        await refreshHistories([scheduleId]);
         setRunStates((current) => ({ ...current, [scheduleId]: { status: 'blocked', message: 'A run is still resolving. Check its history before starting another.' } }));
         return;
       }
@@ -273,7 +324,7 @@ export function useAutomationManagement(): {
           ? 'We could not confirm this request. Refresh history, then retry the same Run now request if it is not listed.'
           : scheduleActionError(error, 'The briefing could not be started.')
       } }));
-      await refreshOneHistory(scheduleId);
+      await refreshHistories([scheduleId]);
     } finally {
       runInFlight.current.delete(scheduleId);
     }
@@ -300,7 +351,7 @@ export function useAutomationManagement(): {
 
   return {
     schedules, scheduleStatus, scheduleError, histories, runStates, readyNotice,
-    refresh, refreshHistory: async (scheduleId) => { await refreshOneHistory(scheduleId); }, loadMoreHistory,
+    refresh, refreshHistory: async (scheduleId) => { await refreshHistories([scheduleId]); }, loadMoreHistory,
     create, update, run, retryRun, dismissNotice: () => setReadyNotice(null)
   };
 }

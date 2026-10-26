@@ -3,7 +3,7 @@ import type { DataSource, EntityManager } from 'typeorm';
 import type { AccountKind, AccountRole, LocalUserRecord, SessionRecord } from '@/modules/auth/domain/auth-types';
 import type { CreateSessionInput, ISessionRepository } from '@/modules/auth/repositories/session-repository';
 import type { CreateRegularAccountInput, DisableAccountResult, IUserRepository } from '@/modules/auth/repositories/user-repository';
-import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
+import { InvalidCredentialsError, UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
 
 interface UserRow {
   readonly id: string;
@@ -197,15 +197,27 @@ export class TypeOrmSessionRepository implements ISessionRepository {
   public constructor(private readonly dataSource: DataSource) {}
 
   public async create(input: CreateSessionInput): Promise<Pick<SessionRecord, 'id' | 'userId' | 'expiresAt'>> {
-    const rows: readonly { id: string; user_id: string; expires_at: Date | string }[] = await this.dataSource.query(
-      'INSERT INTO "sessions" ("user_id", "token_hash", "expires_at") VALUES ($1, $2, $3) RETURNING "id", "user_id", "expires_at"',
-      [input.userId, input.tokenHash, input.expiresAt]
-    );
-    const row = rows[0];
-    if (!row) {
-      throw new Error('The local session could not be created.');
-    }
-    return { id: row.id, userId: row.user_id, expiresAt: toDate(row.expires_at) };
+    return this.dataSource.transaction(async (manager) => {
+      if (input.expectedPasswordHash !== undefined) {
+        // Serialize issuance with credential reset, without holding a lock during bcrypt.
+        const users: readonly { readonly id: string }[] = await manager.query(
+          `SELECT "id" FROM "users" WHERE "id"=$1 AND "password_hash"=$2
+            AND "account_kind"='regular' AND "is_active"=true
+            AND ("expires_at" IS NULL OR "expires_at">clock_timestamp()) FOR SHARE`,
+          [input.userId, input.expectedPasswordHash]
+        );
+        if (!users[0]) throw new InvalidCredentialsError();
+      }
+      const rows: readonly { id: string; user_id: string; expires_at: Date | string }[] = await manager.query(
+        'INSERT INTO "sessions" ("user_id", "token_hash", "expires_at") VALUES ($1, $2, $3) RETURNING "id", "user_id", "expires_at"',
+        [input.userId, input.tokenHash, input.expiresAt]
+      );
+      const row = rows[0];
+      if (!row) {
+        throw new Error('The local session could not be created.');
+      }
+      return { id: row.id, userId: row.user_id, expiresAt: toDate(row.expires_at) };
+    });
   }
 
   public async findByTokenHash(tokenHash: string): Promise<SessionRecord | null> {

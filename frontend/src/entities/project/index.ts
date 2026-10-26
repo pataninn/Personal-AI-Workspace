@@ -2,7 +2,7 @@ export { createProject, getProject, listProjects, removeProject, renameProject, 
 export { getProjectChatContext, updateProjectChatContext } from '@/entities/project/api/project-chat-context-api';
 export type { ProjectChatContext } from '@/entities/project/api/project-chat-context-api';
 export { useProjectChatContext } from '@/entities/project/model/use-project-chat-context';
-export { loadProject, loadProjects, projectCreated, projectReducer, projectStatusUpdated } from '@/entities/project/model/slice';
+export { loadProject, loadProjects, projectCreated, projectReducer, projectStatusUpdated, projectSessionChanged } from '@/entities/project/model/slice';
 export {
   selectProjectById,
   selectProjectDetail,

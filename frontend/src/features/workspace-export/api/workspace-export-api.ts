@@ -1,5 +1,4 @@
-import { ApiClientError, postJson } from '@/shared/api';
-import { notifySessionExpiry } from '@/shared/api/session-expiry';
+import { ApiClientError, getRequestSessionGeneration, notifySessionExpiry, postJson } from '@/shared/api';
 
 export interface WorkspaceExportDescriptor {
   readonly id: string;
@@ -22,6 +21,7 @@ export async function createWorkspaceExport(
 }
 
 export async function downloadWorkspaceExport(exportId: string): Promise<Blob> {
+  const generation = getRequestSessionGeneration();
   const response = await fetch(`/api/v1/workspace-exports/${encodeURIComponent(exportId)}`, {
     method: 'GET',
     credentials: 'include',
@@ -38,7 +38,7 @@ export async function downloadWorkspaceExport(exportId: string): Promise<Blob> {
       }
     } catch { /* Keep the same generic unavailable message for malformed error responses. */ }
     const error = new ApiClientError(response.status, code, message);
-    notifySessionExpiry(error.statusCode, error.code, error);
+    notifySessionExpiry(error.statusCode, error.code, error, generation);
     throw error;
   }
   const blob = await response.blob();

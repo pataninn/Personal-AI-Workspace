@@ -166,8 +166,8 @@ New anonymous admission remains disabled until all six `DEMO_GLOBAL_ADMISSION_MA
 `DEMO_GLOBAL_ADMISSION_WINDOW_SECONDS`, `DEMO_NETWORK_ADMISSION_MAX`,
 `DEMO_NETWORK_ADMISSION_WINDOW_SECONDS`, `DEMO_RUN_START_MAX`, and
 `DEMO_RUN_START_WINDOW_SECONDS` values and `DEMO_NETWORK_HASH_SECRET` are configured
-together. Compose and `.env.example` now provide modest visitor limits (40/hour
-globally, 5/hour per network, 10 run starts/hour per demo). These are capacity
+together. Compose and `.env.example` now provide modest visitor limits (4/hour
+globally, 2/hour per network, 10 run starts/hour per demo). These are capacity
 limits, not permission to spend money. Existing persisted demo settings are not
 overwritten; use **Admin > Fill missing demo limits**, review, and save if needed. `DEMO_NETWORK_HASH_SECRET` must be a dedicated random
 secret of at least 32 bytes, kept private and separate from `SESSION_SECRET`. Rotating
@@ -190,6 +190,15 @@ administrators can still change an individual account's storage limit. Migration
 revision is still 1. It preserves finite limits, regular accounts, and all accounts
 with a later administrator revision (including intentionally unlimited demos).
 Its rollback restores only recorded repairs that have not subsequently changed.
+New admission also has a server-enforced ceiling of 16 retained demo accounts:
+at the default per-account allowance, their combined allowance is at most 1 GiB.
+Expired, disabled and failed-provisioning accounts still occupy a slot until
+cleanup actually removes them; changing admission rates or TTL cannot bypass it.
+Existing admission-key status retries remain available at capacity. This leaves
+headroom on the small-host example's shared 20 GiB data volume for PostgreSQL,
+images, bounded exports and runtime state. Deliberate admin storage overrides,
+regular-owner data and host/runtime growth still require operator capacity
+monitoring; the ceiling does not promise protection against every disk consumer.
 A published showcase must fit within the visitor's remaining allowance. A separate
 showcase configuration controls whether new demos can be admitted. Configure all six
 settings together: `SHOWCASE_MAX_SNAPSHOT_BYTES`, `SHOWCASE_MAX_FILE_BYTES`,

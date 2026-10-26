@@ -25,7 +25,7 @@ import { ListWorkspaceFilesUseCase, ReadWorkspaceTextUseCase, SearchWorkspaceTex
 import type { Project } from '@/modules/projects/domain/project-types';
 import { ProjectNotFoundError } from '@/modules/projects/domain/project-errors';
 import type { CreateProjectRecord, IProjectRepository, UpdateProjectStatusRecord } from '@/modules/projects/repositories/project-repository';
-import type { IWorkspaceBoundary, ProjectRootScope, ResolvedProjectRoot, WorkspaceBoundarySnapshot } from '@/modules/projects/repositories/workspace-boundary';
+import type { IWorkspaceBoundary, ManagedProjectRootAllocation, ProjectRootScope, ResolvedProjectRoot, WorkspaceBoundarySnapshot } from '@/modules/projects/repositories/workspace-boundary';
 import { CreateProjectUseCase, GetProjectUseCase, ListProjectsUseCase, UpdateProjectStatusUseCase } from '@/modules/projects/use-cases/project-use-cases';
 import type { IWorkspacePlanningUseCases } from '@/modules/projects/use-cases/workspace-planning-use-cases';
 import { GetAiRunUseCase } from '@/modules/ai-runs/use-cases/ai-run-use-cases';
@@ -137,6 +137,9 @@ class TestProjectRepository implements IProjectRepository {
     this.records.set(project.id, project);
     return project;
   }
+  public async recoverUncreatedRoot(ownerId: string, projectId: string, discard: () => Promise<void>): Promise<void> {
+    if (!await this.findByIdForOwner(ownerId, projectId)) await discard();
+  }
   public async updateStatus(input: UpdateProjectStatusRecord): Promise<Project | null> {
     const current = await this.findByIdForOwner(input.ownerId, input.projectId);
     if (!current || current.version !== input.expectedVersion) return null;
@@ -154,6 +157,9 @@ class TempManagedWorkspaceBoundary implements IWorkspaceBoundary {
   public async assertReady(): Promise<void> { return undefined; }
   public async validateProjectRoot(relativeRoot: string): Promise<string> { return relativeRoot; }
   public async createManagedProjectRoot(_ownerId: string, projectId: string): Promise<string> { return `projects/${projectId}`; }
+  public async allocateManagedProjectRoot(ownerId: string, projectId: string): Promise<ManagedProjectRootAllocation> {
+    return { relativeRoot: await this.createManagedProjectRoot(ownerId, projectId), discardIfEmpty: async () => undefined };
+  }
   public async resolveProjectRoot(scope: ProjectRootScope): Promise<ResolvedProjectRoot> {
     if (scope.storageKind !== 'managed' || scope.relativeRoot !== `projects/${scope.projectId}`) {
       throw new Error('The test workspace received an unexpected persisted project scope.');

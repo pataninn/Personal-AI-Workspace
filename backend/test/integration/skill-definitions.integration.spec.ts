@@ -185,10 +185,15 @@ describeDatabase('Task 6.2 skill definitions PostgreSQL integration', () => {
     await expect(skills.findActiveById(OTHER_OWNER_ID, created.skill.id)).resolves.toBeNull();
     await expect(skills.listActive(OWNER_ID, WORKSPACE_ID)).resolves.toHaveLength(1);
     await expect(skills.listActive(OTHER_OWNER_ID)).resolves.toHaveLength(1);
+    await expect(skills.listActive(OTHER_OWNER_ID, WORKSPACE_ID)).resolves.toEqual([
+      expect.objectContaining({ id: otherOwnerSkill.skill.id, workspaceId: null })
+    ]);
+    await expect(skills.listActive(OWNER_ID, OTHER_OWNER_ID)).resolves.toEqual([]);
     await expect(quota.readUsage(OTHER_OWNER_ID)).resolves.toMatchObject({ usedBytes: firstRevisionBytes, reservedBytes: 0n });
 
     await expect(skills.softDelete({ ownerId: OWNER_ID, skillId: created.skill.id, expectedVersion: 2 })).resolves.toMatchObject({ version: 2 });
     await expect(skills.findActiveById(OWNER_ID, created.skill.id)).resolves.toBeNull();
+    await expect(skills.listActive(OWNER_ID, WORKSPACE_ID)).resolves.toEqual([]);
     await expect(skills.create(createInput)).rejects.toMatchObject({ code: 'SKILL_NOT_FOUND', statusCode: 404 });
     await expect(quota.readUsage(OWNER_ID)).resolves.toMatchObject({ usedBytes: expectedHistoryBytes, reservedBytes: 0n });
   });

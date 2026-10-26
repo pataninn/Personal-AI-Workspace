@@ -39,18 +39,26 @@ export class CreateProjectUseCase {
       throw new ProjectWorkspaceModeInvalidError();
     }
     const id = this.createId();
-    if (!this.workspaceBoundary.createManagedProjectRoot) throw new WorkspaceStorageUnavailableError();
-    const relativeRoot = await this.workspaceBoundary.createManagedProjectRoot(input.ownerId, id);
-    return this.projectRepository.create({
-      id,
-      ownerId: input.ownerId,
-      name: identity.name,
-      slug: identity.slug,
-      relativeRoot,
-      storageKind: 'managed',
-      relativeRootKey: relativeRoot,
-      objective
-    });
+    const recover = this.projectRepository.recoverUncreatedRoot?.bind(this.projectRepository);
+    if (!this.workspaceBoundary.allocateManagedProjectRoot || !recover) throw new WorkspaceStorageUnavailableError();
+    const allocation = await this.workspaceBoundary.allocateManagedProjectRoot(input.ownerId, id);
+    try {
+      return await this.projectRepository.create({
+        id,
+        ownerId: input.ownerId,
+        name: identity.name,
+        slug: identity.slug,
+        relativeRoot: allocation.relativeRoot,
+        storageKind: 'managed',
+        relativeRootKey: allocation.relativeRoot,
+        objective
+      });
+    } catch (error: unknown) {
+      try {
+        await recover(input.ownerId, id, () => allocation.discardIfEmpty());
+      } catch { throw new WorkspaceStorageUnavailableError(); }
+      throw error;
+    }
   }
 }
 

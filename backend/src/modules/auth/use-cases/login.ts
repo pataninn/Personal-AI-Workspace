@@ -52,6 +52,7 @@ export class LoginUseCase {
     const expiresAt = new Date(this.clock.now().getTime() + this.options.sessionLifetimeMs);
     const session = await this.sessionRepository.create({
       userId: user.id,
+      expectedPasswordHash: user.passwordHash,
       tokenHash: this.tokenProvider.digestToken(rawToken),
       expiresAt
     });

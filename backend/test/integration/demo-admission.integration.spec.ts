@@ -29,7 +29,7 @@ import { StartAiRunUseCase } from '@/modules/ai-runs/use-cases/start-ai-run-use-
 import type { StartRunUpdate, RunMutationResult } from '@/modules/ai-runs/repositories/ai-run-repository';
 import { DemoAdmissionRateLimitedError, DemoAdmissionUnavailableError, DemoRunStartRateLimitedError } from '@/modules/demo/domain/demo-admission-errors';
 import { CreateDemoSessionUseCase } from '@/modules/demo/use-cases/create-demo-session';
-import { DEFAULT_DEMO_STORAGE_LIMIT_BYTES } from '@/modules/demo/domain/demo-storage-policy';
+import { DEFAULT_DEMO_STORAGE_LIMIT_BYTES, MAX_RETAINED_DEMO_ACCOUNTS } from '@/modules/demo/domain/demo-storage-policy';
 import { WorkspacePlanningUseCases } from '@/modules/projects/use-cases/workspace-planning-use-cases';
 
 const DATABASE_NAME = 'home_history_task_3_3_demo_test';
@@ -381,6 +381,39 @@ describeDatabase('Task 3.3 demo admission with PostgreSQL', () => {
       await baseClient.end();
     }
   }, 30_000);
+
+  it('reserves the last retained-demo slot once, counts expired owners, and frees capacity only after removal', async () => {
+    const source = requiredDataSource();
+    const retained = await source.query(`INSERT INTO "users"
+      ("scope_key", "account_kind", "role", "password_hash", "expires_at", "is_active")
+      SELECT 'account:retained-capacity-' || value, 'demo', 'user', NULL,
+        clock_timestamp() - interval '1 hour', false
+      FROM generate_series(1, $1::integer) AS value RETURNING "id"`,
+    [MAX_RETAINED_DEMO_ACCOUNTS - 1]) as readonly { readonly id: string }[];
+    const inputs = ['a', 'b'].map((value) => ({
+      requestDigest: createHash('sha256').update(`capacity-${value}`).digest('hex'),
+      networkHash: value.repeat(64), networkKeyId: 'c'.repeat(16)
+    }));
+    const attempts = await Promise.allSettled(inputs.map((input) => admissionRepository.beginAdmission(input)));
+    const winnerIndex = attempts.findIndex((attempt) => attempt.status === 'fulfilled');
+    expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
+    expect(attempts.filter((attempt) => attempt.status === 'rejected')).toEqual([
+      expect.objectContaining({ reason: expect.objectContaining({ code: 'DEMO_ADMISSION_RATE_LIMITED' }) })
+    ]);
+    expect(await source.query(`SELECT count(*)::integer AS "count" FROM "users" WHERE "account_kind"='demo'`))
+      .toEqual([{ count: MAX_RETAINED_DEMO_ACCOUNTS }]);
+    expect(await source.query('SELECT count(*)::integer AS "count" FROM "demo_admissions"')).toEqual([{ count: 1 }]);
+    const winner = inputs[winnerIndex];
+    if (!winner || !retained[0]) throw new Error('Expected the winning admission and a retained owner');
+    await expect(admissionRepository.beginAdmission(winner)).resolves.toEqual({ kind: 'existing', status: { state: 'pending' } });
+    const next = { requestDigest: 'd'.repeat(64), networkHash: 'e'.repeat(64), networkKeyId: 'c'.repeat(16) };
+    await expect(admissionRepository.beginAdmission(next)).rejects.toMatchObject({ code: 'DEMO_ADMISSION_RATE_LIMITED' });
+    // Only actual removal frees capacity; the fifteen expired, disabled rows above did not.
+    await source.query('DELETE FROM "users" WHERE "id"=$1', [retained[0].id]);
+    await expect(admissionRepository.beginAdmission(next)).resolves.toMatchObject({ kind: 'created' });
+    expect(await source.query(`SELECT count(*)::integer AS "count" FROM "users" WHERE "account_kind"='demo'`))
+      .toEqual([{ count: MAX_RETAINED_DEMO_ACCOUNTS }]);
+  });
 
   it('backfills only untouched legacy demo storage defaults and safely reverts only those repairs', async () => {
     const source = requiredDataSource();

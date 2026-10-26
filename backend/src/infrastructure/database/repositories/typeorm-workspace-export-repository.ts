@@ -71,8 +71,8 @@ export class TypeOrmWorkspaceExportRepository implements IWorkspaceExportReposit
     if (!UUID_PATTERN.test(input.ownerId) || !UUID_PATTERN.test(input.workspaceId)
       || !/^\d{1,20}$/u.test(input.builder.startTicks) || !Number.isSafeInteger(input.builder.processId)) throw workspaceUnavailable();
     return this.dataSource.transaction(async (manager) => {
-      const workspace = await lockExportableWorkspace(manager, input.ownerId, input.workspaceId);
       const owner = await lockExportableOwner(manager, input.ownerId);
+      const workspace = await lockExportableWorkspace(manager, input.ownerId, input.workspaceId);
       const generation = await currentDemoCleanupGeneration(manager, input.ownerId);
       if (generation !== null) throw workspaceUnavailable();
       const removal = rows<{ readonly id: string }>(await manager.query(

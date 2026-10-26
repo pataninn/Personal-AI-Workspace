@@ -914,6 +914,21 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
     }, homeConversationContentScope({ ownerId: input.ownerId, conversationId: input.conversationId, turnIdsFromResult: (result: PersistedHomeResource<HomeTurn> | null) => result ? [result.resource.id] : [] }));
   }
 
+  /** Records runtime-only disposal even when expiry has already fenced normal principal writes. */
+  public async recordRuntimeDisposal(input: CancelHomeTurnInput): Promise<void> {
+    await this.dataSource.query(`UPDATE "home_turns"
+      SET "runtime_disposed_at"=COALESCE("runtime_disposed_at",clock_timestamp())
+      WHERE "owner_id"=$1 AND "conversation_id"=$2 AND "id"=$3`,
+    [input.ownerId, input.conversationId, input.turnId]);
+  }
+
+  public async hasRuntimeDisposal(input: CancelHomeTurnInput): Promise<boolean> {
+    const found = returnedRows<{ readonly disposed: boolean }>(await this.dataSource.query(`SELECT ("runtime_disposed_at" IS NOT NULL) AS "disposed"
+      FROM "home_turns" WHERE "owner_id"=$1 AND "conversation_id"=$2 AND "id"=$3`,
+    [input.ownerId, input.conversationId, input.turnId]));
+    return found[0]?.disposed === true;
+  }
+
   /** Updates a turn only within the supplied owner and conversation. */
   public async settleExpiredTurnCancellation(input: CancelHomeTurnInput): Promise<HomeTurn | null> {
     // Metadata-only settlement after trusted no-send/disposal proof. Never writes content or releases provider receipts.

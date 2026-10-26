@@ -68,7 +68,7 @@ describe('assistant execution policy route', () => {
     const unauthenticated = await request(app).get('/api/v1/assistant/execution-policy?scope=home');
     expect(unauthenticated.status).toBe(401);
     expect(findPolicy).not.toHaveBeenCalled();
-    expect(clearSessionCookie).toHaveBeenCalledTimes(1);
+    expect(clearSessionCookie).not.toHaveBeenCalled();
 
     const authenticated = await request(app).get('/api/v1/assistant/execution-policy?scope=home').set('Cookie', cookie(TOKEN_A));
     expect(authenticated.status).toBe(200);

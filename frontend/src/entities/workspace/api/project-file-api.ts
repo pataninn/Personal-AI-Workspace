@@ -1,4 +1,4 @@
-import { getJson, notifySessionExpiry, requestJson, deleteNoContent, ApiClientError } from '@/shared/api';
+import { getJson, getRequestSessionGeneration, notifySessionExpiry, requestJson, deleteNoContent, ApiClientError } from '@/shared/api';
 
 export interface ProjectTextFile {
   readonly path: string;
@@ -25,15 +25,17 @@ export function deleteProjectFile(projectId: string, path: string, hash: string,
 }
 
 export async function downloadProjectFile(projectId: string, path: string): Promise<{ blob: Blob; hash: string }> {
+  const generation = getRequestSessionGeneration();
   const response = await fetch(fileUrl(projectId, 'download', path), { credentials: 'include' });
-  if (!response.ok) await fileError(response);
+  if (!response.ok) await fileError(response, generation);
   const hash = response.headers.get('ETag')?.replace(/^"|"$/gu, '') ?? '';
   return { blob: await response.blob(), hash };
 }
 
 export async function uploadProjectFile(projectId: string, file: File, csrfToken: string): Promise<{ readonly path: string; readonly converted: boolean }> {
+  const generation = getRequestSessionGeneration();
   const response = await fetch(fileUrl(projectId, 'upload', file.name), { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/octet-stream', 'X-CSRF-Token': csrfToken }, body: file });
-  if (!response.ok) await fileError(response);
+  if (!response.ok) await fileError(response, generation);
   const body: unknown = await response.json().catch(() => null);
   if (!body || typeof body !== 'object' || !('data' in body) || !body.data || typeof body.data !== 'object' || !('path' in body.data) || typeof body.data.path !== 'string' || !('converted' in body.data) || typeof body.data.converted !== 'boolean') {
     throw new ApiClientError(response.status, 'INVALID_FILE_RESPONSE', 'The uploaded file could not be confirmed. Refresh the file list.');
@@ -41,7 +43,7 @@ export async function uploadProjectFile(projectId: string, file: File, csrfToken
   return { path: body.data.path, converted: body.data.converted };
 }
 
-async function fileError(response: Response): Promise<never> {
+async function fileError(response: Response, generation: number): Promise<never> {
   const body: unknown = await response.json().catch(() => null);
   let message = 'The file operation failed.';
   let code = 'FILE_REQUEST_FAILED';
@@ -50,6 +52,6 @@ async function fileError(response: Response): Promise<never> {
     if ('code' in body.error && typeof body.error.code === 'string') code = body.error.code;
   }
   const error = new ApiClientError(response.status, code, message);
-  notifySessionExpiry(response.status, code, error);
+  notifySessionExpiry(response.status, code, error, generation);
   throw error;
 }

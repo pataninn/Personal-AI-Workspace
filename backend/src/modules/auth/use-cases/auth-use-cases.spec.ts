@@ -102,7 +102,7 @@ describe('LoginUseCase', () => {
     expect(users.findByIdentifier).toHaveBeenCalledWith('alice');
     expect(passwordHasher.verify).toHaveBeenCalledWith('correct-password', 'stored-hash');
     expect(result.principal).toEqual({ id: 'user-1', displayName: 'Alice', accountKind: 'regular', role: 'user' });
-    expect(sessions.create).toHaveBeenCalledWith({ userId: 'user-1', tokenHash: 'opaque-token-hash', expiresAt: new Date('2026-09-12T12:01:00.000Z') });
+    expect(sessions.create).toHaveBeenCalledWith({ userId: 'user-1', expectedPasswordHash: 'stored-hash', tokenHash: 'opaque-token-hash', expiresAt: new Date('2026-09-12T12:01:00.000Z') });
     expect(tokenProvider.digestToken).toHaveBeenCalledWith(RAW_TOKEN);
   });
 

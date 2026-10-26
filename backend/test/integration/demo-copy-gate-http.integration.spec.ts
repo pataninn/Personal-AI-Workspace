@@ -81,6 +81,7 @@ function buildApp(ready: (ownerId: string) => Promise<boolean>) {
     capabilities: null
   };
   const getCopyStatus = jest.fn(async () => copyStatus);
+  const createDemoSession = jest.fn(async () => ({ kind: 'status' as const, state: 'pending' as const }));
   const currentShowcase = {
     version: 'd3440000-0000-4000-8000-000000000020',
     publishedAt: NOW.toISOString(),
@@ -105,7 +106,7 @@ function buildApp(ready: (ownerId: string) => Promise<boolean>) {
       clearSessionCookie: () => undefined
     } as unknown as ProjectRouterDependencies,
     demoAdmission: {
-      createSession: { execute: async () => ({ kind: 'status', state: 'pending' as const }) },
+      createSession: { execute: createDemoSession },
       getSession,
       appOrigin: APP_ORIGIN,
       cookieSecure: false,
@@ -129,7 +130,7 @@ function buildApp(ready: (ownerId: string) => Promise<boolean>) {
     } as unknown as ShowcaseRouterDependencies
   });
 
-  return { app, privateHandler, getCopyStatus, getPublicShowcase };
+  return { app, privateHandler, getCopyStatus, getPublicShowcase, createDemoSession };
 }
 
 function cookie(token: string): { Cookie: string } {
@@ -137,6 +138,20 @@ function cookie(token: string): { Cookie: string } {
 }
 
 describe('demo copy gate HTTP boundary', () => {
+  it('does not expire browser cookies on rejected copy reads/retries or pending/failed admission responses', async () => {
+    const { app, createDemoSession } = buildApp(async () => true);
+    const invalidCookie = cookie('invalid-old-session-token-with-at-least-32-characters');
+    const read = await request(app).get('/api/v1/demo/showcase-copy').set(invalidCookie).expect(401);
+    const retry = await request(app).post('/api/v1/demo/showcase-copy/retries').set(invalidCookie)
+      .set('Origin', APP_ORIGIN).send({}).expect(401);
+    const pending = await request(app).post('/api/v1/demo/session').set(invalidCookie)
+      .set('Origin', APP_ORIGIN).set('Idempotency-Key', Buffer.alloc(32, 1).toString('base64url')).send({}).expect(202);
+    createDemoSession.mockRejectedValueOnce(new Error('Admission temporarily unavailable.'));
+    const failed = await request(app).post('/api/v1/demo/session').set(invalidCookie)
+      .set('Origin', APP_ORIGIN).set('Idempotency-Key', Buffer.alloc(32, 2).toString('base64url')).send({}).expect(500);
+    for (const response of [read, retry, pending, failed]) expect(response.headers['set-cookie']).toBeUndefined();
+  });
+
   it('denies an unready demo before the attached private project handler runs', async () => {
     const isReady = jest.fn(async () => false);
     const { app, privateHandler } = buildApp(isReady);

@@ -121,8 +121,7 @@ function buildApp(user: LocalUserRecord | null = {
   passwordHash: 'stored-hash',
   isActive: true,
   expiresAt: null
-}): express.Express {
-  const sessions = new FakeSessionRepository();
+}, sessions = new FakeSessionRepository()): express.Express {
   const users = new FakeUserRepository(user);
   const tokenProvider = new FixedTokenProvider();
   const clock = new FixedClock();
@@ -281,5 +280,42 @@ describe('local auth API (integration)', () => {
         });
         expect(JSON.stringify(body)).not.toContain('anything');
       });
+  });
+
+  it('does not expire the browser cookie when an old session read fails after a new login', async () => {
+    const sessions = new FakeSessionRepository();
+    let startLookup = (): void => undefined;
+    const lookupStarted = new Promise<void>((resolve) => { startLookup = resolve; });
+    let resumeLookup = (): void => undefined;
+    const lookupReleased = new Promise<void>((resolve) => { resumeLookup = resolve; });
+    jest.spyOn(sessions, 'findByTokenHash').mockImplementationOnce(async () => {
+      startLookup(); await lookupReleased; return null;
+    });
+    const app = buildApp(undefined, sessions);
+    const staleRead = request(app).get('/api/v1/auth/session')
+      .set('Cookie', '__Host-pa_session=old-session-token-with-at-least-32-characters')
+      .then((response) => response);
+    let login: request.Response;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([lookupStarted, new Promise<void>((_resolve, reject) => {
+        deadline = setTimeout(() => reject(new Error('The old session read did not reach the lookup gate.')), 5000);
+      })]);
+      login = await request(app).post('/api/v1/auth/login').set('Origin', APP_ORIGIN)
+        .send({ identifier: 'owner', password: 'correct-password' }).expect(200);
+    } finally { if (deadline) clearTimeout(deadline); resumeLookup(); }
+    const staleResponse = await staleRead;
+    expect(staleResponse.status).toBe(401);
+    expect(staleResponse.headers['set-cookie']).toBeUndefined();
+    await request(app).get('/api/v1/auth/session').set('Cookie', cookiePair(login)).expect(200);
+  }, 10_000);
+
+  it('rejects unauthenticated reads and logout without an automatic cookie deletion', async () => {
+    const app = buildApp();
+    const missing = await request(app).get('/api/v1/auth/session').expect(401);
+    const rejectedLogout = await request(app).post('/api/v1/auth/logout').set('Origin', APP_ORIGIN)
+      .set('Cookie', '__Host-pa_session=old-session-token-with-at-least-32-characters').expect(401);
+    expect(missing.headers['set-cookie']).toBeUndefined();
+    expect(rejectedLogout.headers['set-cookie']).toBeUndefined();
   });
 });

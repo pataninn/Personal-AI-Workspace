@@ -469,7 +469,7 @@ export class TypeOrmAutomationRepository implements IAutomationRepository, IHome
         WHERE (o."status"='queued'
           OR (o."status" IN ('claimed','dispatching','running','cancel_requested','interrupted_unknown')
             AND (o."lease_expires_at" IS NULL OR o."lease_expires_at"<=clock_timestamp())))
-        ORDER BY o."intended_for_utc",o."id" LIMIT $1 FOR UPDATE OF o SKIP LOCKED
+        ORDER BY o."updated_at",o."intended_for_utc",o."id" LIMIT $1 FOR UPDATE OF o SKIP LOCKED
       `, [Math.max(1, Math.min(32, Math.trunc(input.limit)))]));
       const claimed: ClaimedAutomationOccurrence[] = [];
       for (const candidate of candidates) {

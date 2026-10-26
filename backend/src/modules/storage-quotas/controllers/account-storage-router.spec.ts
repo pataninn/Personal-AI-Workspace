@@ -153,7 +153,7 @@ describe('account storage route', () => {
     const unauthenticated = await request(app).get('/api/v1/account/storage');
     expect(unauthenticated.status).toBe(401);
     expect(unauthenticated.body.error.code).toBe('SESSION_UNAUTHENTICATED');
-    expect(clearSessionCookie).toHaveBeenCalledTimes(1);
+    expect(clearSessionCookie).not.toHaveBeenCalled();
     expect(readUsage).not.toHaveBeenCalled();
 
     const authenticatedRead = await request(app).get('/api/v1/account/storage').set('Cookie', sessionCookie(TOKEN_A));

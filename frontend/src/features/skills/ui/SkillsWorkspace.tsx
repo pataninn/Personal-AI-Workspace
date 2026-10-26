@@ -190,6 +190,7 @@ function SkillEditor({ editor, projects, currentProjectId, csrfToken, onCancel, 
   const [latest, setLatest] = useState<UserSkill | null>(null);
   const [conflictResolved, setConflictResolved] = useState(false);
   const pendingCreate = useRef<{ readonly key: string; readonly request: { readonly title: string; readonly instructions: string; readonly workspaceId: string | null; readonly declaredTools: readonly SkillToolCapability[] } } | null>(null);
+  const createKey = useRef(editor.key);
   const instructionBytes = new TextEncoder().encode(draft.instructions).length;
 
   function change<K extends keyof SkillDraft>(key: K, value: SkillDraft[K]): void {
@@ -225,13 +226,18 @@ function SkillEditor({ editor, projects, currentProjectId, csrfToken, onCancel, 
         onSaved(await updateSkill(editor.skill.id, request, csrfToken));
       } else {
         const pending = pendingCreate.current ?? {
-          key: editor.key,
+          key: createKey.current,
           request: { title: draft.title.trim(), instructions: draft.instructions, workspaceId: draft.workspaceId, declaredTools: draft.declaredTools }
         };
         pendingCreate.current = pending;
         onSaved(await createSkill(pending.request, csrfToken, pending.key));
       }
     } catch (saveError: unknown) {
+      if (!editor.skill && saveError instanceof ApiClientError && saveError.statusCode >= 400 && saveError.statusCode < 500
+        && saveError.code !== 'IDEMPOTENCY_KEY_REUSED' && saveError.code !== 'SKILL_IDEMPOTENCY_KEY_REUSED') {
+        pendingCreate.current = null;
+        createKey.current = createIdempotencyKey();
+      }
       if (saveError instanceof ApiClientError && saveError.code === 'SKILL_VERSION_CONFLICT' && editor.skill) {
         setError('This skill changed while you were editing. Your draft is preserved. Choose how to continue.');
         setConflictResolved(false);
@@ -264,8 +270,8 @@ function SkillEditor({ editor, projects, currentProjectId, csrfToken, onCancel, 
       <div className="grid gap-5 overflow-y-auto px-1 pb-1">
       <div className="grid gap-2"><Label htmlFor="skill-title">Title</Label><Input id="skill-title" value={draft.title} maxLength={120} aria-invalid={Boolean(fieldErrors.title)} aria-describedby={fieldErrors.title ? 'skill-title-error' : undefined} onChange={(event) => change('title', event.target.value)} disabled={Boolean(pendingCreate.current)} />{fieldErrors.title ? <p id="skill-title-error" role="alert" className="text-sm text-[var(--color-error)]">{fieldErrors.title}</p> : null}</div>
       <div className="grid gap-2"><Label htmlFor="skill-instructions">Instructions</Label><Textarea id="skill-instructions" rows={8} value={draft.instructions} aria-invalid={Boolean(fieldErrors.instructions)} aria-describedby="skill-instructions-help" onChange={(event) => change('instructions', event.target.value)} disabled={Boolean(pendingCreate.current)} /><p id="skill-instructions-help" className="text-xs text-[var(--color-text-muted)]">{instructionBytes.toLocaleString()} / 16,000 UTF-8 bytes</p>{fieldErrors.instructions ? <p role="alert" className="text-sm text-[var(--color-error)]">{fieldErrors.instructions}</p> : null}</div>
-      <div className="grid gap-2"><Label htmlFor="skill-workspace">Workspace</Label><select id="skill-workspace" className="min-h-11 rounded-lg border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3" value={draft.workspaceId ?? ''} onChange={(event) => change('workspaceId', event.target.value || null)} disabled={Boolean(pendingCreate.current)}><option value="">Account-wide</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}{project.status === 'archived' ? ' (archived)' : ''}</option>)}{draft.workspaceId && !projects.some((project) => project.id === draft.workspaceId) ? <option value={draft.workspaceId}>{draft.workspaceId === currentProjectId ? 'Current workspace' : 'Existing workspace'}</option> : null}</select></div>
-      <label className="flex items-center gap-3"><input type="checkbox" className="size-4 accent-[var(--color-primary)]" checked={draft.enabled} onChange={(event) => change('enabled', event.target.checked)} disabled={Boolean(pendingCreate.current)} /><span>Enabled</span></label>
+      <div className="grid gap-2"><Label htmlFor="skill-workspace">Workspace</Label><select id="skill-workspace" className="min-h-11 rounded-lg border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3" value={draft.workspaceId ?? ''} onChange={(event) => change('workspaceId', event.target.value || null)} disabled={Boolean(pendingCreate.current)}><option value="">Account-wide</option>{projects.filter((project) => project.status === 'active' || Boolean(editor.skill) && project.id === draft.workspaceId).map((project) => <option key={project.id} value={project.id}>{project.name}{project.status === 'archived' ? ' (archived)' : ''}</option>)}{draft.workspaceId && !projects.some((project) => project.id === draft.workspaceId) ? <option value={draft.workspaceId}>{draft.workspaceId === currentProjectId ? 'Current workspace' : 'Existing workspace'}</option> : null}</select></div>
+      {editor.skill ? <label className="flex items-center gap-3"><input type="checkbox" className="size-4 accent-[var(--color-primary)]" checked={draft.enabled} onChange={(event) => change('enabled', event.target.checked)} disabled={Boolean(pendingCreate.current)} /><span>Enabled</span></label> : <p className="text-sm text-[var(--color-text-muted)]">New skills are enabled when saved. You can disable them afterward.</p>}
       <fieldset className="m-0 grid min-w-0 gap-2 border-0 p-0"><legend className="mb-2 p-0 font-medium">Tools</legend>{SKILL_TOOLS.map((tool) => <label key={tool.id} className="flex min-h-11 items-center gap-3"><input type="checkbox" className="mt-1 size-4 accent-[var(--color-primary)]" checked={draft.declaredTools.includes(tool.id)} onChange={(event) => change('declaredTools', event.target.checked ? [...draft.declaredTools, tool.id] : draft.declaredTools.filter((value) => value !== tool.id))} disabled={Boolean(pendingCreate.current)} /><span>{tool.label}</span></label>)}<p className="text-xs text-[var(--color-text-muted)]">Only tools enabled for this workspace can run.</p></fieldset>
       </div>
       <div className="flex shrink-0 flex-wrap justify-end gap-3"><Button type="submit" disabled={!csrfToken || saving || Boolean(latest && !conflictResolved) || Boolean(pendingCreate.current)} aria-busy={saving}>{saving ? 'Saving…' : 'Save skill'}</Button>{pendingCreate.current ? <Button type="submit" variant="secondary" disabled={!csrfToken || saving} aria-busy={saving}>Retry same save</Button> : null}<Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>Cancel</Button></div>

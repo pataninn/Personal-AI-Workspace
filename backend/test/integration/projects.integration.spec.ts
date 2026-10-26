@@ -15,7 +15,7 @@ import type { CreateRegularAccountInput, IUserRepository } from '@/modules/auth/
 import { ProjectIdempotencyKeyInvalidError, ProjectNotFoundError, ProjectRemovalBusyError, ProjectRootReparsePointError, ProjectVersionConflictError, WorkspaceBoundaryUnavailableError, WorkspaceStorageUnavailableError } from '@/modules/projects/domain/project-errors';
 import type { Project } from '@/modules/projects/domain/project-types';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
-import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspace-boundary';
+import type { IWorkspaceBoundary, ManagedProjectRootAllocation } from '@/modules/projects/repositories/workspace-boundary';
 import { CreateProjectUseCase, DeleteProjectUseCase, GetProjectOverviewUseCase, GetProjectUseCase, ListProjectsUseCase, UpdateProjectStatusUseCase } from '@/modules/projects';
 import type {
   AttachInitialProjectRootInput,
@@ -90,6 +90,10 @@ class FixtureProjectRepository implements IProjectRepository {
     return created;
   }
 
+  public async recoverUncreatedRoot(ownerId: string, projectId: string, discard: () => Promise<void>): Promise<void> {
+    if (!await this.findByIdForOwner(ownerId, projectId)) await discard();
+  }
+
   public async updateStatus(input: { readonly ownerId: string; readonly projectId: string; readonly status: 'active' | 'archived'; readonly expectedVersion: number }): Promise<Project | null> {
     const current = await this.findByIdForOwner(input.ownerId, input.projectId);
     if (!current || current.version !== input.expectedVersion) {
@@ -121,6 +125,10 @@ class FixtureWorkspaceBoundary implements IWorkspaceBoundary {
   public async createManagedProjectRoot(_ownerId: string, projectId: string): Promise<string> {
     if (!this.available) throw new WorkspaceStorageUnavailableError();
     return `projects/${projectId}`;
+  }
+
+  public async allocateManagedProjectRoot(ownerId: string, projectId: string): Promise<ManagedProjectRootAllocation> {
+    return { relativeRoot: await this.createManagedProjectRoot(ownerId, projectId), discardIfEmpty: async () => undefined };
   }
 
   public async validateProjectRoot(relativeRoot: string): Promise<string> {

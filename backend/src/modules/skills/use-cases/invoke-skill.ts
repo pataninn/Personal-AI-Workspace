@@ -5,6 +5,8 @@ import type { SubmitHomeTurnUseCase, TrustedSkillInvocationBinding } from '@/mod
 import { AppError } from '@/shared/errors/app-error';
 import type { SkillContextRevision, SkillInvocation, SkillInvocationResult, SkillInvocationState } from '@/modules/skills/domain/skill-invocation-types';
 import { validateSkillVersion } from '@/modules/skills/domain/skill-validation';
+import { SKILL_INPUT_LIMITS } from '@/modules/skills/domain/skill-types';
+import { makeSkillMessage } from '@/modules/skills/domain/skill-invocation-message';
 import type { ISkillInvocationRepository } from '@/modules/skills/repositories/skill-invocation-repository';
 import type { ISkillRepository } from '@/modules/skills/repositories/skill-repository';
 import type { HomeAutomationFence } from '@/modules/home-assistant/repositories/home-conversation-repository';
@@ -214,12 +216,8 @@ function resultFor(invocation: SkillInvocation, state: string): SkillInvocationR
   };
 }
 
-function makeSkillMessage(title: string, instructions: string, request: string): string {
-  return `Reusable skill: ${title}\nUser-authored skill instructions:\n${instructions}\n\nUser request:\n${request}`;
-}
-
 function validateRequest(value: unknown): string {
-  if (typeof value !== 'string' || value.trim().length === 0 || value.trim().length > 20000) {
+  if (typeof value !== 'string' || value.trim().length === 0 || value.trim().length > SKILL_INPUT_LIMITS.requestCharacters) {
     throw new AppError('VALIDATION_ERROR', 400, 'The skill invocation request is invalid.', [{ field: 'request', message: 'Enter a non-empty request no longer than 20000 characters.' }]);
   }
   return value.trim();

@@ -3,7 +3,7 @@ import type { DataSource, EntityManager } from 'typeorm';
 
 import type { DemoAbuseLimitValues, BeginDemoAdmissionResult, CompleteDemoAdmissionInput, CompletedDemoAdmission, DemoAdmissionStatus, IDemoAdmissionRepository, IDemoRunStartAdmission } from '@/modules/demo/domain/demo-admission-types';
 import { DemoAdmissionRateLimitedError, DemoAdmissionUnavailableError, DemoRunStartRateLimitedError, DemoShowcaseUnavailableError } from '@/modules/demo/domain/demo-admission-errors';
-import { DEFAULT_DEMO_STORAGE_LIMIT_BYTES } from '@/modules/demo/domain/demo-storage-policy';
+import { DEFAULT_DEMO_STORAGE_LIMIT_BYTES, MAX_RETAINED_DEMO_ACCOUNTS } from '@/modules/demo/domain/demo-storage-policy';
 
 interface AdmissionRow {
   readonly id: string;
@@ -122,6 +122,15 @@ export class TypeOrmDemoAdmissionRepository implements IDemoAdmissionRepository,
         [input.requestDigest]
       ))[0];
       if (existing) return { kind: 'existing', status: { state: existing.status } } as const;
+
+      // The global admission lock also reserves fleet capacity. Expiry alone cannot free retained bytes.
+      const retained = rows<{ readonly retained_demo_owners: number }>(await manager.query(
+        `SELECT count(*)::integer AS "retained_demo_owners" FROM "users" WHERE "account_kind" = 'demo'`
+      ))[0];
+      if (!retained || !Number.isSafeInteger(retained.retained_demo_owners) || retained.retained_demo_owners < 0) {
+        throw new DemoAdmissionUnavailableError();
+      }
+      if (retained.retained_demo_owners >= MAX_RETAINED_DEMO_ACCOUNTS) throw new DemoAdmissionRateLimitedError();
 
       const policy = rows<{
         readonly demo_settings_bootstrapped: boolean; readonly demo_session_ttl_hours: number | null;

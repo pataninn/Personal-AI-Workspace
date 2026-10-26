@@ -27,6 +27,7 @@ function repository(overrides: Partial<IProjectRepository> = {}): jest.Mocked<IP
     findByIdForOwner: jest.fn().mockResolvedValue(project),
     listActiveRoots: jest.fn().mockResolvedValue([]),
     create: jest.fn().mockResolvedValue(project),
+    recoverUncreatedRoot: jest.fn().mockImplementation(async (_ownerId: string, _projectId: string, discard: () => Promise<void>) => discard()),
     updateStatus: jest.fn().mockResolvedValue({ ...project, status: 'archived', version: 2 }),
     ...overrides
   } as unknown as jest.Mocked<IProjectRepository>;
@@ -37,7 +38,7 @@ function boundary(overrides: Partial<IWorkspaceBoundary> = {}): jest.Mocked<IWor
     getSnapshot: jest.fn().mockResolvedValue({ status: 'ready' }),
     assertReady: jest.fn().mockResolvedValue(undefined),
     validateProjectRoot: jest.fn().mockImplementation(async (value: string) => value),
-    createManagedProjectRoot: jest.fn().mockImplementation(async (_ownerId: string, projectId: string) => `projects/${projectId}`),
+    allocateManagedProjectRoot: jest.fn().mockImplementation(async (_ownerId: string, projectId: string) => ({ relativeRoot: `projects/${projectId}`, discardIfEmpty: jest.fn(async () => undefined) })),
     ...overrides
   } as unknown as jest.Mocked<IWorkspaceBoundary>;
 }
@@ -51,7 +52,7 @@ describe('project use cases', () => {
 
     await expect(useCase.execute({ ownerId: project.ownerId, name: 'Website' })).resolves.toEqual(project);
     expect(createId).toHaveBeenCalledTimes(1);
-    expect(workspace.createManagedProjectRoot).toHaveBeenCalledWith(project.ownerId, '33333333-3333-4333-8333-333333333333');
+    expect(workspace.allocateManagedProjectRoot).toHaveBeenCalledWith(project.ownerId, '33333333-3333-4333-8333-333333333333');
     expect(projects.create).toHaveBeenCalledWith(expect.objectContaining({
       id: '33333333-3333-4333-8333-333333333333',
       relativeRoot: 'projects/33333333-3333-4333-8333-333333333333',
@@ -63,13 +64,13 @@ describe('project use cases', () => {
   it('creates a planning workspace without checking or creating a workspace folder', async () => {
     const planningProject: Project = { ...project, relativeRoot: null, storageKind: null, objective: 'Plan the launch' };
     const projects = repository({ create: jest.fn().mockResolvedValue(planningProject) });
-    const workspace = boundary({ createManagedProjectRoot: jest.fn().mockRejectedValue(new Error('workspace unavailable')) });
+    const workspace = boundary({ allocateManagedProjectRoot: jest.fn().mockRejectedValue(new Error('workspace unavailable')) });
     const useCase = new CreateProjectUseCase(projects, workspace);
 
     await expect(useCase.execute({ ownerId: 'owner-1', name: 'Launch plan', workspaceMode: 'planning', objective: '  Plan the launch  ' }))
       .resolves.toMatchObject({ relativeRoot: null, objective: 'Plan the launch' });
     expect(workspace.assertReady).not.toHaveBeenCalled();
-    expect(workspace.createManagedProjectRoot).not.toHaveBeenCalled();
+    expect(workspace.allocateManagedProjectRoot).not.toHaveBeenCalled();
     expect(projects.listActiveRoots).not.toHaveBeenCalled();
     expect(projects.create).toHaveBeenCalledWith(expect.objectContaining({ relativeRoot: null, relativeRootKey: null, objective: 'Plan the launch' }));
   });
@@ -77,7 +78,7 @@ describe('project use cases', () => {
   it('fails closed when managed storage is not configured and rejects unsupported modes', async () => {
     const workspace = boundary();
     const unconfiguredBoundary = boundary();
-    delete unconfiguredBoundary.createManagedProjectRoot;
+    delete unconfiguredBoundary.allocateManagedProjectRoot;
     const useCase = new CreateProjectUseCase(repository(), unconfiguredBoundary);
 
     await expect(useCase.execute({ ownerId: project.ownerId, name: 'Private files' })).rejects.toBeInstanceOf(WorkspaceStorageUnavailableError);
@@ -91,6 +92,24 @@ describe('project use cases', () => {
 
     await expect(useCase.execute({ ownerId: 'owner-2', projectId: 'project-1' })).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' });
     expect(projects.findByIdForOwner).toHaveBeenCalledWith('owner-2', 'project-1');
+  });
+
+  it('discards a rejected new allocation only through the repository recovery proof', async () => {
+    const rejection = new Error('quota rejected');
+    const discard = jest.fn(async () => undefined);
+    const workspace = boundary({ allocateManagedProjectRoot: jest.fn().mockResolvedValue({ relativeRoot: 'projects/new', discardIfEmpty: discard }) });
+    const projects = repository({ create: jest.fn().mockRejectedValue(rejection) });
+    await expect(new CreateProjectUseCase(projects, workspace, () => 'new').execute({ ownerId: project.ownerId, name: 'Rejected' })).rejects.toBe(rejection);
+    expect(projects.recoverUncreatedRoot).toHaveBeenCalledWith(project.ownerId, 'new', expect.any(Function));
+    expect(discard).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a new allocation when the recovery database cannot establish its association', async () => {
+    const discard = jest.fn(async () => undefined);
+    const workspace = boundary({ allocateManagedProjectRoot: jest.fn().mockResolvedValue({ relativeRoot: 'projects/new', discardIfEmpty: discard }) });
+    const projects = repository({ create: jest.fn().mockRejectedValue(new Error('commit uncertain')), recoverUncreatedRoot: jest.fn().mockRejectedValue(new Error('primary unavailable')) });
+    await expect(new CreateProjectUseCase(projects, workspace).execute({ ownerId: project.ownerId, name: 'Uncertain' })).rejects.toBeInstanceOf(WorkspaceStorageUnavailableError);
+    expect(discard).not.toHaveBeenCalled();
   });
 
   it('requires a current version for lifecycle changes and revalidates restore', async () => {

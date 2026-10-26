@@ -24,6 +24,9 @@ export interface ProjectListResponse {
 }
 
 export interface ProjectState {
+  readonly generation?: number;
+  readonly listRequestId?: string;
+  readonly detailRequestIds?: Record<string, string>;
   readonly listStatus: 'idle' | 'loading' | 'success' | 'error';
   readonly projects: readonly ProjectSnapshot[];
   readonly errorCode: string | null;

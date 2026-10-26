@@ -78,9 +78,13 @@ describe('useAutomationManagement run reconciliation', () => {
     const { result, unmount } = renderHook(() => useAutomationManagement(), { wrapper });
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(result.current.histories[SCHEDULE_ID]?.occurrences).toEqual([]);
+    const updated = { ...SCHEDULE, nextDueAt: '2026-10-22T00:30:00.000Z', lastRunStatus: 'succeeded' as const };
+    api.listAutomationSchedules.mockResolvedValue([updated]);
     api.listAutomationOccurrences.mockResolvedValue({ occurrences: [{ ...QUEUED_OCCURRENCE, status: 'succeeded' }], nextCursor: null });
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(result.current.readyNotice?.occurrence.status).toBe('succeeded');
+    expect(result.current.schedules[0]).toEqual(updated);
+    expect(result.current.readyNotice?.schedule).toEqual(updated);
     const calls = api.listAutomationOccurrences.mock.calls.length;
     act(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); });
     await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
@@ -89,6 +93,62 @@ describe('useAutomationManagement run reconciliation', () => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
     expect(api.listAutomationOccurrences).toHaveBeenCalledTimes(calls);
+  });
+
+  it('refreshes authoritative schedule metadata once for a batch of changed histories', async () => {
+    const second = { ...SCHEDULE, id: '77777777-7777-4777-8777-777777777777' };
+    api.listAutomationSchedules.mockResolvedValue([SCHEDULE, second]);
+    vi.useFakeTimers();
+    const { result, unmount } = renderHook(() => useAutomationManagement(), { wrapper });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    api.listAutomationOccurrences.mockResolvedValue({ occurrences: [{ ...QUEUED_OCCURRENCE, status: 'succeeded' }], nextCursor: null });
+    api.listAutomationSchedules.mockResolvedValue([SCHEDULE, second].map((schedule) => ({ ...schedule, lastRunStatus: 'succeeded' })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(api.listAutomationSchedules).toHaveBeenCalledTimes(2);
+    expect(result.current.schedules.every((schedule) => schedule.lastRunStatus === 'succeeded')).toBe(true);
+    unmount();
+  });
+
+  it('reconciles first-load history newer than the initial schedule snapshot', async () => {
+    const updated = { ...SCHEDULE, nextDueAt: '2026-10-22T00:30:00.000Z', lastRunStatus: 'succeeded' as const };
+    api.listAutomationSchedules.mockResolvedValueOnce([SCHEDULE]).mockResolvedValue([updated]);
+    api.listAutomationOccurrences.mockResolvedValue({ occurrences: [{ ...QUEUED_OCCURRENCE, status: 'succeeded' }], nextCursor: null });
+    const { result } = renderHook(() => useAutomationManagement(), { wrapper });
+    await waitFor(() => expect(result.current.schedules[0]).toEqual(updated));
+    expect(api.listAutomationSchedules).toHaveBeenCalledTimes(2);
+    expect(result.current.readyNotice).toBeNull();
+  });
+
+  it('retries failed metadata reads without hiding successful history', async () => {
+    vi.useFakeTimers();
+    const { result, unmount } = renderHook(() => useAutomationManagement(), { wrapper });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    api.listAutomationOccurrences.mockResolvedValue({ occurrences: [{ ...QUEUED_OCCURRENCE, status: 'succeeded' }], nextCursor: null });
+    api.listAutomationSchedules.mockRejectedValueOnce(new Error('Temporary summary failure'))
+      .mockResolvedValue([{ ...SCHEDULE, lastRunStatus: 'succeeded' }]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(result.current.histories[SCHEDULE_ID]?.status).toBe('success');
+    expect(result.current.schedules[0]?.lastRunStatus).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(result.current.schedules[0]?.lastRunStatus).toBe('succeeded');
+    unmount();
+  });
+
+  it('does not let a delayed metadata read replace a completed schedule edit', async () => {
+    vi.useFakeTimers();
+    const { result, unmount } = renderHook(() => useAutomationManagement(), { wrapper });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    let resolveOld: (schedules: AutomationSchedule[]) => void = () => { throw new Error('Request not started'); };
+    const updated = { ...SCHEDULE, revision: 4, localTime: '09:30', updatedAt: '2026-10-21T01:00:00.000Z' };
+    api.listAutomationSchedules.mockReturnValueOnce(new Promise<AutomationSchedule[]>((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValue([updated]);
+    api.listAutomationOccurrences.mockResolvedValue({ occurrences: [{ ...QUEUED_OCCURRENCE, status: 'succeeded' }], nextCursor: null });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    api.updateAutomationSchedule.mockResolvedValue(updated);
+    await act(async () => { await result.current.update(SCHEDULE_ID, { expectedRevision: 3, localTime: '09:30' }); });
+    await act(async () => { resolveOld([SCHEDULE]); });
+    expect(result.current.schedules[0]).toEqual(updated);
+    unmount();
   });
 
   it('does not poll disabled schedules with settled history', async () => {

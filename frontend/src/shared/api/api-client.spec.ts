@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { ApiClientError, deleteNoContent, getJson, postNoContent } from '@/shared/api/api-client';
-import { registerSessionExpiryHandler } from '@/shared/api/session-expiry';
+import { advanceRequestSessionGeneration, notifySessionExpiry, registerSessionExpiryHandler } from '@/shared/api/session-expiry';
 
 describe('getJson', () => {
   it('returns data from a successful API envelope', async () => {
@@ -82,5 +82,24 @@ describe('getJson', () => {
     );
     expect(sessionExpired).toHaveBeenCalledTimes(1);
     unregister();
+  });
+
+  it.each(['json', 'no-content', 'invalid-json'] as const)('suppresses stale %s errors including manual repeated notifications', async (kind) => {
+    let resolveOld: (response: Response) => void = () => { throw new Error('Request not started'); };
+    const fetchImplementation = vi.fn<typeof fetch>().mockReturnValue(new Promise<Response>((resolve) => { resolveOld = resolve; }));
+    const sessionExpired = vi.fn();
+    const unregister = registerSessionExpiryHandler(sessionExpired);
+    const pending = kind === 'no-content' ? postNoContent('/old', undefined, fetchImplementation) : getJson('/old', fetchImplementation);
+    advanceRequestSessionGeneration();
+    resolveOld(kind === 'invalid-json' ? new Response('not JSON', { status: 401 })
+      : new Response(JSON.stringify({ data: null, error: { code: 'SESSION_UNAUTHENTICATED', message: 'Old request' } }), { status: 401 }));
+    try {
+      await pending;
+      throw new Error('The request should reject');
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(ApiClientError);
+      if (error instanceof ApiClientError) notifySessionExpiry(error.statusCode, error.code, error);
+      expect(sessionExpired).not.toHaveBeenCalled();
+    } finally { unregister(); }
   });
 });

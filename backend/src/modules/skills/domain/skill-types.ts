@@ -2,6 +2,8 @@ import type { AssistantToolCapability } from '@/modules/assistant-policy/domain/
 
 export type SkillToolCapability = Extract<AssistantToolCapability, `home_${string}`>;
 
+export const SKILL_INPUT_LIMITS = { titleCharacters: 120, instructionBytes: 16_000, requestCharacters: 20_000 } as const;
+
 export interface Skill {
   readonly id: string;
   readonly revisionId: string;

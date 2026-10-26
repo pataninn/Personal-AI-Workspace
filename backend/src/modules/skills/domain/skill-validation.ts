@@ -1,9 +1,6 @@
 import { containsPotentialSecret } from '@/shared/egress/redaction';
 import { AppError } from '@/shared/errors/app-error';
-import { SKILL_TOOL_CAPABILITIES, type SkillDraft, type SkillToolCapability } from '@/modules/skills/domain/skill-types';
-
-const MAX_TITLE_LENGTH = 120;
-const MAX_INSTRUCTION_BYTES = 16_000;
+import { SKILL_INPUT_LIMITS, SKILL_TOOL_CAPABILITIES, type SkillDraft, type SkillToolCapability } from '@/modules/skills/domain/skill-types';
 
 export function validateSkillDraft(input: {
   readonly workspaceId: unknown;
@@ -39,7 +36,7 @@ function validateWorkspaceId(value: unknown): string | null {
 function validateTitle(value: unknown): string {
   if (typeof value !== 'string') throw validationError('title', 'Enter a skill title.');
   const title = value.trim();
-  if (title.length < 1 || title.length > MAX_TITLE_LENGTH || containsPotentialSecret(title)) {
+  if (title.length < 1 || title.length > SKILL_INPUT_LIMITS.titleCharacters || containsPotentialSecret(title)) {
     throw validationError('title', 'Enter a title up to 120 characters without credential-like text.');
   }
   return title;
@@ -48,7 +45,7 @@ function validateTitle(value: unknown): string {
 function validateInstructions(value: unknown): string {
   if (typeof value !== 'string') throw validationError('instructions', 'Enter skill instructions.');
   const instructions = value.trim();
-  if (instructions.length === 0 || Buffer.byteLength(instructions, 'utf8') > MAX_INSTRUCTION_BYTES || containsPotentialSecret(instructions)) {
+  if (instructions.length === 0 || Buffer.byteLength(instructions, 'utf8') > SKILL_INPUT_LIMITS.instructionBytes || containsPotentialSecret(instructions)) {
     throw validationError('instructions', 'Enter instructions up to 16,000 UTF-8 bytes without credential-like text.');
   }
   return instructions;
