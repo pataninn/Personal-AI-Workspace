@@ -15,6 +15,46 @@ const LEASE = 'f3330000-0000-4000-8000-000000000401';
 function unused<T>(): T { return {} as T; }
 
 describe('TypeOrmDemoExpiryCleanupRepository', () => {
+  it.each(['fenced', 'finalizing'])('discovers interactive turns absent from a legacy %s manifest and retries uncertain cleanup before purge', async (phase) => {
+    const turnId = 'f3330000-0000-4000-8000-000000000501';
+    const conversationId = 'f3330000-0000-4000-8000-000000000601';
+    let turnStatus = 'cancel_requested';
+    const job = { admission_id: ADMISSION_ID, owner_id: OWNER_ID, generation: GENERATION, phase,
+      manifest: { ownerId: OWNER_ID, projectIds: [], runs: [], commands: [], reservations: [], roots: [], copy: null },
+      lease_token: LEASE, attempts: 1 };
+    const query = jest.fn(async (statement: string, values?: readonly unknown[]) => {
+      if (statement.includes('SELECT a."id", a."owner_id"')) return [];
+      if (statement.includes('FROM "demo_expiry_cleanups" c JOIN "demo_admissions" a')) return [job];
+      if (statement.includes('RETURNING "admission_id","generation","phase","manifest","lease_token","attempts"')) return [job];
+      if (statement.includes('SELECT "id","conversation_id" FROM "home_turns"')) {
+        expect(values).toEqual([OWNER_ID]);
+        return [{ id: turnId, conversation_id: conversationId }];
+      }
+      if (statement.includes('UPDATE "home_turns"')) { turnStatus = String(values?.[2]); return []; }
+      if (statement.includes('AS "uncertain_home_turn"')) return [{ uncertain_home_turn: turnStatus === 'unknown', active_credit_reservation: true }];
+      if (statement.includes('RETURNING "admission_id" AS "id"')) return [{ id: ADMISSION_ID }];
+      return [];
+    });
+    const dataSource = { query, transaction: async (action: (manager: EntityManager) => Promise<unknown>) => action({ query } as unknown as EntityManager) } as unknown as DataSource;
+    const workspace = { removeManagedProjectRoot: jest.fn() };
+    const quota = { purgeDemoOwnedReferences: jest.fn() };
+    const repository = new TypeOrmDemoExpiryCleanupRepository(dataSource, workspace as unknown as IWorkspaceBoundary,
+      unused<IProjectRecoveryCleaner>(), unused<IStorageRootMappingRepository>(), quota as unknown as TypeOrmStorageQuotaRepository);
+    const cancelHomeTurn = jest.fn().mockResolvedValueOnce({ status: 'unknown' }).mockResolvedValueOnce({ status: 'cancelled' });
+    const cancellation = { cancelHomeTurn, cancelRun: jest.fn(), cancelCommand: jest.fn(), cancelAutomationTurn: jest.fn() };
+
+    await expect(repository.runBatch(cancellation, 1)).resolves.toBe(0);
+    expect(turnStatus).toBe('unknown');
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('"next_attempt_at"'), [ADMISSION_ID, GENERATION, LEASE, 'unknown_effect']);
+    await expect(repository.runBatch(cancellation, 1)).resolves.toBe(0);
+    expect(turnStatus).toBe('cancelled');
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('"next_attempt_at"'), [ADMISSION_ID, GENERATION, LEASE, 'busy']);
+    expect(cancelHomeTurn).toHaveBeenNthCalledWith(2, { ownerId: OWNER_ID, conversationId, turnId });
+    expect(cancellation.cancelAutomationTurn).not.toHaveBeenCalled();
+    expect(quota.purgeDemoOwnedReferences).not.toHaveBeenCalled();
+    expect(workspace.removeManagedProjectRoot).not.toHaveBeenCalled();
+  });
+
   it('keeps a cleanup pending when a managed-root creation receipt is unresolved', async () => {
     const job = {
       admission_id: ADMISSION_ID, owner_id: OWNER_ID, generation: GENERATION, phase: 'fenced' as const,

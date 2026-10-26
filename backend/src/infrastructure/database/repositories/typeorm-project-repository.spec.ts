@@ -60,6 +60,35 @@ function fixture(query: jest.Mock): {
 }
 
 describe('TypeOrmProjectRepository', () => {
+  it('locks the owner and project before discarding an unattached allocation', async () => {
+    const order: string[] = [];
+    const query = jest.fn(async (sql: string) => {
+      if (sql.includes('pg_advisory_xact_lock')) { order.push('owner-lock'); return []; }
+      if (sql.includes('FOR UPDATE')) {
+        order.push('project-lock');
+        return [{ ...projectRow('active'), relative_root: null, relative_root_key: null, storage_kind: null }];
+      }
+      return [];
+    });
+    const { repository, commitTransaction, release } = fixture(query);
+    await repository.recoverUnattachedRoot(OWNER_ID, PROJECT_ID, async () => { order.push('discard'); });
+    expect(order).toEqual(['owner-lock', 'project-lock', 'discard']);
+    expect(commitTransaction).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves committed associations and retains allocations if the recovery read fails', async () => {
+    const committed = fixture(jest.fn(async (sql: string) => sql.includes('FOR UPDATE') ? [projectRow('active')] : []));
+    const discard = jest.fn(async () => undefined);
+    await committed.repository.recoverUnattachedRoot(OWNER_ID, PROJECT_ID, discard);
+    expect(discard).not.toHaveBeenCalled();
+    const failed = fixture(jest.fn().mockRejectedValue(new Error('database unavailable')));
+    await expect(failed.repository.recoverUnattachedRoot(OWNER_ID, PROJECT_ID, discard)).rejects.toThrow('database unavailable');
+    expect(discard).not.toHaveBeenCalled();
+    expect(failed.rollbackTransaction).toHaveBeenCalledTimes(1);
+    expect(failed.release).toHaveBeenCalledTimes(1);
+  });
+
   it('maps a rootless planning row with its objective without inventing a file root', async () => {
     const row = { ...projectRow('active'), relative_root: null, relative_root_key: null, storage_kind: null, objective: 'Plan the launch' };
     const dataSource = { query: jest.fn().mockResolvedValue([row]) } as unknown as DataSource;

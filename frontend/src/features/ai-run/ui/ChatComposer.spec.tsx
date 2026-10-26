@@ -104,6 +104,20 @@ describe('ChatComposer', () => {
     expect(startMock).not.toHaveBeenCalled();
   });
 
+  it('refreshes allowance after a turn settles without refreshing on every render', async () => {
+    const refresh = vi.fn();
+    usageApi.useAccountUsage.mockReturnValue({ state: { status: 'success', data: { availability: { status: 'available', canSubmit: true, reason: null } } }, refresh });
+    sendMock.mockResolvedValueOnce({ ...autoStarted, status: 'succeeded', phase: 'completed' });
+    renderComposer();
+    const user = userEvent.setup();
+    await user.type(screen.getByTestId('message-input'), 'Hello');
+    await waitFor(() => expect(screen.getByTestId('ai-run-submit')).toBeEnabled());
+    await user.click(screen.getByTestId('ai-run-submit'));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    await user.type(screen.getByTestId('message-input'), 'Next');
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
   it('describes policy-bound staging without suggesting that a user approved it', async () => {
     sendMock.mockResolvedValueOnce({ ...autoStarted, status: 'staging', phase: 'staging' });
     renderComposer();

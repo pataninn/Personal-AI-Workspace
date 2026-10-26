@@ -26,4 +26,21 @@ export class CancelHomeTurnUseCase {
     }
     return result;
   }
+
+  /** Drains a fenced, expired owner's runtime without requiring an active-principal write. */
+  public async cancelForExpiry(input: { readonly ownerId: string; readonly conversationId: string; readonly turnId: string }): Promise<{ readonly status: HomeTurn['status'] }> {
+    const turn = await this.conversations.findTurnForOwner(input.ownerId, input.conversationId, input.turnId);
+    if (!turn || !this.runtime) return { status: 'unknown' };
+    try {
+      if (['completed', 'partial', 'failed', 'cancelled', 'unsupported'].includes(turn.status)) {
+        await this.runtime.delete(input.turnId);
+        return { status: turn.status };
+      }
+      if ((await this.runtime.cancel(input.turnId)).outcome !== 'confirmed') return { status: 'unknown' };
+      await this.runtime.delete(input.turnId);
+      return { status: 'cancelled' };
+    } catch {
+      return { status: 'unknown' };
+    }
+  }
 }

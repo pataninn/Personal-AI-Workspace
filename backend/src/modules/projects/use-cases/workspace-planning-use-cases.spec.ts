@@ -155,14 +155,22 @@ class MemoryActionLedger implements IActionLedgerRepository<void> {
 
 function fixture(projects = new MemoryProjectRepository(), managedRoot?: (ownerId: string, projectId: string) => Promise<string>) {
   const ledger = new MemoryActionLedger();
+  const discardIfEmpty = jest.fn(async () => undefined);
   const boundary: IWorkspaceBoundary & { readonly validateProjectRoot: jest.Mock; readonly createManagedProjectRoot: jest.Mock } = {
     getSnapshot: jest.fn().mockResolvedValue({ status: 'ready' }),
     assertReady: jest.fn().mockResolvedValue(undefined),
     validateProjectRoot: jest.fn(async (root: string) => root),
     createManagedProjectRoot: jest.fn(managedRoot ?? (async (_ownerId: string, projectId: string) => `projects/${projectId}`))
   };
+  boundary.allocateManagedProjectRoot = async (ownerId, projectId) => ({
+    relativeRoot: await boundary.createManagedProjectRoot(ownerId, projectId), discardIfEmpty
+  });
+  const recoveryRepository = projects as MemoryProjectRepository & { recoverUnattachedRoot?: (ownerId: string, projectId: string, discard: () => Promise<void>) => Promise<void> };
+  recoveryRepository.recoverUnattachedRoot = async (ownerId, projectId, discard) => {
+    if ((await projects.findByIdForOwner(ownerId, projectId))?.relativeRoot === null) await discard();
+  };
   const useCases = new WorkspacePlanningUseCases(projects, projects, ledger, boundary, () => NEW_PROJECT_ID);
-  return { boundary, ledger, projects, useCases };
+  return { boundary, discardIfEmpty, ledger, projects, useCases };
 }
 
 describe('WorkspacePlanningUseCases', () => {
@@ -255,5 +263,32 @@ describe('WorkspacePlanningUseCases', () => {
     expect(failedUpdate.boundary.createManagedProjectRoot).toHaveBeenCalledWith(OWNER_ID, PROJECT_ID);
     expect(failedUpdate.projects.records.get(PROJECT_ID)?.relativeRoot).toBeNull();
     expect(failedUpdate.ledger.records.size).toBe(0);
+    expect(failedUpdate.discardIfEmpty).toHaveBeenCalledTimes(1);
+  });
+
+  it('compensates a late ledger rollback and permits the same attachment to retry', async () => {
+    const { projects, ledger, useCases, discardIfEmpty } = fixture();
+    const input = { ownerId: OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'late-quota' };
+    const failure = new Error('storage quota exceeded after mutation');
+    jest.spyOn(ledger, 'executeAtomically').mockImplementationOnce(async (_input, mutate) => {
+      await mutate(undefined);
+      projects.records.set(PROJECT_ID, project());
+      throw failure;
+    });
+    await expect(useCases.attachInitialRoot(input)).rejects.toBe(failure);
+    expect(discardIfEmpty).toHaveBeenCalledTimes(1);
+    await expect(useCases.attachInitialRoot(input)).resolves.toMatchObject({ project: { version: 2 } });
+  });
+
+  it('preserves an associated root when the commit response is lost', async () => {
+    const { ledger, useCases, discardIfEmpty } = fixture();
+    const execute = ledger.executeAtomically.bind(ledger);
+    jest.spyOn(ledger, 'executeAtomically').mockImplementationOnce(async (input, mutate) => {
+      await execute(input, mutate);
+      throw new Error('connection lost after commit');
+    });
+    await expect(useCases.attachInitialRoot({ ownerId: OWNER_ID, projectId: PROJECT_ID, expectedVersion: 1, operationKey: 'ambiguous' }))
+      .rejects.toThrow('connection lost after commit');
+    expect(discardIfEmpty).not.toHaveBeenCalled();
   });
 });

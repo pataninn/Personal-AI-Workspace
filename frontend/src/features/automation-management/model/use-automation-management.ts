@@ -176,7 +176,7 @@ export function useAutomationManagement(): {
   }, [refreshAllHistories]);
 
   const pendingHistoryKey = Object.entries(histories)
-    .filter(([, history]) => history.status === 'success' && hasUnresolvedOccurrence(history.occurrences))
+    .filter(([, history]) => hasUnresolvedOccurrence(history.occurrences))
     .map(([scheduleId]) => scheduleId).join('\u0000');
   useEffect(() => {
     if (!pendingHistoryKey || !pageVisible) return undefined;
@@ -192,6 +192,21 @@ export function useAutomationManagement(): {
     timeout = window.setTimeout(() => { void poll(); }, delay);
     return () => { stopped = true; window.clearTimeout(timeout); };
   }, [pendingHistoryKey, pageVisible, refreshOneHistory]);
+
+  const discoveryHistoryKey = schedules.filter((schedule) => schedule.enabled
+    && !hasUnresolvedOccurrence(histories[schedule.id]?.occurrences ?? []))
+    .map((schedule) => schedule.id).join('\u0000');
+  useEffect(() => {
+    if (!discoveryHistoryKey || !pageVisible) return;
+    let stopped = false;
+    let timeout: number;
+    const poll = async (): Promise<void> => {
+      await Promise.all(discoveryHistoryKey.split('\u0000').map((scheduleId) => refreshOneHistory(scheduleId, true)));
+      if (!stopped) timeout = window.setTimeout(() => { void poll(); }, 30_000);
+    };
+    timeout = window.setTimeout(() => { void poll(); }, 30_000);
+    return () => { stopped = true; window.clearTimeout(timeout); };
+  }, [discoveryHistoryKey, pageVisible, refreshOneHistory]);
 
   useEffect(() => {
       const settledRunIds = Object.entries(runStates)

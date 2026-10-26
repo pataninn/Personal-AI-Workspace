@@ -547,6 +547,16 @@ export class TypeOrmAutomationRepository implements IAutomationRepository, IHome
     return result.length === 1;
   }
 
+  /** Ends one bounded poll without leaving the next pass waiting for lease expiry. */
+  public async releasePollingClaim(fence: AutomationLeaseFence): Promise<boolean> {
+    const result = rows<{ readonly id: string }>(await this.dataSource.query(`
+      UPDATE "automation_occurrences" SET "lease_token"=NULL,"lease_expires_at"=NULL,"updated_at"=clock_timestamp()
+      WHERE "id"=$1 AND "lease_token"=$2 AND "claim_generation"=$3 AND "lease_expires_at">clock_timestamp()
+        AND "status" IN ('running','cancel_requested','interrupted_unknown') RETURNING "id"
+    `, [fence.occurrenceId, fence.leaseToken, fence.generation]));
+    return result.length === 1;
+  }
+
   public async recordCancellationResult(input: { readonly occurrenceId: string; readonly status: 'succeeded' | 'failed' | 'cancelled' | 'skipped' | 'interrupted_unknown' }): Promise<boolean> {
     const unresolved = input.status === 'interrupted_unknown';
     const result = rows<{ readonly id: string }>(await this.dataSource.query(`

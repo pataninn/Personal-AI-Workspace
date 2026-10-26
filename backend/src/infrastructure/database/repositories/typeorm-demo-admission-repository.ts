@@ -3,6 +3,7 @@ import type { DataSource, EntityManager } from 'typeorm';
 
 import type { DemoAbuseLimitValues, BeginDemoAdmissionResult, CompleteDemoAdmissionInput, CompletedDemoAdmission, DemoAdmissionStatus, IDemoAdmissionRepository, IDemoRunStartAdmission } from '@/modules/demo/domain/demo-admission-types';
 import { DemoAdmissionRateLimitedError, DemoAdmissionUnavailableError, DemoRunStartRateLimitedError, DemoShowcaseUnavailableError } from '@/modules/demo/domain/demo-admission-errors';
+import { DEFAULT_DEMO_STORAGE_LIMIT_BYTES } from '@/modules/demo/domain/demo-storage-policy';
 
 interface AdmissionRow {
   readonly id: string;
@@ -218,8 +219,8 @@ export class TypeOrmDemoAdmissionRepository implements IDemoAdmissionRepository,
       if (!users) throw new DemoAdmissionUnavailableError();
       const demoLimitsConfigured = policy.demo_default_daily_limit_units !== null || policy.demo_default_lifetime_limit_units !== null;
       await manager.query(`INSERT INTO "account_limits" (
-        "owner_id", "daily_credit_limit_units", "lifetime_credit_limit_units", "demo_credit_limits_configured"
-      ) VALUES ($1, $2, $3, $4)`, [users.id, policy.demo_default_daily_limit_units, policy.demo_default_lifetime_limit_units, demoLimitsConfigured]);
+        "owner_id", "daily_credit_limit_units", "lifetime_credit_limit_units", "demo_credit_limits_configured", "storage_limit_bytes"
+      ) VALUES ($1, $2, $3, $4, $5)`, [users.id, policy.demo_default_daily_limit_units, policy.demo_default_lifetime_limit_units, demoLimitsConfigured, DEFAULT_DEMO_STORAGE_LIMIT_BYTES.toString()]);
 
       const admission = rows<AdmissionRow>(await manager.query(`
         UPDATE "demo_admissions"

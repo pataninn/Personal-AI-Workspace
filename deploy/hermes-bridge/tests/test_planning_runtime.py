@@ -140,6 +140,32 @@ class PlanningDispatchTests(unittest.TestCase):
         self.assertEqual(server.dispatch(self.body('planning-poll', payload={'cursor': 0}))['status'], 'unknown')
         self.assertEqual(server.dispatch(self.body('planning-cancel', payload={}) )['outcome'], 'unknown')
 
+    def test_compensating_cancel_disposes_failed_claimed_run_and_releases_shared_capacity(self):
+        self.create()
+        run = server.PLANNING_RUNS[TURN_ID]
+        session = Mock(home_tool_lock=threading.RLock())
+        session.prompt.side_effect = TimeoutError('synthetic provider-credit handoff timeout')
+        with patch.object(run, '_create'), patch.object(run, '_create_empty_workdir'), \
+                patch.object(run, 'ssh_command', return_value=[]), \
+                patch.object(run, '_cleanup') as cleanup, \
+                patch.object(planning_lifecycle, 'AcpSession', return_value=session):
+            run.work()
+            self.assertEqual(run.status, 'failed')
+            self.assertTrue(run.finished.is_set())
+            cleanup.assert_not_called()
+            for index in range(3):
+                server.RUNS['project-' + str(index)] = object()
+            next_body = self.body(identity='b5f9b759-f2b9-4949-a98d-20697e01acb2')
+            with self.assertRaises(BridgeError):
+                self.create(next_body)
+            with self.assertRaises(BridgeError):
+                server.dispatch(self.body('planning-cancel', capability='b' * 43, payload={}))
+            cleanup.assert_not_called()
+            self.assertEqual(server.dispatch(self.body('planning-cancel', payload={})), {'outcome': 'confirmed'})
+            cleanup.assert_called_once()
+            self.assertNotIn(TURN_ID, server.PLANNING_RUNS)
+            self.assertEqual(self.create(next_body), {'status': 'preparing'})
+
     def test_recovered_unknown_create_stays_unknown_instead_of_becoming_unavailable(self):
         recovered = Mock()
         recovered.capability = CAPABILITY

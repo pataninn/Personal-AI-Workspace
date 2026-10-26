@@ -6,6 +6,9 @@ import type { DataSource } from 'typeorm';
 import { createDataSource } from '@/infrastructure/database/data-source';
 import { TypeOrmDemoAdmissionRepository } from '@/infrastructure/database/repositories/typeorm-demo-admission-repository';
 import { TypeOrmDemoExpiryCleanupRepository } from '@/infrastructure/database/repositories/typeorm-demo-expiry-cleanup-repository';
+import { TypeOrmHomeConversationRepository } from '@/infrastructure/database/repositories/typeorm-home-conversation-repository';
+import { CancelHomeTurnUseCase } from '@/modules/home-assistant/use-cases/cancel-home-turn';
+import type { IHomePlanningRuntime } from '@/modules/home-assistant/repositories/home-planning-runtime';
 import { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
 import { TypeOrmStorageRootMappingRepository } from '@/infrastructure/database/repositories/typeorm-storage-root-mapping-repository';
 import { TypeOrmCreditLedgerRepository } from '@/infrastructure/database/repositories/typeorm-credit-ledger-repository';
@@ -220,6 +223,48 @@ describeDatabase('Task 3.5 demo expiry cleanup with PostgreSQL and managed stora
     expect(bootstrap.initializeEmptyAccount).not.toHaveBeenCalled();
     await expect(scalarCount(source, 'users', DEMO_OWNER_ID)).resolves.toBe(0);
     await expect(source.query(`SELECT "singleton_id" FROM "showcase_publication" WHERE "current_version_id"=$1`, [SHOWCASE_VERSION_ID])).resolves.toHaveLength(1);
+  });
+
+  it('drains interactive Home turns for an expired principal and retries a persisted legacy cleanup job', async () => {
+    const source = requiredDataSource();
+    await seedDemo(source, { copy: false });
+    await seedInteractiveHomeTurn(source);
+    const runtime = { cancel: jest.fn().mockResolvedValueOnce({ outcome: 'unknown' }).mockResolvedValue({ outcome: 'confirmed' }),
+      delete: jest.fn(async () => undefined) };
+    const cancel = new CancelHomeTurnUseCase(new TypeOrmHomeConversationRepository(source), runtime as unknown as IHomePlanningRuntime);
+    const port: DemoExpiryCancellationPort = { cancelRun: jest.fn(), cancelCommand: jest.fn(),
+      cancelAutomationTurn: jest.fn(), cancelHomeTurn: (input) => cancel.cancelForExpiry(input) };
+
+    await expect(createCleanupRepository().runBatch(port, 1)).resolves.toBe(0);
+    await expect(source.query('SELECT "status" FROM "home_turns" WHERE "id"=$1', [SCHEDULER_TURN_ID])).resolves.toEqual([{ status: 'unknown' }]);
+    await expect(source.query('SELECT "failure_code" FROM "demo_expiry_cleanups" WHERE "admission_id"=$1', [DEMO_ADMISSION_ID])).resolves.toEqual([{ failure_code: 'unknown_effect' }]);
+    expect(runtime.delete).not.toHaveBeenCalled();
+    // Simulate a cleanup manifest persisted before Home-turn draining existed.
+    await source.query(`UPDATE "demo_expiry_cleanups" SET "manifest"="manifest"-'automationTurns'-'scheduleIds'-'exportIds',
+      "next_attempt_at"=clock_timestamp() WHERE "admission_id"=$1`, [DEMO_ADMISSION_ID]);
+
+    await expect(createCleanupRepository().runBatch(port, 1)).resolves.toBe(1);
+    expect(runtime.cancel).toHaveBeenCalledTimes(2);
+    expect(runtime.delete).toHaveBeenCalledWith(SCHEDULER_TURN_ID);
+    await expect(scalarCount(source, 'users', DEMO_OWNER_ID)).resolves.toBe(0);
+  });
+
+  it('settles proven no-send cancellation only for the matching fenced expired demo turn', async () => {
+    const source = requiredDataSource();
+    await seedDemo(source, { copy: false, expiresAt: new Date(Date.now() + 60_000) });
+    await seedInteractiveHomeTurn(source);
+    await source.query('UPDATE "home_turns" SET "status"=\'unknown\' WHERE "id"=$1', [SCHEDULER_TURN_ID]);
+    const conversations = new TypeOrmHomeConversationRepository(source);
+    const input = { ownerId: DEMO_OWNER_ID, conversationId: SCHEDULER_CONVERSATION_ID, turnId: SCHEDULER_TURN_ID };
+    await expect(conversations.settleExpiredTurnCancellation(input)).resolves.toBeNull();
+    await source.query('UPDATE "users" SET "expires_at"=clock_timestamp()-interval \'1 second\' WHERE "id"=$1', [DEMO_OWNER_ID]);
+    await expect(conversations.settleExpiredTurnCancellation(input)).resolves.toBeNull();
+    const port = { cancelRun: jest.fn(), cancelCommand: jest.fn(), cancelAutomationTurn: jest.fn(async () => ({ status: 'unknown' })) };
+    await createCleanupRepository().runBatch(port, 1);
+    await expect(conversations.settleExpiredTurnCancellation({ ...input, ownerId: REGULAR_OWNER_ID })).resolves.toBeNull();
+    await expect(conversations.settleExpiredTurnCancellation({ ...input, conversationId: REGULAR_PROJECT_ID })).resolves.toBeNull();
+    await expect(conversations.settleExpiredTurnCancellation(input)).resolves.toMatchObject({ status: 'cancelled' });
+    await expect(conversations.settleExpiredTurnCancellation(input)).resolves.toBeNull();
   });
 
   it('retains settled demo credit history, waits on unresolved calls, and replays after owner detachment', async () => {
@@ -517,6 +562,13 @@ describeDatabase('Task 3.5 demo expiry cleanup with PostgreSQL and managed stora
     return new TypeOrmDemoExpiryCleanupRepository(requiredDataSource(), workspace, recovery, roots, quota);
   }
 });
+
+async function seedInteractiveHomeTurn(source: DataSource): Promise<void> {
+  await source.query(`INSERT INTO "home_conversations" ("id","owner_id","scope","title","create_request_key","create_request_fingerprint")
+    VALUES ($1,$2,'home','Interactive demo','interactive-expiry','1')`, [SCHEDULER_CONVERSATION_ID, DEMO_OWNER_ID]);
+  await source.query(`INSERT INTO "home_turns" ("id","owner_id","conversation_id","sequence","request_key","request_fingerprint","status")
+    VALUES ($1,$2,$3,1,'interactive-expiry-turn','1','running')`, [SCHEDULER_TURN_ID, DEMO_OWNER_ID, SCHEDULER_CONVERSATION_ID]);
+}
 
 async function seedDemo(source: DataSource, input: { readonly copy: boolean; readonly expiresAt?: Date }): Promise<void> {
   const expiresAt = input.expiresAt ?? new Date(Date.now() - 1_000);

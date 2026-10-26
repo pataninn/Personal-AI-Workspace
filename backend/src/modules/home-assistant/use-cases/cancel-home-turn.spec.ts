@@ -22,6 +22,33 @@ const activeTurn: HomeTurn = {
 };
 
 describe('CancelHomeTurnUseCase', () => {
+  it.each(['confirmed', 'unknown'] as const)('drains an expired owner through the trusted path with %s cancellation', async (outcome) => {
+    const conversations = { findTurnForOwner: jest.fn(async () => ({ ...activeTurn, status: 'cancel_requested' as const })),
+      cancelTurn: jest.fn(), updateTurnStatus: jest.fn() };
+    const runtime = { cancel: jest.fn(async () => ({ outcome })), delete: jest.fn(async () => undefined) };
+    const useCase = new CancelHomeTurnUseCase(conversations as unknown as IHomeConversationRepository, runtime as unknown as IHomePlanningRuntime);
+
+    await expect(useCase.cancelForExpiry({ ownerId: OWNER_ID, conversationId: CONVERSATION_ID, turnId: TURN_ID }))
+      .resolves.toEqual({ status: outcome === 'confirmed' ? 'cancelled' : 'unknown' });
+
+    expect(conversations.findTurnForOwner).toHaveBeenCalledWith(OWNER_ID, CONVERSATION_ID, TURN_ID);
+    expect(conversations.cancelTurn).not.toHaveBeenCalled();
+    expect(conversations.updateTurnStatus).not.toHaveBeenCalled();
+    expect(runtime.delete).toHaveBeenCalledTimes(outcome === 'confirmed' ? 1 : 0);
+  });
+
+  it('does not signal another owner runtime and keeps failed deletion uncertain', async () => {
+    const conversations = { findTurnForOwner: jest.fn<Promise<HomeTurn | null>, []>().mockResolvedValueOnce(null).mockResolvedValue(activeTurn) };
+    const runtime = { cancel: jest.fn(async () => ({ outcome: 'confirmed' })), delete: jest.fn(async () => { throw new Error('cleanup unavailable'); }) };
+    const useCase = new CancelHomeTurnUseCase(conversations as unknown as IHomeConversationRepository, runtime as unknown as IHomePlanningRuntime);
+    const input = { ownerId: OWNER_ID, conversationId: CONVERSATION_ID, turnId: TURN_ID };
+
+    await expect(useCase.cancelForExpiry(input)).resolves.toEqual({ status: 'unknown' });
+    expect(runtime.cancel).not.toHaveBeenCalled();
+    await expect(useCase.cancelForExpiry(input)).resolves.toEqual({ status: 'unknown' });
+    expect(runtime.delete).toHaveBeenCalledWith(TURN_ID);
+  });
+
   it.each([
     { runtimeOutcome: 'confirmed' as const, expectedStatus: 'cancelled' as const },
     { runtimeOutcome: 'unknown' as const, expectedStatus: 'unknown' as const }

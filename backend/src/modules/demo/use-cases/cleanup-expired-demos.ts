@@ -18,8 +18,11 @@ export class CleanupExpiredDemosUseCase {
       cancelCommand: async (input) => { await this.cancelSandboxCommand.execute(input); },
       cancelAutomationTurn: async (input) => {
         if (!this.cancelHomeTurn) throw new Error('The scheduled Home turn cancellation path is unavailable.');
-        const result = await this.cancelHomeTurn.execute(input);
-        return { status: result.resource.status };
+        return this.cancelHomeTurn.cancelForExpiry(input);
+      },
+      cancelHomeTurn: async (input) => {
+        if (!this.cancelHomeTurn) throw new Error('The Home turn cancellation path is unavailable.');
+        return this.cancelHomeTurn.cancelForExpiry(input);
       }
     });
   }

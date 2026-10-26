@@ -195,6 +195,9 @@ export interface IHomeConversationRepository {
   /** Updates a turn that belongs to the supplied owner and conversation. */
   updateTurnStatus(input: UpdateHomeTurnStatusInput): Promise<HomeTurn | null>;
 
+  /** Internal proof of no-send or confirmed runtime disposal; only an existing demo-expiry fence may settle. */
+  settleExpiredTurnCancellation?(input: CancelHomeTurnInput): Promise<HomeTurn | null>;
+
   /** Commits the bounded assistant reply and terminal turn status only while the turn is active. */
   completeTurnWithAssistant(input: CompleteHomeTurnWithAssistantInput): Promise<HomeTurn | null>;
 

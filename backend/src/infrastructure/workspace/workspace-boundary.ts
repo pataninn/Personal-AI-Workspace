@@ -11,6 +11,7 @@ import {
 import { normalizeProjectRoot } from '@/modules/projects/domain/project-root-policy';
 import type {
   IWorkspaceBoundary,
+  ManagedProjectRootAllocation,
   ManagedNamespaceInventory,
   ManagedOwnerDirectoryInventory,
   ProjectRootScope,
@@ -160,6 +161,39 @@ export class WorkspaceBoundaryAdapter implements IWorkspaceBoundary {
       }
     }
     return `projects/${projectId}`;
+  }
+
+  public async allocateManagedProjectRoot(ownerId: string, projectId: string): Promise<ManagedProjectRootAllocation> {
+    if (!this.fileSystem.readdir || !this.fileSystem.rmdir) throw new WorkspaceStorageUnavailableError();
+    const root = await this.verifyManagedRoot();
+    const relativeRoot = await this.createManagedProjectRoot(ownerId, projectId);
+    const projectPath = path.posix.join(root, ownerId, relativeRoot);
+    const allocated = await this.fileSystem.lstat(projectPath);
+    if (allocated.dev === undefined || allocated.ino === undefined) throw new WorkspaceStorageUnavailableError();
+    return {
+      relativeRoot,
+      discardIfEmpty: async () => {
+        try {
+          if (await this.verifyManagedRoot() !== root) throw new WorkspaceStorageUnavailableError();
+          for (const directory of [path.posix.join(root, ownerId), path.posix.join(root, ownerId, 'projects'), projectPath]) {
+            await this.assertCanonicalManagedDirectory(root, directory);
+          }
+          const assertAllocation = async (): Promise<void> => {
+            const current = await this.fileSystem.lstat(projectPath);
+            if (String(current.dev) !== String(allocated.dev) || String(current.ino) !== String(allocated.ino)) {
+              throw new WorkspaceStorageUnavailableError();
+            }
+          };
+          await assertAllocation();
+          if ((await this.fileSystem.readdir!(projectPath)).length !== 0) throw new WorkspaceStorageUnavailableError();
+          await assertAllocation();
+          // Non-recursive removal also refuses content created after the empty check.
+          await this.fileSystem.rmdir!(projectPath);
+        } catch (error: unknown) {
+          if (!hasFileSystemCode(error, 'ENOENT')) throw new WorkspaceStorageUnavailableError();
+        }
+      }
+    };
   }
 
   /** Removes only one canonical managed project child; owner and namespace directories are retained. */

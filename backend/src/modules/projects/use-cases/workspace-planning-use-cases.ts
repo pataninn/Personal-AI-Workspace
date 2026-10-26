@@ -23,7 +23,7 @@ import { normalizeProjectName } from '@/modules/projects/domain/project-root-pol
 import type { Project } from '@/modules/projects/domain/project-types';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { IProjectWorkspaceRepository } from '@/modules/projects/repositories/project-workspace-repository';
-import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspace-boundary';
+import type { IWorkspaceBoundary, ManagedProjectRootAllocation } from '@/modules/projects/repositories/workspace-boundary';
 
 export interface SearchProjectMetadataInput {
   readonly ownerId: string;
@@ -191,42 +191,60 @@ export class WorkspacePlanningUseCases<TTransaction> implements IWorkspacePlanni
 
   public async attachInitialRoot(input: AttachInitialProjectRootInput): Promise<ProjectActionResult> {
     const operationKey = this.operationKey(input.operationKey);
-    const persisted = await this.runLedger(() => this.ledger.executeAtomically({
-      ownerId: input.ownerId,
-      operationKey,
-      requestFingerprint: fingerprint({ action: 'workspace.attach-root', projectId: input.projectId, expectedVersion: input.expectedVersion }),
-      actorKind: 'manual',
-      turnId: null,
-      targetKind: 'workspace',
-      targetId: input.projectId,
-      actionKind: 'workspace.update',
-      expectedVersion: input.expectedVersion,
-      undoOfActionId: null
-    }, async (transaction) => {
-      await this.workspaceProjects.lockOwnerRoots(transaction, input.ownerId);
-      const current = await this.workspaceProjects.findByIdForOwnerForUpdate(transaction, input.ownerId, input.projectId);
-      this.assertActiveAndCurrent(current, input.expectedVersion);
-      if (current.relativeRoot !== null) throw new ProjectRootAlreadyAttachedError();
-
-      if (!this.workspaceBoundary.createManagedProjectRoot) throw new WorkspaceStorageUnavailableError();
-      const relativeRoot = await this.workspaceBoundary.createManagedProjectRoot(input.ownerId, input.projectId);
-      const updated = await this.workspaceProjects.attachInitialRoot(transaction, {
+    let allocation: ManagedProjectRootAllocation | undefined;
+    let persisted: PersistedActionLedgerRecord;
+    try {
+      persisted = await this.runLedger(() => this.ledger.executeAtomically({
         ownerId: input.ownerId,
-        projectId: input.projectId,
+        operationKey,
+        requestFingerprint: fingerprint({ action: 'workspace.attach-root', projectId: input.projectId, expectedVersion: input.expectedVersion }),
+        actorKind: 'manual',
+        turnId: null,
+        targetKind: 'workspace',
+        targetId: input.projectId,
+        actionKind: 'workspace.update',
         expectedVersion: input.expectedVersion,
-        relativeRoot,
-        relativeRootKey: relativeRoot,
-        storageKind: 'managed'
-      });
-      if (!updated) throw new ProjectVersionConflictError();
-      return {
-        preVersion: current.version,
-        postVersion: updated.version,
-        reversibleFields: {},
-        outcome: { targetId: updated.id, targetVersion: updated.version },
-        undoStatus: 'not_reversible'
-      };
-    }));
+        undoOfActionId: null
+      }, async (transaction) => {
+        await this.workspaceProjects.lockOwnerRoots(transaction, input.ownerId);
+        const current = await this.workspaceProjects.findByIdForOwnerForUpdate(transaction, input.ownerId, input.projectId);
+        this.assertActiveAndCurrent(current, input.expectedVersion);
+        if (current.relativeRoot !== null) throw new ProjectRootAlreadyAttachedError();
+
+        if (!this.workspaceBoundary.allocateManagedProjectRoot) throw new WorkspaceStorageUnavailableError();
+        allocation = await this.workspaceBoundary.allocateManagedProjectRoot(input.ownerId, input.projectId);
+        const relativeRoot = allocation.relativeRoot;
+        const updated = await this.workspaceProjects.attachInitialRoot(transaction, {
+          ownerId: input.ownerId,
+          projectId: input.projectId,
+          expectedVersion: input.expectedVersion,
+          relativeRoot,
+          relativeRootKey: relativeRoot,
+          storageKind: 'managed'
+        });
+        if (!updated) throw new ProjectVersionConflictError();
+        return {
+          preVersion: current.version,
+          postVersion: updated.version,
+          reversibleFields: {},
+          outcome: { targetId: updated.id, targetVersion: updated.version },
+          undoStatus: 'not_reversible'
+        };
+      }));
+    } catch (error: unknown) {
+      if (allocation) {
+        const allocated = allocation;
+        // A commit response can be lost: the recovery port waits on the same
+        // owner/row locks before checking the association on the primary database.
+        try {
+          if (!this.workspaceProjects.recoverUnattachedRoot) throw new WorkspaceStorageUnavailableError();
+          await this.workspaceProjects.recoverUnattachedRoot(input.ownerId, input.projectId, () => allocated.discardIfEmpty());
+        } catch {
+          throw new WorkspaceStorageUnavailableError();
+        }
+      }
+      throw error;
+    }
     return this.resultForReceipt(input.ownerId, persisted);
   }
 

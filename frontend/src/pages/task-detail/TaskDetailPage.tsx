@@ -13,7 +13,7 @@ import { Alert, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, A
 import { TaskDetailEditor } from '@/pages/task-detail/TaskDetailEditor';
 import type { AppShellOutletContext } from '@/widgets/app-shell';
 
-type DetailState = { readonly taskId: string; readonly includeArchived: boolean; readonly status: 'loading' | 'success' | 'error'; readonly item: GlobalTaskItem | null };
+type DetailState = { readonly ownerId: string | null; readonly taskId: string; readonly includeArchived: boolean; readonly status: 'loading' | 'success' | 'error'; readonly item: GlobalTaskItem | null };
 type ActionError = { readonly message: string; readonly retryable: boolean };
 
 export function TaskDetailPage(): React.JSX.Element {
@@ -28,7 +28,7 @@ export function TaskDetailPage(): React.JSX.Element {
   const projectListStatus = useAppSelector(selectProjectListStatus);
   const ownerId = useAppSelector(selectPrincipal)?.id ?? null;
   const csrfToken = useAppSelector(selectCsrfToken);
-  const [state, setState] = useState<DetailState>({ taskId: '', includeArchived: false, status: 'loading', item: null });
+  const [state, setState] = useState<DetailState>({ ownerId: null, taskId: '', includeArchived: false, status: 'loading', item: null });
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [editSaving, setEditSaving] = useState(false);
   const [editDirty, setEditDirty] = useState(false);
@@ -54,8 +54,6 @@ export function TaskDetailPage(): React.JSX.Element {
   const pageHeadingRef = useRef<HTMLHeadingElement>(null);
   const moveTriggerRef = useRef<HTMLButtonElement>(null);
   const pageActiveRef = useRef(false);
-  const taskIdRef = useRef(taskId);
-  const locationPathRef = useRef(location.pathname);
   const editDirtyRef = useRef(false);
   const editSavingRef = useRef(false);
   const deleteSavingRef = useRef(false);
@@ -64,9 +62,15 @@ export function TaskDetailPage(): React.JSX.Element {
   const moveIntent = useRef<{ readonly taskId: string; readonly expectedVersion: number; readonly workspaceId: string | null; readonly key: string } | null>(null);
   const deleteIntent = useRef<{ readonly taskId: string; readonly expectedVersion: number; readonly key: string } | null>(null);
   const undoIntent = useRef<{ readonly actionId: string; readonly key: string } | null>(null);
+  const viewKey = JSON.stringify([ownerId, taskId, includeArchived, location.pathname]);
+  const viewRef = useRef({ key: viewKey, token: {} });
+  if (viewRef.current.key !== viewKey) viewRef.current = { key: viewKey, token: {} };
+  const viewToken = viewRef.current.token;
 
-  taskIdRef.current = taskId;
-  locationPathRef.current = location.pathname;
+  function isCurrentView(): boolean {
+    return pageActiveRef.current && viewRef.current.token === viewToken;
+  }
+
 
   useEffect(() => {
     pageActiveRef.current = true;
@@ -75,14 +79,14 @@ export function TaskDetailPage(): React.JSX.Element {
 
   useEffect(() => {
     let active = true;
-    setState({ taskId, includeArchived, status: 'loading', item: null });
+    setState({ ownerId, taskId, includeArchived, status: 'loading', item: null });
     void getGlobalTask(taskId, includeArchived).then((item) => {
-      if (active) setState({ taskId, includeArchived, status: 'success', item });
+      if (active) setState({ ownerId, taskId, includeArchived, status: 'success', item });
     }).catch(() => {
-      if (active) setState({ taskId, includeArchived, status: 'error', item: null });
+      if (active) setState({ ownerId, taskId, includeArchived, status: 'error', item: null });
     });
     return () => { active = false; };
-  }, [taskId, includeArchived, loadAttempt]);
+  }, [ownerId, taskId, includeArchived, loadAttempt]);
 
   useEffect(() => {
     if (projectListStatus === 'idle') void dispatch(loadProjects());
@@ -126,7 +130,7 @@ export function TaskDetailPage(): React.JSX.Element {
   }, [ownerId, taskId, receiptReloadAttempt]);
 
   const path = `/tasks${includeArchived ? '?includeArchived=true' : ''}`;
-  const current = state.taskId === taskId && state.includeArchived === includeArchived ? state : null;
+  const current = state.ownerId === ownerId && state.taskId === taskId && state.includeArchived === includeArchived ? state : null;
   const item = current?.status === 'success' ? current.item : null;
   const task = item?.task ?? null;
   const currentLocation = item?.workspace?.name ?? 'Inbox';
@@ -186,16 +190,33 @@ export function TaskDetailPage(): React.JSX.Element {
     editDirtyRef.current = false;
     setEditDirty(false);
     setExitPromptOpen(false);
-  }, [taskId]);
+    editSavingRef.current = false;
+    deleteSavingRef.current = false;
+    setEditSaving(false);
+    setDeleteSaving(false);
+    setDeleteOpen(false);
+    setMoveOpen(false);
+    setMoveSaving(false);
+    setMoveError(null);
+    setUndoSaving(false);
+    setUndoError(null);
+    setRefreshWarning(false);
+    setAnnouncement('');
+    moveIntent.current = null;
+    deleteIntent.current = null;
+    undoIntent.current = null;
+  }, [ownerId, taskId, includeArchived, location.pathname]);
 
   function onEditorDirtyChange(dirty: boolean): void {
+    if (!isCurrentView()) return;
     editDirtyRef.current = dirty;
     setEditDirty(dirty);
   }
 
   function setCanonicalItem(nextItem: GlobalTaskItem): void {
+    if (!isCurrentView() || nextItem.task.id !== taskId) return;
     const historical = nextItem.workspace?.status === 'archived';
-    setState({ taskId, includeArchived: historical, status: 'success', item: nextItem });
+    setState({ ownerId, taskId, includeArchived: historical, status: 'success', item: nextItem });
     setSearchParams((currentParams) => {
       const next = new URLSearchParams(currentParams);
       if (historical) next.set('includeArchived', 'true');
@@ -207,16 +228,18 @@ export function TaskDetailPage(): React.JSX.Element {
   async function reloadLatest(): Promise<GlobalTaskItem | null> {
     try {
       const latest = await getGlobalTask(taskId, true);
+      if (!isCurrentView()) return null;
       setCanonicalItem(latest);
       setTaskUnavailable(false);
       return latest;
     } catch (error: unknown) {
-      if (error instanceof ApiClientError && error.statusCode === 404) setTaskUnavailable(true);
+      if (isCurrentView() && error instanceof ApiClientError && error.statusCode === 404) setTaskUnavailable(true);
       return null;
     }
   }
 
   async function refreshCommittedViews(): Promise<void> {
+    if (!isCurrentView()) return;
     setRefreshWarning(false);
     const refreshes: Promise<unknown>[] = [
       getGlobalTask(taskId, true).then((latest) => { setCanonicalItem(latest); }),
@@ -224,7 +247,7 @@ export function TaskDetailPage(): React.JSX.Element {
     ];
     if (projectListStatus !== 'loading') refreshes.push(dispatch(loadProjects()).unwrap());
     const outcomes = await Promise.allSettled(refreshes);
-    if (outcomes.some((outcome) => outcome.status === 'rejected')) setRefreshWarning(true);
+    if (isCurrentView() && outcomes.some((outcome) => outcome.status === 'rejected')) setRefreshWarning(true);
   }
 
   function applyCommittedMutation(
@@ -232,7 +255,6 @@ export function TaskDetailPage(): React.JSX.Element {
     actionKind: TaskMutationKind,
     successMessage: string
   ): void {
-    setCanonicalItem(result.item);
     const savedReceipt: TaskActionReceiptMetadata = {
       id: result.receipt.id,
       actionKind,
@@ -244,10 +266,12 @@ export function TaskDetailPage(): React.JSX.Element {
       undoStatus: result.receipt.undoStatus,
       undoActionId: null
     };
+    if (ownerId) saveTaskReceiptPointer(ownerId, result.item.task.id, savedReceipt.id);
+    if (!isCurrentView()) return;
+    setCanonicalItem(result.item);
     setReceipt(savedReceipt);
     setReceiptOwnerId(ownerId);
     setReceiptLoadError(false);
-    if (ownerId) saveTaskReceiptPointer(ownerId, result.item.task.id, savedReceipt.id);
     setReceiptReloadAttempt((value) => value + 1);
     setAnnouncement(successMessage);
     setUndoError(null);
@@ -263,9 +287,11 @@ export function TaskDetailPage(): React.JSX.Element {
     try {
       const result = await updateGlobalTask(taskId, patch, expectedVersion, csrfToken, idempotencyKey);
       applyCommittedMutation(result, 'task.update', 'Task changes saved.');
+      if (!isCurrentView()) return { status: 'saved', task: result.item.task };
       setTaskUnavailable(false);
       return { status: 'saved', task: result.item.task };
     } catch (error: unknown) {
+      if (!isCurrentView()) return { status: 'error', message: 'The task view changed while saving.' };
       if (error instanceof ApiClientError && error.statusCode === 404) {
         setTaskUnavailable(true);
         return { status: 'conflict', latest: null };
@@ -277,8 +303,10 @@ export function TaskDetailPage(): React.JSX.Element {
       }
       return { status: 'error', message: isUncertain(error) ? 'The edit outcome is uncertain. Retry to safely check the same edit.' : 'The task could not be updated. Review the fields and try again.' };
     } finally {
-      editSavingRef.current = false;
-      setEditSaving(false);
+      if (isCurrentView()) {
+        editSavingRef.current = false;
+        setEditSaving(false);
+      }
     }
   }
 
@@ -334,13 +362,16 @@ export function TaskDetailPage(): React.JSX.Element {
     setMoveError(null);
     try {
       const result = await moveGlobalTask(task.id, workspaceId, intent.expectedVersion, csrfToken, intent.key);
+      applyCommittedMutation(result, 'task.move', `Task moved to ${result.item.workspace?.name ?? 'Inbox'}.`);
+      if (!isCurrentView()) return;
       moveIntent.current = null;
       setMoveOpen(false);
-      applyCommittedMutation(result, 'task.move', `Task moved to ${result.item.workspace?.name ?? 'Inbox'}.`);
     } catch (error: unknown) {
+      if (!isCurrentView()) return;
       if (isTaskConflict(error)) {
         moveIntent.current = null;
         await reloadLatest();
+        if (!isCurrentView()) return;
         setMoveError({ message: 'This task changed elsewhere. The latest version is loaded; confirm the destination and try again.', retryable: false });
       } else if (isUncertain(error)) {
         setMoveError({ message: 'The move outcome is uncertain. Retry the same destination to safely check the request.', retryable: true });
@@ -349,14 +380,13 @@ export function TaskDetailPage(): React.JSX.Element {
         setMoveError({ message: 'The task could not be moved. Check its destination and try again.', retryable: false });
       }
     } finally {
-      setMoveSaving(false);
+      if (isCurrentView()) setMoveSaving(false);
     }
   }
 
   async function deleteTask(): Promise<void> {
     if (!task || !csrfToken || deleteSavingRef.current) return;
     const targetTaskId = task.id;
-    const targetLocationPath = location.pathname;
     const intent = deleteIntent.current?.taskId === task.id && deleteIntent.current.expectedVersion === task.version
       ? deleteIntent.current
       : { taskId: task.id, expectedVersion: task.version, key: crypto.randomUUID() };
@@ -366,9 +396,9 @@ export function TaskDetailPage(): React.JSX.Element {
     setDeleteError(null);
     try {
       await deleteGlobalTask(targetTaskId, intent.expectedVersion, csrfToken, intent.key);
-      deleteIntent.current = null;
       if (ownerId) clearTaskReceiptPointer(ownerId, targetTaskId);
-      if (!pageActiveRef.current || taskIdRef.current !== targetTaskId || locationPathRef.current !== targetLocationPath) return;
+      if (!isCurrentView()) return;
+      deleteIntent.current = null;
       editDirtyRef.current = false;
       setEditDirty(false);
       setDeleteOpen(false);
@@ -376,10 +406,11 @@ export function TaskDetailPage(): React.JSX.Element {
       setDeleteSaving(false);
       navigate(path, { replace: true });
     } catch (error: unknown) {
-      if (!pageActiveRef.current || taskIdRef.current !== targetTaskId || locationPathRef.current !== targetLocationPath) return;
+      if (!isCurrentView()) return;
       if (isTaskConflict(error)) {
         deleteIntent.current = null;
         const latest = await reloadLatest();
+        if (!isCurrentView()) return;
         if (error instanceof ApiClientError && error.statusCode === 404 && !latest) {
           setTaskUnavailable(true);
           setDeleteError({ message: 'This task is no longer available. Your unsaved draft is still here.', retryable: false });
@@ -395,8 +426,10 @@ export function TaskDetailPage(): React.JSX.Element {
         setDeleteError({ message: 'The task could not be deleted. Review its latest state and try again.', retryable: false });
       }
     } finally {
-      deleteSavingRef.current = false;
-      if (pageActiveRef.current) setDeleteSaving(false);
+      if (isCurrentView()) {
+        deleteSavingRef.current = false;
+        setDeleteSaving(false);
+      }
     }
   }
 
@@ -408,6 +441,7 @@ export function TaskDetailPage(): React.JSX.Element {
     setUndoError(null);
     try {
       const result = await undoTaskAction(visibleReceipt.id, csrfToken, intent.key);
+      if (!isCurrentView()) return;
       undoIntent.current = null;
       setReceipt(result.originalAction);
       setReceiptOwnerId(ownerId);
@@ -417,9 +451,11 @@ export function TaskDetailPage(): React.JSX.Element {
       setReceiptReloadAttempt((value) => value + 1);
       void refreshCommittedViews();
     } catch (error: unknown) {
+      if (!isCurrentView()) return;
       if (error instanceof ApiClientError && error.statusCode === 409) {
         undoIntent.current = null;
         await reloadLatest();
+        if (!isCurrentView()) return;
         setUndoError({ message: 'This task changed after the action, so Undo was not applied. The latest task and receipt are loaded.', retryable: false });
         setReceiptReloadAttempt((value) => value + 1);
       } else if (error instanceof ApiClientError && error.statusCode === 404) {
@@ -435,7 +471,7 @@ export function TaskDetailPage(): React.JSX.Element {
         setUndoError({ message: 'Undo could not be applied. Refresh the saved receipt before trying again.', retryable: false });
       }
     } finally {
-      setUndoSaving(false);
+      if (isCurrentView()) setUndoSaving(false);
     }
   }
 

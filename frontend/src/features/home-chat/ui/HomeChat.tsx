@@ -41,7 +41,7 @@ interface HomeChatProps {
 
 export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = true, disabled = false, disabledReason, onSummaryRefreshRequested, onClose }: HomeChatProps): React.JSX.Element | null {
   const isAsk = presentation === 'ask';
-  const usage = useAccountUsage();
+  const usage = useAccountUsage(open && !disabled);
   const quotaAvailable = usage.state.status === 'success' && usage.state.data.availability.canSubmit;
   const chat = useHomeChat({ scope, disabled, syncConversationInUrl: !isAsk });
   const planningRecords = useHomePlanningRecords({
@@ -58,6 +58,10 @@ export function HomeChat({ scope, scopeLabel, presentation = 'embedded', open = 
   const composerDisabled = disabled || !quotaAvailable || chat.busy || !chat.policyReady || chat.runtimeUnavailable || chat.createNeedsRetry || chat.sendStatus === 'uncertain';
   const allowUndo = chat.policyReady && chat.policyStatus?.policy?.capabilities.includes('home_action_undo') === true;
   const legacyActiveTurn = chat.activeTurn && chat.isLegacyTurn(chat.activeTurn.id) && ['pending', 'running', 'cancel_requested', 'unknown'].includes(chat.activeTurn.status);
+
+  useEffect(() => {
+    if (chat.activeTurn && ['completed', 'partial', 'failed', 'cancelled'].includes(chat.activeTurn.status)) usage.refresh();
+  }, [chat.activeTurn?.id, chat.activeTurn?.status, usage.refresh]);
 
   useEffect(() => {
     if (chat.eventsConversationId !== chat.selectedConversationId) return;

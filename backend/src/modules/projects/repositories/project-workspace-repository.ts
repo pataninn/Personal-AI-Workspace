@@ -39,6 +39,8 @@ export interface IProjectWorkspaceRepository<TTransaction> {
   createPlanning(transaction: TTransaction, input: CreatePlanningProjectRecord): Promise<Project>;
   updateObjective(transaction: TTransaction, input: UpdateProjectObjectiveRecord): Promise<Project | null>;
   attachInitialRoot(transaction: TTransaction, input: AttachProjectRootRecord): Promise<Project | null>;
+  /** Runs compensation only after a fresh locked read proves the project remains unattached. */
+  recoverUnattachedRoot?(ownerId: string, projectId: string, discard: () => Promise<void>): Promise<void>;
 }
 
 /** Undo-only workspace participant. It never creates or removes filesystem content. */

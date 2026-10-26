@@ -2,7 +2,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { Provider } from 'react-redux';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { sessionAuthenticated, userSessionReducer } from '@/entities/user-session';
 import type { AccountUsageSnapshot } from '@/entities/account-usage/model/types';
@@ -34,6 +34,61 @@ function createStore() {
 
 describe('useAccountUsage', () => {
   beforeEach(() => api.getAccountUsage.mockReset());
+  afterEach(() => vi.useRealTimers());
+
+  it('shares a new view refresh with an existing exhausted gate', async () => {
+    const store = createStore();
+    const wrapper = ({ children }: { readonly children: ReactNode }): React.JSX.Element => <Provider store={store}>{children}</Provider>;
+    api.getAccountUsage.mockResolvedValueOnce({ ...usageSnapshot(OWNER_ONE), availability: { status: 'exhausted', canSubmit: false, reason: 'daily' } });
+    const first = renderHook(() => useAccountUsage(), { wrapper });
+    await waitFor(() => expect(first.result.current.state.status).toBe('success'));
+    api.getAccountUsage.mockResolvedValueOnce(usageSnapshot(OWNER_ONE));
+    renderHook(() => useAccountUsage(), { wrapper });
+    await waitFor(() => expect(first.result.current.state.status === 'success' && first.result.current.state.data.availability.canSubmit).toBe(true));
+    expect(api.getAccountUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it('deduplicates simultaneous views and skips requests until a closed gate opens', async () => {
+    const store = createStore();
+    const wrapper = ({ children }: { readonly children: ReactNode }): React.JSX.Element => <Provider store={store}>{children}</Provider>;
+    api.getAccountUsage.mockResolvedValue(usageSnapshot(OWNER_ONE));
+    const view = renderHook(({ active }) => { const first = useAccountUsage(active); const second = useAccountUsage(active); return { first, second }; }, { wrapper, initialProps: { active: false } });
+    expect(api.getAccountUsage).not.toHaveBeenCalled();
+    view.rerender({ active: true });
+    await waitFor(() => expect(view.result.current.first.state.status).toBe('success'));
+    expect(view.result.current.second.state.status).toBe('success');
+    expect(api.getAccountUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers from an initial request failure without remounting and cleans up retries', async () => {
+    vi.useFakeTimers();
+    const store = createStore();
+    const wrapper = ({ children }: { readonly children: ReactNode }): React.JSX.Element => <Provider store={store}>{children}</Provider>;
+    api.getAccountUsage.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(usageSnapshot(OWNER_ONE));
+    const view = renderHook(() => useAccountUsage(), { wrapper });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(view.result.current.state.status).toBe('error');
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(view.result.current.state.status).toBe('success');
+    expect(api.getAccountUsage).toHaveBeenCalledTimes(2);
+    view.unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+    expect(api.getAccountUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it('refreshes at the daily reset and on foreground focus', async () => {
+    vi.useFakeTimers();
+    const store = createStore();
+    const wrapper = ({ children }: { readonly children: ReactNode }): React.JSX.Element => <Provider store={store}>{children}</Provider>;
+    const snapshot = usageSnapshot(OWNER_ONE);
+    api.getAccountUsage.mockResolvedValueOnce({ ...snapshot, daily: { ...snapshot.daily, resetAt: new Date(Date.now() + 5_000).toISOString() } }).mockResolvedValue(snapshot);
+    renderHook(() => useAccountUsage(), { wrapper });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(api.getAccountUsage).toHaveBeenCalledTimes(2);
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(api.getAccountUsage).toHaveBeenCalledTimes(3);
+  });
 
   it('does not expose the prior owner snapshot while the new owner usage is loading', async () => {
     let finishFirst!: (value: AccountUsageSnapshot) => void;

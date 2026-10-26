@@ -184,7 +184,11 @@ export class HermesHomePlanningRuntime implements IHomePlanningRuntime {
     if (!active) return { outcome: 'unknown' };
     if (active.cancelPromise) return active.cancelPromise;
     active.cancelled = true;
-    active.cancelPromise = this.cancelActive(turnId, active);
+    active.cancelPromise = this.cancelActive(turnId, active).then((result) => {
+      // Share an in-flight request, but let durable expiry retries recover a transient bridge failure.
+      if (result.outcome === 'unknown') delete active.cancelPromise;
+      return result;
+    });
     return active.cancelPromise;
   }
 

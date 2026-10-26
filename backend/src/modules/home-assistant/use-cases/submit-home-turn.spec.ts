@@ -5,6 +5,8 @@ import type { IHomeConversationRepository } from '@/modules/home-assistant/repos
 import type { HomePlanningProvider, IHomePlanningRuntime, StartHomePlanningRunResult, PollHomePlanningRunResult, CancelHomePlanningRunResult } from '@/modules/home-assistant/repositories/home-planning-runtime';
 import type { IHomeProjectMemoryContextReader } from '@/modules/home-assistant/repositories/home-project-memory-context-reader';
 import { SubmitHomeTurnUseCase, type HomeTurnRuntimeConfiguration } from '@/modules/home-assistant/use-cases/submit-home-turn';
+import { HermesHomePlanningRuntime } from '@/infrastructure/hermes/hermes-home-planning-runtime';
+import type { HermesBridgeClient } from '@/infrastructure/hermes/hermes-bridge-client';
 
 const OWNER = '11111111-1111-4111-8111-111111111111';
 const CONVERSATION = '22222222-2222-4222-8222-222222222222';
@@ -48,11 +50,12 @@ function setup(options: {
     findForOwner: jest.fn(async () => currentConversation),
     submitTurn: jest.fn(async () => submission),
     listMessagesForOwner: jest.fn(async () => ({ messages: [], nextBeforeSequence: null })),
-    findTurnForOwner: jest.fn(async () => turn(currentStatus, revision, workspacePolicyRevision)),
+    findTurnForOwner: jest.fn(async (): Promise<HomeTurn | null> => turn(currentStatus, revision, workspacePolicyRevision)),
     updateTurnStatus: jest.fn(async ({ status }: { readonly status: 'unsupported' | 'unknown' | 'cancelled' }) => {
       currentStatus = status;
       return turn(status, revision, workspacePolicyRevision);
-    })
+    }),
+    settleExpiredTurnCancellation: jest.fn(async (): Promise<HomeTurn | null> => null)
   };
   const executionPolicy = {
     assertHome: jest.fn(async () => {
@@ -100,6 +103,96 @@ function storedPolicy(scopeKind: AssistantScopePolicy['scopeKind'], policyProfil
 }
 
 describe('SubmitHomeTurnUseCase', () => {
+  it.each(['cancel_requested', 'unknown'] as const)('settles a proven no-send %s turn fenced during context loading', async (status) => {
+    const { useCase, conversations, runtime } = setup();
+    conversations.listMessagesForOwner.mockImplementation(async () => {
+      conversations.findTurnForOwner.mockResolvedValue(turn(status));
+      return { messages: [], nextBeforeSequence: null };
+    });
+    conversations.settleExpiredTurnCancellation.mockResolvedValue(turn('cancelled'));
+
+    await expect(useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, requestKey: 'request-1', message: 'Plan my day' }))
+      .resolves.toMatchObject({ turn: { status: 'cancelled' } });
+    expect(runtime.start).not.toHaveBeenCalled();
+    expect(conversations.settleExpiredTurnCancellation).toHaveBeenCalledWith({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+  });
+
+  it('settles a proven no-send expiry even when asynchronous skill denial persistence fails', async () => {
+    const { useCase, conversations, runtime, submission } = setup({ policyFailsAt: 2 });
+    const invocationId = '66666666-6666-4666-8666-666666666666';
+    Object.assign(submission, { turn: { ...submission.turn, skillInvocationId: invocationId } });
+    const skillInvocation = {
+      skillId: '77777777-7777-4777-8777-777777777777', skillRevisionId: '88888888-8888-4888-8888-888888888888', skillVersion: 1,
+      claim: jest.fn(async () => ({ id: invocationId })), isCurrent: jest.fn(async () => true),
+      updateState: jest.fn(async () => { throw new Error('expired principal cannot persist skill denial'); })
+    };
+    conversations.settleExpiredTurnCancellation.mockResolvedValue(turn('cancelled'));
+
+    await expect(useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, requestKey: 'request-1', message: 'Skill request', skillInvocation }))
+      .rejects.toThrow('expired principal cannot persist skill denial');
+
+    expect(runtime.start).not.toHaveBeenCalled();
+    expect(conversations.settleExpiredTurnCancellation).toHaveBeenCalledWith({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN });
+  });
+
+  it('disposes the actual adapter capability when the owner disappears during a pending create', async () => {
+    const { conversations, executionPolicy } = setup();
+    const actualProvider: HomePlanningProvider = { profile: 'nebius-token-factory', model: 'nvidia/nemotron-3-super-120b-a12b', endpoint: 'https://api.tokenfactory.nebius.com/v1' };
+    let resolveCreate: (value: Record<string, unknown>) => void = () => undefined;
+    const pending = new Promise<Record<string, unknown>>((resolve) => { resolveCreate = resolve; });
+    let enterCreate: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => { enterCreate = resolve; });
+    const calls = jest.fn(async (operation: string) => {
+      if (operation === 'planning-capabilities') return { providerReceiptVersion: 1, providerProfile: actualProvider.profile, model: actualProvider.model, maxOutputTokens: 512 };
+      if (operation === 'planning-create') { enterCreate(); return pending; }
+      return operation === 'planning-cancel' ? { outcome: 'confirmed' } : { deleted: true };
+    });
+    const runtime = new HermesHomePlanningRuntime({ call: calls } as unknown as HermesBridgeClient, actualProvider,
+      { providerEgressAdmissionEnforced: true, maxOutputTokens: 512 });
+    const onAccepted = jest.fn();
+    const useCase = new SubmitHomeTurnUseCase(conversations as unknown as IHomeConversationRepository,
+      { mode: 'hermes', provider: actualProvider, runtime, onAccepted },
+      { executionPolicy, providerProfile: actualProvider.profile, model: actualProvider.model });
+    const work = useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, requestKey: 'request-1', message: 'Plan my day' });
+    await entered;
+    conversations.findTurnForOwner.mockResolvedValue(null);
+    resolveCreate({ status: 'preparing' });
+
+    await expect(work).rejects.toThrow();
+    expect(onAccepted).not.toHaveBeenCalled();
+    expect(calls.mock.calls.map(([operation]) => operation)).toEqual(['planning-capabilities', 'planning-create', 'planning-cancel', 'planning-delete']);
+    // A deleted adapter entry produces no second bridge delete, proving the capability is not retained.
+    await runtime.delete(TURN);
+    expect(calls).toHaveBeenCalledTimes(4);
+  });
+
+  it.each(['missing', 'read_failure', 'supervisor_failure'] as const)('compensates an accepted runtime when post-start handoff has %s', async (failure) => {
+    const { useCase, conversations, runtime, onAccepted } = setup();
+    jest.mocked(runtime.start).mockImplementation(async () => {
+      if (failure === 'missing') conversations.findTurnForOwner.mockResolvedValue(null);
+      if (failure === 'read_failure') conversations.findTurnForOwner.mockRejectedValue(new Error('read unavailable'));
+      return { outcome: 'accepted' };
+    });
+    if (failure === 'supervisor_failure') onAccepted.mockImplementation(() => { throw new Error('supervisor unavailable'); });
+
+    await expect(useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, requestKey: 'request-1', message: 'Plan my day' })).rejects.toThrow();
+
+    expect(runtime.cancel).toHaveBeenCalledWith(TURN);
+    expect(runtime.delete).toHaveBeenCalledWith(TURN);
+    if (failure !== 'supervisor_failure') expect(onAccepted).not.toHaveBeenCalled();
+  });
+
+  it('retains a durable unknown turn when compensation cannot confirm runtime cancellation', async () => {
+    const { useCase, conversations, runtime, onAccepted } = setup();
+    onAccepted.mockImplementation(() => { throw new Error('supervisor unavailable'); });
+    jest.mocked(runtime.cancel).mockResolvedValue({ outcome: 'unknown' });
+
+    await expect(useCase.execute({ ownerId: OWNER, conversationId: CONVERSATION, requestKey: 'request-1', message: 'Plan my day' })).rejects.toThrow('supervisor unavailable');
+
+    expect(conversations.updateTurnStatus).toHaveBeenCalledWith({ ownerId: OWNER, conversationId: CONVERSATION, turnId: TURN, status: 'unknown' });
+    expect(runtime.delete).not.toHaveBeenCalled();
+  });
+
   it('persists the exact policy revisions before starting the runtime once', async () => {
     const { useCase, conversations, runtime, projectMemory, submission, onAccepted } = setup();
 

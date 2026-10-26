@@ -129,125 +129,168 @@ export class SubmitHomeTurnUseCase {
       ...(input.skillInvocation?.automationFence ? { automationFence: input.skillInvocation.automationFence } : {})
     });
 
-    if (input.skillInvocation && submission.turn.skillInvocationId !== invocation?.id) throw new HomeTurnNotFoundError();
-
-    if (submission.replayed) {
-      return this.replayWithoutRestart(input.ownerId, input.conversationId, submission, runtime);
-    }
-
-    let priorMessages: readonly HomePlanningContextMessage[] = [];
-    let planningContext: HomePlanningContext;
+    let dispatchAttempted = false;
     try {
-      const history = await this.conversations.listMessagesForOwner({
-        ownerId: input.ownerId,
-        conversationId: input.conversationId,
-        beforeSequence: submission.message.sequence,
-        limit: HOME_PLANNING_CONTEXT_LIMITS.priorMessages,
-        transcriptOnly: true
-      });
-      if (!history) throw new HomeConversationNotFoundError();
-      priorMessages = history.messages.map((message) => ({
-        role: message.role,
-        content: message.content,
-        sourceId: message.id,
-        sourceRevision: message.sequence
-      }));
-      const selectedProjectFacts = projectFactsPermitted
-        ? await this.readSelectedProjectFacts(input.ownerId, conversation)
-        : [];
-      planningContext = buildHomePlanningContext({
-        currentMessage: submission.message.content,
-        priorMessages,
-        selectedProjectFacts
-      });
-      if (input.skillInvocation && (!sameSkillContextRevisions(skillContextRevisions ?? [], skillContextRevisionsFor(planningContext))
-        || !skillPreflightContext
-        || !sameProjectMemorySnapshot(skillPreflightContext.selectedProjectFacts, planningContext.selectedProjectFacts))) {
-        return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE', input.skillInvocation);
+      if (input.skillInvocation && submission.turn.skillInvocationId !== invocation?.id) throw new HomeTurnNotFoundError();
+
+      if (submission.replayed) {
+        return this.replayWithoutRestart(input.ownerId, input.conversationId, submission, runtime);
       }
-    } catch {
-      return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE', input.skillInvocation);
-    }
 
-    const beforeSend = await this.findCurrentTurn(input.ownerId, input.conversationId, submission.turn.id);
-    if (!beforeSend) throw new HomeTurnNotFoundError();
-    if (beforeSend.status !== 'running' || !samePolicyBinding(beforeSend, revisions)) {
-      return resultWithTurn(submission, beforeSend, executionForTurn(beforeSend));
-    }
-    try {
-      const currentAuthorization = await assertConversationPolicy(policy, input.ownerId, conversation, revisions);
-      if (projectFactsPermitted && !permitsProjectFacts(currentAuthorization, conversation)) {
-        return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'ASSISTANT_EXECUTION_UNAVAILABLE', input.skillInvocation);
-      }
-    } catch {
-      return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'ASSISTANT_EXECUTION_UNAVAILABLE', input.skillInvocation);
-    }
-
-    const authorizedTurn = await this.findCurrentTurn(input.ownerId, input.conversationId, submission.turn.id);
-    if (!authorizedTurn) throw new HomeTurnNotFoundError();
-    if (authorizedTurn.status === 'cancel_requested') {
-      const turn = await this.updateStatus(input.ownerId, input.conversationId, submission.turn.id, 'cancelled');
-      return resultWithTurn(submission, turn, { state: 'cancelled' });
-    }
-    if (authorizedTurn.status !== 'running' || !samePolicyBinding(authorizedTurn, revisions)) {
-      return resultWithTurn(submission, authorizedTurn, executionForTurn(authorizedTurn));
-    }
-
-    if (conversation.scope.kind === 'workspace' && projectFactsPermitted) {
+      let priorMessages: readonly HomePlanningContextMessage[] = [];
+      let planningContext: HomePlanningContext;
       try {
-        const latestSelectedProjectFacts = await this.readSelectedProjectFacts(input.ownerId, conversation);
-        const latestContext = buildHomePlanningContext({
+        const history = await this.conversations.listMessagesForOwner({
+          ownerId: input.ownerId,
+          conversationId: input.conversationId,
+          beforeSequence: submission.message.sequence,
+          limit: HOME_PLANNING_CONTEXT_LIMITS.priorMessages,
+          transcriptOnly: true
+        });
+        if (!history) throw new HomeConversationNotFoundError();
+        priorMessages = history.messages.map((message) => ({
+          role: message.role,
+          content: message.content,
+          sourceId: message.id,
+          sourceRevision: message.sequence
+        }));
+        const selectedProjectFacts = projectFactsPermitted
+          ? await this.readSelectedProjectFacts(input.ownerId, conversation)
+          : [];
+        planningContext = buildHomePlanningContext({
           currentMessage: submission.message.content,
           priorMessages,
-          selectedProjectFacts: latestSelectedProjectFacts
+          selectedProjectFacts
         });
-        if (!sameProjectMemorySnapshot(planningContext.selectedProjectFacts, latestContext.selectedProjectFacts)) {
-          return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE', input.skillInvocation);
+        if (input.skillInvocation && (!sameSkillContextRevisions(skillContextRevisions ?? [], skillContextRevisionsFor(planningContext))
+          || !skillPreflightContext
+          || !sameProjectMemorySnapshot(skillPreflightContext.selectedProjectFacts, planningContext.selectedProjectFacts))) {
+          return await this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE', input.skillInvocation);
         }
       } catch {
-        return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE', input.skillInvocation);
+        return await this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE', input.skillInvocation);
       }
-    }
 
-    if (input.skillInvocation) {
-      await input.skillInvocation.updateState('dispatching');
-      if (input.skillInvocation.automationFence && !await input.skillInvocation.heartbeat?.()) {
-        return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'SCHEDULE_LEASE_LOST', input.skillInvocation);
+      const beforeSend = await this.findCurrentTurn(input.ownerId, input.conversationId, submission.turn.id);
+      if (!beforeSend) throw new HomeTurnNotFoundError();
+      if (beforeSend.status !== 'running' || !samePolicyBinding(beforeSend, revisions)) {
+        const settled = beforeSend.status === 'cancel_requested' || beforeSend.status === 'unknown'
+          ? await this.settleExpiredCancellation(input.ownerId, input.conversationId, submission.turn.id) : null;
+        return resultWithTurn(submission, settled ?? beforeSend, executionForTurn(settled ?? beforeSend));
       }
-      if (!await input.skillInvocation.isCurrent()) {
-        return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'SKILL_NOT_AVAILABLE', input.skillInvocation);
+      try {
+        const currentAuthorization = await assertConversationPolicy(policy, input.ownerId, conversation, revisions);
+        if (projectFactsPermitted && !permitsProjectFacts(currentAuthorization, conversation)) {
+          return await this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'ASSISTANT_EXECUTION_UNAVAILABLE', input.skillInvocation);
+        }
+      } catch {
+        return await this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'ASSISTANT_EXECUTION_UNAVAILABLE', input.skillInvocation);
       }
-    }
 
-    let outcome: 'accepted' | 'unavailable' | 'unknown';
+      const authorizedTurn = await this.findCurrentTurn(input.ownerId, input.conversationId, submission.turn.id);
+      if (!authorizedTurn) throw new HomeTurnNotFoundError();
+      if (authorizedTurn.status === 'cancel_requested') {
+        const turn = await this.updateStatus(input.ownerId, input.conversationId, submission.turn.id, 'cancelled');
+        return resultWithTurn(submission, turn, { state: 'cancelled' });
+      }
+      if (authorizedTurn.status !== 'running' || !samePolicyBinding(authorizedTurn, revisions)) {
+        const settled = authorizedTurn.status === 'unknown'
+          ? await this.settleExpiredCancellation(input.ownerId, input.conversationId, submission.turn.id) : null;
+        return resultWithTurn(submission, settled ?? authorizedTurn, executionForTurn(settled ?? authorizedTurn));
+      }
+
+      if (conversation.scope.kind === 'workspace' && projectFactsPermitted) {
+        try {
+          const latestSelectedProjectFacts = await this.readSelectedProjectFacts(input.ownerId, conversation);
+          const latestContext = buildHomePlanningContext({
+            currentMessage: submission.message.content,
+            priorMessages,
+            selectedProjectFacts: latestSelectedProjectFacts
+          });
+          if (!sameProjectMemorySnapshot(planningContext.selectedProjectFacts, latestContext.selectedProjectFacts)) {
+            return await this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE', input.skillInvocation);
+          }
+        } catch {
+          return await this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'HOME_CONTEXT_UNAVAILABLE', input.skillInvocation);
+        }
+      }
+
+      if (input.skillInvocation) {
+        await input.skillInvocation.updateState('dispatching');
+        if (input.skillInvocation.automationFence && !await input.skillInvocation.heartbeat?.()) {
+          return await this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'SCHEDULE_LEASE_LOST', input.skillInvocation);
+        }
+        if (!await input.skillInvocation.isCurrent()) {
+          return await this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'SKILL_NOT_AVAILABLE', input.skillInvocation);
+        }
+      }
+
+      let outcome: 'accepted' | 'unavailable' | 'unknown';
+      try {
+        dispatchAttempted = true;
+        outcome = (await runtime.start({ turnId: submission.turn.id, prompt: `${conversation.title === DEFAULT_CONVERSATION_TITLE ? CONVERSATION_TITLE_INSTRUCTION : ''}${planningContext.prompt}`, provider: runtimeConfiguration.provider })).outcome;
+      } catch {
+        outcome = 'unknown';
+      }
+      if (outcome === 'unavailable') {
+        dispatchAttempted = false;
+        return await this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'PLANNING_RUNTIME_UNAVAILABLE', input.skillInvocation);
+      }
+      try {
+        if (outcome === 'unknown') {
+          if (input.skillInvocation) await input.skillInvocation.updateState('unknown');
+          const turn = await this.updateStatus(input.ownerId, input.conversationId, submission.turn.id, 'unknown');
+          return resultWithTurn(submission, turn, { state: 'unknown', code: 'PLANNING_RUNTIME_OUTCOME_UNKNOWN' });
+        }
+        if (input.skillInvocation) await input.skillInvocation.updateState('accepted');
+        const afterSend = await this.findCurrentTurn(input.ownerId, input.conversationId, submission.turn.id);
+        if (!afterSend) throw new HomeTurnNotFoundError();
+        if (afterSend.status === 'cancel_requested') {
+          const cancelled = await cancelStartedRun(runtime, afterSend);
+          const turn = await this.updateStatus(input.ownerId, input.conversationId, submission.turn.id, cancelled ? 'cancelled' : 'unknown');
+          return resultWithTurn(submission, turn, cancelled
+            ? { state: 'cancelled' }
+            : { state: 'unknown', code: 'PLANNING_RUNTIME_OUTCOME_UNKNOWN' });
+        }
+        if (afterSend.status === 'running' && !afterSend.automationOccurrenceId) {
+          runtimeConfiguration.onAccepted?.({ ownerId: input.ownerId, conversationId: input.conversationId, turnId: afterSend.id });
+        } else if (afterSend.status !== 'running') {
+          if (await this.cleanupUnsupervisedStart(runtime, submission.turn.id)) {
+            await this.settleExpiredCancellation(input.ownerId, input.conversationId, submission.turn.id);
+          }
+        }
+        return resultWithTurn(submission, afterSend, executionForTurn(afterSend));
+      } catch (error: unknown) {
+        const cleaned = await this.cleanupUnsupervisedStart(runtime, submission.turn.id);
+        if (cleaned) {
+          await this.updateStatus(input.ownerId, input.conversationId, submission.turn.id, 'cancelled').catch(() => null);
+        } else {
+          // Expiry's durable Home-turn barrier retries unknown cleanup instead of deleting the owner.
+          await this.conversations.updateTurnStatus({ ownerId: input.ownerId, conversationId: input.conversationId,
+            turnId: submission.turn.id, status: 'unknown' }).catch(() => null);
+        }
+        throw error;
+      }
+    } catch (error: unknown) {
+      if (!dispatchAttempted && !submission.replayed) {
+        await this.settleExpiredCancellation(input.ownerId, input.conversationId, submission.turn.id).catch(() => null);
+      }
+      throw error;
+    }
+  }
+
+  private async cleanupUnsupervisedStart(runtime: IHomePlanningRuntime, turnId: string): Promise<boolean> {
     try {
-      outcome = (await runtime.start({ turnId: submission.turn.id, prompt: `${conversation.title === DEFAULT_CONVERSATION_TITLE ? CONVERSATION_TITLE_INSTRUCTION : ''}${planningContext.prompt}`, provider: runtimeConfiguration.provider })).outcome;
+      if ((await runtime.cancel(turnId)).outcome !== 'confirmed') return false;
+      await runtime.delete(turnId);
+      return true;
     } catch {
-      outcome = 'unknown';
+      return false;
     }
-    if (outcome === 'unavailable') {
-      return this.finishKnownNoSend(input.ownerId, input.conversationId, submission, 'PLANNING_RUNTIME_UNAVAILABLE', input.skillInvocation);
-    }
-    if (outcome === 'unknown') {
-      if (input.skillInvocation) await input.skillInvocation.updateState('unknown');
-      const turn = await this.updateStatus(input.ownerId, input.conversationId, submission.turn.id, 'unknown');
-      return resultWithTurn(submission, turn, { state: 'unknown', code: 'PLANNING_RUNTIME_OUTCOME_UNKNOWN' });
-    }
-    if (input.skillInvocation) await input.skillInvocation.updateState('accepted');
+  }
 
-    const afterSend = await this.findCurrentTurn(input.ownerId, input.conversationId, submission.turn.id);
-    if (!afterSend) throw new HomeTurnNotFoundError();
-    if (afterSend.status === 'cancel_requested') {
-      const cancelled = await cancelStartedRun(runtime, afterSend);
-      const turn = await this.updateStatus(input.ownerId, input.conversationId, submission.turn.id, cancelled ? 'cancelled' : 'unknown');
-      return resultWithTurn(submission, turn, cancelled
-        ? { state: 'cancelled' }
-        : { state: 'unknown', code: 'PLANNING_RUNTIME_OUTCOME_UNKNOWN' });
-    }
-    if (afterSend.status === 'running' && !afterSend.automationOccurrenceId) {
-      runtimeConfiguration.onAccepted?.({ ownerId: input.ownerId, conversationId: input.conversationId, turnId: afterSend.id });
-    }
-    return resultWithTurn(submission, afterSend, executionForTurn(afterSend));
+  private async settleExpiredCancellation(ownerId: string, conversationId: string, turnId: string): Promise<HomeTurn | null> {
+    return await this.conversations.settleExpiredTurnCancellation?.({ ownerId, conversationId, turnId }) ?? null;
   }
 
   private async replayWithoutRestart(ownerId: string, conversationId: string, submission: HomeTurnSubmission, runtime: IHomePlanningRuntime): Promise<HomeTurnSubmission> {
@@ -315,10 +358,18 @@ export class SubmitHomeTurnUseCase {
       const unsupported = await this.updateStatus(ownerId, conversationId, current.id, 'unsupported');
       return resultWithTurn(submission, unsupported, { state: 'unsupported', code });
     }
+    if (current.status === 'unknown') {
+      const settled = await this.settleExpiredCancellation(ownerId, conversationId, current.id);
+      if (settled) return resultWithTurn(submission, settled, { state: 'cancelled' });
+    }
     return resultWithTurn(submission, current, executionForTurn(current));
   }
 
   private async updateStatus(ownerId: string, conversationId: string, turnId: string, status: 'unsupported' | 'unknown' | 'cancelled'): Promise<HomeTurn> {
+    if (status === 'cancelled') {
+      const settled = await this.settleExpiredCancellation(ownerId, conversationId, turnId);
+      if (settled) return settled;
+    }
     const turn = await this.conversations.updateTurnStatus({ ownerId, conversationId, turnId, status });
     if (!turn) throw new HomeTurnNotFoundError();
     return turn;

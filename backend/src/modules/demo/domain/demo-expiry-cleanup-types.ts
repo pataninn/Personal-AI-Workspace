@@ -7,6 +7,8 @@ export interface DemoExpiryCancellationPort {
     readonly idempotencyKey: string;
   }): Promise<unknown>;
   cancelAutomationTurn(input: { readonly ownerId: string; readonly conversationId: string; readonly turnId: string }): Promise<{ readonly status: string }>;
+  /** Trusted cleanup-only path; expiry has already fenced the owner from new work. */
+  cancelHomeTurn?(input: { readonly ownerId: string; readonly conversationId: string; readonly turnId: string }): Promise<{ readonly status: string }>;
 }
 
 export interface IDemoExpiryCleanupRepository {

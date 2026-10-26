@@ -400,4 +400,60 @@ describe('TaskDetailPage', () => {
     expect(screen.queryByTestId('task-undo')).not.toBeInTheDocument();
     expect(mocks.undoTaskAction).not.toHaveBeenCalled();
   });
+  it('keeps task B visible after task A move completes late', async () => {
+    const secondId = '77777777-7777-4777-8777-777777777777';
+    const second = { ...inboxItem, task: { ...inboxItem.task, id: secondId, title: 'Task B' } };
+    const moved = { ...inboxItem, task: { ...inboxItem.task, projectId: WORKSPACE_ID, version: 2 }, workspace: WORKSPACE, collection: 'workspace' as const };
+    mocks.getGlobalTask.mockImplementation(async (id) => id === secondId ? second : moved).mockResolvedValueOnce(inboxItem);
+    const pending = deferred<ReturnType<typeof mutationResult>>();
+    mocks.moveGlobalTask.mockReturnValue(pending.promise);
+    const user = userEvent.setup();
+    const { router } = renderTaskDetail();
+    await screen.findByRole('heading', { name: 'Send the proposal' });
+    await user.click(screen.getByTestId('task-move-open'));
+    await user.selectOptions(screen.getByTestId('task-move-destination'), WORKSPACE_ID);
+    await user.click(screen.getByTestId('task-move-submit'));
+    await act(async () => { await router.navigate('/tasks/' + secondId); });
+    await screen.findByRole('heading', { name: 'Task B' });
+    await act(async () => { pending.resolve(mutationResult(moved, 'task.move')); });
+    expect(screen.getByRole('heading', { name: 'Task B' })).toBeInTheDocument();
+  });
+
+  it('ignores task A follow-up reads after a committed move and navigation to B', async () => {
+    const secondId = '77777777-7777-4777-8777-777777777777';
+    const second = { ...inboxItem, task: { ...inboxItem.task, id: secondId, title: 'Task B' } };
+    const moved = { ...inboxItem, task: { ...inboxItem.task, projectId: WORKSPACE_ID, version: 2 }, workspace: WORKSPACE, collection: 'workspace' as const };
+    const refresh = deferred<GlobalTaskItem>();
+    mocks.getGlobalTask.mockImplementation((id) => id === secondId ? Promise.resolve(second) : refresh.promise).mockResolvedValueOnce(inboxItem);
+    mocks.moveGlobalTask.mockResolvedValue(mutationResult(moved, 'task.move'));
+    const user = userEvent.setup();
+    const { router } = renderTaskDetail();
+    await screen.findByRole('heading', { name: 'Send the proposal' });
+    await user.click(screen.getByTestId('task-move-open'));
+    await user.selectOptions(screen.getByTestId('task-move-destination'), WORKSPACE_ID);
+    await user.click(screen.getByTestId('task-move-submit'));
+    await waitFor(() => expect(mocks.getGlobalTask).toHaveBeenCalledWith(TASK_ID, true));
+    await act(async () => { await router.navigate('/tasks/' + secondId); });
+    await screen.findByRole('heading', { name: 'Task B' });
+    await act(async () => { refresh.resolve(moved); });
+    expect(screen.getByRole('heading', { name: 'Task B' })).toBeInTheDocument();
+    expect(screen.queryByTestId('task-refresh-warning')).not.toBeInTheDocument();
+  });
+
+  it('ignores late Undo results after navigating to another task', async () => {
+    const secondId = '77777777-7777-4777-8777-777777777777';
+    const second = { ...inboxItem, task: { ...inboxItem.task, id: secondId, title: 'Task B' } };
+    globalThis.sessionStorage.setItem(`personal-ai:task-action-receipt:owner-1:${TASK_ID}`, ACTION_ID);
+    mocks.getGlobalTask.mockImplementation(async (id) => id === secondId ? second : inboxItem);
+    const undo = deferred<{ originalAction: typeof savedReceipt; undoAction: typeof savedReceipt }>();
+    mocks.undoTaskAction.mockReturnValue(undo.promise);
+    const user = userEvent.setup();
+    const { router } = renderTaskDetail();
+    await user.click(await screen.findByTestId('task-undo'));
+    await act(async () => { await router.navigate('/tasks/' + secondId); });
+    await screen.findByRole('heading', { name: 'Task B' });
+    await act(async () => { undo.resolve({ originalAction: savedReceipt, undoAction: savedReceipt }); });
+    expect(screen.getByRole('heading', { name: 'Task B' })).toBeInTheDocument();
+    expect(screen.queryByTestId('task-action-receipt')).not.toBeInTheDocument();
+  });
 });

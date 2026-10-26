@@ -349,6 +349,31 @@ describeDatabase('Task 7.1 durable scheduler PostgreSQL integration', () => {
     }
   });
 
+  it('reclaims a released running poll immediately while rejecting the prior fence', async () => {
+    const schedule = await createSchedule();
+    const run = await automations.createManualOccurrence({
+      ownerId: OWNER_ID, scheduleId: schedule.id, expectedRevision: 1,
+      requestKeyDigest: '9'.repeat(64), requestFingerprint: 'a'.repeat(64)
+    });
+    const first = (await automations.claimBatch({ limit: 1, leaseMilliseconds: 120_000 }))[0];
+    if (!first) throw new Error('The test occurrence was not claimed.');
+    expect(first.occurrence.id).toBe(run.occurrence.id);
+    expect(await automations.beginDispatch(first.fence)).toBe(true);
+    expect(await automations.recordTurnStatus({ ...first.fence, status: 'running' })).toBe(true);
+    expect(await automations.releasePollingClaim(first.fence)).toBe(true);
+
+    const second = (await automations.claimBatch({ limit: 1, leaseMilliseconds: 120_000 }))[0];
+    if (!second) throw new Error('The running occurrence did not become immediately claimable.');
+    expect(second.occurrence.id).toBe(first.occurrence.id);
+    expect(second.fence.generation).toBe(first.fence.generation + 1);
+    expect(second.fence.leaseToken).not.toBe(first.fence.leaseToken);
+    expect(await automations.releasePollingClaim(first.fence)).toBe(false);
+    expect(await automations.heartbeat(first.fence, 120_000)).toBe(false);
+    expect(await automations.recordTurnStatus({ ...first.fence, status: 'succeeded' })).toBe(false);
+    expect(await automations.heartbeat(second.fence, 120_000)).toBe(true);
+    expect(await automations.recordTurnStatus({ ...second.fence, status: 'succeeded' })).toBe(true);
+  });
+
   it('records bounded task source revisions only under the current occurrence lease', async () => {
     const schedule = await createSchedule();
     const first = await automations.createManualOccurrence({

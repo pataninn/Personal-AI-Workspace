@@ -91,6 +91,7 @@ export class AutomationWorker {
     } finally {
       heartbeatRunning = false;
       clearInterval(timer);
+      await this.repository.releasePollingClaim(item.fence);
     }
   }
 

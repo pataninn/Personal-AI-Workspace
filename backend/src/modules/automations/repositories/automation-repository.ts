@@ -83,6 +83,7 @@ export interface IAutomationRepository {
   beginDispatch(input: AutomationLeaseFence): Promise<boolean>;
   heartbeat(input: AutomationLeaseFence, leaseMilliseconds: number): Promise<boolean>;
   recordTurnStatus(input: AutomationLeaseFence & { readonly status: AutomationOccurrenceStatus; readonly failureCode?: string }): Promise<boolean>;
+  releasePollingClaim(input: AutomationLeaseFence): Promise<boolean>;
   recordCancellationResult(input: { readonly occurrenceId: string; readonly status: AutomationCancellationOutcome }): Promise<boolean>;
   finishWithoutTurn(input: AutomationLeaseFence & { readonly status: 'failed' | 'skipped'; readonly failureCode: string }): Promise<boolean>;
   releaseSafeClaim(input: AutomationLeaseFence, failureCode: string): Promise<boolean>;

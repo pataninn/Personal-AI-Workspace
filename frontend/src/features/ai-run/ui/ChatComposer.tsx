@@ -28,7 +28,7 @@ export function ChatComposer({ projectId, conversationId, disabled, archivedDesc
   const csrfToken = useAppSelector(selectCsrfToken);
   const submitButton = useRef<HTMLButtonElement>(null);
   const policy = useWorkspaceAssistantPolicy(projectId);
-  const usage = useAccountUsage();
+  const usage = useAccountUsage(!disabled);
   const quotaAvailable = usage.state.status === 'success' && usage.state.data.availability.canSubmit;
   const [legacyCancelPending, setLegacyCancelPending] = useState(false);
   const [legacyCancelError, setLegacyCancelError] = useState<string | null>(null);
@@ -40,6 +40,10 @@ export function ChatComposer({ projectId, conversationId, disabled, archivedDesc
   const legacyPending = chat.run?.status === 'pending_approval' && chat.run.decision === 'pending';
   const showStatusCard = Boolean(chat.run && ['rejected', 'staging'].includes(chat.run.status));
   const canEditDraft = !disabled && !chat.lockDraft;
+
+  useEffect(() => {
+    if (chat.run && ['succeeded', 'failed', 'cancelled', 'blocked'].includes(chat.run.status)) usage.refresh();
+  }, [chat.run?.runId, chat.run?.status, usage.refresh]);
 
   useEffect(() => {
     legacyCancelKey.current = null;

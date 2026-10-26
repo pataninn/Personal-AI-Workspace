@@ -146,6 +146,23 @@ export class TypeOrmProjectRepository implements IProjectRepository, IProjectWor
     await lockOwner(transaction, ownerId);
   }
 
+  public async recoverUnattachedRoot(ownerId: string, projectId: string, discard: () => Promise<void>): Promise<void> {
+    const runner = this.dataSource.createQueryRunner('master');
+    await runner.connect();
+    await runner.startTransaction();
+    try {
+      // Wait for any ambiguous attachment commit and fence concurrent attachment
+      // until the proven empty allocation has been discarded.
+      await this.lockOwnerRoots(runner, ownerId);
+      const current = await this.findByIdForOwnerForUpdate(runner, ownerId, projectId);
+      if (current?.relativeRoot === null) await discard();
+      await runner.commitTransaction();
+    } catch (error: unknown) {
+      await runner.rollbackTransaction();
+      throw error;
+    } finally { await runner.release(); }
+  }
+
   public async findByIdForOwnerForUpdate(transaction: QueryRunner, ownerId: string, projectId: string): Promise<Project | null> {
     const rows: readonly ProjectRow[] = await transaction.query(
       `SELECT "id", "owner_id", "name", "slug", "relative_root", "relative_root_key", "storage_kind", "objective", "status", "version", "created_at", "updated_at"

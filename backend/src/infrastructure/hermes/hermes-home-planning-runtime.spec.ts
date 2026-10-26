@@ -29,6 +29,45 @@ function runtimeWith(bridgeCall: jest.Mock, registeredToolNames: readonly HomePl
 }
 
 describe('HermesHomePlanningRuntime', () => {
+  it('retries an uncertain cancellation with the original capability and disposes the run after confirmation', async () => {
+    const call = jest.fn().mockResolvedValueOnce({ status: 'preparing' })
+      .mockRejectedValueOnce(new Error('bridge temporarily unavailable'))
+      .mockResolvedValueOnce({ outcome: 'confirmed' }).mockResolvedValueOnce({ deleted: true });
+    const runtime = runtimeWith(call);
+    await runtime.start({ turnId, prompt: 'Synthetic expiry race.', provider });
+
+    await expect(runtime.cancel(turnId)).resolves.toEqual({ outcome: 'unknown' });
+    await expect(runtime.cancel(turnId)).resolves.toEqual({ outcome: 'confirmed' });
+    await runtime.delete(turnId);
+
+    const capability = call.mock.calls[0]?.[2] as string;
+    expect(call.mock.calls.map(([operation]) => operation)).toEqual(['planning-create', 'planning-cancel', 'planning-cancel', 'planning-delete']);
+    expect(call.mock.calls.every((args) => args[2] === capability)).toBe(true);
+    await runtime.delete(turnId);
+    expect(call).toHaveBeenCalledTimes(4);
+  });
+
+  it('waits for a pending create before cancellation, including a create with uncertain acceptance', async () => {
+    let resolveCreate: (value: Record<string, unknown>) => void = () => undefined;
+    const pendingCreate = new Promise<Record<string, unknown>>((resolve) => { resolveCreate = resolve; });
+    let enteredCreate: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => { enteredCreate = resolve; });
+    const call = jest.fn(async (operation: string) => {
+      if (operation === 'planning-create') { enteredCreate(); return pendingCreate; }
+      return operation === 'planning-cancel' ? { outcome: 'confirmed' } : { deleted: true };
+    });
+    const runtime = runtimeWith(call);
+    const start = runtime.start({ turnId, prompt: 'Synthetic pending start.', provider });
+    await entered;
+    const cancel = runtime.cancel(turnId);
+    expect(call).toHaveBeenCalledTimes(1);
+    resolveCreate({ status: 'unknown' });
+    await expect(start).resolves.toMatchObject({ outcome: 'unknown' });
+    await expect(cancel).resolves.toEqual({ outcome: 'confirmed' });
+    await runtime.delete(turnId);
+    expect(call.mock.calls.map(([operation]) => operation)).toEqual(['planning-create', 'planning-cancel', 'planning-delete']);
+  });
+
   it('fails closed before planning-create unless the bridge egress gate is explicitly verified', async () => {
     const call = jest.fn();
     const runtime = new HermesHomePlanningRuntime({ call } as unknown as HermesBridgeClient, provider);

@@ -37,8 +37,9 @@ function setup(item: ClaimedAutomationOccurrence) {
     heartbeat: jest.fn(async () => true),
     recordTurnStatus: jest.fn(async (input: { status: typeof current.status }) => { current = { ...current, status: input.status }; return true; }),
     finishWithoutTurn: jest.fn(async () => true),
-    releaseSafeClaim: jest.fn(async () => true)
-  } as unknown as IAutomationRepository & { recordTurnStatus: jest.Mock; beginDispatch: jest.Mock; finishWithoutTurn: jest.Mock; releaseSafeClaim: jest.Mock };
+    releaseSafeClaim: jest.fn(async () => true),
+    releasePollingClaim: jest.fn(async () => true)
+  } as unknown as IAutomationRepository & { recordTurnStatus: jest.Mock; beginDispatch: jest.Mock; finishWithoutTurn: jest.Mock; releaseSafeClaim: jest.Mock; releasePollingClaim: jest.Mock };
   const invokeSkill = { execute: jest.fn(async () => ({ invocation: { id: 'invoke-id', turnId: TURN_ID, state: 'running' } })) } as unknown as InvokeSkillUseCase & { execute: jest.Mock };
   const getHomeTurn = { execute: jest.fn(async () => ({ id: TURN_ID, status: 'completed' })) } as unknown as ProcessHomeTurnUseCase & { execute: jest.Mock };
   const cancelHomeTurn = { execute: jest.fn() } as unknown as CancelHomeTurnUseCase;
@@ -46,6 +47,27 @@ function setup(item: ClaimedAutomationOccurrence) {
 }
 
 describe('AutomationWorker', () => {
+  it('releases a running poll so the next pass can advance the same turn without redispatching', async () => {
+    const { worker, repository, getHomeTurn, invokeSkill } = setup(claimed(TURN_ID, 'running'));
+    let leased = false;
+    (repository.claimBatch as jest.Mock).mockImplementation(async () => {
+      if (leased) return [];
+      leased = true;
+      return [claimed(TURN_ID, 'running')];
+    });
+    repository.releasePollingClaim.mockImplementation(async () => { leased = false; return true; });
+    getHomeTurn.execute.mockResolvedValueOnce({ id: TURN_ID, status: 'running' })
+      .mockResolvedValueOnce({ id: TURN_ID, status: 'completed' });
+
+    await expect(worker.runOnce()).resolves.toBe(1);
+    await expect(worker.runOnce()).resolves.toBe(1);
+
+    expect(getHomeTurn.execute).toHaveBeenCalledTimes(2);
+    expect(invokeSkill.execute).not.toHaveBeenCalled();
+    expect(repository.recordTurnStatus).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'succeeded' }));
+    expect(repository.releasePollingClaim).toHaveBeenCalledTimes(2);
+  });
+
   it('stops trusting the lease when a background heartbeat fails without rejecting the timer', async () => {
     jest.useFakeTimers();
     try {

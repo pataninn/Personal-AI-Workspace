@@ -83,7 +83,9 @@ class LinuxGatewayProfileTests(unittest.TestCase):
 
             service_dir = home / '.config/systemd/user'
             bridge_unit = (service_dir / 'personal-ai-hermes-bridge.service').read_text(encoding='utf-8')
-            self.assertIn('After=openshell-gateway.service', bridge_unit)
+            after = next(line.removeprefix('After=').split() for line in bridge_unit.splitlines() if line.startswith('After='))
+            self.assertIn('default.target', after)
+            self.assertIn('openshell-gateway.service', after)
             self.assertIn('Requires=openshell-gateway.service', bridge_unit)
             self.assertIn('Environment=PAI_GATEWAY_MODE=packaged-linux', bridge_unit)
             self.assertFalse((service_dir / 'personal-ai-hermes-gateway.service').exists())
@@ -107,7 +109,9 @@ class LinuxGatewayProfileTests(unittest.TestCase):
             gateway_unit = (service_dir / 'personal-ai-hermes-gateway.service').read_text(encoding='utf-8')
             bridge_unit = (service_dir / 'personal-ai-hermes-bridge.service').read_text(encoding='utf-8')
             self.assertIn('--name nemoclaw-18080', gateway_unit)
-            self.assertIn('After=personal-ai-hermes-gateway.service', bridge_unit)
+            after = next(line.removeprefix('After=').split() for line in bridge_unit.splitlines() if line.startswith('After='))
+            self.assertIn('default.target', after)
+            self.assertIn('personal-ai-hermes-gateway.service', after)
             self.assertIn('Environment=PAI_GATEWAY_MODE=custom', bridge_unit)
             self.assertEqual(
                 run.call_args_list[-1].args[0],

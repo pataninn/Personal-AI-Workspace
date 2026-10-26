@@ -71,6 +71,7 @@ function parseManifest(value: CleanupManifest | string): CleanupManifest {
 
 const ACTIVE_RUNS = "('pending_approval','staging','ready','queued','running','waiting_approval','cancel_requested')";
 const ACTIVE_COMMANDS = "('awaiting_approval','running','cancel_requested')";
+const UNRESOLVED_HOME_TURNS = "('pending','running','cancel_requested','unknown')";
 
 /** Bounded, leased demo cleanup. Unknown external effects remain barriers; no paths are persisted. */
 export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRepository {
@@ -92,13 +93,14 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
       try {
         if (job.phase === 'fenced') await this.setPhase(job, 'fenced', 'draining');
         const manifest = parseManifest(job.manifest);
+        // Legacy jobs may already be finalizing; their newly recognized Home barrier still needs a drain path.
+        await this.requestCancellations(manifest, cancellation);
+        const barrier = await this.getBarrier(manifest.ownerId);
+        if (barrier) {
+          await this.releaseForRetry(job, barrier);
+          continue;
+        }
         if (job.phase !== 'finalizing') {
-          await this.requestCancellations(manifest, cancellation);
-          const barrier = await this.getBarrier(manifest.ownerId);
-          if (barrier) {
-            await this.releaseForRetry(job, barrier);
-            continue;
-          }
           if (job.phase !== 'purging') await this.setPhase(job, 'draining', 'purging');
           await this.purge(job, manifest);
           await this.quota.purgeDemoOwnedReferences(job.owner_id, job.admission_id, job.generation, job.lease_token);
@@ -134,6 +136,8 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
         const owner = rows<{ readonly id: string }>(await manager.query(
           `SELECT "id" FROM "users" WHERE "id"=$1 AND "account_kind"='demo' FOR UPDATE`, [due.owner_id]))[0];
         if (!owner) return false;
+        await manager.query(`UPDATE "home_turns" SET "status"='cancel_requested',"updated_at"=clock_timestamp()
+          WHERE "owner_id"=$1 AND "status" IN ('pending','running')`, [due.owner_id]);
         const schedules = rows<{ readonly id: string }>(await manager.query(
           `SELECT "id" FROM "automation_schedules" WHERE "owner_id"=$1 ORDER BY "id" FOR UPDATE`, [due.owner_id]));
         await manager.query(`UPDATE "automation_schedules" SET "enabled"=false,"revision"="revision"+1,
@@ -230,6 +234,20 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
   }
 
   private async requestCancellations(manifest: CleanupManifest, cancellation: DemoExpiryCancellationPort): Promise<void> {
+    // Query current turns as well as the manifest so jobs created before Home draining was added remain safe.
+    const homeTurns = rows<{ readonly id: string; readonly conversation_id: string }>(await this.dataSource.query(
+      `SELECT "id","conversation_id" FROM "home_turns" WHERE "owner_id"=$1 AND "status" IN ${UNRESOLVED_HOME_TURNS}`,
+      [manifest.ownerId]));
+    const homeResults = new Map<string, string>();
+    for (const turn of homeTurns) {
+      let status = 'unknown';
+      try {
+        const cancel = cancellation.cancelHomeTurn ?? cancellation.cancelAutomationTurn;
+        status = (await cancel({ ownerId: manifest.ownerId, conversationId: turn.conversation_id, turnId: turn.id })).status;
+      } catch { /* keep the persisted Home turn as an uncertain cleanup barrier */ }
+      homeResults.set(turn.id, status);
+      await this.recordHomeCancellation(manifest.ownerId, turn.id, status);
+    }
     const activeRuns = rows<{ readonly id: string }>(await this.dataSource.query(
       `SELECT "id" FROM "ai_runs" WHERE "owner_id"=$1 AND "status" IN ${ACTIVE_RUNS}`, [manifest.ownerId]));
     for (const run of activeRuns) {
@@ -245,13 +263,15 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
     }
     for (const automation of manifest.automationTurns) {
       if (!automation.turnId) continue;
-      let status = 'unknown';
-      try {
-        const result = await cancellation.cancelAutomationTurn({
-          ownerId: manifest.ownerId, conversationId: automation.conversationId, turnId: automation.turnId
-        });
-        status = result.status;
-      } catch { /* the persisted cancel request remains the cleanup barrier */ }
+      let status = homeResults.get(automation.turnId) ?? 'unknown';
+      if (!homeResults.has(automation.turnId)) {
+        try {
+          status = (await cancellation.cancelAutomationTurn({
+            ownerId: manifest.ownerId, conversationId: automation.conversationId, turnId: automation.turnId
+          })).status;
+        } catch { /* the persisted cancel request remains the cleanup barrier */ }
+        await this.recordHomeCancellation(manifest.ownerId, automation.turnId, status);
+      }
       const occurrenceStatus = status === 'completed' || status === 'partial' ? 'succeeded'
         : status === 'failed' ? 'failed' : status === 'unsupported' ? 'skipped'
           : status === 'cancelled' ? 'cancelled' : 'interrupted_unknown';
@@ -265,11 +285,18 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
     }
   }
 
+  private async recordHomeCancellation(ownerId: string, turnId: string, status: string): Promise<void> {
+    const settled = ['completed', 'partial', 'failed', 'cancelled', 'unsupported'].includes(status) ? status : 'unknown';
+    await this.dataSource.query(`UPDATE "home_turns" SET "status"=$3,"updated_at"=clock_timestamp()
+      WHERE "owner_id"=$1 AND "id"=$2 AND "status" IN ${UNRESOLVED_HOME_TURNS}`, [ownerId, turnId, settled]);
+  }
+
   private async getBarrier(ownerId: string): Promise<'busy' | 'unknown_effect' | null> {
     const result = rows<{ readonly active_run: boolean; readonly uncertain_provider: boolean; readonly active_command: boolean;
       readonly unresolved_reservation: boolean; readonly unresolved_root_effect: boolean; readonly removal_job: boolean;
       readonly active_credit_reservation: boolean; readonly uncertain_credit_reservation: boolean;
-      readonly active_automation: boolean; readonly uncertain_automation: boolean }>(await this.dataSource.query(`
+      readonly active_automation: boolean; readonly uncertain_automation: boolean;
+      readonly active_home_turn: boolean; readonly uncertain_home_turn: boolean }>(await this.dataSource.query(`
       SELECT EXISTS(SELECT 1 FROM "ai_runs" WHERE "owner_id"=$1 AND ("status" IN ${ACTIVE_RUNS} OR "status"='review_required')) AS "active_run",
         EXISTS(SELECT 1 FROM "ai_runs" WHERE "owner_id"=$1 AND "provider_transmission"='unknown') AS "uncertain_provider",
         EXISTS(SELECT 1 FROM "sandbox_commands" WHERE "owner_id"=$1 AND ("status" IN ${ACTIVE_COMMANDS} OR "status"='review_required')) AS "active_command",
@@ -280,12 +307,14 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
         EXISTS(SELECT 1 FROM "credit_provider_call_reservations" WHERE "owner_id"=$1 AND "status"='unknown') AS "uncertain_credit_reservation",
         EXISTS(SELECT 1 FROM "automation_occurrences" WHERE "owner_id"=$1 AND "status" IN ('queued','claimed','dispatching','running','cancel_requested')) AS "active_automation",
         EXISTS(SELECT 1 FROM "automation_occurrences" WHERE "owner_id"=$1 AND "status"='interrupted_unknown') AS "uncertain_automation",
+        EXISTS(SELECT 1 FROM "home_turns" WHERE "owner_id"=$1 AND "status" IN ('pending','running','cancel_requested')) AS "active_home_turn",
+        EXISTS(SELECT 1 FROM "home_turns" WHERE "owner_id"=$1 AND "status"='unknown') AS "uncertain_home_turn",
         EXISTS(SELECT 1 FROM "project_removal_jobs" WHERE "owner_id"=$1) AS "removal_job"
     `, [ownerId]))[0];
     if (!result) return 'busy';
     if (result.uncertain_provider || result.unresolved_root_effect || result.unresolved_reservation
-      || result.uncertain_credit_reservation || result.uncertain_automation) return 'unknown_effect';
-    if (result.active_run || result.active_command || result.removal_job || result.active_credit_reservation || result.active_automation) return 'busy';
+      || result.uncertain_credit_reservation || result.uncertain_automation || result.uncertain_home_turn) return 'unknown_effect';
+    if (result.active_run || result.active_command || result.removal_job || result.active_credit_reservation || result.active_automation || result.active_home_turn) return 'busy';
     return null;
   }
 

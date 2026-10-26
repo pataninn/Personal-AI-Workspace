@@ -5,6 +5,8 @@ import path from 'node:path';
 import type { DataSource, QueryRunner } from 'typeorm';
 
 import { createDataSource } from '@/infrastructure/database/data-source';
+import { BoundDemoStorage1710000042000 } from '@/infrastructure/database/migrations/1710000042000-bound-demo-storage';
+import { TypeOrmActionLedgerRepository } from '@/infrastructure/database/repositories/typeorm-action-ledger-repository';
 import { TypeOrmDemoAdmissionRepository } from '@/infrastructure/database/repositories/typeorm-demo-admission-repository';
 import { TypeOrmAiRunRepository } from '@/infrastructure/database/repositories/typeorm-ai-run-repository';
 import { TypeOrmConversationRepository } from '@/infrastructure/database/repositories/typeorm-conversation-repository';
@@ -27,6 +29,8 @@ import { StartAiRunUseCase } from '@/modules/ai-runs/use-cases/start-ai-run-use-
 import type { StartRunUpdate, RunMutationResult } from '@/modules/ai-runs/repositories/ai-run-repository';
 import { DemoAdmissionRateLimitedError, DemoAdmissionUnavailableError, DemoRunStartRateLimitedError } from '@/modules/demo/domain/demo-admission-errors';
 import { CreateDemoSessionUseCase } from '@/modules/demo/use-cases/create-demo-session';
+import { DEFAULT_DEMO_STORAGE_LIMIT_BYTES } from '@/modules/demo/domain/demo-storage-policy';
+import { WorkspacePlanningUseCases } from '@/modules/projects/use-cases/workspace-planning-use-cases';
 
 const DATABASE_NAME = 'home_history_task_3_3_demo_test';
 const REGULAR_OWNER_ID = 'd3330000-0000-4000-8000-000000000101';
@@ -129,6 +133,17 @@ class TestManagedWorkspaceBoundary implements IWorkspaceBoundary {
     await fs.mkdir(projectsRoot, { recursive: true, mode: 0o700 });
     await fs.mkdir(path.join(projectsRoot, projectId), { mode: 0o700 });
     return `projects/${projectId}`;
+  }
+
+  public async allocateManagedProjectRoot(ownerId: string, projectId: string) {
+    const relativeRoot = await this.createManagedProjectRoot(ownerId, projectId);
+    const projectPath = path.join(this.root, ownerId, relativeRoot);
+    const allocated = await fs.lstat(projectPath);
+    return { relativeRoot, discardIfEmpty: async () => {
+      const current = await fs.lstat(projectPath);
+      if (current.dev !== allocated.dev || current.ino !== allocated.ino || current.isSymbolicLink()) throw new Error('Allocation changed');
+      await fs.rmdir(projectPath);
+    } };
   }
 
   public async resolveProjectRoot(scope: ProjectRootScope): Promise<ResolvedProjectRoot> {
@@ -367,6 +382,64 @@ describeDatabase('Task 3.3 demo admission with PostgreSQL', () => {
     }
   }, 30_000);
 
+  it('backfills only untouched legacy demo storage defaults and safely reverts only those repairs', async () => {
+    const source = requiredDataSource();
+    const legacy = randomUUID();
+    const overridden = randomUUID();
+    const finite = randomUUID();
+    const changedLater = randomUUID();
+    for (const ownerId of [legacy, overridden, finite, changedLater]) {
+      await source.query(`INSERT INTO "users" ("id", "scope_key", "account_kind", "role", "password_hash", "expires_at")
+        VALUES ($1, $2, 'demo', 'user', NULL, now() + interval '1 day')`, [ownerId, `account:${ownerId}`]);
+      await source.query('INSERT INTO "account_limits" ("owner_id") VALUES ($1)', [ownerId]);
+    }
+    await source.query('UPDATE "account_limits" SET "limits_revision" = 2 WHERE "owner_id" = $1', [overridden]);
+    await source.query('UPDATE "account_limits" SET "storage_limit_bytes" = 123 WHERE "owner_id" = $1', [finite]);
+    const runner = source.createQueryRunner();
+    await runner.connect();
+    try {
+      const migration = new BoundDemoStorage1710000042000();
+      await migration.up(runner);
+      expect(await source.query('SELECT "storage_limit_bytes" FROM "account_limits" WHERE "owner_id" = $1', [legacy]))
+        .toEqual([{ storage_limit_bytes: DEFAULT_DEMO_STORAGE_LIMIT_BYTES.toString() }]);
+      expect(await source.query('SELECT "storage_limit_bytes" FROM "account_limits" WHERE "owner_id" = $1', [overridden]))
+        .toEqual([{ storage_limit_bytes: null }]);
+      expect(await source.query('SELECT "storage_limit_bytes" FROM "account_limits" WHERE "owner_id" = $1', [REGULAR_OWNER_ID]))
+        .toEqual([{ storage_limit_bytes: null }]);
+      await source.query('UPDATE "account_limits" SET "limits_revision" = 2 WHERE "owner_id" = $1', [changedLater]);
+      const issued = await demoUseCase.execute({ idempotencyKey: randomBytes(32).toString('base64url'), clientIp: '198.51.100.80' });
+      if (issued.kind !== 'created') throw new Error('Expected a new demo');
+      await migration.down(runner);
+      const limits = async (ownerId: string) => await source.query('SELECT "storage_limit_bytes" FROM "account_limits" WHERE "owner_id" = $1', [ownerId]);
+      expect(await limits(legacy)).toEqual([{ storage_limit_bytes: null }]);
+      expect(await limits(finite)).toEqual([{ storage_limit_bytes: '123' }]);
+      expect(await limits(overridden)).toEqual([{ storage_limit_bytes: null }]);
+      expect(await limits(changedLater)).toEqual([{ storage_limit_bytes: DEFAULT_DEMO_STORAGE_LIMIT_BYTES.toString() }]);
+      expect(await limits(issued.session.principal.id)).toEqual([{ storage_limit_bytes: DEFAULT_DEMO_STORAGE_LIMIT_BYTES.toString() }]);
+    } finally { await runner.release(); }
+  });
+
+  it('compensates a real late quota rollback after filesystem allocation and retries without an orphan', async () => {
+    const source = requiredDataSource();
+    await quotaRepository.reconcileReferences(REGULAR_OWNER_ID, []);
+    const projects = new TypeOrmProjectRepository(source);
+    const boundary = new TestManagedWorkspaceBoundary(workspaceRoot!);
+    const useCases = new WorkspacePlanningUseCases(projects, projects, new TypeOrmActionLedgerRepository(source), boundary);
+    const planning = await useCases.createPlanning({ ownerId: REGULAR_OWNER_ID, operationKey: 'planning-root-rollback', name: 'Planning workspace' });
+    const projectId = planning.project.id;
+    const used = (await quotaRepository.readUsage(REGULAR_OWNER_ID)).usedBytes;
+    if (used === null) throw new Error('Expected ready storage accounting');
+    await source.query('UPDATE "account_limits" SET "storage_limit_bytes" = $2 WHERE "owner_id" = $1', [REGULAR_OWNER_ID, used.toString()]);
+    const input = { ownerId: REGULAR_OWNER_ID, projectId, expectedVersion: 1, operationKey: 'attach-root-rollback' };
+    await expect(useCases.attachInitialRoot(input)).rejects.toMatchObject({ code: 'STORAGE_QUOTA_EXCEEDED' });
+    await expect(fs.lstat(path.join(workspaceRoot!, REGULAR_OWNER_ID, 'projects', projectId))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await projects.findByIdForOwner(REGULAR_OWNER_ID, projectId)).toMatchObject({ relativeRoot: null, version: 1 });
+    expect(await source.query('SELECT "project_id" FROM "storage_root_mappings" WHERE "owner_id" = $1', [REGULAR_OWNER_ID])).toEqual([]);
+    await source.query('UPDATE "account_limits" SET "storage_limit_bytes" = NULL WHERE "owner_id" = $1', [REGULAR_OWNER_ID]);
+    const restarted = new WorkspacePlanningUseCases(projects, projects, new TypeOrmActionLedgerRepository(source), new TestManagedWorkspaceBoundary(workspaceRoot!));
+    await expect(restarted.attachInitialRoot(input)).resolves.toMatchObject({ project: { relativeRoot: `projects/${projectId}`, version: 2 } });
+  });
+
   it('serializes cross-network duplicate keys, enforces fixed-window counters, and makes the owner storage-ready once', async () => {
     const firstKey = randomBytes(32).toString('base64url');
     const secondKey = randomBytes(32).toString('base64url');
@@ -377,6 +450,7 @@ describeDatabase('Task 3.3 demo admission with PostgreSQL', () => {
     ]);
     const created = concurrent.filter((result) => result.kind === 'created');
     const statusOnly = concurrent.filter((result) => result.kind === 'status');
+    const admittedIp = concurrent[0]?.kind === 'created' ? '198.51.100.40' : '203.0.113.90';
     expect(created).toHaveLength(1);
     expect(statusOnly).toHaveLength(1);
     expect(statusOnly[0]).toMatchObject({ kind: 'status', state: expect.stringMatching(/^(pending|ready)$/u) });
@@ -420,11 +494,11 @@ describeDatabase('Task 3.3 demo admission with PostgreSQL', () => {
       raw_key_retained: false, expiries_match: true, ready_state: true, inference_paused: true
     });
     const usage = await quotaRepository.readUsage(ownerId);
-    expect(usage).toMatchObject({ state: 'ready', usedBytes: 0n, reservedBytes: 0n });
+    expect(usage).toMatchObject({ state: 'ready', usedBytes: 0n, reservedBytes: 0n, limitBytes: DEFAULT_DEMO_STORAGE_LIMIT_BYTES });
 
     await expect(demoUseCase.execute({ idempotencyKey: firstKey, clientIp: '192.0.2.55' }))
       .resolves.toEqual({ kind: 'status', state: 'ready' });
-    await expect(demoUseCase.execute({ idempotencyKey: secondKey, clientIp: '198.51.100.40' }))
+    await expect(demoUseCase.execute({ idempotencyKey: secondKey, clientIp: admittedIp }))
       .rejects.toThrow(DemoAdmissionRateLimitedError);
     const rotatedUseCase = new CreateDemoSessionUseCase(
       admissionRepository,

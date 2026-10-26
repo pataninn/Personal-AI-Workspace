@@ -196,8 +196,10 @@ describe('Home chat', () => {
 
     const launcher = screen.getByRole('button', { name: 'Open Home assistant' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(usageApi.useAccountUsage).toHaveBeenLastCalledWith(false);
     await user.click(launcher);
     const input = await screen.findByRole('textbox', { name: 'Message' });
+    expect(usageApi.useAccountUsage).toHaveBeenLastCalledWith(true);
     await waitFor(() => expect(input).toBeEnabled());
     const conversationTrigger = screen.getByTestId('home-chat-conversation-trigger');
     await waitFor(() => expect(conversationTrigger).toHaveAttribute('aria-label', 'Conversation: Planning question'));

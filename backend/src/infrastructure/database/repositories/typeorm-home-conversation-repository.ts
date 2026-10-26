@@ -915,6 +915,21 @@ export class TypeOrmHomeConversationRepository implements IHomeConversationRepos
   }
 
   /** Updates a turn only within the supplied owner and conversation. */
+  public async settleExpiredTurnCancellation(input: CancelHomeTurnInput): Promise<HomeTurn | null> {
+    // Metadata-only settlement after trusted no-send/disposal proof. Never writes content or releases provider receipts.
+    const updated = returnedRows<HomeTurnRow>(await this.dataSource.query(`
+      UPDATE "home_turns" t SET "status"='cancelled',"updated_at"=clock_timestamp()
+      WHERE t."owner_id"=$1 AND t."conversation_id"=$2 AND t."id"=$3
+        AND t."status" IN ('cancel_requested','unknown')
+        AND EXISTS (SELECT 1 FROM "users" u JOIN "demo_admissions" a ON a."owner_id"=u."id"
+          JOIN "demo_expiry_cleanups" c ON c."admission_id"=a."id"
+          WHERE u."id"=t."owner_id" AND u."account_kind"='demo'
+            AND ((u."expires_at" IS NOT NULL AND u."expires_at"<=clock_timestamp())
+              OR (a."expires_at" IS NOT NULL AND a."expires_at"<=clock_timestamp())))
+      RETURNING t.*`, [input.ownerId, input.conversationId, input.turnId]));
+    return updated[0] ? toHomeTurn(updated[0]) : null;
+  }
+
   public async updateTurnStatus(input: UpdateHomeTurnStatusInput): Promise<HomeTurn | null> {
     return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
       const conversation = await lockConversation(queryRunner, input.ownerId, input.conversationId);

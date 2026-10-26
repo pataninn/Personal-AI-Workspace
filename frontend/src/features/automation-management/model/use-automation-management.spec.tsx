@@ -69,8 +69,35 @@ describe('useAutomationManagement run reconciliation', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     const completedCalls = api.listAutomationOccurrences.mock.calls.length;
     await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
-    expect(api.listAutomationOccurrences).toHaveBeenCalledTimes(completedCalls);
+    expect(api.listAutomationOccurrences).toHaveBeenCalledTimes(completedCalls + 3);
     unmount();
+  });
+
+  it('discovers a future scheduled result and stops discovery while hidden or unmounted', async () => {
+    vi.useFakeTimers();
+    const { result, unmount } = renderHook(() => useAutomationManagement(), { wrapper });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.histories[SCHEDULE_ID]?.occurrences).toEqual([]);
+    api.listAutomationOccurrences.mockResolvedValue({ occurrences: [{ ...QUEUED_OCCURRENCE, status: 'succeeded' }], nextCursor: null });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(result.current.readyNotice?.occurrence.status).toBe('succeeded');
+    const calls = api.listAutomationOccurrences.mock.calls.length;
+    act(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+    expect(api.listAutomationOccurrences).toHaveBeenCalledTimes(calls);
+    unmount();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+    expect(api.listAutomationOccurrences).toHaveBeenCalledTimes(calls);
+  });
+
+  it('does not poll disabled schedules with settled history', async () => {
+    api.listAutomationSchedules.mockResolvedValue([{ ...SCHEDULE, enabled: false }]);
+    vi.useFakeTimers();
+    renderHook(() => useAutomationManagement(), { wrapper });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    expect(api.listAutomationOccurrences).toHaveBeenCalledTimes(1);
   });
 
   it('keeps an acknowledged run visible when the immediate history read has not caught up and prevents a second run', async () => {

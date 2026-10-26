@@ -182,7 +182,15 @@ not parse `X-Forwarded-For` itself. Network limits identify a shared network buc
 not an individual person. Raw addresses are not persisted or included in request logs.
 
 A new demo account receives storage-ready status only after the server verifies its
-new database account is empty and initializes its storage accounting. A separate
+new database account is empty and initializes its storage accounting. New public
+demos receive a 64 MiB storage limit covering retained database content and files,
+including the copied showcase. This allowance is independent of AI credit limits;
+administrators can still change an individual account's storage limit. Migration
+`1710000042000` also caps legacy demos whose storage limit is NULL and whose limits
+revision is still 1. It preserves finite limits, regular accounts, and all accounts
+with a later administrator revision (including intentionally unlimited demos).
+Its rollback restores only recorded repairs that have not subsequently changed.
+A published showcase must fit within the visitor's remaining allowance. A separate
 showcase configuration controls whether new demos can be admitted. Configure all six
 settings together: `SHOWCASE_MAX_SNAPSHOT_BYTES`, `SHOWCASE_MAX_FILE_BYTES`,
 `SHOWCASE_MAX_ITEMS`, `SHOWCASE_MAX_FILES`, `SHOWCASE_MAX_RETAINED_VERSIONS`, and
