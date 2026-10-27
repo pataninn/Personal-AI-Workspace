@@ -1,5 +1,7 @@
 # Personal AI Workspace
 
+**License: [MIT](LICENSE)** · **Public code: [pataninn/Personal-AI-Workspace](https://github.com/pataninn/Personal-AI-Workspace)**
+
 This repository contains the local Personal AI Workspace with projects,
 conversations, selected context, memory, tasks, live updates, and file history.
 The supported setup is one owner account and an anonymous demo. Visitors choose
@@ -14,12 +16,143 @@ only read saved progress. Local pages, tasks, and files remain available when th
 AI bridge is offline. Inference still requires a configured, healthy Hermes bridge
 and the existing policy and credit checks.
 
+## For judges and first-time users
+
+Personal AI Workspace brings tasks, project files, saved facts, reusable skills
+and AI conversations into an owner-scoped workspace. Visitors can explore a
+public showcase and start an isolated, expiring demo copy. The owner can publish
+selected sample content, configure usage budgets and schedule read-only briefings.
+
+- [NVIDIA Nemotron and Nebius Token Factory integration](#nvidia-nemotron-and-nebius-token-factory)
+- [Quick UI preview: no credentials or Docker](#quick-ui-preview-no-credentials-or-docker)
+- [Run the persistent application](#run-the-persistent-application)
+- [Enable the real AI runtime](#prepare-the-hermes-provider-route)
+- [Tests and checks](#checks)
+
+### Quick UI preview: no credentials or Docker
+
+Install Git, Node.js 22.20+ in the 22.x line, and pnpm 11.8.0. From PowerShell:
+
+```powershell
+git clone https://github.com/pataninn/Personal-AI-Workspace.git
+cd Personal-AI-Workspace
+corepack enable
+corepack prepare pnpm@11.8.0 --activate
+pnpm.cmd install --frozen-lockfile
+pnpm.cmd --filter personal-ai-workspace-frontend preview:dev
+```
+
+Open **http://127.0.0.1:5173/** and enter any made-up, non-empty password.
+The yellow preview notice identifies the in-memory mock API. Explore the sample
+workspace, tasks and conversations; data resets when the preview process restarts.
+This mode does not run Nemotron, access real files or persist PostgreSQL data.
+Stop it with **Ctrl+C**. On Linux/macOS, use `pnpm` instead of `pnpm.cmd` for this
+frontend-only preview.
+
+### Run the persistent application
+
+Use Docker Desktop with WSL2/Ubuntu for the documented Windows setup. After
+cloning the repository:
+
+1. Copy `.env.example` to `.env`. Fill in `POSTGRES_PASSWORD`, `SESSION_SECRET`
+   and the separate `DEMO_NETWORK_HASH_SECRET` with your own values.
+2. Choose an existing, dedicated workspace directory outside the repository and
+   cloud-sync folders. Set `WORKSPACE_HOST_ROOT` to its absolute path. Create its
+   `.personal-ai-workspace-identity` text file containing exactly the non-secret
+   value you set in `WORKSPACE_IDENTITY`; leave `WORKSPACE_IDENTITY_FILE` at the
+   template's in-container path.
+3. Create the private owner-password file named by `LOCAL_USER_PASSWORD_FILE`.
+   Provide `tls.crt` and `tls.key` in `TLS_CERT_DIR`. The [local setup details](#local-prerequisites)
+   below include password-file and temporary certificate examples. Keep `.env`,
+   passwords, API keys and private TLS keys outside Git.
+4. Validate and start the two-service stack:
+
+   ```powershell
+   docker compose --project-name personal-ai-workspace config --quiet
+   docker compose --project-name personal-ai-workspace up --build -d
+   docker compose --project-name personal-ai-workspace ps
+   ```
+
+5. Open **https://127.0.0.1:8443/** and sign in as `owner` using the password from
+   your file. Migrations and initial owner creation run automatically on a fresh
+   database. Local data features work with the AI bridge offline; real AI sends
+   require the runtime and credit configuration below.
+
+For new file-backed workspaces, enable the [managed-storage overlay](#optional-managed-file-storage)
+with a separate persistent directory. To test anonymous demos, publish selected
+content through **Admin > Demo content**, then open **Try demo** in a private
+browser window. Nothing is published automatically. Stop the stack with
+`docker compose --project-name personal-ai-workspace down`; retain its volumes
+to preserve data.
+
+## NVIDIA Nemotron and Nebius Token Factory
+
+The configured model is **NVIDIA Nemotron 3 Super**, served as
+`nvidia/nemotron-3-super-120b-a12b` through **Nebius Token Factory** at
+`https://api.tokenfactory.nebius.com/v1`. NVIDIA publishes the open model;
+Nebius hosts the inference endpoint used by this project. The repository
+integrates the model and does not train or fine-tune its weights.
+
+### How Nemotron is used
+
+- **Home planning:** turn requests into grounded task/workspace lookups and
+  planning responses using bounded history, selected facts and typed tools.
+- **Workspace assistance:** reason over approved project context in a disposable
+  Hermes sandbox, produce proposed file changes, and pass them through validation
+  and the application's approval/history flow.
+- **Reusable skills and briefings:** apply saved instructions to study planning,
+  launch preparation or weekly reviews. Scheduled skills use read-only tools and
+  persist their results in the workspace conversation.
+
+### Where Token Factory accelerated the workflow
+
+Hosted inference let development focus on context selection, tool permissions,
+saved conversations and usage controls while accessing Nemotron through an
+OpenAI-compatible API. No local GPU or self-hosted model-serving cluster is
+required by the application host. Staging smoke tests used the same model route
+to generate saved replies for DSA study planning, beta-launch copy and weekly
+planning. These were bounded, serial inference checks, not a throughput benchmark.
+
+The request path is:
+
+```text
+Browser -> Express API -> Hermes bridge -> OpenShell gateway -> Nebius Token Factory -> NVIDIA Nemotron
+```
+
+The gateway holds the provider credential. Disposable sandboxes receive approved
+context and a controlled inference route. Provider calls require credit admission;
+unknown spending stays reserved instead of being automatically replayed.
+
+| Component | Role and implementation |
+| --- | --- |
+| NVIDIA Nemotron 3 Super | Model route and endpoint checks in [provider.py](deploy/hermes-bridge/provider.py). |
+| Nebius Token Factory | Hosted inference provider; configured in [.env.example](.env.example), with gateway credential setup in [provider.py](deploy/hermes-bridge/provider.py). |
+| NVIDIA OpenShell + Hermes agent runtime | Isolated agent execution and supervised bridge; pinned settings in [common.py](deploy/hermes-bridge/common.py) and the [runtime image](docker/hermes.Dockerfile). |
+| Usage controls | Provider-call reservation/settlement in [provider_credit.py](deploy/hermes-bridge/runtime/provider_credit.py) and the [credit use cases](backend/src/modules/credits/use-cases). |
+
+**Other Nebius services:** this submission uses Token Factory for inference.
+Application staging uses AWS EC2/EBS, Docker and PostgreSQL; it does not use
+Nebius Compute, storage or fine-tuning services.
+
+References: [NVIDIA Nemotron 3 Super](https://research.nvidia.com/labs/nemotron/Nemotron-3-Super/),
+[Nebius Nemotron model catalog](https://nebius.com/services/token-factory/models/nvidia-nemotron-models-inference),
+and [Token Factory API quickstart](https://docs.tokenfactory.nebius.com/quickstart).
+
+The [MIT license](LICENSE) covers this repository's original code. Third-party
+dependencies, container images and model weights retain their respective licenses.
+
 ## Prepare the Hermes provider route
 
 This machine uses the installed WSL Ubuntu OpenShell 0.0.116 gateway
 `nemoclaw-18080` and digest-pinned Hermes 0.20.6 base image. The gateway's
 named `pai-nebius-token-factory` provider is configured by the startup helper.
 This helper does not install Hermes or provision a fresh gateway on another machine.
+Fresh machines must first provision the pinned OpenShell gateway expected by
+[common.py](deploy/hermes-bridge/common.py); the Windows helper is not a general
+runtime installer. Upstream binaries are available in the
+[OpenShell v0.0.116 release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.0.116).
+The [Linux runtime installer](deploy/aws/install-linux-runtime.sh) is specifically
+for the prepared Ubuntu 24.04 AWS/EBS host and checks that host before changing it.
 
 From this repository, with Docker Desktop running:
 
@@ -205,12 +338,13 @@ settings together: `SHOWCASE_MAX_SNAPSHOT_BYTES`, `SHOWCASE_MAX_FILE_BYTES`,
 `SHOWCASE_MAX_ITEMS`, `SHOWCASE_MAX_FILES`, `SHOWCASE_MAX_RETAINED_VERSIONS`, and
 `DEMO_SHOWCASE_COPY_MAX_ATTEMPTS`. Values must be finite positive integers;
 per-file bytes cannot exceed total snapshot bytes, and file count cannot exceed the
-item count. No defaults or production limits are supplied. Missing, partial, or
+item count. Compose and `.env.example` supply starter values; missing, partial, or
 invalid values keep new admissions unavailable. An administrator must select content
 in the private preview and publish it explicitly; the application starts unpublished
 and does not create sample content or publish automatically. `Try demo` creates a
-private copy only from a currently published version. Expired demo data cleanup is
-also a separate later task.
+private copy only from a currently published version. Periodic expiry cleanup
+drains active work before removing demo data; uncertain external effects retain
+cleanup barriers for reconciliation.
 
 Non-AI exploration does not require provider-spending configuration. AI remains
 subject to the shared credit pause, configured budgets, verified request bounds, and
@@ -223,13 +357,12 @@ default template places these files under
 
 - <code>LOCAL_USER_PASSWORD_FILE</code> points to <code>secrets/local_user_password</code>
 - <code>NEBIUS_API_KEY_FILE</code> points to ignored <code>./secrets/nebius_api_key</code>
-- Optional <code>NVIDIA_API_KEY_FILE</code> points to <code>secrets/nvidia_api_key</code> for direct fallback
 - <code>TLS_CERT_DIR</code> points to <code>tls</code>
 
 The Nebius key is stored by the WSL OpenShell gateway and is not mounted in
-<code>personal-ai-app</code> or the disposable sandbox. The optional direct override
-mounts its NVIDIA key at <code>/run/secrets/nvidia_api_key</code>. The browser, database,
-logs, and frontend bundle never receive either key. The login password is mounted read-only at
+<code>personal-ai-app</code> or the disposable sandbox. There is no direct-provider
+fallback Compose overlay. The browser, database, logs and frontend bundle never
+receive the provider key. The login password is mounted read-only at
 <code>/run/secrets/local_user_password</code>; on first boot with an empty users table, the
 app hashes this value to create its single local user. Use the same value at the
 login screen. Replacing the secret file later does not replace the existing
@@ -388,20 +521,21 @@ docker compose --project-name personal-ai-workspace up -d
 ## Backups and recovery
 
 The app runs ordered TypeORM migrations before starting Express. It keeps
-private file recovery snapshots in the app-only <code>pai_mvp2_recovery</code> volume at
+private file recovery snapshots in the app-only <code>pai_recovery</code> volume at
 <code>/var/lib/personal-ai/recovery</code>. Keep recovery data outside the authoritative
 workspace and retain the volume when inspecting an ambiguous apply result. For
-a manual backup, stop the stack and copy the configured workspace to a separate
-location, then export PostgreSQL:
+a manual backup, stop the application while leaving PostgreSQL running, copy the
+configured workspace to a separate location, then export PostgreSQL:
 
 ```powershell
 $privateRoot = Join-Path $env:LOCALAPPDATA 'Personal-AI-Workspace\private'
 $databaseBackup = Join-Path $privateRoot 'database-backup.sql'
+docker compose --project-name personal-ai-workspace stop personal-ai-app
 docker compose --project-name personal-ai-workspace exec -T postgres pg_dump -U pai_app -d personal_ai > $databaseBackup
 docker compose --project-name personal-ai-workspace down
 ```
 
-Keep the SQL file private and retain the <code>pai_mvp2_recovery</code> volume with the backup.
+Keep the SQL file private and retain the configured recovery volume with the backup.
 If an apply reports a stale or uncertain result, leave the app stopped, inspect
 the affected file and recovery snapshot, and restore from the saved workspace
 copy only after choosing the intended version. Start the app again after the
@@ -416,16 +550,15 @@ pnpm test
 pnpm test:integration
 pnpm test:boundaries
 docker compose --project-name personal-ai-workspace config --quiet
-docker compose --project-name personal-ai-workspace-mvp2 up --build
+docker compose --project-name personal-ai-workspace up --build
 ```
 
 <code>docker compose --project-name personal-ai-workspace config --quiet</code> uses the repository's <code>.env</code> and validates
 Compose without printing resolved settings. The live Compose/Hermes startup needs
 Docker Desktop, operator-provisioned TLS files, the workspace identity marker,
-and the configured gateway provider credential. Application startup fails closed until
-PostgreSQL, the workspace identity, the authenticated bridge, and the selected
-gateway route are available. Startup checks route configuration; it is not proof of
-paid inference. In this release, a paid chat remains blocked before provider
+and the configured gateway provider credential for live AI. Application startup
+requires PostgreSQL and the workspace identity; the authenticated bridge and
+selected gateway route are checked before AI work. A paid chat remains blocked before provider
 execution until the credit prerequisites above are verified and enforced.
 
 The app image installs MarkItDown for converting uploaded PDF, DOCX, PPTX, XLSX,
