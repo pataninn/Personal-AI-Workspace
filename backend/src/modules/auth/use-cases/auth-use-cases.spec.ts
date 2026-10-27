@@ -15,8 +15,12 @@ function userRecord(overrides: Partial<LocalUserRecord> = {}): LocalUserRecord {
   return {
     id: 'user-1',
     displayName: 'Local user',
+    identifier: 'owner',
+    accountKind: 'regular',
+    role: 'admin',
     passwordHash: 'stored-hash',
     isActive: true,
+    expiresAt: null,
     ...overrides
   };
 }
@@ -26,8 +30,24 @@ function sessionRecord(overrides: Partial<SessionRecord> = {}): SessionRecord {
     id: 'session-1',
     userId: 'user-1',
     displayName: 'Local user',
+    accountKind: 'regular',
+    role: 'admin',
+    accountExpiresAt: null,
     expiresAt: new Date('2026-09-13T12:00:00.000Z'),
     revokedAt: null,
+    ...overrides
+  };
+}
+
+function createUserRepository(overrides: Partial<jest.Mocked<IUserRepository>> = {}): jest.Mocked<IUserRepository> {
+  return {
+    findByIdentifier: jest.fn(),
+    findById: jest.fn(),
+    findBootstrapOwnerId: jest.fn(),
+    hasAnyRegularAccounts: jest.fn().mockResolvedValue(true),
+    createRegularAccount: jest.fn(),
+    bootstrapInitialAdmin: jest.fn(),
+    disableAccount: jest.fn(),
     ...overrides
   };
 }
@@ -44,113 +64,82 @@ function createClock(): jest.Mocked<IClock> {
   return { now: jest.fn().mockReturnValue(NOW) };
 }
 
+function createPasswordHasher(accepted = true): jest.Mocked<IPasswordHasher> {
+  return {
+    hash: jest.fn().mockResolvedValue('hashed-password'),
+    verify: jest.fn().mockResolvedValue(accepted)
+  };
+}
+
+function createSessionRepository(): jest.Mocked<ISessionRepository> {
+  return {
+    create: jest.fn().mockResolvedValue({ id: 'session-1', userId: 'user-1', expiresAt: new Date('2026-09-12T12:01:00.000Z') }),
+    findByTokenHash: jest.fn(),
+    revoke: jest.fn()
+  };
+}
+
 describe('LoginUseCase', () => {
-  it('returns setup required when no local user exists', async () => {
-    const users: jest.Mocked<IUserRepository> = {
-      findActiveLocalUser: jest.fn().mockResolvedValue(null),
-      findActiveLocalUserById: jest.fn(),
-      createLocalUser: jest.fn()
-    };
-    const useCase = new LoginUseCase(
-      users,
-      {} as jest.Mocked<ISessionRepository>,
-      {} as jest.Mocked<IPasswordHasher>,
-      createTokenProvider(),
-      createClock(),
-      { sessionLifetimeMs: 60_000 }
-    );
+  it('returns setup required only when no accounts have been bootstrapped', async () => {
+    const users = createUserRepository({
+      findByIdentifier: jest.fn().mockResolvedValue(null),
+      hasAnyRegularAccounts: jest.fn().mockResolvedValue(false)
+    });
+    const useCase = new LoginUseCase(users, createSessionRepository(), createPasswordHasher(), createTokenProvider(), createClock(), { sessionLifetimeMs: 60_000 });
 
-    await expect(useCase.execute({ password: 'password' })).rejects.toBeInstanceOf(SetupRequiredError);
+    await expect(useCase.execute({ identifier: 'owner', password: 'password' })).rejects.toBeInstanceOf(SetupRequiredError);
   });
 
-  it('rejects a password without creating a session', async () => {
-    const users: jest.Mocked<IUserRepository> = {
-      findActiveLocalUser: jest.fn().mockResolvedValue(userRecord()),
-      findActiveLocalUserById: jest.fn(),
-      createLocalUser: jest.fn()
-    };
-    const passwordHasher: jest.Mocked<IPasswordHasher> = {
-      hash: jest.fn(),
-      verify: jest.fn().mockResolvedValue(false)
-    };
-    const sessions: jest.Mocked<ISessionRepository> = {
-      create: jest.fn(),
-      findByTokenHash: jest.fn(),
-      revoke: jest.fn()
-    };
-    const useCase = new LoginUseCase(
-      users,
-      sessions,
-      passwordHasher,
-      createTokenProvider(),
-      createClock(),
-      { sessionLifetimeMs: 60_000 }
-    );
-
-    await expect(useCase.execute({ password: 'wrong-password' })).rejects.toBeInstanceOf(InvalidCredentialsError);
-    expect(sessions.create).not.toHaveBeenCalled();
-  });
-
-  it('creates one opaque session and returns only a non-secret snapshot to the controller', async () => {
-    const users: jest.Mocked<IUserRepository> = {
-      findActiveLocalUser: jest.fn().mockResolvedValue(userRecord({ displayName: 'Pat' })),
-      findActiveLocalUserById: jest.fn(),
-      createLocalUser: jest.fn()
-    };
-    const sessions: jest.Mocked<ISessionRepository> = {
-      create: jest.fn().mockResolvedValue({
-        id: 'session-1',
-        userId: 'user-1',
-        expiresAt: new Date('2026-09-12T12:01:00.000Z')
-      }),
-      findByTokenHash: jest.fn(),
-      revoke: jest.fn()
-    };
-    const passwordHasher: jest.Mocked<IPasswordHasher> = {
-      hash: jest.fn(),
-      verify: jest.fn().mockResolvedValue(true)
-    };
+  it('normalizes identifiers and creates a session for the matching regular account', async () => {
+    const users = createUserRepository({ findByIdentifier: jest.fn().mockResolvedValue(userRecord({ identifier: 'alice', displayName: 'Alice', role: 'user' })) });
+    const sessions = createSessionRepository();
+    const passwordHasher = createPasswordHasher();
     const tokenProvider = createTokenProvider();
-    const useCase = new LoginUseCase(
-      users,
-      sessions,
-      passwordHasher,
-      tokenProvider,
-      createClock(),
-      { sessionLifetimeMs: 60_000 }
-    );
+    const useCase = new LoginUseCase(users, sessions, passwordHasher, tokenProvider, createClock(), { sessionLifetimeMs: 60_000 });
 
-    const result = await useCase.execute({ password: 'correct-password' });
+    const result = await useCase.execute({ identifier: '  ALIce ', password: 'correct-password' });
 
-    expect(result).toEqual({
-      sessionId: 'session-1',
-      principal: { id: 'user-1', displayName: 'Pat' },
-      rawToken: RAW_TOKEN,
-      csrfToken: 'csrf-value',
-      expiresAt: new Date('2026-09-12T12:01:00.000Z')
-    });
-    expect(sessions.create).toHaveBeenCalledWith({
-      userId: 'user-1',
-      tokenHash: 'opaque-token-hash',
-      expiresAt: new Date('2026-09-12T12:01:00.000Z')
-    });
+    expect(users.findByIdentifier).toHaveBeenCalledWith('alice');
+    expect(passwordHasher.verify).toHaveBeenCalledWith('correct-password', 'stored-hash');
+    expect(result.principal).toEqual({ id: 'user-1', displayName: 'Alice', accountKind: 'regular', role: 'user' });
+    expect(sessions.create).toHaveBeenCalledWith({ userId: 'user-1', expectedPasswordHash: 'stored-hash', tokenHash: 'opaque-token-hash', expiresAt: new Date('2026-09-12T12:01:00.000Z') });
     expect(tokenProvider.digestToken).toHaveBeenCalledWith(RAW_TOKEN);
+  });
+
+  it.each([
+    ['wrong password', userRecord(), false],
+    ['disabled account', userRecord({ isActive: false }), true],
+    ['passwordless demo account', userRecord({ identifier: null, accountKind: 'demo', role: 'user', passwordHash: null, expiresAt: new Date('2026-09-13T12:00:00.000Z') }), true]
+  ])('rejects %s without creating a session', async (_label, user, passwordAccepted) => {
+    const users = createUserRepository({ findByIdentifier: jest.fn().mockResolvedValue(user) });
+    const sessions = createSessionRepository();
+    const passwordHasher = createPasswordHasher(passwordAccepted);
+    const useCase = new LoginUseCase(users, sessions, passwordHasher, createTokenProvider(), createClock(), { sessionLifetimeMs: 60_000 });
+
+    await expect(useCase.execute({ identifier: 'owner', password: 'wrong-password' })).rejects.toBeInstanceOf(InvalidCredentialsError);
+    expect(sessions.create).not.toHaveBeenCalled();
+    if (!user.passwordHash || !user.isActive || user.accountKind !== 'regular') {
+      expect(passwordHasher.verify).not.toHaveBeenCalled();
+    }
+  });
+
+  it('uses the same credential error for an unknown identifier once accounts exist', async () => {
+    const users = createUserRepository({ findByIdentifier: jest.fn().mockResolvedValue(null) });
+    const useCase = new LoginUseCase(users, createSessionRepository(), createPasswordHasher(), createTokenProvider(), createClock(), { sessionLifetimeMs: 60_000 });
+
+    await expect(useCase.execute({ identifier: 'not-the-owner', password: 'password' })).rejects.toBeInstanceOf(InvalidCredentialsError);
   });
 });
 
 describe('BootstrapLocalUserUseCase', () => {
-  it('hashes the operator password and bootstraps only when no user exists', async () => {
-    const users: jest.Mocked<IUserRepository> = {
-      findActiveLocalUser: jest.fn()
+  it('creates the owner admin once and never replaces the existing account password', async () => {
+    const users = createUserRepository({
+      findByIdentifier: jest.fn()
         .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce(userRecord()),
-      findActiveLocalUserById: jest.fn(),
-      createLocalUser: jest.fn().mockResolvedValue(userRecord())
-    };
-    const passwordHasher: jest.Mocked<IPasswordHasher> = {
-      hash: jest.fn().mockResolvedValue('hashed-password'),
-      verify: jest.fn()
-    };
+        .mockResolvedValueOnce(userRecord({ isActive: false })),
+      bootstrapInitialAdmin: jest.fn().mockResolvedValueOnce(true)
+    });
+    const passwordHasher = createPasswordHasher();
     const useCase = new BootstrapLocalUserUseCase(users, passwordHasher);
 
     await expect(useCase.execute({ password: 'operator-password', displayName: 'Pat' })).resolves.toBe(true);
@@ -158,7 +147,7 @@ describe('BootstrapLocalUserUseCase', () => {
 
     expect(passwordHasher.hash).toHaveBeenCalledTimes(1);
     expect(passwordHasher.hash).toHaveBeenCalledWith('operator-password');
-    expect(users.createLocalUser).toHaveBeenCalledWith({ displayName: 'Pat', passwordHash: 'hashed-password' });
+    expect(users.bootstrapInitialAdmin).toHaveBeenCalledWith({ displayName: 'Pat', passwordHash: 'hashed-password' });
   });
 });
 
@@ -167,7 +156,8 @@ describe('GetSessionUseCase', () => {
     ['missing token', undefined, null],
     ['unknown token', RAW_TOKEN, null],
     ['revoked session', RAW_TOKEN, sessionRecord({ revokedAt: NOW })],
-    ['expired session', RAW_TOKEN, sessionRecord({ expiresAt: NOW })]
+    ['expired session', RAW_TOKEN, sessionRecord({ expiresAt: NOW })],
+    ['expired account', RAW_TOKEN, sessionRecord({ accountExpiresAt: NOW })]
   ])('rejects %s', async (_label, rawToken, record) => {
     const sessions: jest.Mocked<ISessionRepository> = {
       create: jest.fn(),
@@ -185,7 +175,7 @@ describe('GetSessionUseCase', () => {
     }
   });
 
-  it('returns the current principal and derives a CSRF value for a valid session', async () => {
+  it('returns the current account role and derives a CSRF value for a valid session', async () => {
     const sessions: jest.Mocked<ISessionRepository> = {
       create: jest.fn(),
       findByTokenHash: jest.fn().mockResolvedValue(sessionRecord()),
@@ -198,7 +188,7 @@ describe('GetSessionUseCase', () => {
 
     expect(snapshot).toEqual({
       sessionId: 'session-1',
-      principal: { id: 'user-1', displayName: 'Local user' },
+      principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular', role: 'admin' },
       csrfToken: 'csrf-value',
       expiresAt: new Date('2026-09-13T12:00:00.000Z')
     });

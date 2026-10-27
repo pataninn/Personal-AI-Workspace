@@ -16,7 +16,7 @@ export class SendChatMessageUseCase {
     private readonly contexts: Pick<IProjectChatContextRepository, 'get'>,
     private readonly facts: IProjectFactRepository,
     private readonly createRun: Pick<CreateAiRunUseCase, 'execute'>,
-    private readonly decideEgress: Pick<DecideEgressUseCase, 'execute'>,
+    private readonly preparePolicyRun: Pick<DecideEgressUseCase, 'preparePolicyAuthorizedRun'>,
     private readonly startRun: Pick<StartAiRunUseCase, 'execute'>
   ) {}
 
@@ -29,13 +29,18 @@ export class SendChatMessageUseCase {
       includeRecentMessages: context.includeProjectConversations, includeProjectConversations: context.includeProjectConversations
     });
     let run = created.resource;
-    if (run.decision === 'pending' && run.status === 'pending_approval') {
-      // Sending a chat message authorizes transmission of the project's saved context.
-      run = await this.decideEgress.execute({ ownerId: input.ownerId, runId: run.id, manifestHash: run.manifest.manifestHash,
-        decision: 'approve', idempotencyKey: `chat-approve-${run.id}` });
-    }
-    if (run.status === 'ready') {
-      run = (await this.startRun.execute({ ownerId: input.ownerId, runId: run.id, idempotencyKey: `chat-start-${run.id}` })).resource;
+    if (run.decision === 'policy_authorized') {
+      if (run.status === 'staging') {
+        run = await this.preparePolicyRun.preparePolicyAuthorizedRun({ ownerId: input.ownerId, runId: run.id });
+      }
+      if (run.status === 'ready') {
+        const started = await this.startRun.execute({
+          ownerId: input.ownerId,
+          runId: run.id,
+          idempotencyKey: `policy-start-${run.id}`
+        });
+        run = started.resource;
+      }
     }
     return { resource: run, replayed: created.replayed };
   }

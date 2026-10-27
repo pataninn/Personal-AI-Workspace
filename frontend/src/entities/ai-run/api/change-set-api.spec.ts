@@ -41,6 +41,11 @@ function changeSet(overrides: Record<string, unknown> = {}): Record<string, unkn
 }
 
 describe('proposed change-set API normalizer', () => {
+  it('preserves policy authorization as distinct from human approval', () => {
+    const result = normalizeProposedChangeSet(changeSet({ status: 'applied', decision: 'policy_authorized' }));
+    expect(result.decision).toBe('policy_authorized');
+  });
+
   it('keeps safe bounded operation metadata and preview text', () => {
     const result = normalizeProposedChangeSet(changeSet());
     expect(result).toMatchObject({ runId: RUN_ID, projectId: PROJECT_ID, status: 'awaiting_approval', fakeRuntime: true });

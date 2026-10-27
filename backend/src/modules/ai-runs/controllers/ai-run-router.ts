@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 import { authenticateRequest, requireCsrf, sameOrigin } from '@/modules/auth/controllers/request-auth';
 import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
-import { AiRunManifestConflictError, AiRunNotFoundError, AiRunProviderPermissionRevokedError } from '@/modules/ai-runs/domain/ai-run-errors';
+import { AiRunManifestConflictError, AiRunNotFoundError } from '@/modules/ai-runs/domain/ai-run-errors';
 import type { AiRun, EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
 import type { ProviderPermission } from '@/modules/ai-runs/domain/provider-permission';
 import { CreateAiRunUseCase, DecideEgressUseCase, GetAiRunUseCase } from '@/modules/ai-runs/use-cases/ai-run-use-cases';
@@ -12,6 +12,7 @@ import { ListProviderPermissionsUseCase, RevokeProviderPermissionUseCase } from 
 import { DecideProposedChangeSetUseCase, GetProposedChangeSetUseCase } from '@/modules/ai-runs/use-cases/change-set-use-cases';
 import type { ProposedChangeSet } from '@/modules/ai-runs/domain/change-types';
 import { AppError } from '@/shared/errors/app-error';
+import { PolicyActionRetiredError } from '@/modules/assistant-policy/domain/policy-action-retired-error';
 import { sendData } from '@/shared/http/response';
 import type { SendChatMessageUseCase } from '@/modules/ai-runs/use-cases/send-chat-message-use-case';
 import type { ProjectChatContextUseCases } from '@/modules/ai-runs/use-cases/project-chat-context-use-cases';
@@ -19,6 +20,7 @@ import type { ProjectTaskSuggestion } from '@/modules/tasks/domain/project-task'
 import type { IProjectTaskSuggestionQuery } from '@/modules/tasks/repositories/task-suggestion-query';
 import type { GetAiRunActivityUseCase, ListAiRunActivityUseCase } from '@/modules/ai-runs/use-cases/activity-use-cases';
 import type { ListProjectFileHistoryUseCase } from '@/modules/ai-runs/use-cases/file-history-use-cases';
+import type { StartAiRunUseCase } from '@/modules/ai-runs/use-cases/start-ai-run-use-case';
 
 const createRunSchema = z.object({
   conversationId: z.string(),
@@ -30,20 +32,9 @@ const createRunSchema = z.object({
   }).strict().optional()
 }).strict();
 
-const decisionSchema = z.object({
-  manifestHash: z.string(),
-  decision: z.enum(['approve', 'reject']),
-  rememberProviderPermission: z.boolean().optional()
-}).strict();
-
-const changeSetDecisionSchema = z.object({
-  proposalHash: z.string().min(1),
-  decision: z.enum(['approve', 'reject'])
-}).strict();
-
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const chatContextSchema = z.object({ relativePaths: z.array(z.string()).optional(), excludedPaths: z.array(z.string()).max(1000).optional(), factIds: z.array(z.string().uuid()).optional(), includeProjectConversations: z.boolean().optional() }).strict();
-const chatMessageSchema = z.object({ conversationId: z.string().uuid(), request: z.string() }).strict();
+const chatContextSchema = z.object({ relativePaths: z.array(z.string()).optional(), excludedPaths: z.array(z.string()).max(1000).optional(), factIds: z.array(z.guid()).optional(), includeProjectConversations: z.boolean().optional() }).strict();
+const chatMessageSchema = z.object({ conversationId: z.guid(), request: z.string() }).strict();
 
 export interface AiRunRouterDependencies {
   readonly sendChatMessage?: SendChatMessageUseCase;
@@ -52,6 +43,7 @@ export interface AiRunRouterDependencies {
   readonly createAiRun: CreateAiRunUseCase;
   readonly getAiRun: GetAiRunUseCase;
   readonly decideEgress: DecideEgressUseCase;
+  readonly startAiRun?: StartAiRunUseCase;
   readonly getProposedChangeSet?: GetProposedChangeSetUseCase;
   readonly decideProposedChangeSet?: DecideProposedChangeSetUseCase;
   readonly taskSuggestionsForRun?: IProjectTaskSuggestionQuery;
@@ -246,10 +238,11 @@ function createHandler(dependencies: AiRunRouterDependencies): RequestHandler {
         idempotencyKey: requiredIdempotencyKey(request)
       });
       let run = result.resource;
-      try {
-        run = await dependencies.decideEgress.approveWithRememberedPermission({ ownerId, runId: run.id }) ?? run;
-      } catch (error: unknown) {
-        if (!(error instanceof AiRunProviderPermissionRevokedError)) throw error;
+      if (run.decision === 'policy_authorized') {
+        run = await dependencies.decideEgress.preparePolicyAuthorizedRun({ ownerId, runId: run.id });
+        if (run.status === 'ready' && dependencies.startAiRun) {
+          run = (await dependencies.startAiRun.execute({ ownerId, runId: run.id, idempotencyKey: `policy-start-${run.id}` })).resource;
+        }
       }
       response.location(`/api/v1/ai-runs/${run.id}`);
       sendData(response, {
@@ -303,25 +296,15 @@ function manifestHandler(dependencies: AiRunRouterDependencies): RequestHandler 
   };
 }
 
-function decisionHandler(dependencies: AiRunRouterDependencies): RequestHandler {
-  return async (request, response, next): Promise<void> => {
+function decisionHandler(_dependencies: AiRunRouterDependencies): RequestHandler {
+  return async (request, _response, next): Promise<void> => {
     try {
       const ownerId = request.auth?.principal.id;
       if (!ownerId) {
         next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
         return;
       }
-      const runId = parseUuid(routeParam(request.params.runId), new AiRunNotFoundError());
-      const body = parseBody(decisionSchema, request.body);
-      const run = await dependencies.decideEgress.execute({
-        ownerId,
-        runId,
-        manifestHash: body.manifestHash,
-        decision: body.decision,
-        rememberProviderPermission: body.rememberProviderPermission ?? false,
-        idempotencyKey: requiredIdempotencyKey(request)
-      });
-      sendData(response, { run: serializeSnapshot(run), manifest: serializeManifest(run) });
+      throw new PolicyActionRetiredError();
     } catch (error: unknown) {
       next(error);
     }
@@ -349,28 +332,15 @@ function proposedChangeSetHandler(dependencies: AiRunRouterDependencies): Reques
   };
 }
 
-function proposedChangeDecisionHandler(dependencies: AiRunRouterDependencies): RequestHandler {
-  return async (request, response, next): Promise<void> => {
+function proposedChangeDecisionHandler(_dependencies: AiRunRouterDependencies): RequestHandler {
+  return async (request, _response, next): Promise<void> => {
     try {
-      if (!dependencies.decideProposedChangeSet) {
-        next(new AppError('NOT_FOUND', 404, 'The proposed change set is not available.'));
-        return;
-      }
       const ownerId = request.auth?.principal.id;
       if (!ownerId) {
         next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
         return;
       }
-      const runId = parseUuid(routeParam(request.params.runId), new AiRunNotFoundError());
-      const body = parseBody(changeSetDecisionSchema, request.body);
-      const changeSet = await dependencies.decideProposedChangeSet.execute({
-        ownerId,
-        runId,
-        proposalHash: body.proposalHash,
-        decision: body.decision,
-        idempotencyKey: requiredIdempotencyKey(request)
-      });
-      sendData(response, serializeProposedChangeSet(changeSet));
+      throw new PolicyActionRetiredError();
     } catch (error: unknown) {
       next(error);
     }
@@ -461,11 +431,21 @@ function serializeManifest(run: AiRun): Record<string, unknown> {
     },
     bestEffortSecretDetection: manifest.bestEffortSecretDetection,
     preConsentNotice: consentNotice(run),
-    ...(manifest.files.length === 0 && manifest.messageCount === 0 && facts.length === 0 ? { emptyContextNotice: 'No project files or facts are selected. Only your request will be sent if you approve.' } : {})
+    ...(manifest.files.length === 0 && manifest.messageCount === 0 && facts.length === 0 ? {
+      emptyContextNotice: run.decision === 'policy_authorized'
+        ? 'No project files or facts are selected. Only your request is included under the current workspace policy.'
+        : 'No project files or facts are selected. Only your request will be sent if you approve.'
+    } : {})
   };
 }
 
 function consentNotice(run: AiRun): string {
+  if (run.decision === 'policy_authorized') {
+    if (run.status === 'review_required' || run.providerTransmission === 'unknown') {
+      return 'Provider transmission status is unknown. Refresh the run status before retrying.';
+    }
+    return 'The request is being processed under the current workspace policy.';
+  }
   if (run.decision === 'pending') {
     return `Nothing has been copied to the run staging area or sent to ${run.manifest.provider} yet.`;
   }

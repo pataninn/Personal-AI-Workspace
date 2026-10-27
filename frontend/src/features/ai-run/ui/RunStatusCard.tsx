@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 
 import type { AiRunSnapshot, EgressManifest } from '@/entities/ai-run';
-import { Alert, Button, Card } from '@/shared/ui';
+import { Alert, Button, Card, TypingIndicator } from '@/shared/ui';
 
 export interface RunStatusState {
   readonly snapshot: AiRunSnapshot;
@@ -14,65 +14,23 @@ interface RunStatusCardProps {
   readonly conversationHref: string;
   readonly onRetry: () => void;
   readonly onRefresh: () => void;
+  readonly retryDisabled?: boolean;
 }
 
-export function RunStatusCard({ state, conversationHref, onRetry, onRefresh }: RunStatusCardProps): React.JSX.Element | null {
+export function RunStatusCard({ state, conversationHref, onRetry, onRefresh, retryDisabled = false }: RunStatusCardProps): React.JSX.Element | null {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const { snapshot } = state;
-
   useEffect(() => {
-    if (snapshot.status !== 'pending_approval') headingRef.current?.focus();
+    if (['failed', 'rejected'].includes(snapshot.status)) headingRef.current?.focus();
   }, [snapshot.status, state.errorCode]);
-
   if (snapshot.status === 'pending_approval') return null;
-
-  if (snapshot.status === 'ready') {
-    return <div data-testid="ai-run-status-card"><Card className="run-status-card">
-      <h3 ref={headingRef} tabIndex={-1} data-testid="run-ready">Provider access approved</h3>
-      <Alert tone="success" data-testid="run-ready-status" role="status" live="polite">
-        <p>The approved context is ready for a server-side model request. The authoritative project workspace is unchanged.</p>
-        {state.manifest ? <p className="field-help">Provider: {state.manifest.provider}. Model: {formatModel(state.manifest.model)}. Selected files: {state.manifest.itemCount}. Recent messages: {state.manifest.messageCount}.</p> : null}
-      </Alert>
-    </Card></div>;
-  }
-
-  if (snapshot.status === 'staging') {
-    return <div data-testid="ai-run-status-card"><Card className="run-status-card" data-testid="run-staging">
-      <h3 ref={headingRef} tabIndex={-1}>Preparing the approved context</h3>
-      <Alert tone="info" role="status"><p>The selected context is being prepared locally. Refresh checks the saved status and does not restart the run.</p></Alert>
-      <Button type="button" variant="secondary" data-testid="run-staging-refresh" onClick={onRefresh}>Refresh run status</Button>
-    </Card></div>;
-  }
-
-  if (snapshot.status !== 'rejected' && (snapshot.status !== 'failed' || snapshot.phase !== 'staging')) {
-    return null;
-  }
-
-  if (snapshot.status === 'rejected') {
-    return <div data-testid="ai-run-status-card"><Card className="run-status-card" data-testid="run-rejected">
-      <h3 ref={headingRef} tabIndex={-1}>This run was not started</h3>
-      <Alert tone="info" role="status" live="polite">No project content was sent to the model provider.</Alert>
-    </Card></div>;
-  }
-
-  const reviewRequired = snapshot.providerTransmission === 'unknown' || state.errorCode === 'RUN_REVIEW_REQUIRED';
-  const message = reviewRequired ? 'The app could not confirm whether the provider request finished. Do not retry automatically; refresh the run status before trying again.' : errorMessage(state.errorCode, snapshot.safeMessage);
+  if (snapshot.status === 'ready' || snapshot.status === 'staging') return <div data-testid="ai-run-status-card"><div data-testid={snapshot.status === 'staging' ? 'run-staging' : 'run-ready'}><TypingIndicator /></div></div>;
+  if (snapshot.status === 'rejected') return <p role="status" data-testid="run-rejected">Request cancelled.</p>;
+  if (snapshot.status !== 'failed' || snapshot.phase !== 'staging') return null;
+  const needsCheck = snapshot.providerTransmission === 'unknown' || state.errorCode === 'RUN_REVIEW_REQUIRED';
   return <div data-testid="ai-run-status-card"><Card className="run-status-card" data-testid="run-error">
-    <h3 ref={headingRef} tabIndex={-1} data-testid="run-provider-failed">{reviewRequired ? 'Run needs review' : 'The model provider could not start this request'}</h3>
-    <Alert tone={reviewRequired ? 'warning' : 'error'} role="alert">{message}</Alert>
-    <div className="run-status-actions">{reviewRequired ? <Button type="button" variant="secondary" data-testid="run-status-refresh" onClick={onRefresh}>Refresh run status</Button> : <Button type="button" variant="secondary" data-testid="run-error-retry" onClick={onRetry}>Try again</Button>}<a className="button button-secondary" data-testid="run-back-to-conversation" href={conversationHref}>Back to conversation</a></div>
+    <h3 ref={headingRef} tabIndex={-1} data-testid="run-provider-failed">Unable to continue</h3>
+    <Alert tone={needsCheck ? 'warning' : 'error'} role="alert">{needsCheck ? 'Check this request before trying again.' : 'Could not start this request. Please try again.'}</Alert>
+    <div className="run-status-actions">{needsCheck ? <Button type="button" variant="secondary" data-testid="run-status-refresh" onClick={onRefresh}>Check status</Button> : <Button type="button" variant="secondary" data-testid="run-error-retry" disabled={retryDisabled} onClick={onRetry}>Try again</Button>}<a className="button button-secondary" data-testid="run-back-to-conversation" href={conversationHref}>Back to chat</a></div>
   </Card></div>;
-}
-
-function errorMessage(errorCode: string | undefined, safeMessage: string): string {
-  if (errorCode === 'EGRESS_SOURCE_CHANGED') return 'The approved project context changed before the model request started. Review a fresh provider disclosure before trying again. No file changes were made.';
-  if (errorCode === 'RUNTIME_UNAVAILABLE' || errorCode === 'NIM_UNAVAILABLE') return 'The model provider is unavailable. No provider request was started. No file changes were made. Try again when provider setup is available.';
-  if (errorCode === 'STAGING_FAILED') return 'The approved context could not be prepared for the model provider. No provider request was started. No file changes were made.';
-  if (safeMessage.startsWith('The local sandbox gateway is unavailable.') || safeMessage.startsWith('NVIDIA NIM is not ready')) return 'The model provider is unavailable. No provider request was started. No file changes were made. Try again when provider setup is available.';
-  if (safeMessage.length > 0) return `${safeMessage} No file changes were made.`;
-  return 'The model provider could not complete this request. No file changes were made.';
-}
-
-function formatModel(model: string): string {
-  return model === 'nvidia/nemotron-3-super-120b-a12b' ? 'Nemotron 3 Super 120B' : model;
 }

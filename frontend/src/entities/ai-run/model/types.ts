@@ -2,7 +2,7 @@ export type AiRunStatus = 'pending_approval' | 'rejected' | 'staging' | 'ready' 
 
 export type AiRunPhase = 'manifest' | 'decision' | 'staging' | 'runtime' | 'inference' | 'terminal' | 'review';
 
-export type EgressDecision = 'pending' | 'approved' | 'rejected';
+export type EgressDecision = 'pending' | 'approved' | 'rejected' | 'policy_authorized';
 
 export type CleanupStatus = 'not_started' | 'complete' | 'unknown';
 
@@ -11,7 +11,7 @@ export type ProviderTransmissionStatus = 'not_started' | 'not_started_confirmed'
 export interface EgressManifest {
   readonly runId: string;
   readonly manifestHash: string;
-  readonly status: 'pending_approval';
+  readonly status: AiRunStatus;
   readonly provider: string;
   readonly providerProfile: string;
   readonly model: string;
@@ -102,7 +102,7 @@ export interface AiRunIntent extends AiRunSnapshot {
 
 export type SandboxCommandClassification = 'safe' | 'sensitive' | 'blocked';
 
-export type SandboxCommandDecision = 'pending' | 'approved' | 'rejected' | 'not_applicable';
+export type SandboxCommandDecision = 'pending' | 'approved' | 'rejected' | 'not_applicable' | 'policy_authorized';
 
 export type SandboxCommandStatus =
   | 'awaiting_approval'
@@ -160,7 +160,7 @@ export interface SandboxCommandSnapshot {
 }
 
 export type ProposedChangeSetStatus = 'awaiting_approval' | 'applying' | 'applied' | 'rejected' | 'stale' | 'blocked' | 'failed' | 'needs_manual_review';
-export type ProposedChangeDecision = 'pending' | 'approved' | 'rejected';
+export type ProposedChangeDecision = 'pending' | 'approved' | 'rejected' | 'policy_authorized';
 export type ProposedChangeOperationKind = 'create' | 'edit' | 'overwrite' | 'rename' | 'delete';
 export type ProposedChangeOperationStatus = 'applied' | 'skipped' | 'failed' | 'needs_manual_review';
 export type ProposedChangeBackupStatus = 'not_required' | 'created' | 'failed' | 'unknown';

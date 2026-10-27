@@ -2,6 +2,32 @@ import 'reflect-metadata';
 
 import { DataSource } from 'typeorm';
 import { CreateProjectRemovalJobs1710000017000 } from '@/infrastructure/database/migrations/1710000017000-create-project-removal-jobs';
+import { AddInboxTaskPersistence1710000018000 } from '@/infrastructure/database/migrations/1710000018000-add-inbox-task-persistence';
+import { AddPlanningProjectPersistence1710000019000 } from '@/infrastructure/database/migrations/1710000019000-add-planning-project-persistence';
+import { CreateHomeConversationPersistence1710000020000 } from '@/infrastructure/database/migrations/1710000020000-create-home-conversation-persistence';
+import { CreateActionLedgerPersistence1710000021000 } from '@/infrastructure/database/migrations/1710000021000-create-action-ledger-persistence';
+import { IncreaseActionLedgerReversibleFieldsCap1710000022000 } from '@/infrastructure/database/migrations/1710000022000-increase-action-ledger-reversible-fields-cap';
+import { AddHomeConversationEvents1710000023000 } from '@/infrastructure/database/migrations/1710000023000-add-home-conversation-events';
+import { AddHomeConsentDisclosures1710000024000 } from '@/infrastructure/database/migrations/1710000024000-add-home-consent-disclosures';
+import { CreateHomeChangeProposals1710000025000 } from '@/infrastructure/database/migrations/1710000025000-create-home-change-proposals';
+import { AddAccountIdentity1710000026000 } from '@/infrastructure/database/migrations/1710000026000-add-account-identity';
+import { EnforceProjectOwnershipBoundaries1710000027000 } from '@/infrastructure/database/migrations/1710000027000-enforce-project-ownership-boundaries';
+import { CreateCreditLedger1710000028000 } from '@/infrastructure/database/migrations/1710000028000-create-credit-ledger';
+import { AddAccountStorageLimit1710000029000 } from '@/infrastructure/database/migrations/1710000029000-add-account-storage-limit';
+import { CreateStorageRootMappings1710000030000 } from '@/infrastructure/database/migrations/1710000030000-create-storage-root-mappings';
+import { CreateDemoAdmission1710000031000 } from '@/infrastructure/database/migrations/1710000031000-create-demo-admission';
+import { CreateAssistantScopePolicies1710000032000 } from '@/infrastructure/database/migrations/1710000032000-create-assistant-scope-policies';
+import { CreateShowcaseAndDemoCopies1710000033000 } from '@/infrastructure/database/migrations/1710000033000-create-showcase-and-demo-copies';
+import { CreateDemoExpiryCleanup1710000034000 } from '@/infrastructure/database/migrations/1710000034000-create-demo-expiry-cleanup';
+import { CreateSkills1710000035000 } from '@/infrastructure/database/migrations/1710000035000-create-skills';
+import { CanonicalTaskDelete1710000036000 } from '@/infrastructure/database/migrations/1710000036000-canonical-task-delete';
+import { AdminDemoPolicy1710000037000 } from '@/infrastructure/database/migrations/1710000037000-admin-demo-policy';
+import { CreateAutomations1710000038000 } from '@/infrastructure/database/migrations/1710000038000-create-automations';
+import { AddAutomationTaskSources1710000039000 } from '@/infrastructure/database/migrations/1710000039000-add-automation-task-sources';
+import { AddEstimatedCreditUsage1710000041000 } from '@/infrastructure/database/migrations/1710000041000-add-estimated-credit-usage';
+import { BoundDemoStorage1710000042000 } from '@/infrastructure/database/migrations/1710000042000-bound-demo-storage';
+import { RecordHomeRuntimeDisposal1710000043000 } from '@/infrastructure/database/migrations/1710000043000-record-home-runtime-disposal';
+import { CreateWorkspaceExports1710000040000 } from '@/infrastructure/database/migrations/1710000040000-create-workspace-exports';
 
 import type { DatabaseConfig } from '@/infrastructure/config/database-config';
 import { CreateApplicationMetadata1710000000000 } from '@/infrastructure/database/migrations/1710000000000-create-application-metadata';
@@ -28,7 +54,7 @@ export function createDataSource(config: DatabaseConfig): DataSource {
     url: config.url,
     synchronize: false,
     migrationsRun: false,
-    migrations: [CreateApplicationMetadata1710000000000, CreateUsersAndSessions1710000001000, CreateProjects1710000002000, CreateConversationsAndMessages1710000003000, CreateAiRunsAndEgress1710000004000, CreateSandboxCommands1710000005000, CreateAiRunChat1710000006000, CreateAiRunChangeSets1710000007000, AddConfirmedProviderTransmission1710000008000, CreateProjectFacts1710000009000, CreateProjectTasks1710000010000, AddAiRunProviderUsage1710000011000, AddChangeSetOperationPathIndex1710000012000, CreateProviderPermissions1710000013000, CreateProjectChatContext1710000014000, AddContextFileExclusions1710000015000, AddTaskPlanningFields1710000016000, CreateProjectRemovalJobs1710000017000],
+    migrations: [CreateApplicationMetadata1710000000000, CreateUsersAndSessions1710000001000, CreateProjects1710000002000, CreateConversationsAndMessages1710000003000, CreateAiRunsAndEgress1710000004000, CreateSandboxCommands1710000005000, CreateAiRunChat1710000006000, CreateAiRunChangeSets1710000007000, AddConfirmedProviderTransmission1710000008000, CreateProjectFacts1710000009000, CreateProjectTasks1710000010000, AddAiRunProviderUsage1710000011000, AddChangeSetOperationPathIndex1710000012000, CreateProviderPermissions1710000013000, CreateProjectChatContext1710000014000, AddContextFileExclusions1710000015000, AddTaskPlanningFields1710000016000, CreateProjectRemovalJobs1710000017000, AddInboxTaskPersistence1710000018000, AddPlanningProjectPersistence1710000019000, CreateHomeConversationPersistence1710000020000, CreateActionLedgerPersistence1710000021000, IncreaseActionLedgerReversibleFieldsCap1710000022000, AddHomeConversationEvents1710000023000, AddHomeConsentDisclosures1710000024000, CreateHomeChangeProposals1710000025000, AddAccountIdentity1710000026000, EnforceProjectOwnershipBoundaries1710000027000, CreateCreditLedger1710000028000, AddAccountStorageLimit1710000029000, CreateStorageRootMappings1710000030000, CreateDemoAdmission1710000031000, CreateAssistantScopePolicies1710000032000, CreateShowcaseAndDemoCopies1710000033000, CreateDemoExpiryCleanup1710000034000, CreateSkills1710000035000, CanonicalTaskDelete1710000036000, AdminDemoPolicy1710000037000, CreateAutomations1710000038000, AddAutomationTaskSources1710000039000, CreateWorkspaceExports1710000040000, AddEstimatedCreditUsage1710000041000, BoundDemoStorage1710000042000, RecordHomeRuntimeDisposal1710000043000],
     entities: [],
     logging: false
   });

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { mkdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 
 class DirectChatPage {
@@ -18,11 +18,7 @@ class DirectChatPage {
 test('uses saved files, ticked memory, and previous project conversations when sending directly', async ({ page }) => {
   test.setTimeout(180_000);
   const marker = randomUUID().slice(0, 8);
-  const relativeRoot = `apps/direct-chat-check-${marker}`;
   const repositoryRoot = resolve(process.cwd(), '..');
-  const workspaceRoot = resolve(process.env.PAI_E2E_WORKSPACE_ROOT ?? repositoryRoot);
-  const fixtureDirectory = resolve(workspaceRoot, relativeRoot);
-  const fixtureFile = join(fixtureDirectory, 'context-example.txt');
   const artifactDirectory = resolve(repositoryRoot, '..', '.codex', 'docs', 'personal-ai-workspace-mvp', 'project-docs', 'artifacts');
   const historyCode = `HISTORY_CEDAR_${marker}`;
   const factCode = `MEMORY_ORCHID_${marker}`;
@@ -39,18 +35,20 @@ test('uses saved files, ticked memory, and previous project conversations when s
     const privateRoot = join(process.env.LOCALAPPDATA ?? '', 'Personal-AI-Workspace', 'private');
     const password = readFileSync(join(privateRoot, 'secrets', 'local_user_password'), 'utf8').trim();
     await page.goto('/login');
+    await page.getByTestId('login-identifier-input').fill('owner');
     await page.getByTestId('login-password-input').fill(password);
     await page.getByTestId('login-submit-button').click();
     await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);
     const sessionResponse = await page.request.get('/api/v1/auth/session');
     csrfToken = (await sessionResponse.json()).data.csrfToken;
     const headers = { Origin: new URL(page.url()).origin, 'X-CSRF-Token': csrfToken, 'Idempotency-Key': randomUUID() };
-    const projectResponse = await page.request.post('/api/v1/projects', { headers, data: { name: `Direct chat check ${marker}`, relativeRoot } });
+    const projectResponse = await page.request.post('/api/v1/projects', { headers, data: { name: `Direct chat check ${marker}`, workspaceMode: 'file_backed' } });
     expect(projectResponse.status()).toBe(201);
-    projectId = (await projectResponse.json()).data.id;
-    if (!projectId || !fixtureDirectory.startsWith(workspaceRoot + sep)) throw new Error('Invalid test project directory');
-    mkdirSync(fixtureDirectory, { recursive: true });
-    writeFileSync(fixtureFile, `The selected file context code is ${fileCode}.\n`, 'utf8');
+    const createdProject = (await projectResponse.json()).data;
+    expect(createdProject).not.toHaveProperty('relativeRoot');
+    expect(createdProject.capabilities.fileAccess).toBe(true);
+    projectId = createdProject.id;
+    await uploadProjectFile(page, projectId, csrfToken, 'context-example.txt', `The selected file context code is ${fileCode}.\n`);
     const createConversation = async (title: string): Promise<string> => {
       const response = await page.request.post(`/api/v1/projects/${projectId}/conversations`, { headers: { ...headers, 'Idempotency-Key': randomUUID() }, data: { title } });
       expect(response.status()).toBe(201);
@@ -136,6 +134,7 @@ test('uses saved files, ticked memory, and previous project conversations when s
         const run = (await runResponse.json()).data;
         if (['ready', 'queued', 'running', 'waiting_approval'].includes(run.status)) await page.request.post(`/api/v1/ai-runs/${sentRunId}/cancel`, { headers, data: {} });
       }
+      await deleteProjectFile(page, projectId, csrfToken, 'context-example.txt');
       const projectResponse = await page.request.get(`/api/v1/projects/${projectId}`);
       const project = (await projectResponse.json()).data;
       if (project.status === 'active') {
@@ -143,8 +142,6 @@ test('uses saved files, ticked memory, and previous project conversations when s
         expect(archived.status()).toBe(200);
       }
     }
-    if (existsSync(fixtureFile)) unlinkSync(fixtureFile);
-    try { rmdirSync(fixtureDirectory); } catch { /* Leave any unexpected files untouched. */ }
   }
 });
 
@@ -152,10 +149,6 @@ test('automatically creates, edits, and deletes workspace files without asking f
   test.setTimeout(180_000);
   const marker = randomUUID().slice(0, 8);
   const repositoryRoot = resolve(process.cwd(), '..');
-  const workspaceRoot = resolve(process.env.PAI_E2E_WORKSPACE_ROOT ?? repositoryRoot);
-  const relativeRoot = `apps/automatic-files-check-${marker}`;
-  const fixtureDirectory = resolve(workspaceRoot, relativeRoot);
-  const fixtureNames = ['edit.txt', 'remove.txt', 'unused.bin', 'New.svelte'];
   let projectId: string | null = null;
   let runId: string | null = null;
   let csrfToken = '';
@@ -169,18 +162,21 @@ test('automatically creates, edits, and deletes workspace files without asking f
     const privateRoot = join(process.env.LOCALAPPDATA ?? '', 'Personal-AI-Workspace', 'private');
     const password = readFileSync(join(privateRoot, 'secrets', 'local_user_password'), 'utf8').trim();
     await page.goto('/login');
+    await page.getByTestId('login-identifier-input').fill('owner');
     await page.getByTestId('login-password-input').fill(password);
     await page.getByTestId('login-submit-button').click();
     await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);
     csrfToken = (await (await page.request.get('/api/v1/auth/session')).json()).data.csrfToken;
     const headers = { Origin: new URL(page.url()).origin, 'X-CSRF-Token': csrfToken, 'Idempotency-Key': randomUUID() };
-    const created = await page.request.post('/api/v1/projects', { headers, data: { name: `Automatic files check ${marker}`, relativeRoot } });
+    const created = await page.request.post('/api/v1/projects', { headers, data: { name: `Automatic files check ${marker}`, workspaceMode: 'file_backed' } });
     expect(created.status()).toBe(201);
-    projectId = (await created.json()).data.id;
-    if (!projectId || !fixtureDirectory.startsWith(workspaceRoot + sep)) throw new Error('Invalid test project directory');
-    writeFileSync(join(fixtureDirectory, 'edit.txt'), 'Original text\n', 'utf8');
-    writeFileSync(join(fixtureDirectory, 'remove.txt'), 'This file should be removed\n', 'utf8');
-    writeFileSync(join(fixtureDirectory, 'unused.bin'), Buffer.from([0, 255, 128, 42]));
+    const createdProject = (await created.json()).data;
+    expect(createdProject).not.toHaveProperty('relativeRoot');
+    expect(createdProject.capabilities.fileAccess).toBe(true);
+    projectId = createdProject.id;
+    await uploadProjectFile(page, projectId, csrfToken, 'edit.txt', 'Original text\n');
+    await uploadProjectFile(page, projectId, csrfToken, 'remove.txt', 'This file should be removed\n');
+    await uploadProjectFile(page, projectId, csrfToken, 'unused.bin', Buffer.from([0, 255, 128, 42]));
     const context = await page.request.patch(`/api/v1/projects/${projectId}/chat-context`, { headers, data: { relativePaths: ['edit.txt', 'remove.txt'] } });
     expect(context.status()).toBe(200);
     const conversation = await page.request.post(`/api/v1/projects/${projectId}/conversations`, { headers, data: { title: 'Automatic file work' } });
@@ -197,10 +193,10 @@ test('automatically creates, edits, and deletes workspace files without asking f
     const completedRun = (await (await page.request.get(`/api/v1/ai-runs/${runId}`)).json()).data;
     expect(completedRun.status, completedRun.safeMessage).toBe('succeeded');
     await expect(page.getByTestId('message-content').filter({ hasText: 'Applied 4 file changes in the project workspace.' })).toBeVisible();
-    expect(readFileSync(join(fixtureDirectory, 'New.svelte'), 'utf8').trim()).toBe(`<h1>AUTOMATIC_${marker}</h1>`);
-    expect(readFileSync(join(fixtureDirectory, 'edit.txt'), 'utf8').trim()).toBe(`UPDATED_${marker}`);
-    expect(existsSync(join(fixtureDirectory, 'remove.txt'))).toBe(false);
-    expect(existsSync(join(fixtureDirectory, 'unused.bin'))).toBe(false);
+    expect(await readProjectFile(page, projectId, 'New.svelte')).toBe(`<h1>AUTOMATIC_${marker}</h1>\n`);
+    expect(await readProjectFile(page, projectId, 'edit.txt')).toBe(`UPDATED_${marker}\n`);
+    expect(await readProjectFile(page, projectId, 'remove.txt')).toBeNull();
+    expect(await readProjectFile(page, projectId, 'unused.bin')).toBeNull();
     const changeResponse = await page.request.get(`/api/v1/ai-runs/${runId}/proposed-change-set`);
     expect(changeResponse.status()).toBe(200);
     const changeSet = (await changeResponse.json()).data;
@@ -219,13 +215,35 @@ test('automatically creates, edits, and deletes workspace files without asking f
         const run = (await (await page.request.get(`/api/v1/ai-runs/${runId}`)).json()).data;
         if (['ready', 'queued', 'running', 'waiting_approval'].includes(run.status)) await page.request.post(`/api/v1/ai-runs/${runId}/cancel`, { headers, data: {} });
       }
+      await deleteProjectFile(page, projectId, csrfToken, 'New.svelte');
+      await deleteProjectFile(page, projectId, csrfToken, 'edit.txt');
       const project = (await (await page.request.get(`/api/v1/projects/${projectId}`)).json()).data;
       if (project.status === 'active') expect((await page.request.patch(`/api/v1/projects/${projectId}`, { headers: { ...headers, 'If-Match': String(project.version) }, data: { status: 'archived' } })).status()).toBe(200);
     }
-    for (const name of fixtureNames) {
-      const fixturePath = join(fixtureDirectory, name);
-      if (existsSync(fixturePath)) unlinkSync(fixturePath);
-    }
-    try { rmdirSync(fixtureDirectory); } catch { /* Leave any unexpected files untouched. */ }
   }
 });
+
+async function uploadProjectFile(page: Page, projectId: string, csrfToken: string, path: string, content: string | Buffer): Promise<void> {
+  const response = await page.request.post(`/api/v1/projects/${projectId}/files/upload?path=${encodeURIComponent(path)}`, {
+    headers: { Origin: new URL(page.url()).origin, 'X-CSRF-Token': csrfToken, 'Content-Type': 'application/octet-stream' }, data: content
+  });
+  expect(response.status()).toBe(201);
+}
+
+async function readProjectFile(page: Page, projectId: string, path: string): Promise<string | null> {
+  const response = await page.request.get(`/api/v1/projects/${projectId}/files/content?path=${encodeURIComponent(path)}`);
+  if (response.status() === 404) return null;
+  expect(response.status()).toBe(200);
+  return (await response.json()).data.content as string;
+}
+
+async function deleteProjectFile(page: Page, projectId: string, csrfToken: string, path: string): Promise<void> {
+  const fileResponse = await page.request.get(`/api/v1/projects/${projectId}/files/content?path=${encodeURIComponent(path)}`);
+  if (fileResponse.status() === 404) return;
+  expect(fileResponse.status()).toBe(200);
+  const { sourceHash } = (await fileResponse.json()).data as { readonly sourceHash: string };
+  const removed = await page.request.delete(`/api/v1/projects/${projectId}/files/content?path=${encodeURIComponent(path)}`, {
+    headers: { Origin: new URL(page.url()).origin, 'X-CSRF-Token': csrfToken, 'If-Match': `"${sourceHash}"` }
+  });
+  expect(removed.status()).toBe(204);
+}

@@ -25,14 +25,14 @@ function makeRun(overrides: Partial<AiRun> = {}): AiRun {
     excludedItemCount: 0, omittedItemCount: 0, omissionSummary: 'No items omitted.', bestEffortSecretDetection: true
   };
   return {
-    id: RUN_ID, ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'token=super-secret inspect the project', relativeRoot: '', requestedPaths: [],
+    id: RUN_ID, ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'token=super-secret inspect the project', relativeRoot: '', storageKind: 'legacy', requestedPaths: [],
     manifest, manifestInvalidated: false, status: 'succeeded', phase: 'terminal', decision: 'approved', cleanup: 'complete', providerTransmission: 'transmitted_confirmed', stagingItemCount: 0,
     sandboxReady: true, assistantMessageId: MESSAGE_ID, assistantComplete: true, safeMessage: 'done', createdAt: NOW, updatedAt: NOW, ...overrides
   };
 }
 
-function projectRepository(owned = true): IProjectRepository {
-  return { findByIdForOwner: jest.fn(async () => owned ? ({ id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', status: 'active', version: 1, createdAt: NOW, updatedAt: NOW }) : null) } as unknown as IProjectRepository;
+function projectRepository(owned = true, relativeRoot: string | null = 'project'): IProjectRepository {
+  return { findByIdForOwner: jest.fn(async () => owned ? ({ id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot, storageKind: relativeRoot === null ? null : 'legacy', objective: null, status: 'active', version: 1, createdAt: NOW, updatedAt: NOW }) : null) } as unknown as IProjectRepository;
 }
 
 describe('Project AI run activity use cases', () => {
@@ -62,6 +62,14 @@ describe('Project AI run activity use cases', () => {
     expect(listActivityForProjectOwner).not.toHaveBeenCalled();
   });
 
+  it('does not query run history for a planning project', async () => {
+    const listActivityForProjectOwner = jest.fn();
+    const useCase = new ListAiRunActivityUseCase(projectRepository(true, null), { listActivityForProjectOwner } as unknown as IAiRunRepository);
+
+    await expect(useCase.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID })).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED', statusCode: 409 });
+    expect(listActivityForProjectOwner).not.toHaveBeenCalled();
+  });
+
   it('returns redacted, bounded run details without context, change, hash, or recovery payloads', async () => {
     const run = makeRun();
     const changeSet = {
@@ -74,7 +82,7 @@ describe('Project AI run activity use cases', () => {
     const aiRunRepository = { findByIdForOwner: jest.fn(async () => run) } as unknown as IAiRunRepository;
     const changeSetRepository = { findByRunForOwner: jest.fn(async () => changeSet) } as unknown as IProposedChangeSetRepository;
     const conversationRepository = { findMessageForOwner: jest.fn(async () => ({ id: MESSAGE_ID, conversationId: CONVERSATION_ID, role: 'assistant', sequence: 2, content: 'password=hunter2 Safe answer.', createdAt: NOW })) } as unknown as IConversationRepository;
-    const useCase = new GetAiRunActivityUseCase(aiRunRepository, changeSetRepository, conversationRepository);
+    const useCase = new GetAiRunActivityUseCase(aiRunRepository, changeSetRepository, conversationRepository, projectRepository());
 
     const detail = await useCase.execute({ ownerId: OWNER_ID, runId: RUN_ID });
     const serialized = JSON.stringify(detail);
@@ -90,8 +98,22 @@ describe('Project AI run activity use cases', () => {
 
   it('hides a run that is missing or owned by another principal', async () => {
     const aiRunRepository = { findByIdForOwner: jest.fn(async () => null) } as unknown as IAiRunRepository;
-    const useCase = new GetAiRunActivityUseCase(aiRunRepository, {} as IProposedChangeSetRepository, {} as IConversationRepository);
+    const useCase = new GetAiRunActivityUseCase(aiRunRepository, {} as IProposedChangeSetRepository, {} as IConversationRepository, projectRepository());
 
     await expect(useCase.execute({ ownerId: 'foreign-owner', runId: RUN_ID })).rejects.toBeInstanceOf(AiRunNotFoundError);
+  });
+
+  it('does not query change-set or conversation history for a planning project', async () => {
+    const run = makeRun();
+    const aiRunRepository = { findByIdForOwner: jest.fn(async () => run) } as unknown as IAiRunRepository;
+    const findChangeSet = jest.fn();
+    const findMessage = jest.fn();
+    const changeSetRepository = { findByRunForOwner: findChangeSet } as unknown as IProposedChangeSetRepository;
+    const conversationRepository = { findMessageForOwner: findMessage } as unknown as IConversationRepository;
+    const useCase = new GetAiRunActivityUseCase(aiRunRepository, changeSetRepository, conversationRepository, projectRepository(true, null));
+
+    await expect(useCase.execute({ ownerId: OWNER_ID, runId: RUN_ID })).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED', statusCode: 409 });
+    expect(findChangeSet).not.toHaveBeenCalled();
+    expect(findMessage).not.toHaveBeenCalled();
   });
 });

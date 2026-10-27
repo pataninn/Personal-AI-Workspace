@@ -89,8 +89,7 @@ describe('project task validation', () => {
       todo: ['in_progress', 'done'],
       in_progress: ['blocked', 'done'],
       blocked: ['in_progress', 'done'],
-      done: [],
-      archived: []
+      done: ['todo']
     };
 
     it.each(PROJECT_TASK_STATUSES)('should expose only contract-approved transitions from %s', (current) => {

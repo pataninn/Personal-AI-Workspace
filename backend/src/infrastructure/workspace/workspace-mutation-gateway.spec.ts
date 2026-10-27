@@ -7,8 +7,14 @@ import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspa
 import type { ProposedChangeOperation } from '@/modules/ai-runs/domain/change-types';
 import type { MutationFileSystem } from '@/infrastructure/workspace/workspace-mutation-gateway';
 import { WorkspaceMutationGatewayAdapter } from '@/infrastructure/workspace/workspace-mutation-gateway';
+import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
+import { StorageQuotaFileMutation } from '@/infrastructure/workspace/storage-quota-file-mutation';
+import type { IStorageQuotaRepository, StorageQuotaTransaction, StorageTrustedFileScopeResolver } from '@/modules/storage-quotas/repositories/storage-quota-repository';
+import type { StorageFileOperationCommand, StorageFileOperationReservation, StorageTrustedFileScope, StorageVerifiedFileChange } from '@/modules/storage-quotas/domain/storage-quota-types';
+import type { IStorageRootMappingRepository, StorageRootMapping } from '@/modules/storage-quotas/repositories/storage-root-mapping-repository';
+import type { WorkspaceMutationScope } from '@/modules/ai-runs/repositories/workspace-mutation-gateway';
 
-const SCOPE = { projectId: 'project-1', relativeRoot: 'project' } as const;
+const SCOPE = { ownerId: 'owner-1', projectId: 'project-1', storageKind: 'legacy' as const, relativeRoot: 'project' } as const;
 const RUN_ID = 'run-1';
 const PROPOSAL_HASH = 'a'.repeat(64);
 
@@ -59,9 +65,130 @@ describe('WorkspaceMutationGatewayAdapter', () => {
     await expect(fs.readFile(path.join(projectRoot, 'renamed.txt'), 'utf8')).resolves.toBe('rename-before\n');
     await expect(fs.access(path.join(projectRoot, 'rename.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fs.access(path.join(projectRoot, 'delete.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(result.operations.filter((item) => item.backup === 'created')).toHaveLength(2);
-    await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, operations[2]!.operationId, 'overwrite.txt.bak'), 'utf8')).resolves.toBe('overwrite-before\n');
-    await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, operations[4]!.operationId, 'delete.txt.bak'), 'utf8')).resolves.toBe('delete-before\n');
+    expect(result.operations.filter((item) => item.backup === 'created')).toHaveLength(3);
+    await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, operations[1]!.operationId, `${hash('edit.txt')}.bak`), 'utf8')).resolves.toBe('edit-before\n');
+    await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, operations[2]!.operationId, `${hash('overwrite.txt')}.bak`), 'utf8')).resolves.toBe('overwrite-before\n');
+    await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, operations[4]!.operationId, `${hash('delete.txt')}.bak`), 'utf8')).resolves.toBe('delete-before\n');
+  });
+
+  it('commits the durable reservation before file I/O and settles after verified promotion', async () => {
+    const events: string[] = [];
+    const quota = makeStorageHarness(SCOPE, events);
+    const baseFileSystem = makeFileSystem(undefined, undefined, undefined, undefined, async (sourcePath, destinationPath) => {
+      if (sourcePath.endsWith('.tmp') && destinationPath.endsWith(`${path.sep}edit.txt`)) events.push('promotion');
+    });
+    const fileSystem: MutationFileSystem = {
+      ...baseFileSystem,
+      open: async (filePath, flags) => {
+        if (filePath.includes(`${path.sep}recovery${path.sep}`)) events.push('recovery-open');
+        if (filePath.endsWith('.tmp')) events.push('temp-open');
+        return baseFileSystem.open(filePath, flags);
+      }
+    };
+    const adapter = makeAdapter(root, recoveryRoot, fileSystem, SCOPE, quota);
+
+    const result = await adapter.applyChangeSet(
+      SCOPE,
+      [operation('edit', 'edit.txt', { content: 'edit-after\n', expectedSourceHash: hash('edit-before\n') })],
+      RUN_ID,
+      PROPOSAL_HASH,
+      { assertPrincipalActive: async () => undefined }
+    );
+
+    expect(result.outcome).toBe('applied');
+    expect(events.indexOf('reserved')).toBeLessThan(events.indexOf('recovery-open'));
+    expect(events.indexOf('reserved')).toBeLessThan(events.indexOf('temp-open'));
+    expect(events.indexOf('promotion')).toBeGreaterThan(events.indexOf('reserved'));
+    expect(events.at(-1)).toBe('settled');
+    expect(quota.isTransactionOpen()).toBe(false);
+  });
+
+  it('records a partial failure and stops the next file promotion when access is revoked between operations', async () => {
+    let active = true;
+    let firstPromotion = false;
+    const fileSystem = makeFileSystem(undefined, undefined, undefined, undefined, async (sourcePath, destinationPath) => {
+      if (sourcePath.endsWith('.tmp') && destinationPath.endsWith(`${path.sep}edit.txt`)) {
+        firstPromotion = true;
+        active = false;
+      }
+    });
+    const adapter = makeAdapter(root, recoveryRoot, fileSystem);
+    const result = await adapter.applyChangeSet(
+      SCOPE,
+      [
+        operation('edit', 'edit.txt', { content: 'edit-after\n', expectedSourceHash: hash('edit-before\n') }),
+        operation('create', 'later.txt', { content: 'must-not-be-written\n' })
+      ],
+      RUN_ID,
+      PROPOSAL_HASH,
+      { assertPrincipalActive: async () => { if (!active) throw new Error('Principal revoked.'); } }
+    );
+
+    expect(result.outcome).toBe('failed');
+    expect(result.operations.map(({ status }) => status)).toEqual(['applied', 'failed']);
+    await expect(fs.readFile(path.join(projectRoot, 'edit.txt'), 'utf8')).resolves.toBe('edit-after\n');
+    await expect(fs.access(path.join(projectRoot, 'later.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(firstPromotion).toBe(true);
+  });
+
+  it('releases a reservation when expiry is rechecked before opening the recovery copy', async () => {
+    let activeChecks = 0;
+    const events: string[] = [];
+    const quota = makeStorageHarness(SCOPE, events);
+    const adapter = makeAdapter(root, recoveryRoot, undefined, SCOPE, quota);
+
+    const result = await adapter.applyChangeSet(
+      SCOPE,
+      [operation('edit', 'edit.txt', { content: 'must-not-promote\n', expectedSourceHash: hash('edit-before\n') })],
+      RUN_ID,
+      PROPOSAL_HASH,
+      { assertPrincipalActive: async () => {
+        activeChecks += 1;
+        if (activeChecks === 4) throw new UnauthenticatedError();
+      } }
+    );
+
+    expect(result.outcome).toBe('failed');
+    expect(result.operations[0]).toMatchObject({ status: 'failed', backup: 'not_created' });
+    expect(activeChecks).toBeGreaterThanOrEqual(4);
+    expect(quota.reservationStates()).toEqual(['released']);
+    expect(events).not.toContain('settled');
+    await expect(fs.readFile(path.join(projectRoot, 'edit.txt'), 'utf8')).resolves.toBe('edit-before\n');
+    await expect(fs.access(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, 'edit-edit.txt', `${hash('edit.txt')}.bak`))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('settles a verified recovery copy when expiry occurs after backup creation', async () => {
+    let activeChecks = 0;
+    const events: string[] = [];
+    const quota = makeStorageHarness(SCOPE, events);
+    const baseFileSystem = makeFileSystem();
+    const fileSystem: MutationFileSystem = {
+      ...baseFileSystem,
+      open: async (filePath, flags) => {
+        if (filePath.includes(`${path.sep}recovery${path.sep}`)) events.push('backup-open');
+        return baseFileSystem.open(filePath, flags);
+      }
+    };
+    const adapter = makeAdapter(root, recoveryRoot, fileSystem, SCOPE, quota);
+
+    const result = await adapter.applyChangeSet(
+      SCOPE,
+      [operation('edit', 'edit.txt', { content: 'must-not-promote\n', expectedSourceHash: hash('edit-before\n') })],
+      RUN_ID,
+      PROPOSAL_HASH,
+      { assertPrincipalActive: async () => {
+        activeChecks += 1;
+        if (activeChecks === 5) throw new UnauthenticatedError();
+      } }
+    );
+
+    expect(result.outcome).toBe('failed');
+    expect(result.operations[0]).toMatchObject({ status: 'failed', backup: 'created' });
+    expect(activeChecks).toBeGreaterThanOrEqual(5);
+    expect(events.indexOf('backup-open')).toBeLessThan(events.indexOf('settled'));
+    expect(quota.reservationStates()).toEqual(['settled']);
+    await expect(fs.readFile(path.join(projectRoot, 'edit.txt'), 'utf8')).resolves.toBe('edit-before\n');
+    await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, 'edit-edit.txt', `${hash('edit.txt')}.bak`), 'utf8')).resolves.toBe('edit-before\n');
   });
 
   it('writes extensionless files and renames/deletes binary files while retaining recovery bytes', async () => {
@@ -78,12 +205,12 @@ describe('WorkspaceMutationGatewayAdapter', () => {
     const deletion = operation('delete', 'moved.bin', { expectedSourceHash: snapshot.hash });
     const result = await adapter.applyChangeSet(SCOPE, [deletion], RUN_ID, PROPOSAL_HASH);
     expect(result.outcome).toBe('applied');
-    await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, deletion.operationId, 'moved.bin.bak'))).resolves.toEqual(bytes);
+    await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, deletion.operationId, `${hash('moved.bin')}.bak`))).resolves.toEqual(bytes);
   });
 
   it('allows reviewed root-project changes but still rejects protected root paths', async () => {
-    const rootScope = { projectId: 'project-1', relativeRoot: '.' } as const;
-    const adapter = makeAdapter(root, recoveryRoot);
+    const rootScope = { ownerId: 'owner-1', projectId: 'project-1', storageKind: 'legacy' as const, relativeRoot: '.' } as const;
+    const adapter = makeAdapter(root, recoveryRoot, undefined, rootScope);
     await fs.writeFile(path.join(root, 'root-edit.txt'), 'root-before\n', 'utf8');
     const rootEdit = operation('edit', 'root-edit.txt', { content: 'root-after\n', expectedSourceHash: hash('root-before\n') });
 
@@ -129,7 +256,7 @@ describe('WorkspaceMutationGatewayAdapter', () => {
       unlink: (filePath) => fs.unlink(filePath),
       rm: (filePath, options) => fs.rm(filePath, { ...options, recursive: false })
     };
-    const adapter = new WorkspaceMutationGatewayAdapter({ containerRoot: root, recoveryRoot, workspaceBoundary: new BoundaryFixture(), fileSystem });
+    const adapter = makeAdapter(root, recoveryRoot, fileSystem);
     const change = operation('delete', 'delete.txt', { expectedSourceHash: hash('delete-before\n') });
 
     const result = await adapter.applyChangeSet(SCOPE, [change], RUN_ID, PROPOSAL_HASH);
@@ -139,7 +266,7 @@ describe('WorkspaceMutationGatewayAdapter', () => {
     await expect(fs.readFile(path.join(projectRoot, 'delete.txt'), 'utf8')).resolves.toBe('delete-before\n');
   });
 
-  it('retains created backup status when the later file write outcome is ambiguous', async () => {
+  it('settles a verified recovery copy when temporary file creation fails cleanly', async () => {
     const fileSystem = makeFileSystem();
     const realOpen = fileSystem.open;
     const failingFileSystem: MutationFileSystem = {
@@ -156,9 +283,10 @@ describe('WorkspaceMutationGatewayAdapter', () => {
       expectedSourceHash: hash('overwrite-before\n')
     })], RUN_ID, PROPOSAL_HASH);
 
-    expect(result.outcome).toBe('needs_manual_review');
-    expect(result.operations[0]).toMatchObject({ status: 'needs_manual_review', backup: 'created' });
+    expect(result.outcome).toBe('failed');
+    expect(result.operations[0]).toMatchObject({ status: 'failed', backup: 'created' });
     await expect(fs.readFile(path.join(projectRoot, 'overwrite.txt'), 'utf8')).resolves.toBe('overwrite-before\n');
+    await expect(fs.readFile(path.join(recoveryRoot, `run-${RUN_ID}`, PROPOSAL_HASH, 'overwrite-overwrite.txt', `${hash('overwrite.txt')}.bak`), 'utf8')).resolves.toBe('overwrite-before\n');
   });
 
   it('rejects a missing exact source hash before touching the workspace', async () => {
@@ -171,7 +299,7 @@ describe('WorkspaceMutationGatewayAdapter', () => {
     expect(filesystemCalls).toBe(0);
   });
 
-  it('fails closed when a trusted-process reparse race appears at the final delete boundary', async () => {
+  it('returns a clean failure when a reparse race is caught before the recovery copy is created', async () => {
     let targetChecks = 0;
     const fileSystem = makeFileSystem(undefined, (filePath, stats) => {
       if (filePath.endsWith(`${path.sep}delete.txt`) && ++targetChecks >= 3) {
@@ -182,9 +310,10 @@ describe('WorkspaceMutationGatewayAdapter', () => {
     const adapter = makeAdapter(root, recoveryRoot, fileSystem);
     const result = await adapter.applyChangeSet(SCOPE, [operation('delete', 'delete.txt', { expectedSourceHash: hash('delete-before\n') })], RUN_ID, PROPOSAL_HASH);
 
-    expect(result.outcome).toBe('needs_manual_review');
-    expect(result.operations[0]?.status).toBe('needs_manual_review');
+    expect(result.outcome).toBe('failed');
+    expect(result.operations[0]).toMatchObject({ status: 'failed', backup: 'not_created' });
     await expect(fs.readFile(path.join(projectRoot, 'delete.txt'), 'utf8')).resolves.toBe('delete-before\n');
+    await expect(fs.access(path.join(recoveryRoot, `run-${RUN_ID}`))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('returns stale when the source hash changes at the backup-to-I/O boundary', async () => {
@@ -315,8 +444,108 @@ describe('WorkspaceMutationGatewayAdapter', () => {
   });
 });
 
-function makeAdapter(containerRoot: string, recoveryRoot: string, fileSystem?: MutationFileSystem): WorkspaceMutationGatewayAdapter {
-  return new WorkspaceMutationGatewayAdapter({ containerRoot, recoveryRoot, workspaceBoundary: new BoundaryFixture(), ...(fileSystem ? { fileSystem } : {}) });
+function makeAdapter(
+  containerRoot: string,
+  recoveryRoot: string,
+  fileSystem?: MutationFileSystem,
+  scope: WorkspaceMutationScope = SCOPE,
+  quota = makeStorageHarness(scope)
+): WorkspaceMutationGatewayAdapter {
+  return new WorkspaceMutationGatewayAdapter({
+    containerRoot,
+    recoveryRoot,
+    workspaceBoundary: new BoundaryFixture(),
+    storageMutations: quota.mutations,
+    rootMappings: quota.rootMappings,
+    ...(fileSystem ? { fileSystem } : {})
+  });
+}
+
+function makeStorageHarness(scope: WorkspaceMutationScope, events: string[] = []) {
+  const mapping: StorageRootMapping = {
+    ownerId: scope.ownerId,
+    projectId: scope.projectId,
+    locatorProjectId: scope.projectId,
+    rootKey: 'project-root',
+    storageKind: scope.storageKind,
+    relativeRoot: scope.relativeRoot,
+    state: 'active'
+  };
+  const trustedScope: StorageTrustedFileScope = {
+    ownerId: scope.ownerId,
+    projectId: scope.projectId,
+    roots: [{ ...mapping, projectId: scope.projectId }]
+  };
+  const transaction: StorageQuotaTransaction = {
+    query: async (query) => query.includes('project_removal_jobs') ? [] : [{ status: 'active' }]
+  };
+  const reservations = new Map<string, StorageFileOperationReservation>();
+  let transactionOpen = false;
+  let nextReservation = 0;
+  const rootMappings: IStorageRootMappingRepository = {
+    listMappings: async (ownerId?: string) => ownerId === scope.ownerId ? [mapping] : [],
+    registerVerifiedRetainedManagedOrphan: async () => { throw new Error('Not used in this test.'); },
+    resolveTrustedScope: async (_transaction, request) => {
+      if (request.ownerId !== scope.ownerId || request.projectId !== scope.projectId || request.rootKeys.length !== 1 || request.rootKeys[0] !== mapping.rootKey) {
+        throw new Error('Unexpected trusted root request.');
+      }
+      return trustedScope;
+    },
+    retainProjectRoot: async () => mapping,
+    deleteVerifiedRetained: async () => undefined
+  };
+  const storage: IStorageQuotaRepository = {
+    readUsage: async () => { throw new Error('Not used in this test.'); },
+    runDatabaseMutation: async () => { throw new Error('Not used in this test.'); },
+    reserveFileOperation: async (command: StorageFileOperationCommand, resolve: StorageTrustedFileScopeResolver) => {
+      const previous = reservations.get(command.operationKey);
+      if (previous) return { ...previous, replay: true };
+      transactionOpen = true;
+      let resolved: StorageTrustedFileScope;
+      try {
+        resolved = await resolve(transaction, { ownerId: command.ownerId, projectId: command.projectId, rootKeys: [command.rootKey] });
+      } finally {
+        transactionOpen = false;
+      }
+      const reservation: StorageFileOperationReservation = {
+        operationId: `reservation-${++nextReservation}`,
+        state: 'reserved',
+        outcome: null,
+        replay: false,
+        trustedScope: resolved
+      };
+      reservations.set(command.operationKey, reservation);
+      events.push('reserved');
+      return reservation;
+    },
+    listUnresolvedFileOperations: async () => [],
+    settleFileOperation: async (_ownerId: string, operationId: string, changes: readonly StorageVerifiedFileChange[]) => {
+      const entry = [...reservations.entries()].find(([, item]) => item.operationId === operationId);
+      if (!entry) throw new Error('The reservation is unavailable.');
+      const [key] = entry;
+      const settled: StorageFileOperationReservation = { operationId, state: 'settled', outcome: changes, replay: false };
+      reservations.set(key, settled);
+      events.push('settled');
+      return settled;
+    },
+    releaseFileOperationWithNoSideEffect: async (_ownerId: string, operationId: string) => {
+      const entry = [...reservations.entries()].find(([, item]) => item.operationId === operationId);
+      if (entry) {
+        reservations.set(entry[0], { operationId, state: 'released', outcome: null, replay: false });
+        events.push('released');
+      }
+    },
+    markFileOperationUnknown: async (_ownerId: string, operationId: string) => {
+      const entry = [...reservations.entries()].find(([, item]) => item.operationId === operationId);
+      if (entry) reservations.set(entry[0], { operationId, state: 'unknown', outcome: null, replay: false });
+    },
+    reconcileReferences: async () => undefined,
+    markAccountUnavailable: async () => undefined
+  };
+  return {
+    mutations: new StorageQuotaFileMutation(storage), rootMappings, isTransactionOpen: () => transactionOpen,
+    reservationStates: () => [...reservations.values()].map((reservation) => reservation.state)
+  };
 }
 
 function operation(operationKind: ProposedChangeOperation['operation'], relativePath: string, overrides: Partial<ProposedChangeOperation> = {}): ProposedChangeOperation {

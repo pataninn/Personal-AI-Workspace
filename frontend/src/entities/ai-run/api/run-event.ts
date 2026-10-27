@@ -48,7 +48,7 @@ function normalizePayload(type: AiRunEventType, payload: Record<string, unknown>
     const manifestHash = readString(payload.manifestHash);
     const status = readStatus(payload.status);
     const phase = readPhase(payload.phase);
-    const decision = payload.decision === 'pending' || payload.decision === 'approved' || payload.decision === 'rejected' ? payload.decision : undefined;
+    const decision = payload.decision === 'pending' || payload.decision === 'approved' || payload.decision === 'rejected' || payload.decision === 'policy_authorized' ? payload.decision : undefined;
     if (!runId || !projectId || !conversationId || !manifestHash || !status || !phase || !decision) {
       return null;
     }

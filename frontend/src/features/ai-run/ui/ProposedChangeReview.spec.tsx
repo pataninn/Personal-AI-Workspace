@@ -9,15 +9,15 @@ import { userSessionReducer } from '@/entities/user-session';
 import type { ProposedChangeSetSnapshot } from '@/entities/ai-run';
 import { ProposedChangeReview } from '@/features/ai-run/ui/ProposedChangeReview';
 
-const { getProposedChangeSetMock, decideProposedChangeSetMock } = vi.hoisted(() => ({ getProposedChangeSetMock: vi.fn(), decideProposedChangeSetMock: vi.fn() }));
-vi.mock('@/entities/ai-run/api/change-set-api', () => ({ getProposedChangeSet: getProposedChangeSetMock, decideProposedChangeSet: decideProposedChangeSetMock }));
+const { getProposedChangeSetMock } = vi.hoisted(() => ({ getProposedChangeSetMock: vi.fn() }));
+vi.mock('@/entities/ai-run/api/change-set-api', () => ({ getProposedChangeSet: getProposedChangeSetMock }));
 
 const RUN_ID = '77777777-7777-4777-8777-000000000001';
 const HASH = 'a'.repeat(64);
-const session = { status: 'authenticated' as const, principal: { id: 'user-1', displayName: 'Local user' }, csrfToken: 'csrf-token', expiresAt: '2099-01-01T00:00:00.000Z', errorCode: null };
+const session = { status: 'authenticated' as const, principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const }, csrfToken: 'csrf-token', expiresAt: '2099-01-01T00:00:00.000Z', errorCode: null };
 const operation = { operationId: '99999999-9999-4999-8999-000000000001', operation: 'delete' as const, path: 'src/old.ts', summary: 'Remove the old source file', expectedSourceHash: HASH, sourcePresent: true, destinationPresent: false, backupRequired: true, sizeBytes: 20, lineCount: 2, reviewable: true, preview: { text: '- old source', limited: false, kind: 'before' as const } };
 const pending: ProposedChangeSetSnapshot = { runId: RUN_ID, projectId: '88888888-8888-4888-8888-000000000001', status: 'awaiting_approval', decision: 'pending', proposalHash: HASH, fakeRuntime: true, runtimeProvenance: 'fake_runtime_development_preview', counts: { total: 1, creates: 0, edits: 0, overwrites: 0, renames: 0, deletes: 1, destructive: 1 }, totalSizeBytes: 20, totalLineCount: 2, previewLimitBytes: 8192, previewLimitLines: 200, safeMessage: 'Review the proposed changes before applying them.', operations: [operation], createdAt: '2026-09-16T00:00:00.000Z', updatedAt: '2026-09-16T00:00:00.000Z' };
-const applied: ProposedChangeSetSnapshot = { ...pending, status: 'applied', decision: 'approved', safeMessage: 'The approved change set was applied and its result was saved.', result: { persisted: true, appliedCount: 1, skippedCount: 0, failedCount: 0, backupCount: 1, operations: [{ operationId: operation.operationId, operation: operation.operation, path: operation.path, status: 'applied', backup: 'created', safeMessage: 'Deleted after a recovery snapshot.' }] } };
+const applied: ProposedChangeSetSnapshot = { ...pending, status: 'applied', decision: 'policy_authorized', safeMessage: 'The policy-authorized change set was applied and its result was saved.', result: { persisted: true, appliedCount: 1, skippedCount: 0, failedCount: 0, backupCount: 1, operations: [{ operationId: operation.operationId, operation: operation.operation, path: operation.path, status: 'applied', backup: 'created', safeMessage: 'Deleted after a recovery snapshot.' }] } };
 
 function renderReview(readOnly = false): void {
   const store = configureStore({ reducer: { userSession: userSessionReducer }, preloadedState: { userSession: session } });
@@ -25,25 +25,22 @@ function renderReview(readOnly = false): void {
 }
 
 describe('ProposedChangeReview', () => {
-  beforeEach(() => { getProposedChangeSetMock.mockReset(); decideProposedChangeSetMock.mockReset(); getProposedChangeSetMock.mockResolvedValue(pending); decideProposedChangeSetMock.mockResolvedValue(applied); });
+  beforeEach(() => { getProposedChangeSetMock.mockReset(); getProposedChangeSetMock.mockResolvedValue(pending); });
 
-  it('shows bounded operation metadata and requires confirmation for destructive apply', async () => {
+  it('shows bounded legacy change metadata without exposing retired decision controls', async () => {
     renderReview();
-    expect(await screen.findByTestId('change-set-summary')).toHaveTextContent('Awaiting your decision');
+    expect(await screen.findByTestId('change-set-summary')).toHaveTextContent('Legacy decision retired');
     expect(screen.getByTestId('change-operation-path')).toHaveTextContent('src/old.ts');
-    const user = userEvent.setup();
-    await user.click(screen.getByTestId('change-approve'));
-    expect(await screen.findByTestId('change-apply-dialog')).toHaveTextContent('recheck the file versions');
-    expect(decideProposedChangeSetMock).not.toHaveBeenCalled();
-    await user.click(screen.getByTestId('change-apply-confirm'));
-    await waitFor(() => expect(decideProposedChangeSetMock).toHaveBeenCalledWith(RUN_ID, HASH, 'approve', 'csrf-token', expect.any(String)));
+    expect(screen.getByTestId('change-legacy-blocked')).toHaveTextContent('will not be applied');
+    expect(screen.queryByTestId('change-approve')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('change-reject')).not.toBeInTheDocument();
   });
 
   it('renders persisted apply results and keeps archived review read-only', async () => {
     renderReview(true);
     expect(await screen.findByTestId('change-review-read-only')).toHaveTextContent('cannot be applied');
-    expect(screen.getByTestId('change-approve')).toBeDisabled();
-    expect(screen.getByTestId('change-reject')).toBeDisabled();
+    expect(screen.queryByTestId('change-approve')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('change-reject')).not.toBeInTheDocument();
     expect(screen.queryByTestId('change-apply-result')).not.toBeInTheDocument();
   });
 
@@ -53,7 +50,7 @@ describe('ProposedChangeReview', () => {
     getProposedChangeSetMock.mockResolvedValueOnce(fullSet);
     renderReview();
 
-    expect(await screen.findByTestId('change-review-fake-mode-notice')).toHaveTextContent('Development preview - fake runtime. These proposed changes are simulated; live OpenShell, Hermes, and NVIDIA NIM provenance is not verified.');
+    expect(await screen.findByTestId('change-review-fake-mode-notice')).toHaveTextContent('Development preview - fake runtime. These proposed changes are simulated; live OpenShell, Hermes, and model provider provenance is not verified.');
     expect(screen.getByTestId('change-set-summary')).toHaveTextContent('Recovery snapshots required');
     expect(screen.getByTestId('change-proposal-freshness')).toHaveTextContent('Source versions are rechecked before applying.');
     expect(screen.queryByTestId('change-proposal-version')).not.toBeInTheDocument();
@@ -77,27 +74,20 @@ describe('ProposedChangeReview', () => {
     expect(screen.getByTestId('change-set-summary')).toBeInTheDocument();
   });
 
-  it('does not require destructive confirmation for an empty-destination rename', async () => {
-    const emptyRename = { ...operation, operation: 'rename' as const, path: 'src/old.ts', destinationPath: 'src/new.ts', destinationPresent: false, expectedDestinationHash: undefined, backupRequired: false };
-    getProposedChangeSetMock.mockResolvedValueOnce({ ...pending, operations: [emptyRename], counts: { total: 1, creates: 0, edits: 0, overwrites: 0, renames: 1, deletes: 0, destructive: 0 } });
+  it('shows policy-authorized application as completed history with no decision controls', async () => {
+    getProposedChangeSetMock.mockResolvedValueOnce(applied);
     renderReview();
-    const user = userEvent.setup();
-    await user.click(await screen.findByTestId('change-approve'));
-    expect(screen.queryByTestId('change-apply-dialog')).not.toBeInTheDocument();
-    await waitFor(() => expect(decideProposedChangeSetMock).toHaveBeenCalledWith(RUN_ID, HASH, 'approve', 'csrf-token', expect.any(String)));
+    expect(await screen.findByTestId('change-applied')).toHaveTextContent('recorded execution policy');
+    expect(screen.getByTestId('change-apply-result')).toBeInTheDocument();
+    expect(screen.queryByTestId('change-approve')).not.toBeInTheDocument();
   });
 
-  it('supports keyboard cancellation without approval and keeps raw secrets out of the DOM', async () => {
+  it('keeps raw secrets out of the read-only workspace history', async () => {
     const secret = 'token: private-ui-secret';
     const safeSet: ProposedChangeSetSnapshot = { ...pending, operations: [{ ...operation, preview: { text: 'token: [REDACTED]', limited: false, kind: 'before' } }] };
     getProposedChangeSetMock.mockResolvedValueOnce(safeSet);
     renderReview();
-    const user = userEvent.setup();
-    await user.click(await screen.findByTestId('change-approve'));
-    expect(screen.getByTestId('change-apply-dialog')).toBeInTheDocument();
-    await user.keyboard('{Escape}');
-    expect(screen.queryByTestId('change-apply-dialog')).not.toBeInTheDocument();
-    expect(decideProposedChangeSetMock).not.toHaveBeenCalled();
+    await screen.findByTestId('change-set-summary');
     expect(screen.getByTestId('change-review-surface')).not.toHaveTextContent(secret);
   });
 
@@ -106,7 +96,7 @@ describe('ProposedChangeReview', () => {
     for (const status of states) {
       cleanup();
       getProposedChangeSetMock.mockReset();
-      getProposedChangeSetMock.mockResolvedValueOnce({ ...pending, status, decision: status === 'rejected' ? 'rejected' : status === 'applied' ? 'approved' : 'pending' });
+      getProposedChangeSetMock.mockResolvedValueOnce({ ...pending, status, decision: status === 'rejected' ? 'rejected' : status === 'applied' ? 'policy_authorized' : 'pending' });
       renderReview();
       await screen.findByTestId('change-decision-status');
       if (status === 'stale') expect(screen.getByTestId('change-stale')).toBeInTheDocument();
@@ -148,6 +138,6 @@ describe('ProposedChangeReview', () => {
     expect(screen.getByTestId('change-stale')).toHaveTextContent('src/conflict.ts');
     expect(screen.getByRole('link', { name: 'View file history for this path' })).toHaveAttribute('href', `/projects/${pending.projectId}/file-history?path=src%2Fconflict.ts`);
     expect(screen.getByRole('link', { name: 'Open conversation' })).toHaveAttribute('href', '/projects/p/conversations/c');
-    expect(screen.getByTestId('change-approve')).toBeDisabled();
+    expect(screen.queryByTestId('change-approve')).not.toBeInTheDocument();
   });
 });

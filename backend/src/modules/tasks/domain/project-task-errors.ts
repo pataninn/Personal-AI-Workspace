@@ -62,15 +62,15 @@ export class ProjectTaskStatusConflictError extends ProjectTaskDomainError {
   }
 }
 
-export class ProjectTaskArchivedError extends ProjectTaskDomainError {
-  public constructor() {
-    super('PROJECT_TASK_ARCHIVED', 409, 'This task is archived and cannot be changed.');
-  }
-}
-
 export class ProjectTaskOrderConflictError extends ProjectTaskDomainError {
   public constructor() {
     super('PROJECT_TASK_ORDER_CONFLICT', 409, 'The project task order changed. Reload the latest order and try again.');
+  }
+}
+
+export class ProjectTaskMoveConflictError extends ProjectTaskDomainError {
+  public constructor() {
+    super('PROJECT_TASK_MOVE_CONFLICT', 409, 'This task is already in that collection or its collection changed. Reload the task and try again.');
   }
 }
 

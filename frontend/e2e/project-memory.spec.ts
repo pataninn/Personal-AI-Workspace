@@ -28,6 +28,7 @@ test('manages a project fact and selects it for a run without starting an AI req
   try {
     const password = readLocalPassword();
     await page.goto('/login');
+    await page.getByTestId('login-identifier-input').fill('owner');
     await page.getByTestId('login-password-input').fill(password);
     await page.getByTestId('login-submit-button').click();
     await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);

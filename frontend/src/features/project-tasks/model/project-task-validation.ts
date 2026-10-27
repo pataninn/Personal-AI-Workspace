@@ -1,5 +1,5 @@
 import { isValidTaskDate } from '@/entities/project-task';
-import type { ProjectTaskDraft, ProjectTaskImportance, ProjectTaskSubtaskDraft } from '@/entities/project-task';
+import type { ProjectTask, ProjectTaskDraft, ProjectTaskImportance, ProjectTaskSubtaskDraft } from '@/entities/project-task';
 
 export type ProjectTaskFieldErrors = {
   readonly title?: string;
@@ -13,6 +13,32 @@ export interface TaskMetadataDraft {
   readonly importance: ProjectTaskImportance | '';
   readonly deadline: string;
   readonly subtasks: readonly ProjectTaskSubtaskDraft[];
+}
+
+export interface ProjectTaskEditorDraft {
+  readonly title: string;
+  readonly details: string;
+  readonly metadata: TaskMetadataDraft;
+}
+
+/** Compare the exact user-editable contract, normalizing optional text and preserving checklist order. */
+export function isProjectTaskEditorDraftDirty(task: ProjectTask, draft: ProjectTaskEditorDraft): boolean {
+  return draft.title.trim() !== task.title || (draft.details.trim() || null) !== task.details ||
+    draft.metadata.importance !== task.importance || (draft.metadata.deadline || null) !== task.deadline ||
+    !sameSubtasks(draft.metadata.subtasks, task.subtasks);
+}
+
+/** Keep fields changed against the original baseline and adopt untouched fields from the reviewed latest task. */
+export function rebaseProjectTaskEditorDraft(base: ProjectTask, latest: ProjectTask, draft: ProjectTaskEditorDraft): ProjectTaskEditorDraft {
+  return {
+    title: draft.title.trim() !== base.title ? draft.title : latest.title,
+    details: (draft.details.trim() || null) !== base.details ? draft.details : latest.details ?? '',
+    metadata: {
+      importance: draft.metadata.importance !== base.importance ? draft.metadata.importance : latest.importance,
+      deadline: (draft.metadata.deadline || null) !== base.deadline ? draft.metadata.deadline : latest.deadline ?? '',
+      subtasks: sameSubtasks(draft.metadata.subtasks, base.subtasks) ? latest.subtasks : draft.metadata.subtasks
+    }
+  };
 }
 
 export function validateProjectTaskDraft(titleValue: string, detailsValue: string, metadata?: TaskMetadataDraft): {
@@ -63,5 +89,12 @@ function containsControlCharacters(value: string, allowFormatting: boolean): boo
     }
     const isControl = codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
     return isControl && !(allowFormatting && (character === '\n' || character === '\t'));
+  });
+}
+
+function sameSubtasks(left: readonly ProjectTaskSubtaskDraft[], right: readonly ProjectTask['subtasks'][number][]): boolean {
+  return left.length === right.length && left.every((subtask, index) => {
+    const candidate = right[index];
+    return candidate !== undefined && subtask.id === candidate.id && subtask.title.trim() === candidate.title && (subtask.completed ?? false) === candidate.completed;
   });
 }

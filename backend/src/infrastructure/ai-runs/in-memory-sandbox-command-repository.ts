@@ -12,6 +12,7 @@ import type {
   CommandDecisionUpdate,
   CommandResultUpdate,
   CreateSandboxCommandRecord,
+  PolicyCommandExecutionClaim,
   SandboxCommand
 } from '@/modules/ai-runs/domain/command-types';
 import { MAX_SANDBOX_COMMANDS_PER_LIST } from '@/modules/ai-runs/domain/command-types';
@@ -115,6 +116,36 @@ export class InMemorySandboxCommandRepository implements ISandboxCommandReposito
       this.commands.set(updated.id, updated);
       return { resource: updated, replayed: false };
     });
+  }
+
+  public async claimPolicyAuthorizedExecution(input: PolicyCommandExecutionClaim): Promise<CommandMutationResult> {
+    return this.withLock(this.stateLockKey(input.commandId), async () => {
+      const command = this.requireCommand(input.ownerId, input.runId, input.commandId);
+      if (command.proposalHash !== input.proposalHash) throw new SandboxCommandProposalConflictError();
+      if (command.decisionIdempotencyKey) {
+        if (command.decisionIdempotencyKey !== input.idempotencyKey || command.decisionFingerprint !== input.requestFingerprint) throw new SandboxCommandDecisionConflictError();
+        return { resource: command, replayed: true };
+      }
+      if (command.classification !== 'safe' || command.decision !== 'pending' || command.status !== 'awaiting_approval' || command.cancelRequested) {
+        throw new SandboxCommandDecisionConflictError();
+      }
+      const updated: SandboxCommand = {
+        ...command,
+        decision: 'policy_authorized',
+        status: 'running',
+        decisionIdempotencyKey: input.idempotencyKey,
+        decisionFingerprint: input.requestFingerprint,
+        safeMessage: 'The stored workspace policy authorized this bounded command.',
+        updatedAt: new Date()
+      };
+      this.commands.set(updated.id, updated);
+      return { resource: updated, replayed: false };
+    });
+  }
+
+  public async isPolicyAuthorizedExecution(ownerId: string, runId: string, commandId: string): Promise<boolean> {
+    const command = await this.findByIdForOwner(ownerId, runId, commandId);
+    return Boolean(command && command.decision === 'policy_authorized' && !command.cancelRequested && ['running', 'completed', 'failed', 'timed_out', 'output_truncated'].includes(command.status));
   }
 
   public async recordCancellation(input: CommandCancellationUpdate): Promise<CommandMutationResult> {

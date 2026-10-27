@@ -1,5 +1,13 @@
+const UNSAFE_RETURN_TO_CHARACTERS = /[\\\u0000-\u001f\u007f-\u009f]/u;
+
 export function getSafeReturnTo(value: string | null): string | null {
-  if (!value || !value.startsWith('/') || value.startsWith('//') || value.includes('://')) {
+  if (
+    !value ||
+    !value.startsWith('/') ||
+    value.startsWith('//') ||
+    value.includes('://') ||
+    UNSAFE_RETURN_TO_CHARACTERS.test(value)
+  ) {
     return null;
   }
   return value;

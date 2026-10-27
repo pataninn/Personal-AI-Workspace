@@ -6,7 +6,7 @@ import { InMemoryAiRunRepository } from '@/infrastructure/ai-runs/in-memory-ai-r
 import { FakeAgentRuntime } from '@/infrastructure/sandbox/fake-agent-runtime';
 import { FakeStagingGateway } from '@/infrastructure/staging/fake-staging-gateway';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
-import type { WorkspaceReadResult } from '@/modules/files/domain/workspace-types';
+import type { WorkspaceReadResult, WorkspaceTreeResult } from '@/modules/files/domain/workspace-types';
 import type { IWorkspaceGateway } from '@/modules/files/repositories/workspace-gateway';
 import type { Conversation, Message, MessagePage } from '@/modules/conversations/domain/conversation-types';
 import type { AddMessageRecord, FindConversationInput, IConversationRepository } from '@/modules/conversations/repositories/conversation-repository';
@@ -22,6 +22,7 @@ import { ProjectChatContextUseCases } from '@/modules/ai-runs/use-cases/project-
 import { SendChatMessageUseCase } from '@/modules/ai-runs/use-cases/send-chat-message-use-case';
 import type { ProjectChatContext } from '@/modules/ai-runs/repositories/project-chat-context-repository';
 import type { IProjectFactRepository } from '@/modules/memory/repositories/project-fact-repository';
+import type { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
 
 const APP_ORIGIN = 'https://127.0.0.1:8443';
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -35,7 +36,9 @@ class ProjectFixture implements IProjectRepository {
     ownerId: OWNER_ID,
     name: 'Project',
     slug: 'project',
-    relativeRoot: '',
+    relativeRoot: 'project',
+    storageKind: 'legacy',
+    objective: null,
     status: 'active',
     version: 1,
     createdAt: new Date(),
@@ -43,7 +46,7 @@ class ProjectFixture implements IProjectRepository {
   };
   public async listByOwner(): Promise<readonly Project[]> { return [this.project]; }
   public async findByIdForOwner(): Promise<Project | null> { return { ...this.project, status: this.status }; }
-  public async listActiveRoots(): Promise<readonly string[]> { return ['']; }
+  public async listActiveRoots(): Promise<readonly string[]> { return ['project']; }
   public async create(): Promise<Project> { return this.project; }
   public async updateStatus(): Promise<Project | null> { return this.project; }
 }
@@ -70,7 +73,7 @@ class WorkspaceFixture implements IWorkspaceGateway {
   public changed = false;
 
   public async list(): Promise<never> { throw new Error('Not used'); }
-  public async tree(): Promise<never> { throw new Error('Not used'); }
+  public async tree(): Promise<WorkspaceTreeResult> { return { directory: '', depth: 6, entries: [], truncated: false }; }
   public async searchText(): Promise<never> { throw new Error('Not used'); }
   public async readText(_scope: unknown, input: { readonly path: string }): Promise<WorkspaceReadResult> {
     const content = this.changed ? 'changed content\n' : 'safe content\n';
@@ -78,7 +81,7 @@ class WorkspaceFixture implements IWorkspaceGateway {
   }
 }
 
-function buildApp(): { readonly app: express.Express; readonly staging: FakeStagingGateway; readonly runtime: FakeAgentRuntime; readonly workspace: WorkspaceFixture; readonly repository: InMemoryAiRunRepository; readonly conversations: ConversationFixture; readonly projects: ProjectFixture } {
+function buildApp(): { readonly app: express.Express; readonly staging: FakeStagingGateway; readonly runtime: FakeAgentRuntime; readonly workspace: WorkspaceFixture; readonly repository: InMemoryAiRunRepository; readonly conversations: ConversationFixture; readonly projects: ProjectFixture; readonly createRun: CreateAiRunUseCase; readonly decide: DecideEgressUseCase; readonly start: StartAiRunUseCase } {
   const projects = new ProjectFixture();
   const conversations = new ConversationFixture();
   const workspace = new WorkspaceFixture();
@@ -95,9 +98,16 @@ function buildApp(): { readonly app: express.Express; readonly staging: FakeStag
   let chatContext: ProjectChatContext = { relativePaths: [], factIds: [], includeProjectConversations: true };
   const contexts = { get: jest.fn(async () => chatContext), update: jest.fn(async (_owner: string, _project: string, changes: Partial<ProjectChatContext>) => { chatContext = { ...chatContext, ...changes }; return chatContext; }) };
   const facts: IProjectFactRepository = { findActiveByIds: jest.fn().mockResolvedValue([]), listActiveByProject: jest.fn(), findActiveById: jest.fn(), create: jest.fn(), update: jest.fn(), verify: jest.fn(), softDelete: jest.fn() };
-  const createRun = new CreateAiRunUseCase(projects, conversations, workspace, repository, 'nvidia-hosted-nim', 'test-model', facts);
-  const decide = new DecideEgressUseCase(repository, conversations, workspace, staging, runtime, '/workspace', facts);
-  const start = new StartAiRunUseCase(repository, conversations, runtime, runEvents, undefined, projects);
+  const executionPolicy = {
+    assertWorkspace: jest.fn(async () => ({
+      policies: [],
+      effectiveCapabilities: ['workspace_file_read', 'workspace_file_write', 'bounded_sandbox_command'],
+      revisions: { workspace: '1' }
+    }))
+  } as unknown as Pick<AssertAssistantExecutionPolicyUseCase, 'assertWorkspace'>;
+  const createRun = new CreateAiRunUseCase(projects, conversations, workspace, repository, 'nvidia-hosted-nim', 'test-model', facts, executionPolicy);
+  const decide = new DecideEgressUseCase(repository, projects, conversations, workspace, staging, runtime, '/workspace', facts, undefined, executionPolicy);
+  const start = new StartAiRunUseCase(repository, conversations, runtime, runEvents, { admitDemoRunStart: async () => undefined }, undefined, projects, undefined, undefined, undefined, undefined, staging, executionPolicy);
   const app = createApp({
     logger: createLogger('silent'),
     readiness: new GetReadinessUseCase(readiness),
@@ -106,42 +116,87 @@ function buildApp(): { readonly app: express.Express; readonly staging: FakeStag
       projectChatContext: new ProjectChatContextUseCases(projects, contexts, facts, workspace),
       sendChatMessage: new SendChatMessageUseCase(contexts, facts, createRun, decide, start),
       getSession,
-      createAiRun: new CreateAiRunUseCase(projects, conversations, workspace, repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b'),
-      getAiRun: new GetAiRunUseCase(repository),
-      decideEgress: new DecideEgressUseCase(repository, conversations, workspace, staging, runtime, '/workspace'),
+      createAiRun: new CreateAiRunUseCase(projects, conversations, workspace, repository, 'nvidia-hosted-nim', 'test-model', facts, executionPolicy),
+      startAiRun: start,
+      getAiRun: new GetAiRunUseCase(repository, projects),
+      decideEgress: decide,
       appOrigin: APP_ORIGIN,
       clearSessionCookie: () => undefined
     },
     aiRunChat: {
       getSession,
-      getAiRun: new GetAiRunUseCase(repository),
-      startAiRun: new StartAiRunUseCase(repository, conversations, runtime, runEvents, undefined, projects),
+      getAiRun: new GetAiRunUseCase(repository, projects),
+      startAiRun: start,
       cancelAiRun: new CancelAiRunUseCase(repository, runtime, runEvents, projects),
       events: runEvents,
+      principalAuthorization: {
+        isActive: async () => true,
+        assertActive: async () => undefined,
+        withActivePrincipal: async <T>(_principalId: string, action: (assertStillActive: () => Promise<void>) => Promise<T>): Promise<T> => action(async () => undefined)
+      },
       appOrigin: APP_ORIGIN,
       clearSessionCookie: () => undefined
     }
   });
-  return { app, staging, runtime, workspace, repository, conversations, projects };
+  return { app, staging, runtime, workspace, repository, conversations, projects, createRun, decide, start };
 }
 
 describe('AI runs API (integration)', () => {
-  it('persists project context and sends directly with idempotent provider startup', async () => {
+  it('persists project context and starts one policy-authorized run without a client decision', async () => {
     const context = buildApp();
     const headers = { Origin: APP_ORIGIN, Cookie: '__Host-pa_session=test', 'X-CSRF-Token': 'csrf-token' };
     const contextPath = `/api/v1/projects/${PROJECT_ID}/chat-context`;
     await request(context.app).get(contextPath).set(headers).expect(200).expect(({ body }) => expect(body.data.includeProjectConversations).toBe(true));
     await request(context.app).patch(contextPath).set(headers).send({ relativePaths: ['README.md'] }).expect(200);
-    await request(context.app).get(contextPath).set(headers).expect(200).expect(({ body }) => expect(body.data).toEqual({ relativePaths: ['README.md'], factIds: [], includeProjectConversations: true }));
+    await request(context.app).get(contextPath).set(headers).expect(200).expect(({ body }) => expect(body.data).toMatchObject({ relativePaths: ['README.md'], factIds: [], includeProjectConversations: true, availablePaths: ['README.md'], excludedPaths: [], fileSelectionLimited: false }));
     const sent = await request(context.app).post(`/api/v1/projects/${PROJECT_ID}/chat-runs`).set(headers).set('Idempotency-Key', 'direct-chat-test')
       .send({ conversationId: CONVERSATION_ID, request: 'Continue the earlier chat' }).expect(202);
-    expect(sent.body.data.run.decision).toBe('approved');
+    expect(sent.body.data.run).toMatchObject({ decision: 'policy_authorized', conversationId: CONVERSATION_ID });
+    expect(['queued', 'running', 'succeeded']).toContain(sent.body.data.run.status);
     expect(sent.body.data.manifest.content.relativePaths).toEqual(['README.md']);
     expect(sent.body.data.manifest.content.messageCount).toBe(1);
+    expect(sent.body.data.manifest.preConsentNotice).toContain('workspace policy');
+    expect(sent.body.data.manifest.preConsentNotice).not.toContain('approved');
+    expect(context.staging.staged).toHaveLength(1);
+    expect(context.runtime.createdRuns).toHaveLength(1);
+    for (let attempt = 0; attempt < 100 && context.runtime.startedRuns.length === 0; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    }
+    expect(context.runtime.startedRuns).toHaveLength(1);
     const replay = await request(context.app).post(`/api/v1/projects/${PROJECT_ID}/chat-runs`).set(headers).set('Idempotency-Key', 'direct-chat-test')
       .send({ conversationId: CONVERSATION_ID, request: 'Continue the earlier chat' }).expect(200);
     expect(replay.body.data.run.runId).toBe(sent.body.data.run.runId);
+    expect(context.staging.staged).toHaveLength(1);
     expect(context.runtime.startedRuns).toHaveLength(1);
+
+    const runId = sent.body.data.run.runId as string;
+    await request(context.app).post(`/api/v1/ai-runs/${runId}/egress-decision`).set(headers).set('Idempotency-Key', 'direct-chat-decision')
+      .send({ manifestHash: sent.body.data.manifest.manifestHash, decision: 'approve' }).expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('POLICY_ACTION_RETIRED'));
+    expect(context.runtime.startedRuns).toHaveLength(1);
+    expect(context.staging.staged).toHaveLength(1);
+    expect((await context.repository.findByIdForOwner(OWNER_ID, runId))?.decision).toBe('policy_authorized');
+  });
+
+  it('starts the existing one-shot run route automatically and includes no approval claim', async () => {
+    const context = buildApp();
+    const headers = { Origin: APP_ORIGIN, Cookie: '__Host-pa_session=test', 'X-CSRF-Token': 'csrf-token' };
+    const created = await request(context.app)
+      .post(`/api/v1/projects/${PROJECT_ID}/ai-runs`)
+      .set(headers)
+      .set('Idempotency-Key', 'run-intent-automatic')
+      .send({ conversationId: CONVERSATION_ID, request: 'Inspect this project', context: { relativePaths: ['README.md'] } })
+      .expect(202);
+    expect(created.body.data.run.decision).toBe('policy_authorized');
+    expect(created.body.data.manifest.preConsentNotice).toContain('workspace policy');
+    expect(created.body.data.manifest.preConsentNotice).not.toContain('approved');
+    expect(context.staging.staged).toHaveLength(1);
+    expect(context.runtime.createdRuns).toHaveLength(1);
+    for (let attempt = 0; attempt < 100 && context.runtime.startedRuns.length === 0; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    }
+    expect(context.runtime.startedRuns).toHaveLength(1);
+    expect(context.runtime.startedRuns[0]).toMatchObject({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID });
   });
 
   it('protects direct send and context mutations with the normal session, origin, and CSRF checks', async () => {
@@ -152,57 +207,28 @@ describe('AI runs API (integration)', () => {
     await request(app).post(`/api/v1/projects/${PROJECT_ID}/chat-runs`).set('Origin', APP_ORIGIN).set('Cookie', '__Host-pa_session=test')
       .send({ conversationId: CONVERSATION_ID, request: 'Hello' }).expect(403);
   });
-  it('creates a disclosure, keeps calls local before consent, and rejects without staging', async () => {
+  it('retires legacy consent allow and deny decisions without changing a pending run', async () => {
     const context = buildApp();
     const headers = { Origin: APP_ORIGIN, Cookie: '__Host-pa_session=test', 'X-CSRF-Token': 'csrf-token' };
-    const created = await request(context.app)
-      .post(`/api/v1/projects/${PROJECT_ID}/ai-runs`)
-      .set(headers)
-      .set('Idempotency-Key', 'run-intent-1')
-      .send({ conversationId: CONVERSATION_ID, request: 'Inspect this project', context: { relativePaths: ['README.md'] } })
-      .expect(202);
+    const legacyCreate = new CreateAiRunUseCase(context.projects, context.conversations, context.workspace, context.repository, 'nvidia-hosted-nim', 'test-model');
+    const created = await legacyCreate.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID,
+      request: 'Legacy request', relativePaths: [], factIds: [], includeRecentMessages: false, idempotencyKey: 'legacy-run-1' });
+    const before = await context.repository.findByIdForOwner(OWNER_ID, created.resource.id);
+    expect(before).toMatchObject({ decision: 'pending', status: 'pending_approval' });
 
-    expect(created.body.data.manifest.preConsentNotice).toContain('Nothing has been copied');
-    expect(created.body.data.manifest.content.relativePaths).toEqual(['README.md']);
+    for (const decision of ['approve', 'reject']) {
+      await request(context.app)
+        .post(`/api/v1/ai-runs/${created.resource.id}/egress-decision`)
+        .set(headers)
+        .set('Idempotency-Key', `legacy-decision-${decision}`)
+        .send({ manifestHash: created.resource.manifest.manifestHash, decision })
+        .expect(409)
+        .expect(({ body }) => expect(body.error.code).toBe('POLICY_ACTION_RETIRED'));
+    }
+    expect(await context.repository.findByIdForOwner(OWNER_ID, created.resource.id)).toMatchObject({ decision: 'pending', status: 'pending_approval' });
     expect(context.staging.staged).toHaveLength(0);
     expect(context.runtime.createdRuns).toHaveLength(0);
-
-    const runId = created.body.data.run.runId as string;
-    const manifestHash = created.body.data.manifest.manifestHash as string;
-    await request(context.app)
-      .post(`/api/v1/ai-runs/${runId}/egress-decision`)
-      .set(headers)
-      .set('Idempotency-Key', 'run-decision-1')
-      .send({ manifestHash, decision: 'reject' })
-      .expect(200)
-      .expect(({ body }) => expect(body.data.run.status).toBe('rejected'));
-    expect(context.staging.staged).toHaveLength(0);
-    expect(context.runtime.createdRuns).toHaveLength(0);
-  });
-
-  it('persists the exact approval before fake staging/runtime readiness', async () => {
-    const context = buildApp();
-    const headers = { Origin: APP_ORIGIN, Cookie: '__Host-pa_session=test', 'X-CSRF-Token': 'csrf-token' };
-    const created = await request(context.app)
-      .post(`/api/v1/projects/${PROJECT_ID}/ai-runs`)
-      .set(headers)
-      .set('Idempotency-Key', 'run-intent-2')
-      .send({ conversationId: CONVERSATION_ID, request: 'Prepare the private run', context: { relativePaths: ['README.md'] } })
-      .expect(202);
-    const runId = created.body.data.run.runId as string;
-    const manifestHash = created.body.data.manifest.manifestHash as string;
-
-    const approved = await request(context.app)
-      .post(`/api/v1/ai-runs/${runId}/egress-decision`)
-      .set(headers)
-      .set('Idempotency-Key', 'run-decision-2')
-      .send({ manifestHash, decision: 'approve' })
-      .expect(200);
-
-    expect(approved.body.data.run.status).toBe('ready');
-    expect(context.staging.staged).toHaveLength(1);
-    expect(context.runtime.createdRuns).toHaveLength(1);
-    expect(JSON.stringify(approved.body)).not.toContain('safe content');
+    expect(context.runtime.startedRuns).toHaveLength(0);
   });
 
   it('keeps CSRF/origin and create idempotency boundaries on the run endpoints', async () => {
@@ -224,7 +250,8 @@ describe('AI runs API (integration)', () => {
       .set('Idempotency-Key', 'run-intent-idempotent')
       .send(payload)
       .expect(202);
-    expect(first.body.data.run.status).toBe('pending_approval');
+    expect(first.body.data.run.decision).toBe('policy_authorized');
+    expect(['ready', 'queued', 'running', 'succeeded']).toContain(first.body.data.run.status);
 
     await request(context.app)
       .post(`/api/v1/projects/${PROJECT_ID}/ai-runs`)
@@ -239,68 +266,38 @@ describe('AI runs API (integration)', () => {
       .set('Idempotency-Key', 'run-decision-csrf')
       .send({ manifestHash: first.body.data.manifest.manifestHash, decision: 'reject' })
       .expect(403);
-    expect(context.staging.staged).toHaveLength(0);
+    expect(context.staging.staged).toHaveLength(1);
   });
 
-  it('invalidates a drifted approval and blocks stale manifest refresh', async () => {
+  it('rechecks selected source hashes before automatic staging and blocks a stale manifest', async () => {
     const context = buildApp();
     const headers = { Origin: APP_ORIGIN, Cookie: '__Host-pa_session=test', 'X-CSRF-Token': 'csrf-token' };
-    const created = await request(context.app)
-      .post(`/api/v1/projects/${PROJECT_ID}/ai-runs`)
-      .set(headers)
-      .set('Idempotency-Key', 'run-intent-drift')
-      .send({ conversationId: CONVERSATION_ID, request: 'Check drift', context: { relativePaths: ['README.md'] } })
-      .expect(202);
+    const created = await context.createRun.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID,
+      request: 'Check drift', relativePaths: ['README.md'], factIds: [], includeRecentMessages: false, idempotencyKey: 'run-intent-drift' });
     context.workspace.changed = true;
-    const runId = created.body.data.run.runId as string;
-    const manifestHash = created.body.data.manifest.manifestHash as string;
-
+    await expect(context.decide.preparePolicyAuthorizedRun({ ownerId: OWNER_ID, runId: created.resource.id }))
+      .rejects.toMatchObject({ code: 'EGRESS_SOURCE_CHANGED' });
     await request(context.app)
-      .post(`/api/v1/ai-runs/${runId}/egress-decision`)
-      .set(headers)
-      .set('Idempotency-Key', 'run-decision-drift')
-      .send({ manifestHash, decision: 'approve' })
-      .expect(409)
-      .expect(({ body }) => expect(body.error.code).toBe('EGRESS_SOURCE_CHANGED'));
-    await request(context.app)
-      .get(`/api/v1/ai-runs/${runId}/egress-manifest`)
+      .get(`/api/v1/ai-runs/${created.resource.id}/egress-manifest`)
       .set(headers)
       .expect(409)
       .expect(({ body }) => expect(body.error.code).toBe('EGRESS_MANIFEST_CONFLICT'));
+    expect(await context.repository.findByIdForOwner(OWNER_ID, created.resource.id)).toMatchObject({ status: 'failed', decision: 'policy_authorized', manifestInvalidated: true });
     expect(context.staging.staged).toHaveLength(0);
     expect(context.runtime.createdRuns).toHaveLength(0);
+    expect(context.runtime.startedRuns).toHaveLength(0);
   });
 
-  it('starts an approved fake run idempotently and returns a best-effort terminal SSE stream', async () => {
+  it('returns the terminal run through the existing best-effort SSE stream after automatic execution', async () => {
     const context = buildApp();
     const headers = { Origin: APP_ORIGIN, Cookie: '__Host-pa_session=test', 'X-CSRF-Token': 'csrf-token' };
     const created = await request(context.app)
-      .post(`/api/v1/projects/${PROJECT_ID}/ai-runs`)
+      .post(`/api/v1/projects/${PROJECT_ID}/chat-runs`)
       .set(headers)
       .set('Idempotency-Key', 'run-intent-chat')
-      .send({ conversationId: CONVERSATION_ID, request: 'Answer from the private run', context: { relativePaths: [] } })
+      .send({ conversationId: CONVERSATION_ID, request: 'Answer from the private run' })
       .expect(202);
     const runId = created.body.data.run.runId as string;
-    await request(context.app)
-      .post(`/api/v1/ai-runs/${runId}/egress-decision`)
-      .set(headers)
-      .set('Idempotency-Key', 'run-decision-chat')
-      .send({ manifestHash: created.body.data.manifest.manifestHash, decision: 'approve' })
-      .expect(200);
-
-    await request(context.app)
-      .post(`/api/v1/ai-runs/${runId}/start`)
-      .set(headers)
-      .set('Idempotency-Key', 'run-start-chat')
-      .send({})
-      .expect(202)
-      .expect(({ body }) => expect(['queued', 'running', 'succeeded']).toContain(body.data.run.status));
-    await request(context.app)
-      .post(`/api/v1/ai-runs/${runId}/start`)
-      .set(headers)
-      .set('Idempotency-Key', 'run-start-chat')
-      .send({})
-      .expect((response) => expect([200, 202]).toContain(response.status));
 
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const run = await context.repository.findByIdForOwner(OWNER_ID, runId);
@@ -310,6 +307,8 @@ describe('AI runs API (integration)', () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 2));
     }
     expect((await context.repository.findByIdForOwner(OWNER_ID, runId))?.status).toBe('succeeded');
+    expect((await context.repository.findByIdForOwner(OWNER_ID, runId))?.decision).toBe('policy_authorized');
+    expect(context.runtime.startedRuns).toHaveLength(1);
     expect(context.conversations.assistantMessages).toHaveLength(1);
 
     const stream = await request(context.app)
@@ -323,19 +322,11 @@ describe('AI runs API (integration)', () => {
   it('rejects archived-project start and cancel before mutating the run or calling the runtime', async () => {
     const context = buildApp();
     const headers = { Origin: APP_ORIGIN, Cookie: '__Host-pa_session=test', 'X-CSRF-Token': 'csrf-token' };
-    const created = await request(context.app)
-      .post(`/api/v1/projects/${PROJECT_ID}/ai-runs`)
-      .set(headers)
-      .set('Idempotency-Key', 'run-intent-archived')
-      .send({ conversationId: CONVERSATION_ID, request: 'Archived project request', context: { relativePaths: [] } })
-      .expect(202);
-    const runId = created.body.data.run.runId as string;
-    await request(context.app)
-      .post(`/api/v1/ai-runs/${runId}/egress-decision`)
-      .set(headers)
-      .set('Idempotency-Key', 'run-decision-archived')
-      .send({ manifestHash: created.body.data.manifest.manifestHash, decision: 'approve' })
-      .expect(200);
+    const created = await context.createRun.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID,
+      request: 'Archived project request', relativePaths: [], factIds: [], includeRecentMessages: false, idempotencyKey: 'run-intent-archived' });
+    const prepared = await context.decide.preparePolicyAuthorizedRun({ ownerId: OWNER_ID, runId: created.resource.id });
+    expect(prepared.status).toBe('ready');
+    const runId = created.resource.id;
 
     context.projects.status = 'archived';
     await request(context.app)

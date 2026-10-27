@@ -1,0 +1,189 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Private CloudFront entry for Personal AI Workspace — keeps the EC2 origin private and the distribution disabled until acceptance.",
+  "Metadata": {
+    "AWSToolsMetrics": { "AWSAgentToolkit": "aws-cloudformation@3" },
+    "com.aws.cloudformation.Context": {
+      "arch": "HTTPS viewer -> standard CloudFront distribution -> private EC2 VPC origin :8080 -> host proxy -> loopback app HTTPS :8443",
+      "must": [
+        "Use the generated CloudFront hostname and AWS default certificate; no custom domain or certificate is assumed.",
+        "The origin hop is HTTP only over the private VPC-origin path; this is not end-to-end TLS.",
+        "Keep the distribution disabled during private preparation and budget review; enable it only for controlled browser acceptance while the global AI pause remains enabled, and hold general public release until acceptance passes.",
+        "Do not cache application responses or add an overriding response policy for the app CSP."
+      ]
+    }
+  },
+  "Parameters": {
+    "HostInstanceId": {
+      "Type": "String",
+      "AllowedPattern": "^i-[0-9a-f]{8,17}$",
+      "ConstraintDescription": "Enter the existing EC2 instance ID, such as i-0123456789abcdef0.",
+      "Description": "Active private EC2 host in the selected project Region; it must already have a security group attached."
+    },
+    "HostRegion": {
+      "Type": "String",
+      "Default": "ap-southeast-2",
+      "AllowedValues": ["ap-southeast-2"],
+      "Description": "Fixed to the selected project Region. CloudFront is global; this value identifies the EC2 origin ARN."
+    },
+    "OriginDomainName": {
+      "Type": "String",
+      "MinLength": 1,
+      "Description": "The host's private IPv4 DNS name, supplied by the host stack's PrivateDnsName output. Do not use a public address or public DNS name."
+    },
+    "VpcOriginName": {
+      "Type": "String",
+      "Default": "personal-ai-workspace-private-host",
+      "AllowedPattern": "^[a-z0-9][a-z0-9-]*$",
+      "MinLength": 1,
+      "MaxLength": 64,
+      "Description": "Optional operator label for the CloudFront VPC origin; lowercase letters, numbers, and hyphens only."
+    },
+    "DistributionEnabled": {
+      "Type": "String",
+      "AllowedValues": ["false", "true"],
+      "Default": "false",
+      "Description": "Keep false for private preparation and budget review. Set true only for controlled browser acceptance while the global AI pause remains enabled; hold general public release until acceptance passes."
+    },
+    "PriceClass": {
+      "Type": "String",
+      "AllowedValues": ["PriceClass_100", "PriceClass_200", "PriceClass_All"],
+      "Description": "Required operator choice. Select a CloudFront edge footprint after reviewing viewer locations and expected credit usage; no broad default is assumed."
+    }
+  },
+  "Conditions": {
+    "DistributionIsEnabled": {
+      "Fn::Equals": [{ "Ref": "DistributionEnabled" }, "true"]
+    }
+  },
+  "Resources": {
+    "PrivateHostVpcOrigin": {
+      "Type": "AWS::CloudFront::VpcOrigin",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Provides CloudFront's service-managed private ENI path to the already active EC2 host; the host security-group rule is a separate post-creation step.",
+          "must": [
+            "The EC2 instance must be active in a supported VPC with an Internet Gateway and a private subnet with an available IPv4 address.",
+            "The endpoint ARN must identify the EC2 instance in the selected Region and stack account.",
+            "Use HTTP :8080 only on this private VPC-origin path; the host proxy must verify HTTPS to the app on loopback :8443."
+          ],
+          "mutable": "change-with-constraints",
+          "trust": { "src": "authored", "conf": "high" }
+        }
+      },
+      "Properties": {
+        "VpcOriginEndpointConfig": {
+          "Arn": {
+            "Fn::Sub": "arn:${AWS::Partition}:ec2:${HostRegion}:${AWS::AccountId}:instance/${HostInstanceId}"
+          },
+          "Name": { "Ref": "VpcOriginName" },
+          "HTTPPort": 8080,
+          "IpAddressType": "ipv4",
+          "OriginProtocolPolicy": "http-only"
+        }
+      }
+    },
+    "AppOriginRequestPolicy": {
+      "Type": "AWS::CloudFront::OriginRequestPolicy",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Forwards the browser Host and app request inputs to the single private Nginx server, and asks CloudFront to add its own viewer-address value for client-IP accounting.",
+          "must": [
+            "Use allViewerAndWhitelistCloudFront with CloudFront-Viewer-Address so the origin receives CloudFront's generated viewer address, not a viewer-supplied value.",
+            "Forward all viewer cookies and query strings; the private Nginx default server accepts the forwarded CloudFront Host and the app validates Origin against APP_ORIGIN.",
+            "Keep this policy separate from the cache key; caching remains disabled."
+          ],
+          "mutable": "change-with-constraints",
+          "trust": { "src": "authored", "conf": "high" }
+        }
+      },
+      "Properties": {
+        "OriginRequestPolicyConfig": {
+          "Name": { "Ref": "AWS::StackName" },
+          "Comment": "Forward viewer request values and add the CloudFront-generated viewer address.",
+          "HeadersConfig": {
+            "HeaderBehavior": "allViewerAndWhitelistCloudFront",
+            "Headers": ["CloudFront-Viewer-Address"]
+          },
+          "CookiesConfig": { "CookieBehavior": "all" },
+          "QueryStringsConfig": { "QueryStringBehavior": "all" }
+        }
+      }
+    },
+    "PublicEntryDistribution": {
+      "Type": "AWS::CloudFront::Distribution",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Uses the generated cloudfront.net hostname and default certificate, forwards app requests without caching, and attaches the managed headers policy that leaves origin values intact except nosniff (which matches Helmet's current value); it does not define or replace CSP.",
+          "must": [
+            "Keep Enabled false during private preparation and budget review; set true only for controlled browser acceptance while the global AI pause remains enabled, and hold general public release until acceptance passes.",
+            "Keep all seven app methods and attach AppOriginRequestPolicy to forward the viewer Host, all viewer headers/cookies/query strings, and CloudFront's generated viewer address.",
+            "Keep CloudFront's origin read timeout at its 30-second default; the app emits SSE heartbeats every 15 seconds.",
+            "Keep minimum, default, and maximum TTL at zero through the managed CachingDisabled policy.",
+            "Do not add Aliases, a custom certificate, Lambda@Edge, WAF, or a public HTTP origin to this template."
+          ],
+          "mutable": "change-with-constraints",
+          "trust": { "src": "authored", "conf": "high" }
+        }
+      },
+      "Properties": {
+        "DistributionConfig": {
+          "Enabled": { "Fn::If": ["DistributionIsEnabled", true, false] },
+          "Comment": "Personal AI Workspace private-host entry",
+          "HttpVersion": "http2",
+          "IPV6Enabled": true,
+          "PriceClass": { "Ref": "PriceClass" },
+          "Origins": [
+            {
+              "Id": "PrivateHostOrigin",
+              "DomainName": { "Ref": "OriginDomainName" },
+              "ConnectionAttempts": 1,
+              "ConnectionTimeout": 10,
+              "VpcOriginConfig": {
+                "VpcOriginId": { "Ref": "PrivateHostVpcOrigin" },
+                "OriginReadTimeout": 30
+              }
+            }
+          ],
+          "DefaultCacheBehavior": {
+            "TargetOriginId": "PrivateHostOrigin",
+            "ViewerProtocolPolicy": "redirect-to-https",
+            "AllowedMethods": ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"],
+            "CachedMethods": ["GET", "HEAD", "OPTIONS"],
+            "Compress": false,
+            "CachePolicyId": "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+            "OriginRequestPolicyId": { "Ref": "AppOriginRequestPolicy" },
+            "ResponseHeadersPolicyId": "67f7725c-6f97-4210-82d7-5512b31e9d03"
+          },
+          "ViewerCertificate": {
+            "CloudFrontDefaultCertificate": true
+          },
+          "Restrictions": {
+            "GeoRestriction": {
+              "RestrictionType": "none",
+              "Quantity": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "DistributionId": {
+      "Description": "CloudFront distribution ID. The distribution remains disabled until DistributionEnabled is set to true.",
+      "Value": { "Ref": "PublicEntryDistribution" }
+    },
+    "DistributionDomainName": {
+      "Description": "Generated trusted HTTPS hostname under cloudfront.net.",
+      "Value": { "Fn::GetAtt": ["PublicEntryDistribution", "DomainName"] }
+    },
+    "VpcOriginId": {
+      "Description": "CloudFront VPC origin ID. Retrieve its AWS-managed service security group after origin creation and pass that ID to origin-access.template.json.",
+      "Value": { "Ref": "PrivateHostVpcOrigin" }
+    },
+    "VpcOriginArn": {
+      "Description": "CloudFront VPC origin ARN.",
+      "Value": { "Fn::GetAtt": ["PrivateHostVpcOrigin", "Arn"] }
+    }
+  }
+}

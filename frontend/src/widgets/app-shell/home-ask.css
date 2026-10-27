@@ -1,0 +1,263 @@
+.app-shell-main.home-ask-shell-main {
+  padding-bottom: calc(var(--space-12) + 5.5rem);
+}
+
+.home-ask-launcher {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: calc(var(--z-overlay) - 1);
+  min-height: 52px;
+  gap: 9px;
+  border-radius: var(--radius-control);
+  padding-inline: 18px;
+  box-shadow: none;
+}
+
+.dialog-content.home-ask-dialog {
+  top: auto;
+  right: 24px;
+  bottom: 24px;
+  left: auto;
+  width: min(440px, calc(100vw - 48px));
+  height: min(640px, calc(100dvh - 48px));
+  max-height: calc(100dvh - 48px);
+  overflow: hidden;
+  padding: 0;
+  transform: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.home-chat-ask {
+  flex: 1;
+  min-height: 0;
+  gap: 12px;
+  overflow: hidden;
+  border: 0;
+  border-radius: inherit;
+  padding: 16px;
+  box-shadow: none;
+}
+
+.home-chat-ask-header {
+  flex: none;
+  align-items: stretch;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.home-chat-ask-title {
+  margin: 0;
+  font: 650 20px/1.2 var(--font-display);
+  letter-spacing: -.02em;
+}
+
+.home-chat-ask-description {
+  display: block;
+  margin: 4px 0 0 !important;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.home-chat-ask-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.home-chat-ask-actions > .button {
+  min-height: 40px;
+  padding-inline: 10px;
+}
+
+.home-chat-conversation-trigger {
+  max-width: 172px;
+  min-width: 0;
+  gap: 5px;
+}
+
+.home-chat-conversation-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dropdown-menu.home-chat-history-menu {
+  width: min(340px, calc(100vw - 40px));
+  max-height: min(360px, 60dvh);
+  overflow-y: auto;
+}
+
+.home-chat-history-menu-item {
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  text-align: left;
+}
+
+.home-chat-history-menu-item > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-chat-history-menu-item[data-current='true'] {
+  background: var(--color-surface-muted);
+}
+
+.home-chat-history-menu-item time {
+  flex: none;
+  color: var(--color-text-subtle);
+  font: 11px/1.4 var(--font-mono);
+}
+
+.home-chat-history-menu-state,
+.home-chat-history-menu-error {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.home-chat-history-menu-error .button {
+  justify-self: start;
+}
+
+.home-chat-layout-ask {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.home-chat-ask .home-chat-main {
+  flex: 1;
+  min-height: 0;
+  gap: 10px;
+  overflow: hidden;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.home-chat-ask > [aria-label='Assistant policy summary'] {
+  flex: none;
+  max-height: 116px;
+  overflow-y: auto;
+}
+
+.home-chat-ask .home-chat-empty {
+  min-height: 0;
+  flex: 1;
+  align-items: center;
+  text-align: center;
+}
+
+.home-chat-ask .home-chat-empty strong {
+  font-size: 16px;
+}
+
+.home-chat-ask .home-chat-messages {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+.home-chat-ask .home-chat-composer {
+  flex: none;
+  gap: 7px;
+  margin-top: 0;
+  padding-top: 10px;
+}
+
+.home-chat-ask .home-chat-composer .textarea {
+  min-height: 76px;
+  max-height: 26dvh;
+  resize: vertical;
+}
+
+.home-chat-ask .home-chat-composer-footer .field-help {
+  flex-basis: auto;
+}
+
+@media (max-width: 40rem) {
+  .app-shell-main.home-ask-shell-main {
+    padding-bottom: calc(var(--space-12) + 5rem + env(safe-area-inset-bottom));
+  }
+
+  .home-ask-launcher {
+    right: 16px;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    min-height: 48px;
+    padding-inline: 15px;
+  }
+
+  .dialog-content.home-ask-dialog {
+    inset: 0;
+    width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    border: 0;
+    border-radius: 0;
+    padding: max(12px, env(safe-area-inset-top)) 16px max(12px, env(safe-area-inset-bottom));
+  }
+
+  .home-chat-ask {
+    gap: 10px;
+    padding: 0;
+  }
+
+  .home-chat-ask-header {
+    align-items: center;
+    flex-direction: row;
+  }
+
+  .home-chat-ask-header > div:first-child {
+    flex: 1;
+  }
+
+  .home-chat-ask-title {
+    font-size: 18px;
+  }
+
+  .home-chat-conversation-trigger {
+    max-width: 126px;
+  }
+
+  .home-chat-ask-actions > .button {
+    min-height: 40px;
+    padding-inline: 8px;
+  }
+
+  .home-chat-new-label {
+    display: none;
+  }
+
+  .home-chat-ask > [aria-label='Assistant policy summary'] {
+    max-height: 108px;
+  }
+
+  .home-chat-ask .home-chat-main {
+    padding: 0;
+  }
+
+  .home-chat-ask .home-chat-composer .textarea {
+    min-height: 68px;
+    max-height: 22dvh;
+    resize: none;
+  }
+
+  .home-chat-ask .home-chat-composer-footer {
+    align-items: center;
+  }
+
+  .home-chat-ask .home-chat-composer-footer .button {
+    flex: none;
+  }
+}

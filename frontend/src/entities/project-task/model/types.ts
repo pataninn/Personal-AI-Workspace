@@ -1,6 +1,6 @@
-export type ProjectTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'archived';
+export type ProjectTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done';
 
-export type ProjectTaskFilter = 'all' | 'open' | 'completed' | 'archived';
+export type ProjectTaskFilter = 'all' | 'open' | 'completed';
 
 export type ProjectTaskImportance = 'low' | 'medium' | 'high' | 'urgent';
 
@@ -38,7 +38,7 @@ export type ProjectTaskSource = UserProjectTaskSource | AssistantProjectTaskSour
 
 export interface ProjectTask {
   readonly id: string;
-  readonly projectId: string;
+  readonly projectId: string | null;
   readonly title: string;
   readonly details: string | null;
   readonly importance: ProjectTaskImportance;
@@ -51,7 +51,42 @@ export interface ProjectTask {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly completedAt: string | null;
-  readonly archivedAt: string | null;
+}
+
+export type GlobalTaskCollection = 'inbox' | 'workspace';
+
+export interface GlobalTaskWorkspace {
+  readonly id: string;
+  readonly name: string;
+  readonly status: 'active' | 'archived';
+}
+
+export interface GlobalTaskItem {
+  readonly task: ProjectTask;
+  readonly collection: GlobalTaskCollection;
+  readonly workspace: GlobalTaskWorkspace | null;
+}
+
+export interface GlobalTaskQuery {
+  readonly workspaceId?: string;
+  readonly inboxOnly?: boolean;
+  readonly status?: ProjectTaskStatus;
+  readonly importance?: ProjectTaskImportance;
+  readonly deadlineFrom?: string;
+  readonly deadlineTo?: string;
+  readonly q?: string;
+  readonly includeArchived?: boolean;
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+
+export interface GlobalTaskQueryPage {
+  readonly items: readonly GlobalTaskItem[];
+  readonly nextCursor: string | null;
+}
+
+export interface InboxTaskCount {
+  readonly count: number;
 }
 
 export interface ProjectTaskDraft {

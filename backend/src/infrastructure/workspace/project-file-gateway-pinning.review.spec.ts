@@ -7,7 +7,7 @@ import { ProjectFileGateway } from '@/infrastructure/workspace/project-file-gate
 
 const PARENT = '/review-root/project/tools';
 const PINNED = '/proc/self/fd/77/script.sh';
-const SCOPE = { projectId: 'project', relativeRoot: 'project' };
+const SCOPE = { ownerId: 'owner', projectId: 'project', storageKind: 'legacy' as const, relativeRoot: 'project' };
 const ORIGINAL = Buffer.from('original');
 const HASH = createHash('sha256').update(ORIGINAL).digest('hex');
 

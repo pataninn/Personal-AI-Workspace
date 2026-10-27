@@ -38,8 +38,14 @@ function closeServer(server: ApplicationServer): Promise<void> {
 }
 
 export async function startServer(): Promise<void> {
-  const application = await createApplication();
-  const server = createListener(application);
+  const application = await createApplication(process.env);
+  let server: ApplicationServer;
+  const stopApplication = async (): Promise<void> => {
+    try { await application.stopMaintenance(); }
+    finally { if (application.dataSource.isInitialized) await application.dataSource.destroy(); }
+  };
+  try { server = createListener(application); }
+  catch (error: unknown) { await stopApplication(); throw error; }
   let closing = false;
 
   const close = async (signal: string): Promise<void> => {
@@ -48,21 +54,30 @@ export async function startServer(): Promise<void> {
     }
     closing = true;
     application.logger.info({ signal }, 'Shutting down application');
-    await closeServer(server);
-    if (application.dataSource.isInitialized) {
-      await application.dataSource.destroy();
-    }
+    // Long-lived streams or an unreachable runtime must not keep an old owner alive forever.
+    // On timeout, exit before releasing the lock; the next process recovers saved work.
+    const deadline = setTimeout(() => process.exit(1), 30_000);
+    deadline.unref();
+    try { await closeServer(server); await stopApplication(); }
+    catch (error: unknown) { application.logger.error({ error }, 'Shutdown failed'); process.exit(1); }
+    finally { clearTimeout(deadline); }
   };
 
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(application.config.port, application.config.host, () => {
+        server.removeListener('error', reject);
+        application.logger.info({ port: application.config.port }, 'Application listening');
+        resolve();
+      });
+    });
+  } catch (error: unknown) {
+    await stopApplication();
+    throw error;
+  }
   process.once('SIGINT', () => { void close('SIGINT'); });
   process.once('SIGTERM', () => { void close('SIGTERM'); });
-
-  await new Promise<void>((resolve) => {
-    server.listen(application.config.port, application.config.host, () => {
-      application.logger.info({ port: application.config.port }, 'Application listening');
-      resolve();
-    });
-  });
 }
 
 if (require.main === module) {

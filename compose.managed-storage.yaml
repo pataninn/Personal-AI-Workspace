@@ -1,0 +1,12 @@
+# Optional managed account-workspace mount.
+# Start with: docker compose -f compose.yaml -f compose.managed-storage.yaml up -d
+services:
+  personal-ai-app:
+    environment:
+      ACCOUNT_WORKSPACES_IDENTITY: ${ACCOUNT_WORKSPACES_IDENTITY:?ACCOUNT_WORKSPACES_IDENTITY must match the managed-storage marker}
+    volumes:
+      - type: bind
+        source: ${ACCOUNT_WORKSPACES_HOST_ROOT:?ACCOUNT_WORKSPACES_HOST_ROOT must be an existing dedicated managed-storage directory}
+        target: /account-workspaces
+        bind:
+          create_host_path: false

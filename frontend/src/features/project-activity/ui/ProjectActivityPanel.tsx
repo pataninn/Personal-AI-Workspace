@@ -69,23 +69,25 @@ function ActivityCard({ item, expanded, detailState, onToggle, onRetryDetail }: 
       <Card className="project-activity-card" data-testid={`activity-run-${item.runId}`}>
         <header className="project-activity-card-header">
           <div>
-            <p className="product-label">{item.provider} · {item.model}</p>
-            <h2>{item.requestPreview || 'Run without a request preview'}</h2>
+            <h2 className="line-clamp-2 break-words">{item.requestPreview || 'Assistant request'}</h2>
             <p className="project-activity-date"><time dateTime={item.createdAt}>{formatDate(item.createdAt)}</time></p>
           </div>
           <span className={`project-activity-status status-${item.status}`}>{formatStatus(item.status)}</span>
         </header>
+        <details className="text-sm text-[var(--color-text-muted)]">
+          <summary className="cursor-pointer py-3 font-medium">Usage details</summary>
         <dl className="project-activity-facts">
-          <div><dt>Approval</dt><dd>{formatStatus(item.decision)}</dd></div>
-          <div><dt>Provider transmission</dt><dd>{formatTransmission(item.providerTransmission)}</dd></div>
+          <div><dt>Authorization</dt><dd>{formatStatus(item.decision)}</dd></div>
+          <div><dt>Request sent</dt><dd>{formatTransmission(item.providerTransmission)}</dd></div>
           <div><dt>Context</dt><dd>{item.context.fileCount} files · {item.context.factCount} facts · {item.context.messageCount} messages</dd></div>
           <div><dt>Estimated context</dt><dd>{formatTokens(item.context.estimatedTokens)} tokens (estimate)</dd></div>
         </dl>
         <div className="project-activity-usage">
-          <h3>Provider usage</h3>
+          <h3>Token usage</h3>
           <UsageSummary usage={item.usage} />
           <p className="project-activity-cost">Cost: {item.cost.label}</p>
         </div>
+        </details>
         {item.changeSet && <p className="project-activity-change-summary">File changes: {formatStatus(item.changeSet.status)} · {item.changeSet.operationCount} operations · {item.changeSet.appliedCount} applied · {item.changeSet.failedCount} failed</p>}
         <div className="project-activity-actions">
           <Button type="button" variant="secondary" aria-expanded={expanded} aria-controls={`activity-detail-${item.runId}`} data-testid={`activity-details-${item.runId}`} onClick={onToggle}>{expanded ? 'Hide details' : 'View details'}</Button>

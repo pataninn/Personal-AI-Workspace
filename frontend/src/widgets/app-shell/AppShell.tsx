@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { sessionCleared, selectCsrfToken, selectPrincipal } from '@/entities/user-session';
 import { signOut, AUTH_COPY } from '@/features/auth';
-import { RemoveProjectDialog, useProjectListLoader } from '@/features/project-management';
+import { RemoveProjectDialog, RenameProjectDialog, useProjectListLoader } from '@/features/project-management';
 import { ProjectHeader, ProjectNavigation } from '@/widgets/project-navigation';
 import { selectProjects } from '@/entities/project';
 import type { ProjectSnapshot } from '@/entities/project';
@@ -14,13 +14,17 @@ import {
   Alert,
   Button,
   Icon,
-  DrawerClose,
   DrawerContent,
-  DrawerDescription,
   DrawerRoot,
   DrawerTitle,
   DrawerTrigger
 } from '@/shared/ui';
+import { HomeAsk } from '@/widgets/app-shell/HomeAsk';
+
+export interface AppShellOutletContext {
+  readonly registerHomeSummaryRefresh: (refresh: (() => void) | null) => void;
+  readonly registerTaskEditorExitGuard?: (guard: (() => Promise<boolean>) | null) => void;
+}
 
 export function AppShell(): React.JSX.Element {
   const dispatch = useAppDispatch();
@@ -29,21 +33,36 @@ export function AppShell(): React.JSX.Element {
   const principal = useAppSelector(selectPrincipal);
   const csrfToken = useAppSelector(selectCsrfToken);
   const mainRef = useRef<HTMLElement>(null);
+  const homeSummaryRefreshRef = useRef<(() => void) | null>(null);
+  const taskEditorExitGuardRef = useRef<(() => Promise<boolean>) | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [logoutError, setLogoutError] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<ProjectSnapshot | null>(null);
+  const [renameTarget, setRenameTarget] = useState<ProjectSnapshot | null>(null);
   useProjectListLoader();
   const displayName = principal?.displayName || 'Local user';
+  const registerHomeSummaryRefresh = useCallback((refresh: (() => void) | null): void => {
+    homeSummaryRefreshRef.current = refresh;
+  }, []);
+  const requestHomeSummaryRefresh = useCallback((): void => {
+    homeSummaryRefreshRef.current?.();
+  }, []);
+  const registerTaskEditorExitGuard = useCallback((guard: (() => Promise<boolean>) | null): void => {
+    taskEditorExitGuardRef.current = guard;
+  }, []);
 
   useEffect(() => {
-    mainRef.current?.focus();
+    mainRef.current?.focus({ preventScroll: true });
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
   }, [location.pathname]);
 
   async function handleSignOut(): Promise<void> {
     if (isSigningOut || !csrfToken) {
       return;
     }
+    const canSignOut = await (taskEditorExitGuardRef.current?.() ?? Promise.resolve(true));
+    if (!canSignOut) return;
     setIsSigningOut(true);
     setLogoutError(false);
     try {
@@ -79,13 +98,9 @@ export function AppShell(): React.JSX.Element {
                   <span>Menu</span>
                 </Button>
               </DrawerTrigger>
-              <DrawerContent data-testid="mobile-nav-drawer" aria-describedby="mobile-nav-description">
-                <DrawerTitle>Navigation</DrawerTitle>
-                <DrawerDescription id="mobile-nav-description">Move between the protected workspace areas.</DrawerDescription>
-                <DrawerClose asChild>
-                  <Button variant="ghost" data-testid="mobile-nav-close-button">Close menu</Button>
-                </DrawerClose>
-                <nav aria-label="Primary navigation"><WorkspaceNavigation currentPath={location.pathname} onNavigate={() => setDrawerOpen(false)} /></nav>
+              <DrawerContent data-testid="mobile-nav-drawer" aria-describedby={undefined}>
+                <DrawerTitle className="sr-only">Navigation</DrawerTitle>
+                <WorkspaceNavigation currentPath={location.pathname} onNavigate={() => setDrawerOpen(false)} />
               </DrawerContent>
             </DrawerRoot>
             <BrandLink />
@@ -93,18 +108,23 @@ export function AppShell(): React.JSX.Element {
           <div className="account-area">
             <AccountMenu
               displayName={displayName}
+              isAdmin={principal?.accountKind === 'regular' && principal.role === 'admin'}
               isSigningOut={isSigningOut}
               logoutError={logoutError}
               onSignOut={handleSignOut}
             />
           </div>
         </header>
-        <main ref={mainRef} className="app-shell-main" data-testid="app-shell-main" tabIndex={-1}>
-          <ProjectHeader onRemove={setRemoveTarget} />
-          <Outlet />
+        <main ref={mainRef} className={`app-shell-main${principal ? ' home-ask-shell-main' : ''}`} data-testid="app-shell-main" tabIndex={-1}>
+          <ProjectHeader onRemove={setRemoveTarget} onRename={setRenameTarget} />
+          <Suspense fallback={<p role="status" className="p-6">Loading page...</p>}>
+            <Outlet context={{ registerHomeSummaryRefresh, registerTaskEditorExitGuard } satisfies AppShellOutletContext} />
+          </Suspense>
         </main>
       </div>
+      <HomeAsk onSummaryRefreshRequested={requestHomeSummaryRefresh} />
       <RemoveProjectDialog project={removeTarget} onOpenChange={(open) => { if (!open) setRemoveTarget(null); }} onRemoved={() => { setRemoveTarget(null); navigate('/dashboard'); }} />
+      {renameTarget ? <RenameProjectDialog key={renameTarget.id} project={renameTarget} onClose={() => setRenameTarget(null)} /> : null}
     </div>
   );
 }
@@ -114,12 +134,13 @@ const ACCOUNT_MENU_ITEM_ID = 'account-menu-sign-out';
 
 interface AccountMenuProps {
   readonly displayName: string;
+  readonly isAdmin: boolean;
   readonly isSigningOut: boolean;
   readonly logoutError: boolean;
   readonly onSignOut: () => void;
 }
 
-function AccountMenu({ displayName, isSigningOut, logoutError, onSignOut }: AccountMenuProps): React.JSX.Element {
+function AccountMenu({ displayName, isAdmin, isSigningOut, logoutError, onSignOut }: AccountMenuProps): React.JSX.Element {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -232,6 +253,8 @@ function AccountMenu({ displayName, isSigningOut, logoutError, onSignOut }: Acco
         >
           <div className="account-menu-label" role="presentation">{displayName}</div>
           <div className="account-menu-separator" role="separator" />
+          <Link className="account-menu-item" role="menuitem" tabIndex={0} to="/usage" onClick={() => closeMenu(false)}>Usage</Link>
+          {isAdmin ? <Link className="account-menu-item" role="menuitem" tabIndex={0} to="/admin" onClick={() => closeMenu(false)}>Admin portal</Link> : null}
           <div className="account-menu-feedback" role="group" aria-label="Sign out status">
             {isSigningOut ? <p className="logout-status" data-testid="logout-status-message" role="status" aria-live="polite">Signing out…</p> : null}
             {logoutError ? <Alert tone="error" data-testid="logout-error-message">{AUTH_COPY.logoutFailed}</Alert> : null}
@@ -269,12 +292,13 @@ function ShellBreadcrumb(): React.JSX.Element {
   const { pathname } = useLocation();
   const project = useAppSelector(selectProjects).find((candidate) => candidate.id === projectId);
   const section = pathname.split('/').at(-1);
-  const labels: Record<string, string> = { activity: 'Activity', memory: 'Memory', context: 'Context', tasks: 'Tasks', 'file-history': 'History' };
-  const title = projectId && section && labels[section] ? labels[section] : project?.name ?? 'Home';
+  const labels: Record<string, string> = { activity: 'Activity', memory: 'Memory', context: 'Context', tasks: 'Tasks', 'file-history': 'History', admin: 'Admin portal', usage: 'Usage', automations: 'Automations' };
+  const title = pathname === '/tasks' ? 'All tasks' : pathname.startsWith('/tasks/') ? 'Task details' : projectId && section && labels[section] ? labels[section] : project?.name ?? 'Home';
   return <nav className="shell-breadcrumb" aria-label="Current page"><strong>{title}</strong></nav>;
 }
 
 function WorkspaceNavigation({ currentPath, onNavigate }: { readonly currentPath: string; readonly onNavigate?: () => void }): React.JSX.Element {
+  const principal = useAppSelector(selectPrincipal);
   return (
     <nav className="shell-nav" data-testid="app-shell-nav" aria-label="Primary navigation">
       <NavLink
@@ -287,6 +311,15 @@ function WorkspaceNavigation({ currentPath, onNavigate }: { readonly currentPath
         <Icon name="home" /><span>Home</span>
       </NavLink>
       <ProjectNavigation onNavigate={onNavigate} />
+      <NavLink className={({ isActive }) => `shell-nav-link${isActive ? ' is-active' : ''}`} to="/automations" aria-current={currentPath === '/automations' ? 'page' : undefined} onClick={onNavigate}>
+        <span>Automations</span>
+      </NavLink>
+      <NavLink className={({ isActive }) => `shell-nav-link${isActive ? ' is-active' : ''}`} to="/usage" aria-current={currentPath === '/usage' ? 'page' : undefined} onClick={onNavigate}>
+        <span>Usage</span>
+      </NavLink>
+      {principal?.accountKind === 'regular' && principal.role === 'admin' ? <NavLink className={({ isActive }) => `shell-nav-link${isActive ? ' is-active' : ''}`} to="/admin" aria-current={currentPath === '/admin' ? 'page' : undefined} onClick={onNavigate}>
+        <span>Admin portal</span>
+      </NavLink> : null}
     </nav>
   );
 }

@@ -13,25 +13,66 @@ import type { IProjectFileAccess, IProjectFileGateway } from '@/modules/files/re
 import type { WorkspaceRouterDependencies } from '@/modules/files/controllers/workspace-router';
 import { createLogger } from '@/shared/logging/logger';
 import { ProjectFileGateway } from '@/infrastructure/workspace/project-file-gateway';
+import { StorageQuotaFileMutation } from '@/infrastructure/workspace/storage-quota-file-mutation';
+import { AppError } from '@/shared/errors/app-error';
+import type { StorageTrustedFileScope } from '@/modules/storage-quotas/domain/storage-quota-types';
+import type { IStorageQuotaRepository } from '@/modules/storage-quotas/repositories/storage-quota-repository';
 
 const ORIGIN = 'https://127.0.0.1:8443';
 const PROJECT = '22222222-2222-4222-8222-222222222222';
+const OWNER = '11111111-1111-4111-8111-111111111111';
 const BASE = `/api/v1/projects/${PROJECT}/files`;
 const HASH = 'a'.repeat(64);
 const HEADERS = { Origin: ORIGIN, Cookie: '__Host-pa_session=valid', 'X-CSRF-Token': 'csrf' };
 
 function fixture(): { app: express.Express; gateway: jest.Mocked<IProjectFileGateway> } {
+  const files = new Map<string, Buffer>();
+  files.set('image.png', Buffer.from([0, 255]));
   const gateway: jest.Mocked<IProjectFileGateway> = {
-    write: jest.fn().mockResolvedValue({ hash: HASH }), remove: jest.fn().mockResolvedValue(undefined),
-    download: jest.fn().mockResolvedValue({ bytes: Buffer.from([0, 255]), hash: HASH })
+    write: jest.fn().mockImplementation(async (_scope, input) => { files.set(input.path, input.bytes); return { hash: HASH }; }),
+    remove: jest.fn().mockImplementation(async (_scope, input) => { files.delete(input.path); }),
+    captureForExport: jest.fn().mockResolvedValue([]),
+    download: jest.fn().mockImplementation(async (_scope, filePath) => {
+      const bytes = files.get(filePath);
+      if (!bytes) throw new AppError('WORKSPACE_PATH_NOT_FOUND', 404, 'File not found.');
+      return { bytes, hash: HASH };
+    })
   };
-  const access: IProjectFileAccess = { execute: async (_input, action) => action({ projectId: PROJECT, relativeRoot: 'folder' }) };
+  const trustedScope: StorageTrustedFileScope = {
+    ownerId: OWNER, projectId: PROJECT,
+    roots: [{ ownerId: OWNER, projectId: PROJECT, locatorProjectId: PROJECT, rootKey: 'legacy/project', storageKind: 'legacy', relativeRoot: 'folder' }]
+  };
+  const scope = { ownerId: OWNER, projectId: PROJECT, storageKind: 'legacy' as const, relativeRoot: 'folder' };
+  const access: IProjectFileAccess = {
+    execute: async (_input, action) => action(scope),
+    authorizeMutation: async (input) => ({
+      ...input, rootKey: 'legacy/project', scope,
+      resolveTrustedScope: async () => trustedScope,
+      recordActivity: async () => undefined
+    })
+  };
+  const storage: jest.Mocked<IStorageQuotaRepository> = {
+    readUsage: jest.fn(), runDatabaseMutation: jest.fn(),
+    reserveFileOperation: jest.fn(async (command, resolveTrustedScope) => ({
+      operationId: command.operationKey,
+      state: 'reserved' as const,
+      outcome: null,
+      replay: false,
+      trustedScope: await resolveTrustedScope({ query: async () => [] }, {
+        ownerId: command.ownerId, projectId: command.projectId, rootKeys: [command.rootKey]
+      })
+    })),
+    listUnresolvedFileOperations: jest.fn(),
+    settleFileOperation: jest.fn(async (_ownerId, operationId, outcome) => ({ operationId, state: 'settled' as const, outcome, replay: false })),
+    releaseFileOperationWithNoSideEffect: jest.fn().mockResolvedValue(undefined), markFileOperationUnknown: jest.fn().mockResolvedValue(undefined),
+    reconcileReferences: jest.fn().mockResolvedValue(undefined), markAccountUnavailable: jest.fn().mockResolvedValue(undefined)
+  };
   const getSession = { execute: jest.fn().mockImplementation(async (token: unknown) => {
     if (token !== 'valid') throw new UnauthenticatedError();
-    return { sessionId: 'session', principal: { id: 'owner' }, csrfToken: 'csrf', expiresAt: new Date('2099-01-01') };
+    return { sessionId: 'session', principal: { id: OWNER }, csrfToken: 'csrf', expiresAt: new Date('2099-01-01') };
   }) } as unknown as GetSessionUseCase;
   const unused = { execute: jest.fn() };
-  const workspace = { getSession, appOrigin: ORIGIN, clearSessionCookie: () => undefined, fileActions: new ProjectFileActions(access, gateway),
+  const workspace = { getSession, appOrigin: ORIGIN, clearSessionCookie: () => undefined, fileActions: new ProjectFileActions(access, gateway, { convert: async ({ bytes }) => bytes }, new StorageQuotaFileMutation(storage)),
     listWorkspaceFiles: unused, treeWorkspaceFiles: unused, readWorkspaceText: unused, searchWorkspaceText: unused } as unknown as WorkspaceRouterDependencies;
   const readiness = new InMemoryReadinessState();
   readiness.markReady();
@@ -42,11 +83,11 @@ describe('manual file HTTP review', () => {
   it('round trips raw binary buffers and returns a download hash and attachment filename', async () => {
     const { app, gateway } = fixture();
     const bytes = Buffer.from([0, 255, 128, 4]);
-    await request(app).post(`${BASE}/upload?path=image.png`).set(HEADERS).type('application/octet-stream').send(bytes).expect(201);
-    expect(gateway.write).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ bytes, path: 'image.png', expectedHash: null }));
-    const result = await request(app).get(`${BASE}/download?path=image.png`).set('Cookie', HEADERS.Cookie).expect(200);
+    await request(app).post(`${BASE}/upload?path=new.png`).set(HEADERS).type('application/octet-stream').send(bytes).expect(201);
+    expect(gateway.write).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ bytes, path: 'new.png', expectedHash: null }));
+    const result = await request(app).get(`${BASE}/download?path=new.png`).set('Cookie', HEADERS.Cookie).expect(200);
     expect(result.headers.etag).toBe(`"${HASH}"`);
-    expect(result.headers['content-disposition']).toContain("filename*=UTF-8''image.png");
+    expect(result.headers['content-disposition']).toContain("filename*=UTF-8''new.png");
   });
 
   it('requires session, same origin and CSRF for file mutations', async () => {

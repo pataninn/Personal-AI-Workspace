@@ -46,7 +46,7 @@ class ProjectFixture implements IProjectRepository {
   }
 
   public async listActiveRoots(ownerId: string): Promise<readonly string[]> {
-    return (await this.listByOwner(ownerId, false)).map((project) => project.relativeRoot);
+    return (await this.listByOwner(ownerId, false)).flatMap((project) => project.relativeRoot === null ? [] : [project.relativeRoot]);
   }
 
   public async create(): Promise<Project> { throw new Error('Not used by command routes.'); }
@@ -54,7 +54,7 @@ class ProjectFixture implements IProjectRepository {
 
   private makeProject(id: string, ownerId: string): Project {
     const now = new Date('2026-09-16T00:00:00.000Z');
-    return { id, ownerId, name: 'Project', slug: 'project', relativeRoot: id === PROJECT_ID ? '' : 'other', status: 'active', version: 1, createdAt: now, updatedAt: now };
+    return { id, ownerId, name: 'Project', slug: 'project', relativeRoot: id === PROJECT_ID ? 'project' : 'other', storageKind: 'legacy', objective: null, status: 'active', version: 1, createdAt: now, updatedAt: now };
   }
 }
 
@@ -71,6 +71,14 @@ class ReadyRunFixture implements IAiRunRepository {
   }
   public async recordDecision(): Promise<never> { throw new Error('Not used by command routes.'); }
   public async save(): Promise<void> { return undefined; }
+  public async beginStart(): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> { throw new Error('Not used by command routes.'); }
+  public async abortStart(): Promise<boolean> { return false; }
+
+  public enablePolicyExecution(): void {
+    const current = this.runs.get(RUN_ID);
+    if (!current) throw new Error('Missing fixture run');
+    this.runs.set(RUN_ID, { ...current, status: 'running', decision: 'policy_authorized', policyRevision: '1' });
+  }
 
   private makeRun(id: string, ownerId: string, projectId: string): AiRun {
     const now = new Date('2026-09-16T00:00:00.000Z');
@@ -81,6 +89,7 @@ class ReadyRunFixture implements IAiRunRepository {
       conversationId: '44444444-4444-4444-8444-444444444444',
       request: 'inspect',
       relativeRoot: '',
+      storageKind: 'legacy',
       requestedPaths: [],
       manifest: {
         manifestHash: 'a'.repeat(64),
@@ -126,10 +135,10 @@ class PausingRuntime extends FakeAgentRuntime {
     this.executeStarted = new Promise<void>((resolve) => { this.resolveExecuteStarted = resolve; });
   }
 
-  public override async executeCommand(input: Parameters<FakeAgentRuntime['executeCommand']>[0]): Promise<Awaited<ReturnType<FakeAgentRuntime['executeCommand']>>> {
+  public override async executePolicyCommand(input: Parameters<FakeAgentRuntime['executePolicyCommand']>[0]): Promise<Awaited<ReturnType<FakeAgentRuntime['executePolicyCommand']>>> {
     this.resolveExecuteStarted();
     await new Promise<void>((resolve) => { this.releaseExecution = resolve; });
-    return super.executeCommand(input);
+    return super.executePolicyCommand(input);
   }
 
   public release(): void { this.releaseExecution(); }
@@ -142,16 +151,19 @@ interface CommandAppFixture {
   readonly proposal: Awaited<ReturnType<ProposeSandboxCommandUseCase['execute']>>['resource'];
   readonly blocked: Awaited<ReturnType<ProposeSandboxCommandUseCase['execute']>>['resource'];
   readonly rejected: Awaited<ReturnType<ProposeSandboxCommandUseCase['execute']>>['resource'];
+  readonly automatic: DecideSandboxCommandUseCase;
 }
 
-async function buildFixture(runtime: FakeAgentRuntime = new FakeAgentRuntime()): Promise<CommandAppFixture> {
+async function buildFixture(runtime: FakeAgentRuntime = new FakeAgentRuntime(), policyMode = false): Promise<CommandAppFixture> {
   const project = new ProjectFixture();
   const runs = new ReadyRunFixture();
   const commands = new InMemorySandboxCommandRepository();
-  const propose = new ProposeSandboxCommandUseCase(runs, commands, runtime, project);
-  const proposal = await propose.execute({ ownerId: OWNER_ID, runId: RUN_ID, command: 'pwd', args: [], idempotencyKey: 'proposal-safe' });
-  const blocked = await propose.execute({ ownerId: OWNER_ID, runId: RUN_ID, command: 'powershell', args: ['Get-ChildItem'], idempotencyKey: 'proposal-blocked' });
-  const rejected = await propose.execute({ ownerId: OWNER_ID, runId: RUN_ID, command: 'ls', args: [], idempotencyKey: 'proposal-rejected' });
+  if (policyMode) runs.enablePolicyExecution();
+  const executionPolicy = policyMode ? { assertWorkspace: async () => ({ policies: [], effectiveCapabilities: ['bounded_sandbox_command' as const], revisions: { workspace: '1' } }) } : undefined;
+  const propose = new ProposeSandboxCommandUseCase(runs, commands, runtime, project, undefined, executionPolicy);
+  const proposal = await propose.execute({ ownerId: OWNER_ID, runId: RUN_ID, command: policyMode ? 'hermes-terminal' : 'pwd', args: policyMode ? ['pwd'] : [], idempotencyKey: 'proposal-safe' });
+  const blocked = policyMode ? proposal : await propose.execute({ ownerId: OWNER_ID, runId: RUN_ID, command: 'powershell', args: ['Get-ChildItem'], idempotencyKey: 'proposal-blocked' });
+  const rejected = policyMode ? proposal : await propose.execute({ ownerId: OWNER_ID, runId: RUN_ID, command: 'ls', args: [], idempotencyKey: 'proposal-rejected' });
   const readiness = new InMemoryReadinessState();
   readiness.markReady();
   const getSession = {
@@ -159,7 +171,7 @@ async function buildFixture(runtime: FakeAgentRuntime = new FakeAgentRuntime()):
       if (rawToken !== 'valid-session-token') {
         throw new UnauthenticatedError();
       }
-      return { sessionId: 'session', principal: { id: OWNER_ID, displayName: 'Local user' }, csrfToken: 'csrf-token', expiresAt: new Date(Date.now() + 60_000) };
+      return { sessionId: 'session', principal: { id: OWNER_ID, displayName: 'Local user', accountKind: 'regular', role: 'admin' }, csrfToken: 'csrf-token', expiresAt: new Date(Date.now() + 60_000) };
     })
   } as unknown as GetSessionUseCase;
   const app = createApp({
@@ -168,15 +180,16 @@ async function buildFixture(runtime: FakeAgentRuntime = new FakeAgentRuntime()):
     appVersion: 'test',
     sandboxCommands: {
       getSession,
-      listCommands: new ListSandboxCommandsUseCase(runs, commands),
-      getCommand: new GetSandboxCommandUseCase(runs, commands),
+      listCommands: new ListSandboxCommandsUseCase(runs, commands, project),
+      getCommand: new GetSandboxCommandUseCase(runs, commands, project),
       decideCommand: new DecideSandboxCommandUseCase(runs, commands, runtime, project),
       cancelCommand: new CancelSandboxCommandUseCase(runs, commands, runtime, project),
       appOrigin: APP_ORIGIN,
       clearSessionCookie: () => undefined
     }
   });
-  return { app, project, runtime, proposal: proposal.resource, blocked: blocked.resource, rejected: rejected.resource };
+  return { app, project, runtime, proposal: proposal.resource, blocked: blocked.resource, rejected: rejected.resource,
+    automatic: new DecideSandboxCommandUseCase(runs, commands, runtime, project, undefined, executionPolicy) };
 }
 
 function authenticatedHeaders(origin = APP_ORIGIN, csrf = 'csrf-token'): Record<string, string> {
@@ -200,7 +213,7 @@ describe('sandbox command router (integration)', () => {
     await request(fixture.app).get(`/api/v1/ai-runs/${RUN_ID}/commands/99999999-9999-4999-8999-999999999999`).set(headers).expect(404).expect(({ body }) => expect(body.error.code).toBe('COMMAND_NOT_FOUND'));
   });
 
-  it('enforces authentication, origin, CSRF, exact proposal hashes, and decision idempotency', async () => {
+  it('enforces authentication and CSRF before uniformly retiring command decisions', async () => {
     const fixture = await buildFixture();
     const headers = authenticatedHeaders();
     const path = `/api/v1/ai-runs/${RUN_ID}/commands/${fixture.proposal.id}/decision`;
@@ -209,22 +222,22 @@ describe('sandbox command router (integration)', () => {
     await request(fixture.app).post(path).set('Origin', APP_ORIGIN).send(payload).expect(401);
     await request(fixture.app).post(path).set(authenticatedHeaders('https://evil.invalid')).set('Idempotency-Key', 'decision-origin').send(payload).expect(403);
     await request(fixture.app).post(path).set({ Cookie: authenticatedHeaders().Cookie, Origin: APP_ORIGIN }).set('Idempotency-Key', 'decision-csrf').send(payload).expect(403);
-    await request(fixture.app).post(path).set(headers).set('Idempotency-Key', 'decision-stale').send({ ...payload, proposalHash: 'b'.repeat(64) }).expect(409).expect(({ body }) => expect(body.error.code).toBe('COMMAND_PROPOSAL_CONFLICT'));
+    await request(fixture.app).post(path).set(headers).set('Idempotency-Key', 'decision-stale').send({ ...payload, proposalHash: 'b'.repeat(64) }).expect(409).expect(({ body }) => expect(body.error.code).toBe('POLICY_ACTION_RETIRED'));
 
-    await request(fixture.app).post(path).set(headers).set('Idempotency-Key', 'decision-approve').send(payload).expect(200).expect(({ body }) => expect(body.data.command.status).toBe('completed'));
-    expect(fixture.runtime.executedCommands).toHaveLength(1);
-    await request(fixture.app).post(path).set(headers).set('Idempotency-Key', 'decision-approve').send(payload).expect(200);
-    expect(fixture.runtime.executedCommands).toHaveLength(1);
+    await request(fixture.app).post(path).set(headers).set('Idempotency-Key', 'decision-approve').send(payload).expect(409).expect(({ body }) => expect(body.error.code).toBe('POLICY_ACTION_RETIRED'));
+    await request(fixture.app).post(path).set(headers).set('Idempotency-Key', 'decision-approve').send(payload).expect(409);
     await request(fixture.app).post(path).set(headers).set('Idempotency-Key', 'decision-approve').send({ ...payload, decision: 'reject' }).expect(409);
+    expect(fixture.runtime.executedCommands).toHaveLength(0);
   });
 
-  it('rejects blocked approval, records rejection, and never executes either command', async () => {
+  it('retires blocked and reject decisions without state changes or runtime effects', async () => {
     const fixture = await buildFixture();
     const headers = authenticatedHeaders();
     const blockedPath = `/api/v1/ai-runs/${RUN_ID}/commands/${fixture.blocked.id}/decision`;
-    await request(fixture.app).post(blockedPath).set(headers).set('Idempotency-Key', 'blocked-decision').send({ proposalHash: fixture.blocked.proposalHash, decision: 'approve' }).expect(409).expect(({ body }) => expect(body.error.code).toBe('COMMAND_BLOCKED'));
+    await request(fixture.app).post(blockedPath).set(headers).set('Idempotency-Key', 'blocked-decision').send({ proposalHash: fixture.blocked.proposalHash, decision: 'approve' }).expect(409).expect(({ body }) => expect(body.error.code).toBe('POLICY_ACTION_RETIRED'));
     const rejectedPath = `/api/v1/ai-runs/${RUN_ID}/commands/${fixture.rejected.id}/decision`;
-    await request(fixture.app).post(rejectedPath).set(headers).set('Idempotency-Key', 'reject-decision').send({ proposalHash: fixture.rejected.proposalHash, decision: 'reject' }).expect(200).expect(({ body }) => expect(body.data.command.status).toBe('rejected'));
+    await request(fixture.app).post(rejectedPath).set(headers).set('Idempotency-Key', 'reject-decision').send({ proposalHash: fixture.rejected.proposalHash, decision: 'reject' }).expect(409).expect(({ body }) => expect(body.error.code).toBe('POLICY_ACTION_RETIRED'));
+    await request(fixture.app).get(`/api/v1/ai-runs/${RUN_ID}/commands/${fixture.rejected.id}`).set(headers).expect(200).expect(({ body }) => expect(body.data.command.status).toBe('awaiting_approval'));
     expect(fixture.runtime.executedCommands).toHaveLength(0);
   });
 
@@ -236,23 +249,25 @@ describe('sandbox command router (integration)', () => {
     const cancelPath = `/api/v1/ai-runs/${RUN_ID}/commands/${fixture.proposal.id}/cancel`;
 
     await request(fixture.app).get(`/api/v1/ai-runs/${RUN_ID}/commands/${fixture.proposal.id}`).set(headers).expect(200);
-    await request(fixture.app).post(decisionPath).set(headers).set('Idempotency-Key', 'decision-archived').send({ proposalHash: fixture.proposal.proposalHash, decision: 'approve' }).expect(409).expect(({ body }) => expect(body.error.code).toBe('PROJECT_ARCHIVED'));
+    await request(fixture.app).post(decisionPath).set(headers).set('Idempotency-Key', 'decision-archived').send({ proposalHash: fixture.proposal.proposalHash, decision: 'approve' }).expect(409).expect(({ body }) => expect(body.error.code).toBe('POLICY_ACTION_RETIRED'));
     await request(fixture.app).post(cancelPath).set(headers).set('Idempotency-Key', 'cancel-archived').send({}).expect(409).expect(({ body }) => expect(body.error.code).toBe('PROJECT_ARCHIVED'));
     expect(fixture.runtime.executedCommands).toHaveLength(0);
   });
 
-  it('returns 202 for cancellation and reconciles a late fake result as cancelled', async () => {
+  it('returns 202 for automatic-command cancellation and suppresses the late fake result', async () => {
     const runtime = new PausingRuntime();
-    const fixture = await buildFixture(runtime);
+    const fixture = await buildFixture(runtime, true);
     const headers = authenticatedHeaders();
-    const approvePath = `/api/v1/ai-runs/${RUN_ID}/commands/${fixture.proposal.id}/decision`;
-    const approval = request(fixture.app).post(approvePath).set(headers).set('Idempotency-Key', 'decision-pause').send({ proposalHash: fixture.proposal.proposalHash, decision: 'approve' });
-    const approvalResult = approval.then((response) => response);
+    const execution = fixture.automatic.executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID, commandId: fixture.proposal.id });
     await runtime.executeStarted;
     const cancelPath = `/api/v1/ai-runs/${RUN_ID}/commands/${fixture.proposal.id}/cancel`;
     await request(fixture.app).post(cancelPath).set(headers).set('Idempotency-Key', 'cancel-pause').send({}).expect(202).expect(({ body }) => expect(body.data.command.status).toBe('cancel_requested'));
     runtime.release();
-    await approvalResult;
-    await request(fixture.app).get(`/api/v1/ai-runs/${RUN_ID}/commands/${fixture.proposal.id}`).set(headers).expect(200).expect(({ body }) => expect(body.data.command.status).toBe('cancelled'));
+    await execution;
+    await request(fixture.app).get(`/api/v1/ai-runs/${RUN_ID}/commands/${fixture.proposal.id}`).set(headers).expect(200).expect(({ body }) => {
+      expect(body.data.command.status).toBe('cancel_requested');
+      expect(body.data.command.result).toBeUndefined();
+    });
+    expect(runtime.executedCommands).toHaveLength(0);
   });
 });

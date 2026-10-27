@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiClientError } from '@/shared/api';
 import {
   createProjectTask,
-  deleteProjectTask,
   decideProjectTaskSuggestion,
   listProjectTaskSuggestions,
   listProjectTasks,
@@ -29,7 +28,6 @@ const task = {
   createdAt: '2026-09-26T00:00:00.000Z',
   updatedAt: '2026-09-26T00:00:00.000Z',
   completedAt: null,
-  archivedAt: null
 } as const;
 const suggestion = {
   id: SUGGESTION_ID,
@@ -92,18 +90,11 @@ describe('project task API', () => {
     expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('If-Match')).toBe('"4"');
   });
 
-  it('preserves task metadata and sends delete with CSRF and current task version', async () => {
+  it('preserves task metadata and sends CSRF and an idempotency key when creating', async () => {
     fetchMock.mockResolvedValueOnce(envelope({ task, orderVersion: 4 }));
     const draft = { title: task.title, details: null, importance: 'urgent' as const, deadline: '2026-10-05', subtasks: [{ title: 'Review', completed: false }] };
     await createProjectTask(PROJECT_ID, draft, 'csrf', 'intent');
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ title: task.title, importance: 'urgent', deadline: '2026-10-05', subtasks: [{ title: 'Review', completed: false }] });
-
-    fetchMock.mockResolvedValueOnce(envelope({ orderVersion: 5 }));
-    await expect(deleteProjectTask(PROJECT_ID, TASK_ID, 4, 'csrf')).resolves.toBe(5);
-    const request = fetchMock.mock.calls[1]?.[1];
-    expect(request?.method).toBe('DELETE');
-    expect(new Headers(request?.headers).get('If-Match')).toBe('"4"');
-    expect(new Headers(request?.headers).get('X-CSRF-Token')).toBe('csrf');
   });
 
   it('rejects malformed metadata and nested subtask responses', async () => {

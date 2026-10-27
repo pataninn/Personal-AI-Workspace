@@ -130,6 +130,7 @@ test('shows the accepted assistant suggestion after reloading its conversation',
 async function signInAndGetDirectProjectId(page: Page): Promise<string> {
   const password = readLocalPassword();
   await page.goto('/login');
+  await page.getByTestId('login-identifier-input').fill('owner');
   await page.getByTestId('login-password-input').fill(password);
   await page.getByTestId('login-submit-button').click();
   await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);

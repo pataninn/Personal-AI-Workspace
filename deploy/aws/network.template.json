@@ -1,0 +1,227 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Single-AZ private egress network with explicit CIDRs and AZ; NAT Gateway hourly/data processing and public IPv4 charges continue while the separate host is stopped, and deleting this stack leaves the host's separately retained data volume intact.",
+  "Metadata": {
+    "AWSToolsMetrics": { "AWSAgentToolkit": "aws-cloudformation@3" },
+    "com.aws.cloudformation.Context": {
+      "arch": "public subnet -> one NAT Gateway -> private subnet; host lives in a separate stack",
+      "must": [
+        "Select one AZ for this network and the intended host.",
+        "Supply RFC1918 CIDRs; keep both subnet ranges inside the VPC range and non-overlapping.",
+        "Review NAT Gateway hourly/data processing and public IPv4 charges; they continue while the host is stopped.",
+        "This stack owns network resources only; it must not own or delete the separately managed host or retained data volume."
+      ]
+    }
+  },
+  "Parameters": {
+    "VpcCidr": {
+      "Type": "String",
+      "AllowedPattern": "^(10\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|172\\.(1[6-9]|2[0-9]|3[01])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|192\\.168\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))/(1[6-9]|2[0-8])$",
+      "ConstraintDescription": "Enter a valid RFC1918 IPv4 CIDR with a prefix from /16 through /28.",
+      "Description": "Explicit private VPC CIDR; must contain both non-overlapping subnet CIDRs."
+    },
+    "PublicSubnetCidr": {
+      "Type": "String",
+      "AllowedPattern": "^(10\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|172\\.(1[6-9]|2[0-9]|3[01])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|192\\.168\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))/(1[6-9]|2[0-8])$",
+      "ConstraintDescription": "Enter a valid RFC1918 IPv4 CIDR with a prefix from /16 through /28.",
+      "Description": "Explicit public subnet CIDR within VpcCidr and non-overlapping with PrivateSubnetCidr. The subnet does not auto-assign public IPs."
+    },
+    "PrivateSubnetCidr": {
+      "Type": "String",
+      "AllowedPattern": "^(10\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|172\\.(1[6-9]|2[0-9]|3[01])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|192\\.168\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))/(1[6-9]|2[0-8])$",
+      "ConstraintDescription": "Enter a valid RFC1918 IPv4 CIDR with a prefix from /16 through /28.",
+      "Description": "Explicit private subnet CIDR within VpcCidr and non-overlapping with PublicSubnetCidr. The subnet does not auto-assign public IPs."
+    },
+    "AvailabilityZone": {
+      "Type": "AWS::EC2::AvailabilityZone::Name",
+      "Description": "Explicit operator-selected AZ. Both subnets and the NAT Gateway use this same AZ."
+    }
+  },
+  "Resources": {
+    "Vpc": {
+      "Type": "AWS::EC2::VPC",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Isolates the separately managed host and gives the public/private subnet pair one explicit IPv4 boundary.",
+          "must": ["Use an RFC1918 CIDR that contains both subnet CIDRs."]
+        }
+      },
+      "Properties": {
+        "CidrBlock": { "Ref": "VpcCidr" },
+        "EnableDnsSupport": true,
+        "EnableDnsHostnames": true
+      }
+    },
+    "PublicSubnet": {
+      "Type": "AWS::EC2::Subnet",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Places only the NAT Gateway on the internet-routed side; public address assignment stays disabled.",
+          "must": ["Stay in AvailabilityZone and do not auto-assign public IPv4 addresses."]
+        }
+      },
+      "Properties": {
+        "VpcId": { "Ref": "Vpc" },
+        "CidrBlock": { "Ref": "PublicSubnetCidr" },
+        "AvailabilityZone": { "Ref": "AvailabilityZone" },
+        "MapPublicIpOnLaunch": false
+      }
+    },
+    "PrivateSubnet": {
+      "Type": "AWS::EC2::Subnet",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Hosts the private workload subnet; outbound internet uses the single NAT Gateway.",
+          "must": ["Stay in AvailabilityZone and do not auto-assign public IPv4 addresses."]
+        }
+      },
+      "Properties": {
+        "VpcId": { "Ref": "Vpc" },
+        "CidrBlock": { "Ref": "PrivateSubnetCidr" },
+        "AvailabilityZone": { "Ref": "AvailabilityZone" },
+        "MapPublicIpOnLaunch": false
+      }
+    },
+    "InternetGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Provides the internet edge required by the public NAT Gateway subnet.",
+          "must": ["Attach only to this VPC."]
+        }
+      }
+    },
+    "InternetGatewayAttachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Connects the VPC to its sole Internet Gateway.",
+          "must": ["Keep the attachment in place for the public route and NAT egress path."]
+        }
+      },
+      "Properties": {
+        "VpcId": { "Ref": "Vpc" },
+        "InternetGatewayId": { "Ref": "InternetGateway" }
+      }
+    },
+    "PublicRouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Holds the public subnet's route to the Internet Gateway for NAT traffic.",
+          "must": ["Associate only with PublicSubnet."]
+        }
+      },
+      "Properties": { "VpcId": { "Ref": "Vpc" } }
+    },
+    "PrivateRouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Keeps private subnet internet egress on the NAT Gateway path.",
+          "must": ["Associate only with PrivateSubnet."]
+        }
+      },
+      "Properties": { "VpcId": { "Ref": "Vpc" } }
+    },
+    "PublicDefaultRoute": {
+      "Type": "AWS::EC2::Route",
+      "DependsOn": "InternetGatewayAttachment",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Provides the NAT Gateway's public subnet with its IPv4 internet path.",
+          "must": ["Route through this VPC's Internet Gateway."]
+        }
+      },
+      "Properties": {
+        "RouteTableId": { "Ref": "PublicRouteTable" },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": { "Ref": "InternetGateway" }
+      }
+    },
+    "PrivateDefaultRoute": {
+      "Type": "AWS::EC2::Route",
+      "DependsOn": "NatGateway",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Sends private subnet IPv4 egress through the single public NAT Gateway.",
+          "must": ["Do not add a direct Internet Gateway route to the private subnet."]
+        }
+      },
+      "Properties": {
+        "RouteTableId": { "Ref": "PrivateRouteTable" },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": { "Ref": "NatGateway" }
+      }
+    },
+    "PublicSubnetRouteTableAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Activates the public IPv4 route for the NAT Gateway subnet.",
+          "must": ["Associate PublicSubnet with PublicRouteTable."]
+        }
+      },
+      "Properties": {
+        "SubnetId": { "Ref": "PublicSubnet" },
+        "RouteTableId": { "Ref": "PublicRouteTable" }
+      }
+    },
+    "PrivateSubnetRouteTableAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Activates NAT-only IPv4 egress for the private workload subnet.",
+          "must": ["Associate PrivateSubnet with PrivateRouteTable."]
+        }
+      },
+      "Properties": {
+        "SubnetId": { "Ref": "PrivateSubnet" },
+        "RouteTableId": { "Ref": "PrivateRouteTable" }
+      }
+    },
+    "NatEip": {
+      "Type": "AWS::EC2::EIP",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Supplies the NAT Gateway's stable public IPv4 address; the address is metered independently of host runtime.",
+          "must": ["Associate only with NatGateway."]
+        }
+      },
+      "Properties": { "Domain": "vpc" }
+    },
+    "NatGateway": {
+      "Type": "AWS::EC2::NatGateway",
+      "DependsOn": "InternetGatewayAttachment",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Gives the private subnet outbound internet access through one public, single-AZ gateway.",
+          "must": ["Stay in PublicSubnet and AvailabilityZone; hourly and data processing charges continue while the host is stopped."]
+        }
+      },
+      "Properties": {
+        "AllocationId": { "Fn::GetAtt": ["NatEip", "AllocationId"] },
+        "SubnetId": { "Ref": "PublicSubnet" },
+        "ConnectivityType": "public"
+      }
+    }
+  },
+  "Outputs": {
+    "VpcId": {
+      "Description": "VPC ID for the separately managed private host stack.",
+      "Value": { "Ref": "Vpc" }
+    },
+    "PrivateSubnetId": {
+      "Description": "Private subnet ID for the separately managed host stack.",
+      "Value": { "Ref": "PrivateSubnet" }
+    },
+    "PublicSubnetId": {
+      "Description": "Public subnet ID that contains the NAT Gateway.",
+      "Value": { "Ref": "PublicSubnet" }
+    },
+    "AvailabilityZone": {
+      "Description": "Selected AZ shared by both subnets and the NAT Gateway.",
+      "Value": { "Ref": "AvailabilityZone" }
+    }
+  }
+}

@@ -8,6 +8,8 @@ import type { IProjectRepository } from '@/modules/projects/repositories/project
 import { redactEgressText } from '@/shared/egress/redaction';
 import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-repository';
 import type { IProposedChangeSetRepository } from '@/modules/ai-runs/repositories/change-set-repository';
+import { requireProjectFileRoot } from '@/modules/projects/domain/project-file-root';
+import { assertAiRunProjectHasFileRoot } from '@/modules/ai-runs/use-cases/assert-ai-run-project';
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
@@ -31,6 +33,7 @@ export class ListAiRunActivityUseCase {
     if (!project) {
       throw new ProjectNotFoundError();
     }
+    requireProjectFileRoot(project);
     const filter = parseFilter(input.filter);
     const limit = parseLimit(input.limit);
     const cursor = parseCursor(input.cursor);
@@ -62,7 +65,8 @@ export class GetAiRunActivityUseCase {
   public constructor(
     private readonly aiRunRepository: IAiRunRepository,
     private readonly changeSetRepository: IProposedChangeSetRepository,
-    private readonly conversationRepository: IConversationRepository
+    private readonly conversationRepository: IConversationRepository,
+    private readonly projectRepository: IProjectRepository
   ) {}
 
   public async execute(input: GetAiRunActivityInput): Promise<AiRunActivityDetail> {
@@ -70,6 +74,7 @@ export class GetAiRunActivityUseCase {
     if (!run) {
       throw new AiRunNotFoundError();
     }
+    await assertAiRunProjectHasFileRoot(this.projectRepository, input.ownerId, run.projectId);
     const [changeSet, assistantMessage] = await Promise.all([
       this.changeSetRepository.findByRunForOwner(input.ownerId, run.id),
       run.assistantMessageId && this.conversationRepository.findMessageForOwner

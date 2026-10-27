@@ -8,6 +8,7 @@ function safePath(value) {
 }
 
 export function previewFiles(seed, project) {
+  if (project.relativeRoot === null) throw new Error('A project file root is required before reading preview files.');
   seed.files[project.relativeRoot] ??= { 'README.md': Buffer.from('# New project\n') };
   return seed.files[project.relativeRoot];
 }
@@ -23,6 +24,7 @@ export async function handlePreviewFiles(request, response, seed, parts, method,
   const project = findProject(seed, parts[3]);
   if (!project) { sendError(response, 404, 'PROJECT_NOT_FOUND', 'Project not found.'); return true; }
   if (parts[4] === 'facts') { sendData(response, { facts: [] }); return true; }
+  if (project.relativeRoot === null) { sendError(response, 409, 'PROJECT_ROOT_NOT_ATTACHED', 'Attach a project folder before using file access or assistant runs.'); return true; }
   if (parts[4] === 'provider-permissions') { sendData(response, { permissions: [] }); return true; }
   if (parts[4] === 'file-history') { sendData(response, { projectId: project.id, path: url.searchParams.get('path') ?? '', outcome: url.searchParams.get('outcome') ?? 'all', items: [], nextCursor: null }); return true; }
   if (parts[4] === 'chat-context') {

@@ -92,12 +92,10 @@ export function useAiRunTimeline({ snapshot, projectId, conversationId, csrfToke
   onConversationReconciledRef.current = onConversationReconciled;
 
   const setSnapshot = useCallback((next: AiRunSnapshot | ((current: AiRunSnapshot) => AiRunSnapshot)): void => {
-    setLocalSnapshot((current) => {
-      const resolved = typeof next === 'function' ? next(current) : next;
-      latestSnapshotRef.current = resolved;
-      onSnapshotChangeRef.current?.(resolved);
-      return resolved;
-    });
+    const resolved = typeof next === 'function' ? next(latestSnapshotRef.current) : next;
+    latestSnapshotRef.current = resolved;
+    setLocalSnapshot(resolved);
+    onSnapshotChangeRef.current?.(resolved);
   }, []);
 
   const reconcile = useCallback(async (fallbackError?: string): Promise<void> => {

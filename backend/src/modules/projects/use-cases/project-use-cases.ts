@@ -5,4 +5,15 @@ export {
   UpdateProjectStatusUseCase,
   type UpdateProjectStatusInput
 } from '@/modules/projects/use-cases/update-project-status';
+export {
+  WorkspacePlanningUseCases,
+  type AttachInitialProjectRootInput,
+  type CreatePlanningProjectInput,
+  type IWorkspacePlanningUseCases,
+  type ProjectActionResult,
+  type ReuseProjectInput,
+  type SearchProjectMetadataInput,
+  type SearchProjectMetadataResult,
+  type UpdateProjectObjectiveInput
+} from '@/modules/projects/use-cases/workspace-planning-use-cases';
 

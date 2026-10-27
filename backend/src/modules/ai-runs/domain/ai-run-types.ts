@@ -1,3 +1,5 @@
+import type { ProjectStorageKind } from '@/modules/projects/domain/project-types';
+
 export type AiRunStatus =
   | 'pending_approval'
   | 'rejected'
@@ -15,7 +17,8 @@ export type AiRunStatus =
 
 export type AiRunPhase = 'manifest' | 'decision' | 'staging' | 'runtime' | 'inference' | 'terminal' | 'review';
 
-export type EgressDecision = 'pending' | 'approved' | 'rejected';
+/** `policy_authorized` identifies server policy admission, never a user's approval. */
+export type EgressDecision = 'pending' | 'approved' | 'rejected' | 'policy_authorized';
 
 export type CleanupStatus = 'not_started' | 'complete' | 'unknown';
 
@@ -79,12 +82,14 @@ export interface AiRun {
   readonly conversationId: string;
   readonly request: string;
   readonly relativeRoot: string;
+  readonly storageKind: ProjectStorageKind;
   readonly requestedPaths: readonly string[];
   readonly manifest: EgressManifest;
   readonly manifestInvalidated: boolean;
   readonly status: AiRunStatus;
   readonly phase: AiRunPhase;
   readonly decision: EgressDecision;
+  readonly policyRevision?: string;
   readonly providerPermissionId?: string;
   readonly cleanup: CleanupStatus;
   readonly providerTransmission: ProviderTransmissionStatus;
@@ -114,10 +119,13 @@ export interface CreateAiRunRecord {
   readonly conversationId: string;
   readonly request: string;
   readonly relativeRoot: string;
+  readonly storageKind: ProjectStorageKind;
   readonly requestedPaths: readonly string[];
   readonly manifest: EgressManifest;
   readonly idempotencyKey: string;
   readonly requestFingerprint: string;
+  /** When present, the repository atomically verifies and binds this stored policy revision. */
+  readonly policyRevision?: string;
 }
 
 export interface CreateAiRunResult {

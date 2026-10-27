@@ -1,4 +1,7 @@
 import type { DataSource, QueryRunner } from 'typeorm';
+import { lockProjectWriteState } from '@/infrastructure/database/project-removal-write-barrier';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import { fixedContentScope, resultContentScope } from '@/infrastructure/database/storage-content-projections';
 
 import { AiRunIdempotencyReusedError } from '@/modules/ai-runs/domain/ai-run-errors';
 import {
@@ -14,10 +17,12 @@ import type {
   CommandResult,
   CommandResultUpdate,
   CreateSandboxCommandRecord,
+  PolicyCommandExecutionClaim,
   SandboxCommand
 } from '@/modules/ai-runs/domain/command-types';
 import { MAX_SANDBOX_COMMANDS_PER_LIST } from '@/modules/ai-runs/domain/command-types';
 import { sanitizeCommandResult } from '@/modules/ai-runs/domain/command-result';
+import { ProjectArchivedError } from '@/modules/conversations/domain/conversation-errors';
 import type { CommandMutationResult, ISandboxCommandRepository } from '@/modules/ai-runs/repositories/sandbox-command-repository';
 
 interface SandboxCommandRow {
@@ -48,12 +53,21 @@ interface SandboxCommandRow {
   readonly updated_at: Date | string;
 }
 
+interface PolicyCommandRunRow {
+  readonly project_id: string;
+  readonly status: string;
+  readonly decision: string;
+  readonly policy_revision: string | null;
+}
+
 export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepository {
-  public constructor(private readonly dataSource: DataSource) {}
+  public constructor(
+    private readonly dataSource: DataSource,
+    private readonly storageAccounting = new TypeOrmStorageContentAccounting(dataSource)
+  ) {}
 
   public async createProposal(input: CreateSandboxCommandRecord): Promise<CommandMutationResult> {
-    const runner = await this.startTransaction();
-    try {
+    return this.withAccountedTransaction(input.ownerId, async (runner) => {
       await lock(runner, `command-create:${input.ownerId}:${input.runId}:${input.createIdempotencyKey}`);
       const existing = await this.findByCreateKey(runner, input);
       if (existing) {
@@ -64,9 +78,9 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
         if (!replay) {
           throw new SandboxCommandNotFoundError();
         }
-        await runner.commitTransaction();
         return { resource: replay, replayed: true };
       }
+      await assertProjectWritable(runner, input.ownerId, input.projectId);
       const rows: readonly SandboxCommandRow[] = commandRows(await runner.query(
         `INSERT INTO "sandbox_commands" ("owner_id", "project_id", "run_id", "proposal_hash", "command", "args", "cwd", "summary", "classification", "blocked_reason", "decision", "status", "limits", "safe_message", "create_idempotency_key", "create_fingerprint")
          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16) RETURNING *`,
@@ -76,14 +90,8 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
       if (!row) {
         throw new SandboxCommandNotFoundError();
       }
-      await runner.commitTransaction();
       return { resource: toCommand(row), replayed: false };
-    } catch (error: unknown) {
-      if (runner.isTransactionActive) await runner.rollbackTransaction();
-      throw error;
-    } finally {
-      await runner.release();
-    }
+    }, resultContentScope((result: CommandMutationResult) => [{ entity: 'sandbox_commands', id: result.resource.id }]));
   }
 
   public async listForRun(ownerId: string, runId: string, limit = MAX_SANDBOX_COMMANDS_PER_LIST): Promise<readonly SandboxCommand[]> {
@@ -105,6 +113,9 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
   public async recordDecision(input: CommandDecisionUpdate): Promise<CommandMutationResult> {
     const runner = await this.startTransaction();
     try {
+      const projectId = await this.findProjectForRun(runner, input.ownerId, input.runId);
+      if (!projectId) throw new SandboxCommandNotFoundError();
+      await assertProjectWritable(runner, input.ownerId, projectId);
       await lock(runner, stateLockKey(input.commandId));
       const command = await this.findForUpdate(runner, input.ownerId, input.runId, input.commandId);
       if (!command) {
@@ -143,6 +154,56 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
     } finally {
       await runner.release();
     }
+  }
+
+  public async claimPolicyAuthorizedExecution(input: PolicyCommandExecutionClaim): Promise<CommandMutationResult> {
+    const runner = await this.startTransaction();
+    try {
+      const projectId = await this.findProjectForRun(runner, input.ownerId, input.runId);
+      if (!projectId) throw new SandboxCommandNotFoundError();
+      await assertProjectWritable(runner, input.ownerId, projectId);
+      const run = await this.findPolicyRunForUpdate(runner, input.ownerId, input.runId);
+      if (!run || run.project_id !== projectId || run.status !== 'running' || run.decision !== 'policy_authorized' || !run.policy_revision) {
+        throw new SandboxCommandDecisionConflictError();
+      }
+      await lock(runner, stateLockKey(input.commandId));
+      const command = await this.findForUpdate(runner, input.ownerId, input.runId, input.commandId);
+      if (!command) throw new SandboxCommandNotFoundError();
+      if (command.proposal_hash !== input.proposalHash) throw new SandboxCommandProposalConflictError();
+      if (command.decision_idempotency_key) {
+        if (command.decision_idempotency_key !== input.idempotencyKey || command.decision_fingerprint !== input.requestFingerprint) throw new SandboxCommandDecisionConflictError();
+        await runner.commitTransaction();
+        return { resource: toCommand(command), replayed: true };
+      }
+      if (command.classification !== 'safe' || command.decision !== 'pending' || command.status !== 'awaiting_approval' || command.cancel_requested) {
+        throw new SandboxCommandDecisionConflictError();
+      }
+      const rows: readonly SandboxCommandRow[] = commandRows(await runner.query(
+        `UPDATE "sandbox_commands" SET "decision" = 'policy_authorized', "status" = 'running', "decision_idempotency_key" = $1, "decision_fingerprint" = $2, "safe_message" = $3, "updated_at" = now()
+         WHERE "owner_id" = $4 AND "run_id" = $5 AND "id" = $6 AND "proposal_hash" = $7 AND "decision" = 'pending' AND "status" = 'awaiting_approval' AND "cancel_requested" = false RETURNING *`,
+        [input.idempotencyKey, input.requestFingerprint, 'The stored workspace policy authorized this bounded command.', input.ownerId, input.runId, input.commandId, input.proposalHash]
+      ));
+      if (!rows[0]) throw new SandboxCommandDecisionConflictError();
+      await runner.commitTransaction();
+      return { resource: toCommand(rows[0]), replayed: false };
+    } catch (error: unknown) {
+      if (runner.isTransactionActive) await runner.rollbackTransaction();
+      throw error;
+    } finally {
+      await runner.release();
+    }
+  }
+
+  public async isPolicyAuthorizedExecution(ownerId: string, runId: string, commandId: string): Promise<boolean> {
+    const rows: readonly { readonly decision: SandboxCommand['decision']; readonly status: SandboxCommand['status']; readonly cancel_requested: boolean; readonly run_status: string; readonly run_decision: string; readonly policy_revision: string | null }[] = await this.dataSource.query(
+      `SELECT c."decision", c."status", c."cancel_requested", r."status" AS "run_status", r."decision"::text AS "run_decision", r."policy_revision"
+       FROM "sandbox_commands" c JOIN "ai_runs" r ON r."owner_id" = c."owner_id" AND r."id" = c."run_id"
+       WHERE c."owner_id" = $1 AND c."run_id" = $2 AND c."id" = $3 LIMIT 1`,
+      [ownerId, runId, commandId]
+    );
+    const command = rows[0];
+    return Boolean(command && command.decision === 'policy_authorized' && command.run_decision === 'policy_authorized' && command.policy_revision !== null
+      && command.run_status === 'running' && !command.cancel_requested && ['running', 'completed', 'failed', 'timed_out', 'output_truncated'].includes(command.status));
   }
 
   public async recordCancellation(input: CommandCancellationUpdate): Promise<CommandMutationResult> {
@@ -186,7 +247,18 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
   public async markRunning(ownerId: string, runId: string, commandId: string): Promise<SandboxCommand | null> {
     const runner = await this.startTransaction();
     try {
+      const projectId = await this.findProjectForRun(runner, ownerId, runId);
+      if (!projectId) {
+        await runner.commitTransaction();
+        return null;
+      }
+      await assertProjectWritable(runner, ownerId, projectId);
       await lock(runner, stateLockKey(commandId));
+      const current = await this.findForUpdate(runner, ownerId, runId, commandId);
+      if (!current) {
+        await runner.commitTransaction();
+        return null;
+      }
       const rows: readonly SandboxCommandRow[] = commandRows(await runner.query(
         `UPDATE "sandbox_commands" SET "status" = 'running', "safe_message" = $1, "updated_at" = now() WHERE "owner_id" = $2 AND "run_id" = $3 AND "id" = $4 AND "decision" = 'approved' AND "status" = 'awaiting_approval' AND "cancel_requested" = false RETURNING *`,
         ['Running the command in the private sandbox.', ownerId, runId, commandId]
@@ -195,7 +267,6 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
         await runner.commitTransaction();
         return toCommand(rows[0]);
       }
-      const current = await this.findForUpdate(runner, ownerId, runId, commandId);
       await runner.commitTransaction();
       return current ? toCommand(current) : null;
     } catch (error: unknown) {
@@ -207,78 +278,54 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
   }
 
   public async saveResult(input: CommandResultUpdate): Promise<SandboxCommand> {
-    const runner = await this.startTransaction();
-    try {
+    return this.withAccountedTransaction(input.ownerId, async (runner) => {
       await lock(runner, stateLockKey(input.commandId));
       const current = await this.findForUpdate(runner, input.ownerId, input.runId, input.commandId);
-      if (!current) {
-        throw new SandboxCommandNotFoundError();
-      }
-      if (current.status !== 'cancel_requested') {
-        await runner.commitTransaction();
-        return toCommand(current);
-      }
+      if (!current) throw new SandboxCommandNotFoundError();
+      if (current.status !== 'cancel_requested') return toCommand(current);
+      await assertProjectWritable(runner, input.ownerId, current.project_id);
       const rows: readonly SandboxCommandRow[] = commandRows(await runner.query(
         `UPDATE "sandbox_commands" SET "status" = $1, "result" = $2::jsonb, "cancel_requested" = COALESCE($3, "cancel_requested"), "safe_message" = $4, "updated_at" = now()
          WHERE "owner_id" = $5 AND "run_id" = $6 AND "id" = $7 AND "status" = 'cancel_requested' RETURNING *`,
         [input.status, input.result ? JSON.stringify(sanitizeCommandResult(input.result, parseLimits(current.limits))) : null, input.cancelRequested ?? null, input.safeMessage, input.ownerId, input.runId, input.commandId]
       ));
-      await runner.commitTransaction();
       return toCommand(rows[0] ?? current);
-    } catch (error: unknown) {
-      if (runner.isTransactionActive) await runner.rollbackTransaction();
-      throw error;
-    } finally {
-      await runner.release();
-    }
+    }, fixedContentScope([{ entity: 'sandbox_commands', id: input.commandId }]));
   }
 
   public async saveIfAwaiting(input: CommandResultUpdate): Promise<SandboxCommand | null> {
-    const runner = await this.startTransaction();
-    try {
+    return this.withAccountedTransaction(input.ownerId, async (runner) => {
       await lock(runner, stateLockKey(input.commandId));
       const current = await this.findForUpdate(runner, input.ownerId, input.runId, input.commandId);
-      if (!current || current.status !== 'awaiting_approval' || current.cancel_requested) {
-        await runner.commitTransaction();
-        return null;
-      }
+      if (!current || current.status !== 'awaiting_approval' || current.cancel_requested) return null;
+      await assertProjectWritable(runner, input.ownerId, current.project_id);
       const rows: readonly SandboxCommandRow[] = commandRows(await runner.query(
         `UPDATE "sandbox_commands" SET "status" = $1, "result" = $2::jsonb, "safe_message" = $3, "updated_at" = now()
          WHERE "owner_id" = $4 AND "run_id" = $5 AND "id" = $6 AND "status" = 'awaiting_approval' AND "cancel_requested" = false RETURNING *`,
         [input.status, input.result ? JSON.stringify(sanitizeCommandResult(input.result, parseLimits(current.limits))) : null, input.safeMessage, input.ownerId, input.runId, input.commandId]
       ));
-      await runner.commitTransaction();
       return rows[0] ? toCommand(rows[0]) : null;
-    } catch (error: unknown) {
-      if (runner.isTransactionActive) await runner.rollbackTransaction();
-      throw error;
-    } finally {
-      await runner.release();
-    }
+    }, fixedContentScope([{ entity: 'sandbox_commands', id: input.commandId }]));
   }
 
   public async saveExecutionResult(input: CommandResultUpdate): Promise<SandboxCommand | null> {
-    const runner = await this.startTransaction();
-    try {
+    return this.withAccountedTransaction(input.ownerId, async (runner) => {
+      const projectId = await this.findProjectForRun(runner, input.ownerId, input.runId);
+      if (!projectId) return null;
+      await assertProjectWritable(runner, input.ownerId, projectId);
+      const run = await this.findPolicyRunForUpdate(runner, input.ownerId, input.runId);
+      if (!run || run.project_id !== projectId) return null;
       await lock(runner, stateLockKey(input.commandId));
       const current = await this.findForUpdate(runner, input.ownerId, input.runId, input.commandId);
-      if (!current || current.status !== 'running' || current.cancel_requested) {
-        await runner.commitTransaction();
-        return null;
-      }
+      if (!current || current.status !== 'running' || current.cancel_requested) return null;
+      if (current.decision === 'policy_authorized' && (run.status !== 'running' || run.decision !== 'policy_authorized' || !run.policy_revision)) return null;
       const rows: readonly SandboxCommandRow[] = commandRows(await runner.query(
         `UPDATE "sandbox_commands" SET "status" = $1, "result" = $2::jsonb, "safe_message" = $3, "updated_at" = now()
          WHERE "owner_id" = $4 AND "run_id" = $5 AND "id" = $6 AND "status" = 'running' AND "cancel_requested" = false RETURNING *`,
         [input.status, input.result ? JSON.stringify(sanitizeCommandResult(input.result, parseLimits(current.limits))) : null, input.safeMessage, input.ownerId, input.runId, input.commandId]
       ));
-      await runner.commitTransaction();
       return rows[0] ? toCommand(rows[0]) : null;
-    } catch (error: unknown) {
-      if (runner.isTransactionActive) await runner.rollbackTransaction();
-      throw error;
-    } finally {
-      await runner.release();
-    }
+    }, fixedContentScope([{ entity: 'sandbox_commands', id: input.commandId }]));
   }
 
   private async startTransaction(): Promise<QueryRunner> {
@@ -286,6 +333,20 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
     await runner.connect();
     await runner.startTransaction();
     return runner;
+  }
+
+  private async withAccountedTransaction<T>(ownerId: string, action: (runner: QueryRunner) => Promise<T>, scope: import('@/infrastructure/database/storage-content-projections').StorageContentMutationScope<T>): Promise<T> {
+    const runner = await this.startTransaction();
+    try {
+      const result = await this.storageAccounting.runMutation(runner, ownerId, () => action(runner), scope);
+      await runner.commitTransaction();
+      return result;
+    } catch (error: unknown) {
+      if (runner.isTransactionActive) await runner.rollbackTransaction();
+      throw error;
+    } finally {
+      await runner.release();
+    }
   }
 
   private async findByCreateKey(runner: QueryRunner, input: CreateSandboxCommandRecord): Promise<Pick<SandboxCommandRow, 'id' | 'create_fingerprint'> | null> {
@@ -305,10 +366,32 @@ export class TypeOrmSandboxCommandRepository implements ISandboxCommandRepositor
     const rows: readonly SandboxCommandRow[] = await runner.query('SELECT * FROM "sandbox_commands" WHERE "owner_id" = $1 AND "run_id" = $2 AND "id" = $3 LIMIT 1 FOR UPDATE', [ownerId, runId, commandId]);
     return rows[0] ?? null;
   }
+
+  private async findProjectForRun(runner: QueryRunner, ownerId: string, runId: string): Promise<string | null> {
+    const rows: readonly { readonly project_id: string }[] = await runner.query(
+      'SELECT "project_id" FROM "ai_runs" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1',
+      [ownerId, runId]
+    );
+    return rows[0]?.project_id ?? null;
+  }
+
+  private async findPolicyRunForUpdate(runner: QueryRunner, ownerId: string, runId: string): Promise<PolicyCommandRunRow | null> {
+    const rows: readonly PolicyCommandRunRow[] = await runner.query(
+      `SELECT "project_id", "status", "decision"::text AS "decision", "policy_revision"
+       FROM "ai_runs" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1 FOR UPDATE`,
+      [ownerId, runId]
+    );
+    return rows[0] ?? null;
+  }
 }
 
 async function lock(runner: QueryRunner, key: string): Promise<void> {
   await runner.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [key]);
+}
+
+async function assertProjectWritable(runner: QueryRunner, ownerId: string, projectId: string): Promise<void> {
+  const project = await lockProjectWriteState(runner, ownerId, projectId);
+  if (!project || project.status !== 'active' || project.removalPending) throw new ProjectArchivedError();
 }
 
 function stateLockKey(commandId: string): string {

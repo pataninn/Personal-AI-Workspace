@@ -21,4 +21,12 @@ export class FakeStagingGateway implements IStagingGateway {
     }
     this.cleaned.push(stagingReference);
   }
+
+  public async assertFresh(_stagingReference: string): Promise<void> {
+    return undefined;
+  }
+
+  public async cleanupExpired(): Promise<number> {
+    return 0;
+  }
 }

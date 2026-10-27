@@ -6,7 +6,7 @@ import type { ProjectTask } from '@/entities/project-task/model/types';
 function task(id: string, deadline: string | null, importance: ProjectTask['importance']): ProjectTask {
   return { id, projectId: 'project', title: id, details: null, importance, deadline, subtasks: [], status: 'todo', position: 0, version: 1,
     source: { kind: 'user', label: 'You', suggestionId: null, runId: null, conversationId: null, acceptedAt: null },
-    createdAt: '2026-10-01', updatedAt: '2026-10-01', completedAt: null, archivedAt: null };
+    createdAt: '2026-10-01', updatedAt: '2026-10-01', completedAt: null };
 }
 
 describe('task priority', () => {

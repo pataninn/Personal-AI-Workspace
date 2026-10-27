@@ -2,7 +2,6 @@ import { promises as fs } from 'node:fs';
 
 import type { DataSource } from 'typeorm';
 
-import type { OpenShellGatewayClient } from '@/infrastructure/sandbox/openshell-gateway-client';
 import {
   StartupChecksError,
   type StartupCheckFailure
@@ -13,11 +12,7 @@ export interface StartupCheckOptions {
   readonly workspaceRoot: string;
   readonly workspaceIdentityFile: string;
   readonly workspaceIdentity: string;
-  readonly gatewayClient?: OpenShellGatewayClient;
-  readonly providerCheck?: () => Promise<void>;
-  readonly nimProfile: string;
-  readonly nimModel: string;
-  readonly agentRuntimeMode?: 'fake' | 'direct' | 'openshell' | 'hermes';
+
 }
 
 async function checkDatabase(dataSource: DataSource): Promise<StartupCheckFailure | null> {
@@ -90,90 +85,11 @@ async function checkWorkspaceIdentity(options: StartupCheckOptions): Promise<Sta
   }
 }
 
-async function checkOpenShell(gatewayClient: OpenShellGatewayClient): Promise<StartupCheckFailure | null> {
-  try {
-    await gatewayClient.checkHealth();
-    return null;
-  } catch (error: unknown) {
-    const code = error instanceof Error && 'code' in error && typeof error.code === 'string'
-      ? error.code
-      : 'OPENSHELL_UNAVAILABLE';
-    return {
-      check: 'openshell',
-      code,
-      message: 'The authenticated OpenShell gateway is unavailable.'
-    };
-  }
-}
-
-async function checkNim(options: StartupCheckOptions): Promise<StartupCheckFailure | null> {
-  if (!options.gatewayClient) {
-    return {
-      check: 'nim',
-      code: 'NIM_PROVIDER_UNAVAILABLE',
-      message: 'The configured model provider or Hermes gateway route is unavailable.'
-    };
-  }
-  try {
-    const readiness = await options.gatewayClient.getNimReadiness();
-    if (!readiness.ready || readiness.provider !== options.nimProfile || readiness.model !== options.nimModel) {
-      return {
-        check: 'nim',
-        code: 'NIM_PROFILE_UNAVAILABLE',
-        message: 'The configured NVIDIA NIM provider profile is not ready.'
-      };
-    }
-    return null;
-  } catch (error: unknown) {
-    const code = error instanceof Error && 'code' in error && typeof error.code === 'string'
-      ? error.code
-      : 'NIM_PROFILE_UNAVAILABLE';
-    return {
-      check: 'nim',
-      code,
-      message: 'The configured NVIDIA NIM provider profile is unavailable.'
-    };
-  }
-}
-
-async function checkDirectProvider(check: () => Promise<void>): Promise<StartupCheckFailure | null> {
-  try {
-    await check();
-    return null;
-  } catch {
-    return {
-      check: 'nim',
-      code: 'NIM_PROVIDER_UNAVAILABLE',
-      message: 'The configured model provider or Hermes gateway route is unavailable.'
-    };
-  }
-}
-
+/** Local data remains usable when the optional AI bridge is offline. */
 export async function runStartupChecks(options: StartupCheckOptions): Promise<void> {
-  const externalChecks = externalStartupChecks(options);
   const failures = (await Promise.all([
     checkDatabase(options.dataSource),
-    checkWorkspaceIdentity(options),
-    ...externalChecks
+    checkWorkspaceIdentity(options)
   ])).filter((failure): failure is StartupCheckFailure => failure !== null);
-  if (failures.length > 0) {
-    throw new StartupChecksError(failures);
-  }
-}
-
-function externalStartupChecks(options: StartupCheckOptions): readonly Promise<StartupCheckFailure | null>[] {
-  if (options.agentRuntimeMode === 'fake') {
-    return [];
-  }
-  if (options.agentRuntimeMode === 'direct' || options.agentRuntimeMode === 'hermes') {
-    return [options.providerCheck ? checkDirectProvider(options.providerCheck) : Promise.resolve({ check: 'nim', code: 'NIM_PROVIDER_UNAVAILABLE', message: 'The configured model provider or Hermes gateway route is unavailable.' })];
-  }
-  if (options.agentRuntimeMode === 'openshell') {
-    return options.gatewayClient
-      ? [checkOpenShell(options.gatewayClient), checkNim(options)]
-      : [Promise.resolve({ check: 'openshell', code: 'OPENSHELL_UNAVAILABLE', message: 'The authenticated OpenShell gateway is unavailable.' })];
-  }
-  return options.gatewayClient
-    ? [checkOpenShell(options.gatewayClient), checkNim(options)]
-    : [Promise.resolve({ check: 'nim', code: 'NIM_PROVIDER_UNAVAILABLE', message: 'The configured model provider or Hermes gateway route is unavailable.' })];
+  if (failures.length > 0) throw new StartupChecksError(failures);
 }

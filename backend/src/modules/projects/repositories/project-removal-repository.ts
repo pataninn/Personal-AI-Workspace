@@ -4,9 +4,19 @@ export interface RemoveProjectRecord {
   readonly expectedVersion: number;
 }
 
+export interface ProjectAutomationTurnReference {
+  readonly ownerId: string;
+  readonly projectId: string;
+  readonly occurrenceId: string;
+  readonly conversationId: string;
+  readonly turnId: string;
+}
+
+export type ProjectAutomationCancellation = (input: ProjectAutomationTurnReference) => Promise<string>;
+
 /** Removes application records, preserving the authoritative project folder. */
 export interface IProjectRemovalRepository {
-  remove(input: RemoveProjectRecord): Promise<void>;
+  remove(input: RemoveProjectRecord, cancelAutomationTurn?: ProjectAutomationCancellation): Promise<void>;
 }
 
 /** A reversible move of private backup directories before database deletion. */

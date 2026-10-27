@@ -18,6 +18,15 @@ const snapshot = {
 };
 
 describe('parseAiRunEvent', () => {
+  it('keeps policy authorization as provenance in a run snapshot event', () => {
+    const event = parseAiRunEvent(JSON.stringify({
+      runId: snapshot.runId, type: 'run.snapshot', sequence: 2,
+      payload: { ...snapshot, decision: 'policy_authorized' }
+    }));
+
+    expect(event?.payload.decision).toBe('policy_authorized');
+  });
+
   it('keeps only bounded safe event fields and accepts a complete snapshot', () => {
     const event = parseAiRunEvent(JSON.stringify({ runId: snapshot.runId, type: 'run.snapshot', sequence: 1, payload: { ...snapshot, providerTransmission: 'transmitted_confirmed' } }));
 

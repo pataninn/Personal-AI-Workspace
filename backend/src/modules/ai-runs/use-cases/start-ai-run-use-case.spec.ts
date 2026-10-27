@@ -2,16 +2,51 @@ import type { Message, MessagePage } from '@/modules/conversations/domain/conver
 import type { IConversationRepository } from '@/modules/conversations/repositories/conversation-repository';
 import type { AiRun, EgressManifest } from '@/modules/ai-runs/domain/ai-run-types';
 import { InMemoryAiRunRepository } from '@/infrastructure/ai-runs/in-memory-ai-run-repository';
+import { InMemorySandboxCommandRepository } from '@/infrastructure/ai-runs/in-memory-sandbox-command-repository';
 import { InMemoryRunEventPublisher } from '@/infrastructure/ai-runs/in-memory-run-event-publisher';
 import { InMemoryProviderPermissionRepository } from '@/infrastructure/ai-runs/in-memory-provider-permission-repository';
 import { FakeAgentRuntime } from '@/infrastructure/sandbox/fake-agent-runtime';
+import type { RuntimeInferenceEvent, RuntimeRunInput } from '@/modules/ai-runs/repositories/agent-runtime';
 import { CancelAiRunUseCase } from '@/modules/ai-runs/use-cases/cancel-ai-run-use-case';
 import { ChangeSetReviewRequiredError } from '@/modules/ai-runs/domain/change-errors';
+import { AiRunCancellationReviewRequiredError, AiRunStagingFailedError } from '@/modules/ai-runs/domain/ai-run-errors';
 import { StartAiRunUseCase, type RuntimeCommandProposalPort } from '@/modules/ai-runs/use-cases/start-ai-run-use-case';
+import { DecideSandboxCommandUseCase, ProposeSandboxCommandUseCase } from '@/modules/ai-runs/use-cases/sandbox-command-use-cases';
+import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
+import type { Project } from '@/modules/projects/domain/project-types';
+import type { AssistantExecutionAuthorization } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
+import type { IStagingGateway } from '@/modules/ai-runs/repositories/staging-gateway';
+import { DemoRunStartRateLimitedError } from '@/modules/demo/domain/demo-admission-errors';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const PROJECT_ID = '22222222-2222-4222-8222-222222222222';
 const CONVERSATION_ID = '33333333-3333-4333-8333-333333333333';
+
+type StartArgs = ConstructorParameters<typeof StartAiRunUseCase>;
+const allowDemoRunStart = { admitDemoRunStart: async (): Promise<void> => undefined };
+
+// Keep the existing test call shape stable while the production constructor
+// requires the admission gate as a separate, non-optional dependency.
+function createStartUseCase(
+  repository: StartArgs[0],
+  conversations: StartArgs[1],
+  runtime: StartArgs[2],
+  events: StartArgs[3],
+  commandProposals?: StartArgs[5],
+  projectRepository?: StartArgs[6],
+  changeSetProposals?: StartArgs[7],
+  providerPermissionRepository?: StartArgs[8],
+  automaticChanges?: StartArgs[9],
+  principalAuthorization?: StartArgs[10],
+  stagingGateway?: StartArgs[11],
+  admission: StartArgs[4] = allowDemoRunStart
+): StartAiRunUseCase {
+  return new StartAiRunUseCase(
+    repository, conversations, runtime, events, admission, commandProposals,
+    projectRepository, changeSetProposals, providerPermissionRepository,
+    automaticChanges, principalAuthorization, stagingGateway
+  );
+}
 
 function manifest(): EgressManifest {
   return {
@@ -56,7 +91,7 @@ function conversationRepository(): IConversationRepository & { readonly assistan
 }
 
 async function readyRun(repository: InMemoryAiRunRepository): Promise<AiRun> {
-  const created = await repository.create({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Inspect the project', relativeRoot: '', requestedPaths: [], manifest: manifest(), idempotencyKey: 'create-run-3-3', requestFingerprint: 'fingerprint' });
+  const created = await repository.create({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Inspect the project', relativeRoot: '', storageKind: 'legacy', requestedPaths: [], manifest: manifest(), idempotencyKey: 'create-run-3-3', requestFingerprint: 'fingerprint' });
   const ready: AiRun = { ...created.resource, status: 'ready', phase: 'runtime', decision: 'approved', runtimeKind: 'fake', sandboxReady: true, runtimeReference: 'fake://staging/run', safeMessage: 'Private run environment ready.', updatedAt: new Date() };
   await repository.save(ready);
   return ready;
@@ -73,12 +108,293 @@ async function waitForStatus(repository: InMemoryAiRunRepository, runId: string,
   throw new Error(`Run did not reach ${status}.`);
 }
 
+class PolicyCommandEventRuntime extends FakeAgentRuntime {
+  public constructor(private readonly commands: InMemorySandboxCommandRepository) { super(); }
+
+  public override async *startRun(input: RuntimeRunInput): AsyncIterable<RuntimeInferenceEvent> {
+    this.startedRuns.push(input);
+    yield { type: 'started' };
+    yield { type: 'tool.proposed', proposal: { runId: input.runId, commandId: 'runtime-permission', command: 'hermes-terminal', args: ['pwd'], cwd: '.' } };
+    const commandId = this.proposedCommands[0]?.commandId;
+    if (!commandId) throw new Error('The bounded command proposal was not registered.');
+    yield { type: 'approval.required', commandId };
+    await waitUntil(async () => this.commands.isPolicyAuthorizedExecution(input.ownerId, input.runId, commandId));
+    yield { type: 'tool.started', commandId };
+    await waitUntil(async () => (await this.commands.findByIdForOwner(input.ownerId, input.runId, commandId))?.status === 'completed');
+    yield { type: 'tool.completed', commandId, status: 'completed' };
+    yield { type: 'completed', text: 'The selected workspace was inspected.' };
+  }
+}
+
+async function waitUntil(predicate: () => Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (await predicate()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error('The policy-authorized command did not reach its expected state.');
+}
+
 describe('StartAiRunUseCase', () => {
+  it('runs a bounded policy command through the async event loop without publishing a decision request', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const conversations = conversationRepository();
+    const events = new InMemoryRunEventPublisher();
+    const commands = new InMemorySandboxCommandRepository();
+    const runtime = new PolicyCommandEventRuntime(commands);
+    const run = await readyRun(repository);
+    await repository.save({ ...run, decision: 'policy_authorized', policyRevision: '7' });
+    const project: Project = {
+      id: PROJECT_ID,
+      ownerId: OWNER_ID,
+      name: 'Project',
+      slug: 'project',
+      relativeRoot: 'projects/project',
+      storageKind: 'managed',
+      objective: null,
+      status: 'active',
+      version: 1,
+      createdAt: new Date('2026-09-16T00:00:00.000Z'),
+      updatedAt: new Date('2026-09-16T00:00:00.000Z')
+    };
+    const projects: IProjectRepository = {
+      listByOwner: async () => [project],
+      findByIdForOwner: async (ownerId, projectId) => ownerId === OWNER_ID && projectId === PROJECT_ID ? project : null,
+      listActiveRoots: async () => ['projects/project'],
+      create: async (input) => ({ ...project, ...input, storageKind: input.storageKind }),
+      updateStatus: async (input) => ({ ...project, status: input.status, version: input.expectedVersion + 1 })
+    };
+    const authorization: AssistantExecutionAuthorization = {
+      policies: [],
+      effectiveCapabilities: ['workspace_file_read', 'bounded_sandbox_command'],
+      revisions: { workspace: '7' }
+    };
+    const executionPolicy = { assertWorkspace: jest.fn(async () => authorization) };
+    const propose = new ProposeSandboxCommandUseCase(repository, commands, runtime, projects, undefined, executionPolicy);
+    const execute = new DecideSandboxCommandUseCase(repository, commands, runtime, projects, undefined, executionPolicy);
+    const received: string[] = [];
+    events.subscribe(run.id, (event) => { received.push(event.type); });
+    const start = new StartAiRunUseCase(
+      repository, conversations, runtime, events, allowDemoRunStart, propose, projects,
+      undefined, undefined, undefined, undefined, undefined, executionPolicy, execute
+    );
+
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-policy-command-control-flow' });
+    const completed = await waitForStatus(repository, run.id, 'succeeded');
+    const [command] = await commands.listForRun(OWNER_ID, run.id);
+
+    expect(completed.decision).toBe('policy_authorized');
+    expect(command).toMatchObject({ decision: 'policy_authorized', status: 'completed', classification: 'safe' });
+    expect(command?.result?.termination).toBe('completed');
+    expect(runtime.policyExecutedCommands).toHaveLength(1);
+    expect(runtime.executedCommands).toHaveLength(0);
+    expect(received).toContain('tool.started');
+    expect(received).toContain('tool.completed');
+    expect(received).not.toContain('approval.required');
+    expect(received).not.toContain('tool.proposed');
+    expect(executionPolicy.assertWorkspace).toHaveBeenCalledWith(expect.objectContaining({ policyRevision: '7' }));
+  });
+
+  it('checks a prepared local staging reference before starting it and cleans only after runtime destruction', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const conversations = conversationRepository();
+    const runtime = new FakeAgentRuntime();
+    const run = await readyRun(repository);
+    await repository.save({ ...run, runtimeReference: `run-${run.id}` });
+    const order: string[] = [];
+    jest.spyOn(runtime, 'destroy').mockImplementation(async () => { order.push('destroy'); });
+    const stagingGateway: Pick<IStagingGateway, 'assertFresh' | 'cleanup'> = {
+      assertFresh: jest.fn(async () => { order.push('freshness'); }),
+      cleanup: jest.fn(async () => { order.push('cleanup'); })
+    };
+    const start = createStartUseCase(repository, conversations, runtime, new InMemoryRunEventPublisher(), undefined, undefined, undefined, undefined, undefined, undefined, stagingGateway);
+
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-staging-cleanup-order' });
+    await waitForStatus(repository, run.id, 'succeeded');
+    for (let attempt = 0; attempt < 100 && !order.includes('cleanup'); attempt += 1) await new Promise<void>((resolve) => setTimeout(resolve, 2));
+
+    expect(order).toEqual(['freshness', 'destroy', 'cleanup']);
+    expect(stagingGateway.cleanup).toHaveBeenCalledWith(`run-${run.id}`);
+  });
+
+  it('does not start an expired prepared snapshot and reports staging cleanup as confirmed absent', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const run = await readyRun(repository);
+    await repository.save({ ...run, runtimeReference: `run-${run.id}` });
+    const stagingGateway: Pick<IStagingGateway, 'assertFresh' | 'cleanup'> = {
+      assertFresh: jest.fn().mockRejectedValue(new AiRunStagingFailedError('complete')),
+      cleanup: jest.fn()
+    };
+    const start = createStartUseCase(repository, conversationRepository(), runtime, new InMemoryRunEventPublisher(), undefined, undefined, undefined, undefined, undefined, undefined, stagingGateway);
+
+    await expect(start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-expired-staging' })).rejects.toMatchObject({ code: 'STAGING_FAILED', cleanup: 'complete' });
+    expect(runtime.startedRuns).toEqual([]);
+    expect(await repository.findByIdForOwner(OWNER_ID, run.id)).toMatchObject({ status: 'ready' });
+  });
+
+  it('restores a start transition when demo run-start admission denies it', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const run = await readyRun(repository);
+    const admission = { admitDemoRunStart: jest.fn().mockRejectedValue(new DemoRunStartRateLimitedError()) };
+    const beginStart = jest.spyOn(repository, 'beginStart');
+    const abortStart = jest.spyOn(repository, 'abortStart');
+    const start = createStartUseCase(
+      repository,
+      conversationRepository(),
+      runtime,
+      new InMemoryRunEventPublisher(),
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      admission
+    );
+
+    await expect(start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'demo-run-rate-limit' }))
+      .rejects.toMatchObject({ code: 'DEMO_RUN_START_RATE_LIMITED', statusCode: 429 });
+    expect(admission.admitDemoRunStart).toHaveBeenCalledTimes(1);
+    expect(beginStart).toHaveBeenCalledTimes(1);
+    expect(abortStart).toHaveBeenCalledTimes(1);
+    expect(await repository.findByIdForOwner(OWNER_ID, run.id)).toMatchObject({ status: 'ready' });
+    expect(runtime.startedRuns).toEqual([]);
+  });
+
+  it('does not charge a demo start when cancellation wins before the ready-to-queued transition', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const events = new InMemoryRunEventPublisher();
+    const run = await readyRun(repository);
+    const admission = { admitDemoRunStart: jest.fn(async (): Promise<void> => undefined) };
+    let releaseBeginStart!: () => void;
+    let markBeginStart!: () => void;
+    const beginStartPaused = new Promise<void>((resolve) => { markBeginStart = resolve; });
+    const beginStartGate = new Promise<void>((resolve) => { releaseBeginStart = resolve; });
+    const beginStart = repository.beginStart.bind(repository);
+    jest.spyOn(repository, 'beginStart').mockImplementation(async (input) => {
+      markBeginStart();
+      await beginStartGate;
+      return beginStart(input);
+    });
+    const start = createStartUseCase(repository, conversationRepository(), runtime, events, undefined, undefined, undefined, undefined, undefined, undefined, undefined, admission);
+    const pendingStart = start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-cancel-before-transition' });
+    await beginStartPaused;
+
+    const cancel = new CancelAiRunUseCase(repository, runtime, events);
+    await cancel.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'cancel-before-start-transition' });
+    releaseBeginStart();
+
+    await expect(pendingStart).rejects.toMatchObject({ code: 'AI_RUN_STATE_CONFLICT' });
+    expect(admission.admitDemoRunStart).not.toHaveBeenCalled();
+    expect(runtime.startedRuns).toEqual([]);
+    await expect(repository.findByIdForOwner(OWNER_ID, run.id)).resolves.toMatchObject({ status: 'cancelled' });
+  });
+
+  it('admits only the winning transition when two distinct start requests compete', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const run = await readyRun(repository);
+    const admission = { admitDemoRunStart: jest.fn(async (): Promise<void> => undefined) };
+    const start = createStartUseCase(repository, conversationRepository(), runtime, new InMemoryRunEventPublisher(), undefined, undefined, undefined, undefined, undefined, undefined, undefined, admission);
+
+    const results = await Promise.allSettled([
+      start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-competing-one' }),
+      start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-competing-two' })
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(admission.admitDemoRunStart).toHaveBeenCalledTimes(1);
+    await waitForStatus(repository, run.id, 'succeeded');
+    expect(runtime.startedRuns).toHaveLength(1);
+  });
+
+  it('does not start a local prepared snapshot when cleanup and freshness support are not wired', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const run = await readyRun(repository);
+    await repository.save({ ...run, runtimeReference: `run-${run.id}` });
+    const start = createStartUseCase(repository, conversationRepository(), runtime, new InMemoryRunEventPublisher());
+
+    await expect(start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-staging-port-missing' }))
+      .rejects.toMatchObject({ code: 'STAGING_FAILED', cleanup: 'unknown' });
+    expect(runtime.startedRuns).toEqual([]);
+  });
+
+  it('retains staging and makes a completed run reviewable when post-run cleanup is uncertain', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const events = new InMemoryRunEventPublisher();
+    const published: string[] = [];
+    const run = await readyRun(repository);
+    await repository.save({ ...run, runtimeReference: `run-${run.id}` });
+    events.subscribe(run.id, (event) => { published.push(event.type); });
+    const stagingGateway: Pick<IStagingGateway, 'assertFresh' | 'cleanup'> = {
+      assertFresh: jest.fn(),
+      cleanup: jest.fn().mockRejectedValue(new AiRunStagingFailedError('unknown'))
+    };
+    const start = createStartUseCase(repository, conversationRepository(), runtime, events, undefined, undefined, undefined, undefined, undefined, undefined, stagingGateway);
+
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-uncertain-staging-cleanup' });
+    const reviewed = await waitForStatus(repository, run.id, 'review_required');
+
+    expect(reviewed.cleanup).toBe('unknown');
+    expect(runtime.destroyedRuns).toContain(run.id);
+    expect(stagingGateway.cleanup).toHaveBeenCalledWith(`run-${run.id}`);
+    expect(published).not.toContain('run.completed');
+    expect(published).toContain('run.needs_manual_review');
+  });
+
+  it('destroys a prepared runtime before cleaning staging on ready-run cancellation', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const events = new InMemoryRunEventPublisher();
+    const run = await readyRun(repository);
+    const order: string[] = [];
+    jest.spyOn(runtime, 'destroy').mockImplementation(async () => { order.push('destroy'); });
+    const stagingGateway: Pick<IStagingGateway, 'cleanup'> = {
+      cleanup: jest.fn(async () => { order.push('cleanup'); })
+    };
+    const cancel = new CancelAiRunUseCase(repository, runtime, events, undefined, undefined, stagingGateway);
+
+    const cancelled = await cancel.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'cancel-prepared-staging' });
+
+    expect(cancelled.status).toBe('cancelled');
+    expect(order).toEqual(['destroy', 'cleanup']);
+    expect(stagingGateway.cleanup).toHaveBeenCalledWith(run.runtimeReference);
+  });
+
+  it('keeps a prepared cancellation in review and retains staging when runtime destruction is unknown', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const events = new InMemoryRunEventPublisher();
+    const run = await readyRun(repository);
+    jest.spyOn(runtime, 'destroy').mockRejectedValue(new Error('destroy is uncertain'));
+    const stagingGateway: Pick<IStagingGateway, 'cleanup'> = { cleanup: jest.fn() };
+    const cancel = new CancelAiRunUseCase(repository, runtime, events, undefined, undefined, stagingGateway);
+
+    await expect(cancel.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'cancel-uncertain-prepared-runtime' }))
+      .rejects.toBeInstanceOf(AiRunCancellationReviewRequiredError);
+    expect(await repository.findByIdForOwner(OWNER_ID, run.id)).toMatchObject({ status: 'review_required', cleanup: 'unknown' });
+    expect(stagingGateway.cleanup).not.toHaveBeenCalled();
+  });
+
+  it('marks staging cleanup unknown when a prepared cancellation destroys runtime but cannot remove its snapshot', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const runtime = new FakeAgentRuntime();
+    const events = new InMemoryRunEventPublisher();
+    const run = await readyRun(repository);
+    const stagingGateway: Pick<IStagingGateway, 'cleanup'> = { cleanup: jest.fn().mockRejectedValue(new AiRunStagingFailedError('unknown')) };
+    const cancel = new CancelAiRunUseCase(repository, runtime, events, undefined, undefined, stagingGateway);
+
+    await expect(cancel.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'cancel-staging-cleanup-unknown' }))
+      .rejects.toBeInstanceOf(AiRunCancellationReviewRequiredError);
+    expect(runtime.destroyedRuns).toContain(run.id);
+    expect(await repository.findByIdForOwner(OWNER_ID, run.id)).toMatchObject({ status: 'review_required', cleanup: 'unknown' });
+  });
+
   it('keeps an uncertain file-apply outcome in review rather than claiming success', async () => {
     const repository = new InMemoryAiRunRepository();
     const run = await readyRun(repository);
     const apply = jest.fn().mockRejectedValue(new ChangeSetReviewRequiredError());
-    await new StartAiRunUseCase(repository, conversationRepository(), new FakeAgentRuntime(), new InMemoryRunEventPublisher(), undefined, undefined, undefined, undefined, { executeAutomatically: apply }).execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'automatic-files-unknown' });
+    await createStartUseCase(repository, conversationRepository(), new FakeAgentRuntime(), new InMemoryRunEventPublisher(), undefined, undefined, undefined, undefined, { executeAutomatically: apply }).execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'automatic-files-unknown' });
     const outcome = await waitForStatus(repository, run.id, 'review_required');
     expect(outcome.assistantComplete).toBe(false);
     expect(apply).toHaveBeenCalledTimes(1);
@@ -96,7 +412,7 @@ describe('StartAiRunUseCase', () => {
       expect((await repository.findByIdForOwner(OWNER_ID, run.id))?.status).toBe('running');
       return { status: applyStatus, safeMessage: 'File apply outcome confirmed.', result: { persisted: true as const, operations: [], appliedCount: 3, skippedCount: 0, failedCount: 0, backupCount: 1 } };
     });
-    const start = new StartAiRunUseCase(repository, conversations, new FakeAgentRuntime(), new InMemoryRunEventPublisher(), undefined, undefined, undefined, undefined, { executeAutomatically: apply });
+    const start = createStartUseCase(repository, conversations, new FakeAgentRuntime(), new InMemoryRunEventPublisher(), undefined, undefined, undefined, undefined, { executeAutomatically: apply });
     await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'automatic-files-test' });
     await waitForStatus(repository, run.id, runStatus);
     expect(apply).toHaveBeenCalledTimes(1);
@@ -113,7 +429,7 @@ describe('StartAiRunUseCase', () => {
     events.subscribe('run-id-is-not-known-yet', (event) => { received.push(event.type); });
     const run = await readyRun(repository);
     events.subscribe(run.id, (event) => { received.push(event.type); });
-    const start = new StartAiRunUseCase(repository, conversations, runtime, events);
+    const start = createStartUseCase(repository, conversations, runtime, events);
 
     const first = await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-run-3-3' });
     const replay = await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-run-3-3' });
@@ -153,7 +469,7 @@ describe('StartAiRunUseCase', () => {
       markRunningFinished();
       return result;
     });
-    const start = new StartAiRunUseCase(repository, conversations, runtime, events, undefined, undefined, undefined, permissions);
+    const start = createStartUseCase(repository, conversations, runtime, events, undefined, undefined, undefined, permissions);
 
     await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-run-permission-race' });
     await waitingForMarkRunning;
@@ -169,6 +485,26 @@ describe('StartAiRunUseCase', () => {
     await expect(repository.findByIdForOwner(OWNER_ID, run.id)).resolves.toMatchObject({ status: 'pending_approval', decision: 'pending' });
   });
 
+  it('cancels and drains active work before releasing application ownership', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const conversations = conversationRepository();
+    const runtime = new FakeAgentRuntime();
+    runtime.runOptions = { response: 'An interrupted response', delayMs: 10 };
+    const events = new InMemoryRunEventPublisher();
+    const run = await readyRun(repository);
+    const start = createStartUseCase(repository, conversations, runtime, events);
+    const cancel = new CancelAiRunUseCase(repository, runtime, events);
+    await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-before-shutdown' });
+    await waitUntil(async () => runtime.startedRuns.length > 0);
+    const stop = jest.fn((active: AiRun) => cancel.execute({ ownerId: active.ownerId, runId: active.id, idempotencyKey: 'shutdown-run' }));
+    await start.stop(stop);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect((await repository.findByIdForOwner(OWNER_ID, run.id))?.status).toBe('cancelled');
+    expect(conversations.assistantMessages).toHaveLength(0);
+    await start.stop(stop);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
   it('wins the cancellation race and never overwrites a cancelled run with a late result', async () => {
     const repository = new InMemoryAiRunRepository();
     const conversations = conversationRepository();
@@ -176,7 +512,7 @@ describe('StartAiRunUseCase', () => {
     runtime.runOptions = { response: 'A long response', delayMs: 10 };
     const events = new InMemoryRunEventPublisher();
     const run = await readyRun(repository);
-    const start = new StartAiRunUseCase(repository, conversations, runtime, events);
+    const start = createStartUseCase(repository, conversations, runtime, events);
     const cancel = new CancelAiRunUseCase(repository, runtime, events);
 
     await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-cancel-3-3' });
@@ -211,7 +547,7 @@ describe('StartAiRunUseCase', () => {
       resolveProposal = resolve;
     }));
     const commandProposals: RuntimeCommandProposalPort = { execute: executeProposal };
-    const start = new StartAiRunUseCase(repository, conversations, runtime, events, commandProposals);
+    const start = createStartUseCase(repository, conversations, runtime, events, commandProposals);
     const cancel = new CancelAiRunUseCase(repository, runtime, events);
 
     await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-command-cancel-3-3' });
@@ -245,7 +581,7 @@ describe('StartAiRunUseCase', () => {
     const published: string[] = [];
     const run = await readyRun(repository);
     events.subscribe(run.id, (event) => { published.push(event.type); });
-    const start = new StartAiRunUseCase(repository, conversations, runtime, events);
+    const start = createStartUseCase(repository, conversations, runtime, events);
 
     await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-review-3-3' });
     const reviewed = await waitForStatus(repository, run.id, 'review_required');
@@ -269,7 +605,7 @@ describe('StartAiRunUseCase', () => {
     };
     const events = new InMemoryRunEventPublisher();
     const run = await readyRun(repository);
-    const start = new StartAiRunUseCase(repository, conversations, runtime, events);
+    const start = createStartUseCase(repository, conversations, runtime, events);
 
     await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-transmission-confirmed-3-3' });
     const completed = await waitForStatus(repository, run.id, 'succeeded');
@@ -291,7 +627,7 @@ describe('StartAiRunUseCase', () => {
     ] };
     const events = new InMemoryRunEventPublisher();
     const run = await readyRun(repository);
-    const start = new StartAiRunUseCase(repository, conversations, runtime, events);
+    const start = createStartUseCase(repository, conversations, runtime, events);
 
     await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-task-drafts-5-2' });
     await waitForStatus(repository, run.id, 'succeeded');
@@ -318,7 +654,7 @@ describe('StartAiRunUseCase', () => {
       { type: 'completed', text: 'Usage was reported.' }
     ] };
     const run = await readyRun(repository);
-    const start = new StartAiRunUseCase(repository, conversations, runtime, new InMemoryRunEventPublisher());
+    const start = createStartUseCase(repository, conversations, runtime, new InMemoryRunEventPublisher());
 
     await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-usage-report-6-1' });
     const completed = await waitForStatus(repository, run.id, 'succeeded');
@@ -339,7 +675,7 @@ describe('StartAiRunUseCase', () => {
     const published: string[] = [];
     const run = await readyRun(repository);
     events.subscribe(run.id, (event) => { published.push(event.type); });
-    const start = new StartAiRunUseCase(repository, conversations, runtime, events);
+    const start = createStartUseCase(repository, conversations, runtime, events);
 
     await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-task-write-failure-5-2' });
     const reviewed = await waitForStatus(repository, run.id, 'review_required');
@@ -364,7 +700,7 @@ describe('StartAiRunUseCase', () => {
     };
     const events = new InMemoryRunEventPublisher();
     const run = await readyRun(repository);
-    const start = new StartAiRunUseCase(repository, conversations, runtime, events);
+    const start = createStartUseCase(repository, conversations, runtime, events);
 
     await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-transmission-unknown-3-3' });
     const reviewed = await waitForStatus(repository, run.id, 'review_required');
@@ -386,7 +722,7 @@ describe('StartAiRunUseCase', () => {
     };
     const events = new InMemoryRunEventPublisher();
     const run = await readyRun(repository);
-    const start = new StartAiRunUseCase(repository, conversations, runtime, events);
+    const start = createStartUseCase(repository, conversations, runtime, events);
 
     await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-transmission-error-3-3' });
     const failed = await waitForStatus(repository, run.id, 'failed');
@@ -404,7 +740,7 @@ describe('StartAiRunUseCase', () => {
     const published: string[] = [];
     const run = await readyRun(repository);
     events.subscribe(run.id, (event) => { published.push(event.type); });
-    const start = new StartAiRunUseCase(repository, conversations, runtime, events);
+    const start = createStartUseCase(repository, conversations, runtime, events);
 
     await start.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-output-limit-3-3' });
     const reviewed = await waitForStatus(repository, run.id, 'review_required');
@@ -414,4 +750,28 @@ describe('StartAiRunUseCase', () => {
     expect(published).toContain('run.needs_manual_review');
     expect(conversations.assistantMessages[0]?.content.length).toBeLessThanOrEqual(64 * 1024);
   });
+});
+
+
+it('names a new chat from the same reply and never stores title metadata as the answer', async () => {
+  const repository = new InMemoryAiRunRepository();
+  const base = conversationRepository();
+  const page = await base.findWithMessagesForOwner({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, limit: 1 });
+  if (!page) throw new Error('Missing fixture conversation');
+  const setGeneratedTitle = jest.fn().mockResolvedValue(true);
+  const conversations = { ...base, setGeneratedTitle, findWithMessagesForOwner: jest.fn().mockResolvedValue({ ...page, conversation: { ...page.conversation, title: 'New chat' } }) };
+  const runtime = new FakeAgentRuntime();
+  runtime.runOptions = { events: [
+    { type: 'assistant.delta', text: '<chat_title>Data structures revision</chat_title>\nUse a stack.' },
+    { type: 'completed', text: '' }
+  ] };
+  const startRun = jest.spyOn(runtime, 'startRun');
+  const run = await readyRun(repository);
+  const useCase = createStartUseCase(repository, conversations, runtime, new InMemoryRunEventPublisher());
+  await useCase.execute({ ownerId: OWNER_ID, runId: run.id, idempotencyKey: 'start-auto-chat-title' });
+  await waitForStatus(repository, run.id, 'succeeded');
+  expect(startRun).toHaveBeenCalledTimes(1);
+  expect(startRun).toHaveBeenCalledWith(expect.objectContaining({ generateConversationTitle: true }));
+  expect(setGeneratedTitle).toHaveBeenCalledWith({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, title: 'Data structures revision' });
+  expect(conversations.assistantMessages[0]?.content).toBe('Use a stack.');
 });

@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: ['project-activity.preview.spec.ts', 'project-file-history.preview.spec.ts', 'provider-permissions.preview.spec.ts', 'run-recovery.preview.spec.ts'],
+  testMatch: ['task-3-6-admin-usage.spec.ts', 'login.preview.spec.ts', 'project-activity.preview.spec.ts', 'project-file-history.preview.spec.ts', 'provider-permissions.preview.spec.ts', 'run-recovery.preview.spec.ts', 'task-home.preview.spec.ts', 'task-actions.preview.spec.ts', 'task-2-2-workspace.preview.spec.ts', 'home-chat.preview.spec.ts', 'home-summaries.preview.spec.ts', 'task-3-4-showcase-demo.spec.ts', 'workspace-export.preview.spec.ts'],
   fullyParallel: false,
   workers: 1,
   timeout: 30_000,
@@ -10,8 +10,10 @@ export default defineConfig({
   reporter: 'list',
   outputDir: process.env.PAI_E2E_OUTPUT_DIR ?? './test-results/activity-preview',
   use: {
-    baseURL: 'http://127.0.0.1:5173',
+    baseURL: process.env.PAI_PREVIEW_BASE_URL ?? 'http://127.0.0.1:5173',
     browserName: 'chromium',
-    launchOptions: { executablePath: process.env.PAI_CHROME_EXECUTABLE ?? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' }
+    launchOptions: { executablePath: process.env.PAI_CHROME_EXECUTABLE ?? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' },
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure'
   }
 });

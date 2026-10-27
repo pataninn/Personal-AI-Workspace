@@ -2,10 +2,19 @@
 
 This repository contains the local Personal AI Workspace with projects,
 conversations, selected context, memory, tasks, live updates, and file history.
-Hermes works in disposable OpenShell project copies using NVIDIA Nemotron on Nebius Token Factory.
-The direct server-side NIM adapter remains available as a fallback.
+The supported setup is one owner account and an anonymous demo. Visitors choose
+**Try demo** without creating an account; each visitor receives an isolated,
+expiring copy of the content you publish. Extra named-account creation is retired.
+Existing accounts and saved data are preserved.
 
-## Start with Hermes
+One backend process runs the HTTP API, Home chat execution, scheduled jobs, and
+cleanup. A database ownership lock prevents another process from recovering or
+executing its live work. Home turns continue when you leave the page; status GETs
+only read saved progress. Local pages, tasks, and files remain available when the
+AI bridge is offline. Inference still requires a configured, healthy Hermes bridge
+and the existing policy and credit checks.
+
+## Prepare the Hermes provider route
 
 This machine uses the installed WSL Ubuntu OpenShell 0.0.116 gateway
 `nemoclaw-18080` and digest-pinned Hermes 0.20.6 base image. The gateway's
@@ -27,10 +36,11 @@ AGENT_RUNTIME_MODE=hermes
 
 This model ID was confirmed in the authenticated Nebius catalog. The key is read
 locally and passed to OpenShell through the CLI's environment credential lookup;
-it is never included in command arguments or bridge payloads. Startup selects the
-route without generating a model response or spending inference tokens. Your next
-approved chat request uses Nebius. The approval dialog and Activity show Nebius as
-the recipient, and existing NVIDIA permissions do not authorize Nebius requests.
+it is never included in command arguments or bridge payloads. Startup can prepare
+the provider route without generating a model response or spending inference
+tokens. Inference requires the credit configuration described below.
+Provider consent remains separate by provider; existing NVIDIA permissions do
+not authorize Nebius requests.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/start-hermes.ps1
@@ -76,30 +86,136 @@ placeholders, and code references are allowed. This intentionally favors fewer
 false alarms and does not detect every secret. Context sent to the provider still
 uses the separate egress redaction policy.
 
-To use the NVIDIA direct fallback, configure `NVIDIA_API_KEY_FILE` and run
-`docker compose -p personal-ai-workspace -f compose.yaml -f compose.direct.yaml up -d --no-build --wait`.
-The override selects NVIDIA/direct mode and mounts only its NVIDIA secret.
-Normal Hermes Compose does not mount either provider key. Restart with the Hermes
-helper to return to Nebius. For Hermes on NVIDIA, set `NIM_PROFILE=nvidia-hosted-nim`
-and `NIM_ENDPOINT=https://integrate.api.nvidia.com/v1` in `.env`; the installed
-gateway's existing `compatible-endpoint` credential remains available.
+Hermes is the production runtime. The unsupported direct NVIDIA adapter and its
+Compose overlay have been removed; `fake` is reserved for development and tests.
+The WSL OpenShell gateway used by Hermes remains part of this deployment.
+
+### Credit admission and paid inference status
+
+The credit ledger migration starts with global inference paused, and this release
+does not choose provider prices, account budgets, or demo campaign limits. Regular
+account daily and lifetime limits default to `null` (unlimited), while missing
+demo campaign configuration denies demo sends. Do not infer that a provider key
+or provider profile enables inference.
+
+Before a paid Hermes send can be enabled, configure the
+following six configuration values together, using verified prices and bounds:
+
+- `NIM_CREDIT_PRICE_VERSION`
+- `NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS`
+- `NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS`
+- `NIM_MAX_INPUT_TOKENS`
+- `NIM_MAX_OUTPUT_TOKENS` (at most 16,384)
+- `NIM_MAX_PROVIDER_CALLS_PER_RUN` (1–32)
+
+Rates are positive integer credit units per 1,000,000 tokens; one displayed
+credit equals 1,000,000 integer credit units. Prices and request limits have no
+application defaults. Partial configuration is rejected. These values alone
+still do not bypass the global pause, account limits, or demo shared budgets.
+The supported Nebius/Nemotron path reserves the full 262,144-token input bound;
+`NIM_MAX_INPUT_TOKENS` must cover that bound. The bridge enforces admission and
+records usage at provider calls. Requests fail closed when the required policy,
+credit configuration, or bridge enforcement is unavailable. No provider prices,
+spending limits, or automatic unpause are supplied by this cleanup.
 
 ## Local prerequisites
 
 - Node.js 22.20 or newer in the 22.x line
 - pnpm 11.8 or newer
 - Docker Desktop with WSL2/Ubuntu 22.04 or newer
-- A Nebius Token Factory credential (NVIDIA credentials are optional for fallback)
+- A Nebius Token Factory credential for paid AI use
 
 Keep the active <code>.env</code> in this application repository. Copy
 <code>.env.example</code> to <code>.env</code> if needed, then fill in the settings.
 Compose reads it automatically when run from this directory. Git and the Docker
 build context ignore <code>.env</code>.
 
-<code>WORKSPACE_HOST_ROOT</code> selects the local folder mounted as
-<code>/workspace</code>. It may be this repository or a dedicated workspace folder.
-The identity marker inside that folder must match <code>WORKSPACE_IDENTITY</code>.
-The server accepts project root <code>.</code> only after it verifies that marker.
+<code>WORKSPACE_HOST_ROOT</code> selects the legacy folder mounted as <code>/workspace</code>.
+Its identity marker must match <code>WORKSPACE_IDENTITY</code>. Existing legacy-owner
+projects continue to use their recorded relative roots there. New file-backed projects
+never select a host path in the browser and are allocated under the separate managed
+storage mount described below. Planning-only projects remain usable without that mount.
+
+### Private demo admission
+
+For a small demo:
+
+1. Copy `.env.example`, fill your owner password and separate random secrets, and
+   complete the existing workspace/managed-storage setup below.
+2. Start the normal application. In **Admin > Demo content**, select only content
+   intended for visitors and publish it. Nothing is published automatically.
+3. Review **Admin > Demo settings**. Visitor limits have a starter preset;
+   advanced limits are collapsed. The emergency AI pause remains visible.
+4. Open the login page in a private browser window and choose **Try demo**.
+   Configure provider prices and explicit demo AI budgets only if you want paid AI.
+
+The demo still needs isolated records, expiry cleanup, and a published snapshot.
+File-backed demo workspaces also need the managed-storage mount.
+Those protect your owner workspace and other visitors. Snapshot history is retained
+so active demos can finish copying the version they were issued.
+
+The passwordless demo endpoint is `POST /api/v1/demo/session`. It accepts an empty
+request body, an exact configured `Origin`, and a high-entropy `Idempotency-Key`.
+The key is stored as a one-way digest, is globally unique across network changes,
+and is not a session credential. A cookie-less replay receives only the persisted
+pending/ready status; it cannot recover or mint a session cookie. A valid demo cookie
+resumes the same account without extending its expiry, while a valid regular-account
+cookie is preserved on conflict.
+
+New anonymous admission remains disabled until all six `DEMO_GLOBAL_ADMISSION_MAX`,
+`DEMO_GLOBAL_ADMISSION_WINDOW_SECONDS`, `DEMO_NETWORK_ADMISSION_MAX`,
+`DEMO_NETWORK_ADMISSION_WINDOW_SECONDS`, `DEMO_RUN_START_MAX`, and
+`DEMO_RUN_START_WINDOW_SECONDS` values and `DEMO_NETWORK_HASH_SECRET` are configured
+together. Compose and `.env.example` now provide modest visitor limits (4/hour
+globally, 2/hour per network, 10 run starts/hour per demo). These are capacity
+limits, not permission to spend money. Existing persisted demo settings are not
+overwritten; use **Admin > Fill missing demo limits**, review, and save if needed. `DEMO_NETWORK_HASH_SECRET` must be a dedicated random
+secret of at least 32 bytes, kept private and separate from `SESSION_SECRET`. Rotating
+it while an old network window is still active temporarily blocks new admissions
+rather than resetting the existing counter. `DEMO_SESSION_TTL_HOURS` is optional,
+defaults to 24, and accepts only 1 through 24 hours.
+
+`TRUSTED_PROXY_CIDRS` is optional and must list the exact trusted proxy CIDRs. If it
+is unset, forwarded headers are ignored and visitors are grouped by the direct peer
+address. When configured, only validated CIDRs are passed to Express; the app does
+not parse `X-Forwarded-For` itself. Network limits identify a shared network bucket,
+not an individual person. Raw addresses are not persisted or included in request logs.
+
+A new demo account receives storage-ready status only after the server verifies its
+new database account is empty and initializes its storage accounting. New public
+demos receive a 64 MiB storage limit covering retained database content and files,
+including the copied showcase. This allowance is independent of AI credit limits;
+administrators can still change an individual account's storage limit. Migration
+`1710000042000` also caps legacy demos whose storage limit is NULL and whose limits
+revision is still 1. It preserves finite limits, regular accounts, and all accounts
+with a later administrator revision (including intentionally unlimited demos).
+Its rollback restores only recorded repairs that have not subsequently changed.
+New admission also has a server-enforced ceiling of 16 retained demo accounts:
+at the default per-account allowance, their combined allowance is at most 1 GiB.
+Expired, disabled and failed-provisioning accounts still occupy a slot until
+cleanup actually removes them; changing admission rates or TTL cannot bypass it.
+Existing admission-key status retries remain available at capacity. This leaves
+headroom on the small-host example's shared 20 GiB data volume for PostgreSQL,
+images, bounded exports and runtime state. Deliberate admin storage overrides,
+regular-owner data and host/runtime growth still require operator capacity
+monitoring; the ceiling does not promise protection against every disk consumer.
+A published showcase must fit within the visitor's remaining allowance. A separate
+showcase configuration controls whether new demos can be admitted. Configure all six
+settings together: `SHOWCASE_MAX_SNAPSHOT_BYTES`, `SHOWCASE_MAX_FILE_BYTES`,
+`SHOWCASE_MAX_ITEMS`, `SHOWCASE_MAX_FILES`, `SHOWCASE_MAX_RETAINED_VERSIONS`, and
+`DEMO_SHOWCASE_COPY_MAX_ATTEMPTS`. Values must be finite positive integers;
+per-file bytes cannot exceed total snapshot bytes, and file count cannot exceed the
+item count. No defaults or production limits are supplied. Missing, partial, or
+invalid values keep new admissions unavailable. An administrator must select content
+in the private preview and publish it explicitly; the application starts unpublished
+and does not create sample content or publish automatically. `Try demo` creates a
+private copy only from a currently published version. Expired demo data cleanup is
+also a separate later task.
+
+Non-AI exploration does not require provider-spending configuration. AI remains
+subject to the shared credit pause, configured budgets, verified request bounds, and
+provider-call admission; demo admission itself never enables or spends on a provider
+request.
 
 Keep the credential and TLS files at the paths named in <code>.env</code>. The
 default template places these files under
@@ -162,12 +278,92 @@ docker compose --project-name personal-ai-workspace ps
 curl.exe -k https://127.0.0.1:8443/ready
 ```
 
-Create the project in the UI with relative root <code>.</code> to use the complete
-folder configured by <code>WORKSPACE_HOST_ROOT</code>. Workspace inspection still blocks <code>.git</code>, <code>.env*</code>,
+Workspace inspection still blocks <code>.git</code>, <code>.env*</code>,
 <code>secrets</code>, backup/audit/internal paths, private keys, links, and other protected
 paths. File changes require validation, current hashes, pre-destructive backups,
 and atomic promotion. The configured file approval mode controls review versus
 automatic application.
+
+### Optional managed file storage
+
+The base Compose stack does not mount managed account storage. Without the overlay,
+existing verified legacy projects still work, planning-only projects remain available,
+and new file-backed project creation reports that managed storage is unavailable.
+To enable new isolated file-backed projects, provision an existing persistent host
+directory dedicated to account workspaces. Keep it physically separate from
+<code>WORKSPACE_HOST_ROOT</code>; do not use a symlink, junction, nested directory, or
+the application repository. Do not create this mount source through Docker Compose.
+
+Create a stable, non-secret marker value, put that exact value in
+<code>ACCOUNT_WORKSPACES_IDENTITY</code> in the private root <code>.env</code>, and
+write it to <code>.personal-ai-managed-storage-identity</code> at the root of the
+provisioned directory. Set <code>ACCOUNT_WORKSPACES_HOST_ROOT</code> to its absolute
+host path. For example, replace these illustrative values with the existing
+operator-provisioned directory and its marker value:
+
+```dotenv
+ACCOUNT_WORKSPACES_HOST_ROOT=D:/personal-ai-managed-storage
+ACCOUNT_WORKSPACES_IDENTITY=managed-storage-local-01
+```
+
+The override binds that existing directory to the fixed app path
+<code>/account-workspaces</code> and sets <code>bind.create_host_path: false</code>.
+
+Before enabling it, verify both host roots exist, are ordinary directories rather
+than links/reparse points, and are not the same path or nested inside each other.
+Confirm the marker file is a regular file and its trimmed contents exactly match
+<code>ACCOUNT_WORKSPACES_IDENTITY</code>. For example, enter the actual paths and
+marker value in a local PowerShell session (the marker is an identity label, not a
+credential):
+
+```powershell
+$legacyRoot = Read-Host 'Absolute WORKSPACE_HOST_ROOT path'
+$managedRoot = Read-Host 'Absolute ACCOUNT_WORKSPACES_HOST_ROOT path'
+$managedIdentity = Read-Host 'ACCOUNT_WORKSPACES_IDENTITY marker value'
+$legacyItem = Get-Item -LiteralPath $legacyRoot -Force
+$legacy = (Resolve-Path -LiteralPath $legacyRoot).Path.TrimEnd('\', '/')
+$managedItem = Get-Item -LiteralPath $managedRoot -Force
+$managed = (Resolve-Path -LiteralPath $managedRoot).Path.TrimEnd('\', '/')
+$reparse = [IO.FileAttributes]::ReparsePoint
+if (-not $legacyItem.PSIsContainer -or ($legacyItem.Attributes -band $reparse) -ne 0) { throw 'Legacy root must be an ordinary directory.' }
+if (-not $managedItem.PSIsContainer -or ($managedItem.Attributes -band $reparse) -ne 0) { throw 'Managed root must be an ordinary directory.' }
+$separator = [IO.Path]::DirectorySeparatorChar
+if ($legacy.Equals($managed, [StringComparison]::OrdinalIgnoreCase) -or
+    $legacy.StartsWith($managed + $separator, [StringComparison]::OrdinalIgnoreCase) -or
+    $managed.StartsWith($legacy + $separator, [StringComparison]::OrdinalIgnoreCase)) {
+  throw 'Legacy and managed roots must be disjoint.'
+}
+$marker = Get-Item -LiteralPath (Join-Path $managed '.personal-ai-managed-storage-identity') -Force
+if ($marker.PSIsContainer -or ($marker.Attributes -band $reparse) -ne 0) { throw 'Marker must be a regular file.' }
+if ((Get-Content -LiteralPath $marker.FullName -Raw).Trim() -cne $managedIdentity) { throw 'Managed marker identity does not match.' }
+```
+
+Then validate and start with the explicit overlay:
+
+```powershell
+docker compose --project-name personal-ai-workspace -f compose.yaml -f compose.managed-storage.yaml config --quiet
+docker compose --project-name personal-ai-workspace -f compose.yaml -f compose.managed-storage.yaml up --build -d
+```
+
+The backend also checks the fixed in-container mount, marker identity, and filesystem
+identity. This host preflight and Compose wiring do not prove Docker's resolved physical
+source or mount persistence; complete that deployment check before relying on a
+production host. Never point the managed mount at the legacy root or rely on an inferred
+default. New projects use server-generated account/project directories below the
+managed mount; clients never submit a path.
+
+### Physical storage observation
+
+The backend samples process-visible free capacity with Node's `statfs` at startup
+and during the existing hourly maintenance pass. It checks only the verified
+legacy workspace, the managed mount when configured, and the canonical recovery
+directory. `STORAGE_DISK_WARNING_FREE_BYTES` is an optional positive decimal byte
+threshold. When configured, the backend emits path-free structured warnings when
+an observed root crosses below it, and records when observation becomes unavailable
+or recovers. With no threshold, there is no low-space warning. This observation
+does not change account quotas, readiness, or write admission, and it does not
+prove the host bind source or persistent-volume capacity. Task 8.1 must verify the
+actual mounts and select an operational threshold before deployment.
 
 When preparing an AI run, use <strong>Choose context</strong> to browse or search project
 files. Search ranks phrase and term matches deterministically, reports when its bounded
@@ -228,8 +424,9 @@ Compose without printing resolved settings. The live Compose/Hermes startup need
 Docker Desktop, operator-provisioned TLS files, the workspace identity marker,
 and the configured gateway provider credential. Application startup fails closed until
 PostgreSQL, the workspace identity, the authenticated bridge, and the selected
-gateway route are available. Startup checks route configuration; the first approved
-chat request establishes inference and tool execution with the provider.
+gateway route are available. Startup checks route configuration; it is not proof of
+paid inference. In this release, a paid chat remains blocked before provider
+execution until the credit prerequisites above are verified and enforced.
 
 The app image installs MarkItDown for converting uploaded PDF, DOCX, PPTX, XLSX,
 XLS, and EPUB documents into adjacent Markdown files. Local backend runs need
@@ -264,3 +461,19 @@ command is development-only and is not used by production builds. Use
 
 The normal frontend <code>pnpm dev</code> command still needs the real backend API; the
 mock is enabled only by <code>preview:dev</code>.
+
+## Execution and shutdown
+
+Start the normal backend or Compose app; scheduled jobs start automatically.
+There is no separate `start:worker` process. A second application instance using
+the same database fails before recovery. Do not scale this personal deployment
+to multiple API replicas.
+
+Accepted Home turns run on the server without browser polling. Shutdown drains
+requests, cancels active work, and waits for cleanup before releasing ownership.
+If shutdown cannot finish within 30 seconds, the process exits and the next start
+recovers saved interrupted outcomes; it does not automatically replay paid work.
+
+Frontend pages load on demand. `vite.config.mjs`, `vitest.config.mjs`, and
+`src/app/styles/globals.css` are the authoritative configuration/style files.
+See `dev-summary.md` for verification results and remaining environment limits.

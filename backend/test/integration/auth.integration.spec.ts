@@ -8,7 +8,7 @@ import { LoginUseCase } from '@/modules/auth/use-cases/login';
 import { LogoutUseCase } from '@/modules/auth/use-cases/logout';
 import type { IClock, ILoginRateLimiter, IOpaqueTokenProvider, IPasswordHasher } from '@/modules/auth/repositories/security-providers';
 import type { CreateSessionInput, ISessionRepository } from '@/modules/auth/repositories/session-repository';
-import type { CreateLocalUserInput, IUserRepository } from '@/modules/auth/repositories/user-repository';
+import type { CreateRegularAccountInput, IUserRepository } from '@/modules/auth/repositories/user-repository';
 import { InMemoryReadinessState } from '@/infrastructure/startup/readiness-state';
 import { GetReadinessUseCase } from '@/modules/health';
 import { createLogger } from '@/shared/logging/logger';
@@ -20,17 +20,29 @@ const RAW_TOKEN = 'opaque-token-value-with-valid-length-123456';
 class FakeUserRepository implements IUserRepository {
   public constructor(private readonly user: LocalUserRecord | null) {}
 
-  public async findActiveLocalUser(): Promise<LocalUserRecord | null> {
-    return this.user;
+  public async findByIdentifier(identifier: string): Promise<LocalUserRecord | null> {
+    return this.user?.identifier === identifier ? this.user : null;
   }
 
-  public async findActiveLocalUserById(): Promise<LocalUserRecord | null> {
-    return this.user;
+  public async findById(userId: string): Promise<LocalUserRecord | null> {
+    return this.user?.id === userId ? this.user : null;
   }
 
-  public async createLocalUser(_input: CreateLocalUserInput): Promise<LocalUserRecord> {
+  public async findBootstrapOwnerId(): Promise<string | null> {
+    return this.user?.id ?? null;
+  }
+
+  public async hasAnyRegularAccounts(): Promise<boolean> {
+    return this.user !== null;
+  }
+
+  public async createRegularAccount(_input: CreateRegularAccountInput): Promise<LocalUserRecord> {
     throw new Error('Not needed by the auth integration fixture.');
   }
+
+  public async bootstrapInitialAdmin(): Promise<boolean> { return false; }
+
+  public async disableAccount(): Promise<'disabled'> { return 'disabled'; }
 }
 
 class FakeSessionRepository implements ISessionRepository {
@@ -41,6 +53,9 @@ class FakeSessionRepository implements ISessionRepository {
       id: 'session-1',
       userId: input.userId,
       displayName: 'Local user',
+      accountKind: 'regular',
+      role: 'admin',
+      accountExpiresAt: null,
       expiresAt: input.expiresAt,
       revokedAt: null
     };
@@ -100,10 +115,13 @@ class AllowingRateLimiter implements ILoginRateLimiter {
 function buildApp(user: LocalUserRecord | null = {
   id: 'user-1',
   displayName: 'Local user',
+  identifier: 'owner',
+  accountKind: 'regular',
+  role: 'admin',
   passwordHash: 'stored-hash',
-  isActive: true
-}): express.Express {
-  const sessions = new FakeSessionRepository();
+  isActive: true,
+  expiresAt: null
+}, sessions = new FakeSessionRepository()): express.Express {
   const users = new FakeUserRepository(user);
   const tokenProvider = new FixedTokenProvider();
   const clock = new FixedClock();
@@ -150,7 +168,7 @@ describe('local auth API (integration)', () => {
     await request(app)
       .post('/api/v1/auth/login')
       .set('Origin', APP_ORIGIN)
-      .send({ password: '' })
+      .send({ identifier: '', password: '' })
       .expect(400)
       .expect(({ body }: { body: unknown }) => {
         expect(body).toMatchObject({ data: null, error: { code: 'VALIDATION_ERROR' } });
@@ -171,12 +189,12 @@ describe('local auth API (integration)', () => {
     const response = await request(app)
       .post('/api/v1/auth/login')
       .set('Origin', APP_ORIGIN)
-      .send({ password: 'correct-password' })
+      .send({ identifier: '  OWNER  ', password: 'correct-password' })
       .expect(200);
 
     expect(response.body).toEqual({
       data: {
-        principal: { id: 'user-1', displayName: 'Local user' },
+        principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular', role: 'admin' },
         csrfToken: `csrf:${RAW_TOKEN}`,
         expiresAt: '2026-09-12T12:01:00.000Z'
       },
@@ -200,7 +218,7 @@ describe('local auth API (integration)', () => {
     const login = await request(app)
       .post('/api/v1/auth/login')
       .set('Origin', APP_ORIGIN)
-      .send({ password: 'correct-password' })
+      .send({ identifier: 'owner', password: 'correct-password' })
       .expect(200);
     const cookie = cookiePair(login);
 
@@ -214,6 +232,10 @@ describe('local auth API (integration)', () => {
           error: null
         });
       });
+    await request(app)
+      .get('/api/v1/auth/session')
+      .set('Cookie', '__Host-pa_session=foreign-session-token-that-is-not-known-123456')
+      .expect(401);
     await request(app)
       .post('/api/v1/auth/logout')
       .set('Origin', APP_ORIGIN)
@@ -249,7 +271,7 @@ describe('local auth API (integration)', () => {
     await request(app)
       .post('/api/v1/auth/login')
       .set('Origin', APP_ORIGIN)
-      .send({ password: 'anything' })
+      .send({ identifier: 'owner', password: 'anything' })
       .expect(503)
       .expect(({ body }: { body: unknown }) => {
         expect(body).toEqual({
@@ -258,5 +280,42 @@ describe('local auth API (integration)', () => {
         });
         expect(JSON.stringify(body)).not.toContain('anything');
       });
+  });
+
+  it('does not expire the browser cookie when an old session read fails after a new login', async () => {
+    const sessions = new FakeSessionRepository();
+    let startLookup = (): void => undefined;
+    const lookupStarted = new Promise<void>((resolve) => { startLookup = resolve; });
+    let resumeLookup = (): void => undefined;
+    const lookupReleased = new Promise<void>((resolve) => { resumeLookup = resolve; });
+    jest.spyOn(sessions, 'findByTokenHash').mockImplementationOnce(async () => {
+      startLookup(); await lookupReleased; return null;
+    });
+    const app = buildApp(undefined, sessions);
+    const staleRead = request(app).get('/api/v1/auth/session')
+      .set('Cookie', '__Host-pa_session=old-session-token-with-at-least-32-characters')
+      .then((response) => response);
+    let login: request.Response;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([lookupStarted, new Promise<void>((_resolve, reject) => {
+        deadline = setTimeout(() => reject(new Error('The old session read did not reach the lookup gate.')), 5000);
+      })]);
+      login = await request(app).post('/api/v1/auth/login').set('Origin', APP_ORIGIN)
+        .send({ identifier: 'owner', password: 'correct-password' }).expect(200);
+    } finally { if (deadline) clearTimeout(deadline); resumeLookup(); }
+    const staleResponse = await staleRead;
+    expect(staleResponse.status).toBe(401);
+    expect(staleResponse.headers['set-cookie']).toBeUndefined();
+    await request(app).get('/api/v1/auth/session').set('Cookie', cookiePair(login)).expect(200);
+  }, 10_000);
+
+  it('rejects unauthenticated reads and logout without an automatic cookie deletion', async () => {
+    const app = buildApp();
+    const missing = await request(app).get('/api/v1/auth/session').expect(401);
+    const rejectedLogout = await request(app).post('/api/v1/auth/logout').set('Origin', APP_ORIGIN)
+      .set('Cookie', '__Host-pa_session=old-session-token-with-at-least-32-characters').expect(401);
+    expect(missing.headers['set-cookie']).toBeUndefined();
+    expect(rejectedLogout.headers['set-cookie']).toBeUndefined();
   });
 });

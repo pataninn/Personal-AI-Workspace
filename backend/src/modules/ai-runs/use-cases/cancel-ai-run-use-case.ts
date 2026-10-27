@@ -8,6 +8,7 @@ import { hashText } from '@/modules/ai-runs/use-cases/manifest-builder';
 import { assertActiveAiRunProject } from '@/modules/ai-runs/use-cases/assert-ai-run-project';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { ISandboxCommandRepository } from '@/modules/ai-runs/repositories/sandbox-command-repository';
+import type { IStagingGateway } from '@/modules/ai-runs/repositories/staging-gateway';
 
 export interface CancelAiRunInput {
   readonly ownerId: string;
@@ -21,7 +22,8 @@ export class CancelAiRunUseCase {
     private readonly agentRuntime: IAgentRuntime,
     private readonly events: IRunEventPublisher,
     private readonly projectRepository?: IProjectRepository,
-    private readonly commandRepository?: ISandboxCommandRepository
+    private readonly commandRepository?: ISandboxCommandRepository,
+    private readonly stagingGateway?: Pick<IStagingGateway, 'cleanup'>
   ) {}
 
   public async execute(input: CancelAiRunInput): Promise<AiRun> {
@@ -33,10 +35,12 @@ export class CancelAiRunUseCase {
     const result = this.aiRunRepository.requestCancellation
       ? await this.aiRunRepository.requestCancellation({ ownerId: input.ownerId, runId: input.runId, idempotencyKey, requestFingerprint })
       : await this.requestWithLegacyRepository(input, idempotencyKey, requestFingerprint);
-    this.publish(result.resource);
-    if (result.replayed || result.resource.status === 'cancelled') {
+    if (result.replayed) {
+      this.publish(result.resource);
       return result.resource;
     }
+    if (result.resource.status === 'cancelled') return await this.finishPreparedCancellation(result.resource);
+    this.publish(result.resource);
     if (!this.agentRuntime.cancelRun) {
       await this.markReview(input.ownerId, input.runId);
       throw new AiRunCancellationReviewRequiredError();
@@ -61,6 +65,33 @@ export class CancelAiRunUseCase {
         throw error;
       }
       await this.markReview(input.ownerId, input.runId);
+      throw new AiRunCancellationReviewRequiredError();
+    }
+  }
+
+  private async finishPreparedCancellation(run: AiRun): Promise<AiRun> {
+    try {
+      await this.agentRuntime.destroy(run.id);
+      if (run.runtimeReference) {
+        if (!this.stagingGateway) {
+          if (run.runtimeReference.startsWith('run-')) throw new Error('The staging cleanup gateway is unavailable.');
+        } else {
+          await this.stagingGateway.cleanup(run.runtimeReference);
+        }
+      }
+      this.publish(run);
+      return run;
+    } catch {
+      const reviewed: AiRun = {
+        ...run,
+        status: 'review_required',
+        phase: 'review',
+        cleanup: 'unknown',
+        safeMessage: 'The run stopped, but its private environment cleanup could not be confirmed. Refresh run status before retrying.',
+        updatedAt: new Date()
+      };
+      await this.aiRunRepository.save(reviewed);
+      this.publish(reviewed);
       throw new AiRunCancellationReviewRequiredError();
     }
   }

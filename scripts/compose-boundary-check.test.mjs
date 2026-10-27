@@ -4,6 +4,8 @@ import test from 'node:test';
 
 const composePath = new URL('../compose.yaml', import.meta.url);
 const source = readFileSync(composePath, 'utf8');
+const managedComposePath = new URL('../compose.managed-storage.yaml', import.meta.url);
+const managedSource = readFileSync(managedComposePath, 'utf8');
 
 function service(name) {
   const pattern = new RegExp(`^  ${name}:\\r?\\n([\\s\\S]*?)(?=^  [a-z][a-z0-9-]*:\\r?$|^networks:|^volumes:|^secrets:)`, 'm');
@@ -48,15 +50,28 @@ test('provider egress and recovery are app-only boundaries', () => {
   assert.doesNotMatch(postgres, /NVIDIA|nvidia/i);
 });
 
-test('the NVIDIA key is a read-only Docker secret visible only to the app', () => {
+test('the app receives optional provider credit bounds without requiring a configured profile', () => {
   const app = service('personal-ai-app');
-  const postgres = service('postgres');
-  assert.match(app, /    secrets:[\s\S]*?      - source: nvidia_api_key/);
-  assert.match(app, /target: nvidia_api_key[\s\S]*?mode: 0440/);
-  assert.match(app, /NVIDIA_API_KEY_FILE: \/run\/secrets\/nvidia_api_key/);
-  assert.match(source, /^secrets:[\s\S]*?^  nvidia_api_key:\r?\n    file: \$\{NVIDIA_API_KEY_FILE/m);
-  assert.doesNotMatch(postgres, /secrets:|NVIDIA_API_KEY_FILE|nvidia_api_key/i);
-  assert.doesNotMatch(source, /NVIDIA_API_KEY:\s*\$/);
+  for (const name of [
+    'NIM_CREDIT_PRICE_VERSION',
+    'NIM_INPUT_CREDIT_UNITS_PER_MILLION_TOKENS',
+    'NIM_OUTPUT_CREDIT_UNITS_PER_MILLION_TOKENS',
+    'NIM_MAX_INPUT_TOKENS',
+    'NIM_MAX_OUTPUT_TOKENS',
+    'NIM_MAX_PROVIDER_CALLS_PER_RUN'
+  ]) {
+    assert.match(app, new RegExp(`${name}: \\$\\{${name}:-\\}`));
+  }
+});
+
+test('provider credentials remain outside the app container', () => {
+  assert.doesNotMatch(source, /nvidia_api_key|NVIDIA_API_KEY|NEBIUS_API_KEY/);
+});
+
+test('Compose forwards demo admission, publication, and proxy settings', () => {
+  for (const name of ['DEMO_NETWORK_HASH_SECRET', 'DEMO_GLOBAL_ADMISSION_MAX', 'SHOWCASE_MAX_ITEMS', 'TRUSTED_PROXY_CIDRS', 'STORAGE_DISK_WARNING_FREE_BYTES']) {
+    assert.ok(service('personal-ai-app').includes(`${name}:`));
+  }
 });
 
 test('the local login password is a read-only Docker secret visible only to the app', () => {
@@ -84,4 +99,16 @@ test('app performs ordered migrations after PostgreSQL health', () => {
   assert.match(app, /node backend\/dist\/infrastructure\/database\/migrate\.js/);
   assert.match(app, /exec node backend\/dist\/server\.js/);
   assert.match(app, /depends_on:\r?\n      postgres:\r?\n        condition: service_healthy/);
+});
+
+test('managed storage is an explicit optional bind overlay with no implicit host-root creation', () => {
+  const overlayService = managedSource.match(/^  personal-ai-app:\r?\n([\s\S]*)$/m)?.[1];
+  assert.ok(overlayService, 'managed overlay must target only the existing app service');
+  assert.match(overlayService, /ACCOUNT_WORKSPACES_IDENTITY:\s*\$\{ACCOUNT_WORKSPACES_IDENTITY:\?[^}]+\}/);
+  assert.match(overlayService, /source:\s*\$\{ACCOUNT_WORKSPACES_HOST_ROOT:\?[^}]+\}/);
+  assert.match(overlayService, /target:\s*\/account-workspaces/);
+  assert.match(overlayService, /bind:\r?\n\s+create_host_path:\s*false/);
+  assert.doesNotMatch(overlayService, /WORKSPACE_HOST_ROOT|\/workspace/);
+  assert.doesNotMatch(source, /ACCOUNT_WORKSPACES_HOST_ROOT|ACCOUNT_WORKSPACES_IDENTITY/);
+  assert.match(managedSource, /existing dedicated managed-storage directory/);
 });

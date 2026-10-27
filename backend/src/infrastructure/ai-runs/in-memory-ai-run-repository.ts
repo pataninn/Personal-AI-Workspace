@@ -70,6 +70,7 @@ export class InMemoryAiRunRepository implements IAiRunRepository, IProjectTaskSu
         return { resource: replay, replayed: true };
       }
       const now = new Date();
+      const policyAuthorized = input.policyRevision !== undefined;
       const run: AiRun = {
         id: randomUUID(),
         ownerId: input.ownerId,
@@ -77,17 +78,19 @@ export class InMemoryAiRunRepository implements IAiRunRepository, IProjectTaskSu
         conversationId: input.conversationId,
         request: input.request,
         relativeRoot: input.relativeRoot,
+        storageKind: input.storageKind,
         requestedPaths: [...input.requestedPaths],
         manifest: input.manifest,
         manifestInvalidated: false,
-        status: 'pending_approval',
-        phase: 'decision',
-        decision: 'pending',
+        status: policyAuthorized ? 'staging' : 'pending_approval',
+        phase: policyAuthorized ? 'staging' : 'decision',
+        decision: policyAuthorized ? 'policy_authorized' : 'pending',
+        ...(input.policyRevision ? { policyRevision: input.policyRevision } : {}),
         cleanup: 'not_started',
         providerTransmission: 'not_started_confirmed',
         stagingItemCount: 0,
         sandboxReady: false,
-        safeMessage: 'Review the provider disclosure before continuing.',
+        safeMessage: policyAuthorized ? 'Preparing the assistant run under the saved workspace policy.' : 'Review the provider disclosure before continuing.',
         createdAt: now,
         updatedAt: now
       };
@@ -234,6 +237,27 @@ export class InMemoryAiRunRepository implements IAiRunRepository, IProjectTaskSu
       };
       this.runs.set(updated.id, updated);
       return { resource: updated, replayed: false };
+    });
+  }
+
+  public async abortStart(input: StartRunUpdate): Promise<boolean> {
+    return this.withLock(`start:${input.runId}`, async () => {
+      const run = this.runs.get(input.runId);
+      if (!run) return false;
+      const { startIdempotencyKey, startFingerprint, ...withoutStartIdempotency } = run;
+      if (run.ownerId !== input.ownerId || run.status !== 'queued'
+        || startIdempotencyKey !== input.idempotencyKey || startFingerprint !== input.requestFingerprint) {
+        return false;
+      }
+      const ready: AiRun = {
+        ...withoutStartIdempotency,
+        status: 'ready',
+        phase: 'runtime',
+        safeMessage: 'Private run environment ready.',
+        updatedAt: new Date()
+      };
+      this.runs.set(ready.id, ready);
+      return true;
     });
   }
 

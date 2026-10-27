@@ -10,10 +10,11 @@ import type { IAgentRuntime } from '@/modules/ai-runs/repositories/agent-runtime
 import type { IStagingGateway, StageInput } from '@/modules/ai-runs/repositories/staging-gateway';
 import type { ProjectFact } from '@/modules/memory/domain/project-fact';
 import type { IProjectFactRepository } from '@/modules/memory/repositories/project-fact-repository';
+import type { IProviderPermissionRepository } from '@/modules/ai-runs/repositories/provider-permission-repository';
 import { InMemoryAiRunRepository } from '@/infrastructure/ai-runs/in-memory-ai-run-repository';
 import { InMemoryProviderPermissionRepository } from '@/infrastructure/ai-runs/in-memory-provider-permission-repository';
 import { InMemoryRunEventPublisher } from '@/infrastructure/ai-runs/in-memory-run-event-publisher';
-import { CreateAiRunUseCase, DecideEgressUseCase } from '@/modules/ai-runs/use-cases/ai-run-use-cases';
+import { CreateAiRunUseCase, DecideEgressUseCase, GetAiRunUseCase } from '@/modules/ai-runs/use-cases/ai-run-use-cases';
 import { StartAiRunUseCase } from '@/modules/ai-runs/use-cases/start-ai-run-use-case';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -23,7 +24,7 @@ const FACT_ID = '55555555-5555-4555-8555-555555555555';
 
 function makeProject(): Project {
   const now = new Date('2026-09-16T00:00:00.000Z');
-  return { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', status: 'active', version: 1, createdAt: now, updatedAt: now };
+  return { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', storageKind: 'legacy', objective: null, status: 'active', version: 1, createdAt: now, updatedAt: now };
 }
 
 function makeConversation(): MessagePage {
@@ -66,11 +67,16 @@ function factRepository(options: { readonly facts?: readonly ProjectFact[] } = {
 }
 
 class ProjectFixture implements IProjectRepository {
+  public status: Project['status'] = 'active';
   public async listByOwner(): Promise<readonly Project[]> { return [makeProject()]; }
-  public async findByIdForOwner(): Promise<Project | null> { return makeProject(); }
+  public async findByIdForOwner(): Promise<Project | null> { return { ...makeProject(), status: this.status }; }
   public async listActiveRoots(): Promise<readonly string[]> { return ['project']; }
   public async create(): Promise<Project> { return makeProject(); }
   public async updateStatus(): Promise<Project | null> { return makeProject(); }
+}
+
+class RootlessProjectFixture extends ProjectFixture {
+  public override async findByIdForOwner(): Promise<Project | null> { return { ...makeProject(), relativeRoot: null, storageKind: null }; }
 }
 
 class ConversationFixture implements IConversationRepository {
@@ -119,9 +125,44 @@ class StagingFixture implements IStagingGateway {
     return { stagingReference: `fake://${input.runId}`, itemCount: input.files.length + 1 };
   }
   public async cleanup(): Promise<void> { return undefined; }
+  public async assertFresh(): Promise<void> { return undefined; }
+  public async cleanupExpired(): Promise<number> { return 0; }
 }
 
 describe('AI run use cases', () => {
+  it('refuses to create an assistant run for a planning project before conversation or workspace reads', async () => {
+    const conversations = new ConversationFixture();
+    const findConversation = jest.spyOn(conversations, 'findWithMessagesForOwner');
+    const workspace = new WorkspaceFixture();
+    const workspaceRead = jest.spyOn(workspace, 'readText');
+    const repository = new InMemoryAiRunRepository();
+    const create = new CreateAiRunUseCase(new RootlessProjectFixture(), conversations, workspace, repository, 'nvidia-hosted-nim', 'test-model');
+
+    await expect(create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Plan the launch', relativePaths: [], includeRecentMessages: false, idempotencyKey: 'planning-no-run' }))
+      .rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED', statusCode: 409 });
+    expect(findConversation).not.toHaveBeenCalled();
+    expect(workspaceRead).not.toHaveBeenCalled();
+    await expect(repository.findByIdForOwner(OWNER_ID, '00000000-0000-4000-8000-000000000000')).resolves.toBeNull();
+  });
+
+  it('hides an existing run manifest when its project is planning-only', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const create = new CreateAiRunUseCase(new ProjectFixture(), new ConversationFixture(), new WorkspaceFixture(), repository, 'nvidia-hosted-nim', 'test-model');
+    const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Inspect project files', relativePaths: [], includeRecentMessages: false, idempotencyKey: 'get-rootless-run-create' });
+    const getRun = new GetAiRunUseCase(repository, new RootlessProjectFixture());
+
+    await expect(getRun.execute({ ownerId: OWNER_ID, runId: created.resource.id })).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED', statusCode: 409 });
+  });
+
+  it('continues to allow reads for rooted archived projects', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const create = new CreateAiRunUseCase(new ProjectFixture(), new ConversationFixture(), new WorkspaceFixture(), repository, 'nvidia-hosted-nim', 'test-model');
+    const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Inspect project files', relativePaths: [], includeRecentMessages: false, idempotencyKey: 'get-archived-run-create' });
+    const archivedProjects = new ProjectFixture();
+    archivedProjects.status = 'archived';
+
+    await expect(new GetAiRunUseCase(repository, archivedProjects).execute({ ownerId: OWNER_ID, runId: created.resource.id })).resolves.toEqual(created.resource);
+  });
   it('freezes previous-project messages before saving the new user message so preparing context remains stable', async () => {
     const repository = new InMemoryAiRunRepository();
     const conversations = new ConversationFixture();
@@ -143,7 +184,7 @@ describe('AI run use cases', () => {
     const create = new CreateAiRunUseCase(new ProjectFixture(), history, workspace, repository, 'nvidia-hosted-nim', 'test-model');
     const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID,
       request: 'Continue the discussion', relativePaths: [], includeRecentMessages: true, includeProjectConversations: true, idempotencyKey: 'previous-project-context' });
-    const decide = new DecideEgressUseCase(repository, history, workspace, staging, new RuntimeFixture(), '/workspace');
+    const decide = new DecideEgressUseCase(repository, new ProjectFixture(), history, workspace, staging, new RuntimeFixture(), '/workspace');
     await expect(decide.execute({ ownerId: OWNER_ID, runId: created.resource.id, manifestHash: created.resource.manifest.manifestHash,
       decision: 'approve', idempotencyKey: 'stable-context-approval' })).resolves.toMatchObject({ status: 'ready' });
     expect(findRecent).toHaveBeenCalledWith({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, limit: 20 });
@@ -180,7 +221,7 @@ describe('AI run use cases', () => {
     const staging = new StagingFixture();
     const create = new CreateAiRunUseCase(new ProjectFixture(), new ConversationFixture(), workspace, repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b');
     const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Keep local', relativePaths: [], includeRecentMessages: false, idempotencyKey: 'create-run-2' });
-    const decide = new DecideEgressUseCase(repository, new ConversationFixture(), workspace, staging, runtime, '/workspace');
+    const decide = new DecideEgressUseCase(repository, new ProjectFixture(), new ConversationFixture(), workspace, staging, runtime, '/workspace');
 
     const result = await decide.execute({ ownerId: OWNER_ID, runId: created.resource.id, manifestHash: created.resource.manifest.manifestHash, decision: 'reject', idempotencyKey: 'decision-2' });
 
@@ -196,7 +237,7 @@ describe('AI run use cases', () => {
     const staging = new StagingFixture();
     const create = new CreateAiRunUseCase(new ProjectFixture(), new ConversationFixture(), workspace, repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b');
     const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Prepare a private run', relativePaths: ['src/index.ts'], includeRecentMessages: false, idempotencyKey: 'create-run-3' });
-    const decide = new DecideEgressUseCase(repository, new ConversationFixture(), workspace, staging, runtime, '/workspace');
+    const decide = new DecideEgressUseCase(repository, new ProjectFixture(), new ConversationFixture(), workspace, staging, runtime, '/workspace');
 
     const result = await decide.execute({ ownerId: OWNER_ID, runId: created.resource.id, manifestHash: created.resource.manifest.manifestHash, decision: 'approve', idempotencyKey: 'decision-3' });
 
@@ -204,6 +245,33 @@ describe('AI run use cases', () => {
     expect(staging.staged).toHaveLength(1);
     expect(runtime.created).toEqual([created.resource.id]);
     expect((await repository.findByIdForOwner(OWNER_ID, created.resource.id))?.decision).toBe('approved');
+  });
+
+  it('refuses an egress decision for a planning project before conversation, decision, staging, or runtime work', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const conversations = new ConversationFixture();
+    const workspace = new WorkspaceFixture();
+    const create = new CreateAiRunUseCase(new ProjectFixture(), conversations, workspace, repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b');
+    const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Inspect files', relativePaths: [], includeRecentMessages: false, idempotencyKey: 'egress-rootless-create' });
+    const recordDecision = jest.spyOn(repository, 'recordDecision');
+    const findMessages = jest.spyOn(conversations, 'findWithMessagesForOwner');
+    const messageReadCount = findMessages.mock.calls.length;
+    const staging = new StagingFixture();
+    const runtime = new RuntimeFixture();
+    const findPermission = jest.fn();
+    const permissions = { findActive: findPermission } as unknown as IProviderPermissionRepository;
+    const decide = new DecideEgressUseCase(repository, new RootlessProjectFixture(), conversations, workspace, staging, runtime, '/workspace', undefined, permissions);
+
+    await expect(decide.approveWithRememberedPermission({ ownerId: OWNER_ID, runId: created.resource.id }))
+      .rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED', statusCode: 409 });
+    expect(findPermission).not.toHaveBeenCalled();
+
+    await expect(decide.execute({ ownerId: OWNER_ID, runId: created.resource.id, manifestHash: created.resource.manifest.manifestHash, decision: 'approve', idempotencyKey: 'egress-rootless-approve' }))
+      .rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED', statusCode: 409 });
+    expect(recordDecision).not.toHaveBeenCalled();
+    expect(findMessages).toHaveBeenCalledTimes(messageReadCount);
+    expect(staging.staged).toHaveLength(0);
+    expect(runtime.created).toHaveLength(0);
   });
 
   it('grants only this project, the configured provider profile/model, and selected-context sending', async () => {
@@ -214,7 +282,7 @@ describe('AI run use cases', () => {
     const staging = new StagingFixture();
     const create = new CreateAiRunUseCase(new ProjectFixture(), new ConversationFixture(), workspace, repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b');
     const first = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Remember this project scope', relativePaths: [], includeRecentMessages: false, idempotencyKey: 'create-grant-first' });
-    const decide = new DecideEgressUseCase(repository, new ConversationFixture(), workspace, staging, runtime, '/workspace', undefined, permissions);
+    const decide = new DecideEgressUseCase(repository, new ProjectFixture(), new ConversationFixture(), workspace, staging, runtime, '/workspace', undefined, permissions);
     const approved = await decide.execute({ ownerId: OWNER_ID, runId: first.resource.id, manifestHash: first.resource.manifest.manifestHash, decision: 'approve', rememberProviderPermission: true, idempotencyKey: 'decision-grant-first' });
 
     expect(approved.status).toBe('ready');
@@ -238,7 +306,7 @@ describe('AI run use cases', () => {
     const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Do not create an orphaned grant', relativePaths: [], includeRecentMessages: false, idempotencyKey: 'create-grant-rejected-decision' });
     const grant = jest.spyOn(permissions, 'grant');
     jest.spyOn(repository, 'recordDecision').mockRejectedValue(new AiRunStateConflictError());
-    const decide = new DecideEgressUseCase(repository, new ConversationFixture(), new WorkspaceFixture(), new StagingFixture(), new RuntimeFixture(), '/workspace', undefined, permissions);
+    const decide = new DecideEgressUseCase(repository, new ProjectFixture(), new ConversationFixture(), new WorkspaceFixture(), new StagingFixture(), new RuntimeFixture(), '/workspace', undefined, permissions);
 
     await expect(decide.execute({ ownerId: OWNER_ID, runId: created.resource.id, manifestHash: created.resource.manifest.manifestHash, decision: 'approve', rememberProviderPermission: true, idempotencyKey: 'decision-grant-rejected' }))
       .rejects.toMatchObject({ code: 'AI_RUN_STATE_CONFLICT' });
@@ -255,7 +323,7 @@ describe('AI run use cases', () => {
     const create = new CreateAiRunUseCase(new ProjectFixture(), new ConversationFixture(), workspace, repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b');
     const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Use this one-time approval', relativePaths: [], includeRecentMessages: false, idempotencyKey: 'create-grant-storage-failure' });
     jest.spyOn(permissions, 'grant').mockRejectedValue(new Error('storage unavailable'));
-    const decide = new DecideEgressUseCase(repository, new ConversationFixture(), workspace, staging, runtime, '/workspace', undefined, permissions);
+    const decide = new DecideEgressUseCase(repository, new ProjectFixture(), new ConversationFixture(), workspace, staging, runtime, '/workspace', undefined, permissions);
 
     const result = await decide.execute({ ownerId: OWNER_ID, runId: created.resource.id, manifestHash: created.resource.manifest.manifestHash, decision: 'approve', rememberProviderPermission: true, idempotencyKey: 'decision-grant-storage-failure' });
 
@@ -266,18 +334,45 @@ describe('AI run use cases', () => {
     expect(runtime.created).toEqual([created.resource.id]);
   });
 
-  it('does not let a remembered permission authorize rejection or a provider/model mismatch', async () => {
+  it.each([
+    ['owner', { ownerId: '77777777-7777-4777-8777-777777777777' }],
+    ['project', { projectId: '66666666-6666-4666-8666-666666666666' }],
+    ['provider profile', { providerProfile: 'other-provider' }],
+    ['model', { model: 'other-model' }]
+  ] as const)('does not auto-approve when remembered permission %s does not match', async (_scopePart, mismatch) => {
     const repository = new InMemoryAiRunRepository();
     const permissions = new InMemoryProviderPermissionRepository();
-    await permissions.grant({ ownerId: OWNER_ID, projectId: PROJECT_ID, providerProfile: 'other-provider', model: 'other-model' });
+    await permissions.grant({ ownerId: OWNER_ID, projectId: PROJECT_ID, providerProfile: 'nvidia-hosted-nim', model: 'nvidia/nemotron-3-super-120b-a12b', ...mismatch });
     const create = new CreateAiRunUseCase(new ProjectFixture(), new ConversationFixture(), new WorkspaceFixture(), repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b');
     const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Do not widen provider scope', relativePaths: [], includeRecentMessages: false, idempotencyKey: 'create-grant-mismatch' });
-    const decide = new DecideEgressUseCase(repository, new ConversationFixture(), new WorkspaceFixture(), new StagingFixture(), new RuntimeFixture(), '/workspace', undefined, permissions);
+    const decide = new DecideEgressUseCase(repository, new ProjectFixture(), new ConversationFixture(), new WorkspaceFixture(), new StagingFixture(), new RuntimeFixture(), '/workspace', undefined, permissions);
 
     await expect(decide.approveWithRememberedPermission({ ownerId: OWNER_ID, runId: created.resource.id })).resolves.toBeNull();
-    await expect(decide.execute({ ownerId: OWNER_ID, runId: created.resource.id, manifestHash: created.resource.manifest.manifestHash, decision: 'reject', rememberProviderPermission: true, idempotencyKey: 'decision-grant-mismatch' })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
     expect(await repository.findByIdForOwner(OWNER_ID, created.resource.id)).toMatchObject({ status: 'pending_approval', decision: 'pending' });
-    expect(await permissions.listForProjectOwner({ ownerId: OWNER_ID, projectId: PROJECT_ID })).toHaveLength(1);
+  });
+
+  it('does not auto-approve from a revoked remembered permission', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const permissions = new InMemoryProviderPermissionRepository();
+    const permission = await permissions.grant({ ownerId: OWNER_ID, projectId: PROJECT_ID, providerProfile: 'nvidia-hosted-nim', model: 'nvidia/nemotron-3-super-120b-a12b' });
+    await permissions.revoke({ ownerId: OWNER_ID, projectId: PROJECT_ID, permissionId: permission.id });
+    const create = new CreateAiRunUseCase(new ProjectFixture(), new ConversationFixture(), new WorkspaceFixture(), repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b');
+    const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Do not use a revoked grant', relativePaths: [], includeRecentMessages: false, idempotencyKey: 'create-grant-revoked' });
+    const decide = new DecideEgressUseCase(repository, new ProjectFixture(), new ConversationFixture(), new WorkspaceFixture(), new StagingFixture(), new RuntimeFixture(), '/workspace', undefined, permissions);
+
+    await expect(decide.approveWithRememberedPermission({ ownerId: OWNER_ID, runId: created.resource.id })).resolves.toBeNull();
+    expect(await repository.findByIdForOwner(OWNER_ID, created.resource.id)).toMatchObject({ status: 'pending_approval', decision: 'pending' });
+  });
+
+  it('does not let a remembered permission authorize rejection', async () => {
+    const repository = new InMemoryAiRunRepository();
+    const permissions = new InMemoryProviderPermissionRepository();
+    const create = new CreateAiRunUseCase(new ProjectFixture(), new ConversationFixture(), new WorkspaceFixture(), repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b');
+    const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Do not remember a rejection', relativePaths: [], includeRecentMessages: false, idempotencyKey: 'create-grant-reject' });
+    const decide = new DecideEgressUseCase(repository, new ProjectFixture(), new ConversationFixture(), new WorkspaceFixture(), new StagingFixture(), new RuntimeFixture(), '/workspace', undefined, permissions);
+
+    await expect(decide.execute({ ownerId: OWNER_ID, runId: created.resource.id, manifestHash: created.resource.manifest.manifestHash, decision: 'reject', rememberProviderPermission: true, idempotencyKey: 'decision-grant-reject' }))
+      .rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 
   it('auto-approves only matching active permissions and reopens consent if the grant is revoked before start', async () => {
@@ -289,14 +384,16 @@ describe('AI run use cases', () => {
     const permission = await permissions.grant({ ownerId: OWNER_ID, projectId: PROJECT_ID, providerProfile: 'nvidia-hosted-nim', model: 'nvidia/nemotron-3-super-120b-a12b' });
     const create = new CreateAiRunUseCase(new ProjectFixture(), new ConversationFixture(), workspace, repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b');
     const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Use saved provider permission', relativePaths: [], includeRecentMessages: false, idempotencyKey: 'create-grant-auto' });
-    const decide = new DecideEgressUseCase(repository, new ConversationFixture(), workspace, staging, runtime, '/workspace', undefined, permissions);
+    const decide = new DecideEgressUseCase(repository, new ProjectFixture(), new ConversationFixture(), workspace, staging, runtime, '/workspace', undefined, permissions);
     const approved = await decide.approveWithRememberedPermission({ ownerId: OWNER_ID, runId: created.resource.id });
 
     expect(approved).toMatchObject({ status: 'ready', decision: 'approved', providerPermissionId: permission.id });
     await permissions.revoke({ ownerId: OWNER_ID, projectId: PROJECT_ID, permissionId: permission.id });
-    const start = new StartAiRunUseCase(repository, new ConversationFixture(), runtime, new InMemoryRunEventPublisher(), undefined, undefined, undefined, permissions);
+    const admission = { admitDemoRunStart: jest.fn(async (): Promise<void> => undefined) };
+    const start = new StartAiRunUseCase(repository, new ConversationFixture(), runtime, new InMemoryRunEventPublisher(), admission, undefined, undefined, undefined, permissions);
 
     await expect(start.execute({ ownerId: OWNER_ID, runId: created.resource.id, idempotencyKey: 'start-after-permission-revoke' })).rejects.toMatchObject({ code: 'PROVIDER_PERMISSION_REVOKED' });
+    expect(admission.admitDemoRunStart).not.toHaveBeenCalled();
     const reopened = await repository.findByIdForOwner(OWNER_ID, created.resource.id);
     expect(reopened).toMatchObject({ status: 'pending_approval', decision: 'pending' });
     expect(reopened).not.toHaveProperty('providerPermissionId');
@@ -310,7 +407,7 @@ describe('AI run use cases', () => {
     const staging = new StagingFixture();
     const create = new CreateAiRunUseCase(new ProjectFixture(), new ConversationFixture(), workspace, repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b');
     const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Use bounded conversation context', relativePaths: ['src/index.ts', 'src\\index.ts'], includeRecentMessages: true, idempotencyKey: 'create-run-messages' });
-    const decide = new DecideEgressUseCase(repository, new ConversationFixture(), workspace, staging, runtime, '/workspace');
+    const decide = new DecideEgressUseCase(repository, new ProjectFixture(), new ConversationFixture(), workspace, staging, runtime, '/workspace');
 
     await expect(decide.execute({ ownerId: OWNER_ID, runId: created.resource.id, manifestHash: created.resource.manifest.manifestHash, decision: 'approve', idempotencyKey: 'decision-messages' })).resolves.toMatchObject({ status: 'ready' });
 
@@ -326,7 +423,7 @@ describe('AI run use cases', () => {
     const staging = new StagingFixture();
     const create = new CreateAiRunUseCase(new ProjectFixture(), new ConversationFixture(), workspace, repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b');
     const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Unavailable gateway', relativePaths: ['src/index.ts'], includeRecentMessages: false, idempotencyKey: 'create-run-4' });
-    const decide = new DecideEgressUseCase(repository, new ConversationFixture(), workspace, staging, runtime, '/workspace');
+    const decide = new DecideEgressUseCase(repository, new ProjectFixture(), new ConversationFixture(), workspace, staging, runtime, '/workspace');
 
     await expect(decide.execute({ ownerId: OWNER_ID, runId: created.resource.id, manifestHash: created.resource.manifest.manifestHash, decision: 'approve', idempotencyKey: 'decision-4' })).rejects.toMatchObject({ code: 'RUNTIME_UNAVAILABLE' });
     expect(staging.staged).toHaveLength(0);
@@ -341,7 +438,7 @@ describe('AI run use cases', () => {
     const create = new CreateAiRunUseCase(new ProjectFixture(), new ConversationFixture(), workspace, repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b');
     const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Recheck the source', relativePaths: ['src/index.ts'], includeRecentMessages: false, idempotencyKey: 'create-run-5' });
     workspace.changed = true;
-    const decide = new DecideEgressUseCase(repository, new ConversationFixture(), workspace, staging, runtime, '/workspace');
+    const decide = new DecideEgressUseCase(repository, new ProjectFixture(), new ConversationFixture(), workspace, staging, runtime, '/workspace');
 
     await expect(decide.execute({ ownerId: OWNER_ID, runId: created.resource.id, manifestHash: created.resource.manifest.manifestHash, decision: 'approve', idempotencyKey: 'decision-5' })).rejects.toMatchObject({ code: 'EGRESS_SOURCE_CHANGED' });
     expect(staging.staged).toHaveLength(0);
@@ -390,7 +487,7 @@ describe('AI run use cases', () => {
     const create = new CreateAiRunUseCase(new ProjectFixture(), new ConversationFixture(), workspace, repository, 'nvidia-hosted-nim', 'nvidia/nemotron-3-super-120b-a12b', factRecords);
     const created = await create.execute({ ownerId: OWNER_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, request: 'Use the saved test command', factIds: [FACT_ID], relativePaths: [], includeRecentMessages: false, idempotencyKey: 'create-run-stale-fact' });
     currentFact = makeFact({ version: 2, content: 'Run pnpm test --run.', updatedAt: new Date('2026-09-17T00:00:00.000Z') });
-    const decide = new DecideEgressUseCase(repository, new ConversationFixture(), workspace, staging, runtime, '/workspace', factRecords);
+    const decide = new DecideEgressUseCase(repository, new ProjectFixture(), new ConversationFixture(), workspace, staging, runtime, '/workspace', factRecords);
 
     await expect(decide.execute({ ownerId: OWNER_ID, runId: created.resource.id, manifestHash: created.resource.manifest.manifestHash, decision: 'approve', idempotencyKey: 'decision-stale-fact' }))
       .rejects.toMatchObject({ code: 'EGRESS_SOURCE_CHANGED' });

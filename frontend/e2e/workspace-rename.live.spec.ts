@@ -1,0 +1,45 @@
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { expect, test } from '@playwright/test';
+
+test('renames a private demo workspace and preserves the name after reload', async ({ page }) => {
+  test.skip(process.env.PAI_LIVE_RENAME_TEST !== '1', 'Explicit opt-in: creates an expiring session on the local app.');
+  await page.goto('/login');
+  await page.getByTestId('try-demo-button').click();
+  await expect(page).toHaveURL(/\/dashboard/u);
+  let projectId = '';
+  await expect.poll(async () => {
+    const response = await page.request.get('/api/v1/demo/showcase-copy');
+    const body = await response.json();
+    projectId = body.data.projectId ?? '';
+    return body.data.state;
+  }).toBe('ready');
+  await page.goto(`/projects/${projectId}`);
+  const tabs = page.getByRole('navigation', { name: 'Project sections' });
+  await expect(tabs.getByRole('link', { name: 'Automations' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Automations', exact: true }).first()).toBeVisible();
+  const heading = page.locator('.reference-project-header h2');
+  const original = await heading.innerText();
+  await page.getByTestId('project-actions-trigger').click();
+  await page.getByRole('menuitem', { name: 'Rename workspace' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Rename workspace' });
+  await expect(dialog.getByLabel('Workspace name')).toBeFocused();
+  await dialog.getByLabel('Workspace name').fill('Reading Club — Renamed');
+  await dialog.getByRole('button', { name: 'Save name' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(heading).toHaveText('Reading Club — Renamed');
+  await page.reload();
+  await expect(heading).toHaveText('Reading Club — Renamed');
+  const screenshots = join(process.cwd(), '..', '.local');
+  await mkdir(screenshots, { recursive: true });
+  await page.screenshot({ path: join(screenshots, 'workspace-rename-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByTestId('project-actions-trigger').click();
+  await page.getByRole('menuitem', { name: 'Rename workspace' }).click();
+  await expect(dialog).toBeVisible();
+  await page.screenshot({ path: join(screenshots, 'workspace-rename-mobile.png'), fullPage: true });
+  await dialog.getByLabel('Workspace name').fill(original);
+  await dialog.getByRole('button', { name: 'Save name' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(heading).toHaveText(original);
+});

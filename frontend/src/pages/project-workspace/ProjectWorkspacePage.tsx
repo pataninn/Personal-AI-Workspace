@@ -10,8 +10,8 @@ import { ProjectFilesPanel, useProjectFiles } from '@/features/project-files';
 export function ProjectWorkspacePage(): React.JSX.Element {
   const { projectId = '' } = useParams();
   const dispatch = useAppDispatch();
-  const files = useProjectFiles(projectId);
   const detail = useAppSelector(selectProjectDetail(projectId));
+  const files = useProjectFiles(projectId, detail.project?.capabilities.fileAccess === true);
 
   useEffect(() => {
     if (projectId) {
@@ -32,7 +32,7 @@ export function ProjectWorkspacePage(): React.JSX.Element {
     return (
       <Alert tone="error" data-testid="workspace-boundary-error" role="alert">
         <strong>The authoritative workspace is unavailable.</strong>
-        <p>This project cannot be loaded safely until the local workspace setup is available again.</p>
+        <p>This workspace is temporarily unavailable. Try again.</p>
         <Button type="button" variant="secondary" data-testid="workspace-boundary-retry-button" onClick={retryProjectLoad}>Try again</Button>
       </Alert>
     );

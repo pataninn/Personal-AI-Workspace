@@ -37,7 +37,7 @@ describe('AuthProvider', () => {
 
   it('blocks children during bootstrap and exposes only the non-secret session snapshot', async () => {
     getCurrentSessionMock.mockResolvedValue({
-      principal: { id: 'user-1', displayName: 'Local user' },
+      principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const },
       csrfToken: 'csrf-value',
       expiresAt: '2026-09-13T00:00:00.000Z'
     });
@@ -55,7 +55,7 @@ describe('AuthProvider', () => {
     getCurrentSessionMock
       .mockRejectedValueOnce(new Error('offline'))
       .mockResolvedValueOnce({
-        principal: { id: 'user-1', displayName: 'Local user' },
+        principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const },
         csrfToken: 'csrf-value',
         expiresAt: '2026-09-13T00:00:00.000Z'
       });

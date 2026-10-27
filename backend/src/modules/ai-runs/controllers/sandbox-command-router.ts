@@ -7,12 +7,8 @@ import type { GetSessionUseCase } from '@/modules/auth/use-cases/get-session';
 import { SandboxCommandValidationError } from '@/modules/ai-runs/domain/command-errors';
 import { GetSandboxCommandUseCase, ListSandboxCommandsUseCase, DecideSandboxCommandUseCase, CancelSandboxCommandUseCase, toCommandSnapshot } from '@/modules/ai-runs/use-cases/sandbox-command-use-cases';
 import { AppError } from '@/shared/errors/app-error';
+import { PolicyActionRetiredError } from '@/modules/assistant-policy/domain/policy-action-retired-error';
 import { sendData } from '@/shared/http/response';
-
-const decisionSchema = z.object({
-  proposalHash: z.string(),
-  decision: z.enum(['approve', 'reject'])
-}).strict();
 
 const cancelSchema = z.object({}).strict();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -82,17 +78,15 @@ function getHandler(dependencies: SandboxCommandRouterDependencies): RequestHand
   };
 }
 
-function decisionHandler(dependencies: SandboxCommandRouterDependencies): RequestHandler {
-  return async (request, response, next): Promise<void> => {
+function decisionHandler(_dependencies: SandboxCommandRouterDependencies): RequestHandler {
+  return async (request, _response, next): Promise<void> => {
     try {
       const ownerId = request.auth?.principal.id;
       if (!ownerId) {
         next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
         return;
       }
-      const body = parseBody(decisionSchema, request.body);
-      const command = await dependencies.decideCommand.execute({ ownerId, runId: parseUuid(routeParam(request.params.runId)), commandId: parseUuid(routeParam(request.params.commandId)), proposalHash: body.proposalHash, decision: body.decision, idempotencyKey: requiredIdempotencyKey(request) });
-      sendData(response, { command: toCommandSnapshot(command) });
+      throw new PolicyActionRetiredError();
     } catch (error: unknown) {
       next(error);
     }

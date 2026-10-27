@@ -14,7 +14,7 @@ import type { WorkspaceInspectionPolicy } from '@/modules/files/domain/workspace
 import { WorkspaceGatewayAdapter } from '@/infrastructure/workspace/workspace-gateway';
 import { redactSensitiveText, truncateUtf8 } from '@/infrastructure/workspace/workspace-text';
 
-const PROJECT = { projectId: 'project-1', relativeRoot: 'apps' } as const;
+const PROJECT = { ownerId: 'owner-1', projectId: 'project-1', storageKind: 'legacy' as const, relativeRoot: 'apps' } as const;
 
 function stats(options: { directory?: boolean; file?: boolean; symbolicLink?: boolean; reparsePoint?: boolean; size?: number }): WorkspaceGatewayStats {
   return {

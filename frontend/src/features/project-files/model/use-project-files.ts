@@ -5,13 +5,17 @@ const SUFFIXES = new Set('md markdown txt rst adoc csv tsv json jsonl yaml yml t
 const FILENAMES = new Set(['dockerfile', 'makefile', 'readme', 'license', 'procfile', '.gitignore', '.editorconfig']);
 
 /** Load document/code paths without changing the independent AI context choices. */
-export function useProjectFiles(projectId: string) {
+export function useProjectFiles(projectId: string, enabled = true) {
   const [paths, setPaths] = useState<readonly string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [limited, setLimited] = useState(false);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
+    if (!enabled) {
+      setPaths([]); setLoading(false); setError(null); setLimited(false);
+      return;
+    }
     let current = true;
     setLoading(true); setError(null);
     void getWorkspaceTree(projectId, 6).then((tree) => {
@@ -25,7 +29,7 @@ export function useProjectFiles(projectId: string) {
     const refresh = (): void => { setAttempt((value) => value + 1); };
     window.addEventListener('project-files-changed', refresh);
     return () => { current = false; window.removeEventListener('project-files-changed', refresh); };
-  }, [projectId, attempt]);
+  }, [enabled, projectId, attempt]);
   return { paths, loading, error, limited, refresh: (): void => { setAttempt((value) => value + 1); } };
 }
 

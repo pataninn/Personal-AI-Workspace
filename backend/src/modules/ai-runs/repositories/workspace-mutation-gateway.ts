@@ -1,7 +1,9 @@
 import type { BackupCheckpoint, ChangeBackupStatus, ChangeOperationKind, ProposedChangeOperation } from '@/modules/ai-runs/domain/change-types';
 
 export interface WorkspaceMutationScope {
+  readonly ownerId: string;
   readonly projectId: string;
+  readonly storageKind: 'legacy' | 'managed';
   readonly relativeRoot: string;
 }
 
@@ -31,6 +33,8 @@ export interface WorkspaceApplyResult {
 }
 
 export interface WorkspaceMutationApplyOptions {
+  /** Recheck current principal state before each externally visible filesystem promotion. */
+  readonly assertPrincipalActive?: () => Promise<void>;
   /** Called after a verified recovery snapshot and before destructive I/O. */
   readonly recordBackupCheckpoint?: (checkpoint: BackupCheckpoint) => Promise<void>;
 }

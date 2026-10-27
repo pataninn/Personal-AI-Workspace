@@ -1,6 +1,5 @@
 export {
   createProjectTask,
-  deleteProjectTask,
   decideProjectTaskSuggestion,
   listConversationProjectTaskSuggestions,
   listProjectTaskSuggestions,
@@ -10,7 +9,10 @@ export {
   reorderProjectTask,
   updateProjectTask
 } from '@/entities/project-task/api/project-task-api';
+export { createGlobalTask, createInboxTask, deleteGlobalTask, getGlobalTask, getInboxTaskCount, getTaskActionReceipt, listGlobalTasks, moveGlobalTask, undoTaskAction, updateGlobalTask } from '@/entities/project-task/api/global-task-api';
+export type { GlobalTaskCreateDraft, GlobalTaskCreateResult, GlobalTaskDeleteResult, GlobalTaskMutationResult, GlobalTaskPatch, GlobalTaskQueryOptions, TaskActionReceiptMetadata, TaskMutationKind, TaskUndoResult, TaskUndoStatus, TaskUndoTarget } from '@/entities/project-task/api/global-task-api';
 export { useProjectTasks, type ProjectTaskLoadStatus } from '@/entities/project-task/model/use-project-tasks';
+export { useGlobalTaskQuery, type GlobalTaskQueryStatus } from '@/entities/project-task/model/use-global-task-query';
 export { useProjectTaskSuggestions, type ProjectTaskSuggestionLoadStatus } from '@/entities/project-task/model/use-project-task-suggestions';
 export { ProjectTaskStatusLabel } from '@/entities/project-task/ui/ProjectTaskStatusLabel';
 export { isValidTaskDate } from '@/entities/project-task/api/task-metadata';
@@ -18,6 +20,12 @@ export { compareTaskPriority, formatTaskDeadline, isTaskOverdue, TASK_IMPORTANCE
 export type {
   AssistantProjectTaskSource,
   ProjectTask,
+  GlobalTaskCollection,
+  GlobalTaskItem,
+  GlobalTaskQuery,
+  GlobalTaskQueryPage,
+  GlobalTaskWorkspace,
+  InboxTaskCount,
   ProjectTaskDraft,
   ProjectTaskFilter,
   ProjectTaskImportance,

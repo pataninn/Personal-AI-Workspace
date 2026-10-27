@@ -17,14 +17,14 @@ export function ProjectActivityPage(): React.JSX.Element {
   }, [dispatch, projectId]);
 
   useEffect(() => {
-    if (detail.status === 'success' && detail.project) headingRef.current?.focus();
+    if (detail.status === 'success' && detail.project) headingRef.current?.focus({ preventScroll: true });
   }, [detail.project?.id, detail.status]);
 
   if (detail.status === 'idle' || detail.status === 'loading') {
-    return <section className="project-activity-page" aria-busy="true"><div className="loading-status"><Spinner label="Loading project" /><span role="status">Loading project…</span></div><Skeleton className="project-heading-skeleton" /></section>;
+    return <section className="project-activity-page content-start" aria-busy="true"><div className="loading-status"><Spinner label="Loading project" /><span role="status">Loading project…</span></div><Skeleton className="project-heading-skeleton" /></section>;
   }
   if (detail.status === 'error' && detail.errorCode === 'WORKSPACE_BOUNDARY_UNAVAILABLE') {
-    return <Alert tone="error" data-testid="workspace-boundary-error" role="alert"><p>The authoritative workspace is unavailable. This project cannot be loaded safely until local workspace setup is available again.</p><Button type="button" variant="secondary" onClick={() => { void dispatch(loadProject(projectId)); }}>Try again</Button></Alert>;
+    return <Alert tone="error" data-testid="workspace-boundary-error" role="alert"><p>This workspace is temporarily unavailable. Try again.</p><Button type="button" variant="secondary" onClick={() => { void dispatch(loadProject(projectId)); }}>Try again</Button></Alert>;
   }
   if (detail.status === 'error' && detail.errorCode === 'PROJECT_NOT_FOUND') {
     return <ErrorState title="Project not found" detail="We could not find that project in your workspace." testId="project-activity-project-error" action={<Link className="button button-secondary" to="/dashboard">Back to projects</Link>} />;
@@ -34,13 +34,16 @@ export function ProjectActivityPage(): React.JSX.Element {
   }
 
   const project = detail.project;
+  if (!project.capabilities.fileAccess) {
+    return <Alert tone="error" data-testid="project-activity-file-access-unavailable"><p>File activity is unavailable for this project.</p><Link className="button button-secondary" to={`/projects/${encodeURIComponent(project.id)}`}>Back to project</Link></Alert>;
+  }
   return (
-    <div className="project-activity-page" data-testid="project-activity-page">
+    <div className="project-activity-page content-start" data-testid="project-activity-page">
       <header className="project-activity-header">
         <div>
           <p className="product-label">{project.name}</p>
           <h1 ref={headingRef} tabIndex={-1} aria-label="Project activity">Activity</h1>
-          <p className="supporting-copy">Review AI runs, selected context, file outcomes, and provider reported usage.</p>
+          <p className="supporting-copy">Recent assistant work and changes to your files.</p>
         </div>
         <Link className="button button-secondary" to={`/projects/${encodeURIComponent(project.id)}`}>Back to project</Link>
       </header>

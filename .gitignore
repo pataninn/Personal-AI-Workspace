@@ -13,3 +13,4 @@ secrets/
 *.log
 __pycache__/
 .local/
+*.tsbuildinfo

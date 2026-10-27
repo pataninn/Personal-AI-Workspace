@@ -1,11 +1,13 @@
 import { configureStore } from '@reduxjs/toolkit';
+import { useEffect } from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useOutletContext } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { userSessionReducer } from '@/entities/user-session';
+import type { AppShellOutletContext } from '@/widgets/app-shell';
 import { AppShell } from '@/widgets/app-shell/AppShell';
 
 const { signOutMock } = vi.hoisted(() => ({ signOutMock: vi.fn() }));
@@ -19,13 +21,22 @@ function LocationProbe(): React.JSX.Element {
   return <output data-testid="shell-location">{location.pathname}</output>;
 }
 
-function renderShell() {
+function RegisterTaskExitGuard({ guard }: { readonly guard: () => Promise<boolean> }): React.JSX.Element {
+  const context = useOutletContext<AppShellOutletContext>();
+  useEffect(() => {
+    context.registerTaskEditorExitGuard?.(guard);
+    return () => { context.registerTaskEditorExitGuard?.(null); };
+  }, [context.registerTaskEditorExitGuard, guard]);
+  return <h1>Workspace</h1>;
+}
+
+function renderShell(taskExitGuard?: () => Promise<boolean>) {
   const store = configureStore({
     reducer: { userSession: userSessionReducer },
     preloadedState: {
       userSession: {
         status: 'authenticated' as const,
-        principal: { id: 'user-1', displayName: 'Pat' },
+        principal: { id: 'user-1', displayName: 'Pat', accountKind: 'regular' as const, role: 'user' as const },
         csrfToken: 'csrf-value',
         expiresAt: '2026-09-13T00:00:00.000Z',
         errorCode: null
@@ -37,7 +48,7 @@ function renderShell() {
       <MemoryRouter initialEntries={['/dashboard']}>
         <Routes>
           <Route path="/dashboard" element={<AppShell />}>
-            <Route index element={<h1>Workspace</h1>} />
+            <Route index element={taskExitGuard ? <RegisterTaskExitGuard guard={taskExitGuard} /> : <h1>Workspace</h1>} />
           </Route>
           <Route path="/login" element={<h1>Login</h1>} />
         </Routes>
@@ -58,11 +69,13 @@ describe('AppShell', () => {
     renderShell();
 
     expect(screen.getByTestId('app-shell')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Workspace' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Home' })).toHaveAttribute('aria-current', 'page');
     const trigger = screen.getByRole('button', { name: 'Open navigation' });
     await user.click(trigger);
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByText('Move between the protected workspace areas.')).toBeInTheDocument();
+    expect(screen.queryByText('Move between the protected workspace areas.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Close menu' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Navigation' })).toHaveClass('sr-only');
 
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -103,6 +116,21 @@ describe('AppShell', () => {
       expect(store.getState().userSession.status).toBe('unauthenticated');
       expect(screen.getByTestId('shell-location')).toHaveTextContent('/login');
     });
+  });
+
+  it('keeps the authenticated session when a dirty task editor cancels sign-out', async () => {
+    const guard = vi.fn().mockResolvedValue(false);
+    const store = renderShell(guard);
+    const user = userEvent.setup();
+    const trigger = screen.getByRole('button', { name: 'Account menu for Pat' });
+    trigger.focus();
+    await user.keyboard('{Enter}');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => expect(guard).toHaveBeenCalledTimes(1));
+    expect(signOutMock).not.toHaveBeenCalled();
+    expect(store.getState().userSession.status).toBe('authenticated');
+    expect(screen.getByTestId('shell-location')).toHaveTextContent('/dashboard');
   });
 
   it('keeps the visible logout action mounted and prevents duplicate requests while pending', async () => {

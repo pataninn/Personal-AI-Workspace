@@ -13,12 +13,16 @@ export interface ProviderContextMessage {
 }
 
 export interface ModelProviderRequest {
+  /** Trusted owner UUID carried from the persisted run, never supplied by the browser. */
+  readonly ownerId: string;
   readonly runId: string;
   readonly request: string;
   readonly manifest: EgressManifest;
   readonly files: readonly ProviderContextFile[];
   readonly facts: readonly EgressProjectFact[];
   readonly messages: readonly ProviderContextMessage[];
+  /** Rechecked after credit reservation and immediately before the external POST. */
+  readonly beforeProviderAttempt?: () => Promise<void>;
 }
 
 export type ModelProviderEvent =
@@ -40,6 +44,8 @@ export interface ProviderCancellationResult {
 
 export interface IModelProvider {
   checkAvailability(): Promise<void>;
+  /** True only when this exact model has a trusted bounded/admitted send boundary configured. */
+  supportsBoundedAdmission?(input: { readonly providerProfile: string; readonly model: string }): boolean;
   stream(input: ModelProviderRequest): AsyncIterable<ModelProviderEvent>;
   cancel(runId: string): Promise<ProviderCancellationResult>;
 }

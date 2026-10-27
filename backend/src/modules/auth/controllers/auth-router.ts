@@ -14,8 +14,12 @@ import {
 import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
 import type { ILoginRateLimiter } from '@/modules/auth/repositories/security-providers';
+import { isValidAccountIdentifier, normalizeAccountIdentifier } from '@/modules/auth/domain/account-identifier';
 
 const loginSchema = z.object({
+  identifier: z.string().transform(normalizeAccountIdentifier).refine(isValidAccountIdentifier, {
+    message: 'Enter a valid account identifier.'
+  }),
   password: z.string().max(1024).refine((value) => value.trim().length > 0, {
     message: 'Password must contain at least one non-whitespace character.'
   })
@@ -46,11 +50,11 @@ export function clearSessionCookie(response: Response, secure: boolean): void {
   response.cookie(SESSION_COOKIE_NAME, '', cookieOptions(secure, undefined, 0));
 }
 
-function parseLoginBody(body: unknown): { password: string } {
+function parseLoginBody(body: unknown): { identifier: string; password: string } {
   const result = loginSchema.safeParse(body);
   if (!result.success) {
     throw new AppError('VALIDATION_ERROR', 400, 'The sign-in request is invalid.', result.error.issues.map((issue) => ({
-      field: issue.path.join('.') || 'password',
+      field: issue.path.join('.') || 'identifier',
       message: issue.message
     })));
   }
@@ -99,7 +103,6 @@ function logoutHandler(dependencies: AuthRouterDependencies): RequestHandler {
   return async (request, response, next): Promise<void> => {
     try {
       if (!request.auth) {
-        clearSessionCookie(response, dependencies.cookieSecure);
         next(new AppError('SESSION_UNAUTHENTICATED', 401, 'A valid local session is required.'));
         return;
       }
@@ -114,13 +117,12 @@ function logoutHandler(dependencies: AuthRouterDependencies): RequestHandler {
 
 export function createAuthRouter(dependencies: AuthRouterDependencies): Router {
   const router = Router();
-  const clearCookie = (response: Response): void => clearSessionCookie(response, dependencies.cookieSecure);
   router.post('/login', sameOrigin(dependencies.appOrigin), loginHandler(dependencies));
-  router.get('/session', authenticateRequest(dependencies.getSession, clearCookie), sessionHandler(dependencies));
+  router.get('/session', authenticateRequest(dependencies.getSession), sessionHandler(dependencies));
   router.post(
     '/logout',
     sameOrigin(dependencies.appOrigin),
-    authenticateRequest(dependencies.getSession, clearCookie),
+    authenticateRequest(dependencies.getSession),
     requireCsrf,
     logoutHandler(dependencies)
   );

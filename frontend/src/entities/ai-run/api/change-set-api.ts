@@ -19,7 +19,7 @@ const MAX_PREVIEW_BYTES = 8 * 1024;
 const MAX_PREVIEW_LINES = 200;
 const OPERATION_KINDS = new Set<ProposedChangeOperationKind>(['create', 'edit', 'overwrite', 'rename', 'delete']);
 const SET_STATUSES = new Set<ProposedChangeSetStatus>(['awaiting_approval', 'applying', 'applied', 'rejected', 'stale', 'blocked', 'failed', 'needs_manual_review']);
-const DECISIONS = new Set<ProposedChangeDecision>(['pending', 'approved', 'rejected']);
+const DECISIONS = new Set<ProposedChangeDecision>(['pending', 'approved', 'rejected', 'policy_authorized']);
 
 export function getProposedChangeSet(runId: string): Promise<ProposedChangeSetSnapshot> {
   return getJson<unknown>(`${RUNS_PATH}/${encodeURIComponent(runId)}/proposed-change-set`).then(normalizeProposedChangeSet);

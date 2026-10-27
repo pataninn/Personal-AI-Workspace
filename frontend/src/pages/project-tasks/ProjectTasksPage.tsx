@@ -23,15 +23,15 @@ export function ProjectTasksPage(): React.JSX.Element {
 
   useEffect(() => {
     if (detail.status === 'success' && detail.project) {
-      headingRef.current?.focus();
+      headingRef.current?.focus({ preventScroll: true });
     }
   }, [detail.project?.id, detail.status]);
 
   if (detail.status === 'idle' || detail.status === 'loading') {
-    return <section className="project-tasks-page" aria-busy="true"><div className="loading-status"><Spinner label="Loading project" /><span role="status">Loading project…</span></div><Skeleton className="project-heading-skeleton" /></section>;
+    return <section className="project-tasks-page content-start" aria-busy="true"><div className="loading-status"><Spinner label="Loading project" /><span role="status">Loading project…</span></div><Skeleton className="project-heading-skeleton" /></section>;
   }
   if (detail.status === 'error' && detail.errorCode === 'WORKSPACE_BOUNDARY_UNAVAILABLE') {
-    return <Alert tone="error" data-testid="workspace-boundary-error" role="alert"><p>The authoritative workspace is unavailable. This project cannot be loaded safely until the local workspace setup is available again.</p><Button type="button" variant="secondary" data-testid="project-tasks-boundary-retry" onClick={() => { void dispatch(loadProject(projectId)); }}>Try again</Button></Alert>;
+    return <Alert tone="error" data-testid="workspace-boundary-error" role="alert"><p>This workspace is temporarily unavailable. Try again.</p><Button type="button" variant="secondary" data-testid="project-tasks-boundary-retry" onClick={() => { void dispatch(loadProject(projectId)); }}>Try again</Button></Alert>;
   }
   if (detail.status === 'error' && detail.errorCode === 'PROJECT_NOT_FOUND') {
     return <ErrorState title="Project not found" detail="We could not find that project in your workspace." testId="project-tasks-project-error" action={<Link data-testid="project-tasks-not-found-back" className="button button-secondary" to="/dashboard">Back to projects</Link>} />;
@@ -42,12 +42,12 @@ export function ProjectTasksPage(): React.JSX.Element {
 
   const project = detail.project;
   return (
-    <div className="project-tasks-page" data-testid="project-tasks-page">
+    <div className="project-tasks-page content-start" data-testid="project-tasks-page">
       <header className="project-tasks-header">
         <div>
-          <p className="product-label">{project.name}</p>
+
           <h1 ref={headingRef} tabIndex={-1}>Project tasks</h1>
-          <p className="supporting-copy">Track work for this project. Tasks do not run automatically.</p>
+          <p className="supporting-copy">Plan and track work for this project.</p>
         </div>
         <Link data-testid="project-tasks-back-to-project" className="button button-secondary" to={`/projects/${encodeURIComponent(project.id)}`}>Back to project</Link>
       </header>

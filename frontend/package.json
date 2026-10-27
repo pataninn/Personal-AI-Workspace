@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit && vite build --config vite.config.mjs --configLoader runner",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
-    "dev": "vite",
+    "dev": "vite --config vite.config.mjs --configLoader runner",
     "preview:dev": "vite build --mode preview --config vite.config.mjs --configLoader runner && vite preview --mode preview --config vite.config.mjs --configLoader runner",
     "test:preview": "node --test preview/preview-api.test.mjs",
     "test:e2e": "playwright test --config playwright.config.ts",
@@ -24,7 +24,7 @@
     "react-dom": "19.1.0",
     "react-markdown": "^10.1.0",
     "react-redux": "^9.3.0",
-    "react-router-dom": "6.28.2",
+    "react-router-dom": "6.30.6",
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
@@ -40,7 +40,7 @@
     "@types/react-dom": "^19.1.2",
     "jsdom": "^26.1.0",
     "typescript": "^5.8.3",
-    "vite": "^6.3.5",
-    "vitest": "^3.1.3"
+    "vite": "^6.4.4",
+    "vitest": "^4.1.12"
   }
 }

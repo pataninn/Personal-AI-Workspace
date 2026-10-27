@@ -25,7 +25,7 @@ async function signIn(origin) {
   const response = await fetch(`${origin}/api/v1/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password: 'made-up-preview-password' })
+    body: JSON.stringify({ identifier: 'owner', password: 'made-up-preview-password' })
   });
   assert.equal(response.status, 200);
   return response.headers.get('set-cookie').split(';')[0];
@@ -38,6 +38,34 @@ function headers(cookie, extra = {}) {
 const PROJECT_ID = '873c096a-bc57-4a0c-85da-10d4febde96b';
 const CONVERSATION_ID = '489541da-57a5-416d-afb6-45b19ad7bc98';
 
+test('renaming preserves project identity and rejects stale or invalid updates', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const path = `${origin}/api/v1/projects/${PROJECT_ID}`;
+  const before = (await (await fetch(path, { headers: headers(cookie) })).json()).data;
+  const rename = (name, version) => fetch(`${path}/name`, { method: 'PATCH', headers: headers(cookie, { 'If-Match': String(version) }), body: JSON.stringify({ name }) });
+  const result = await rename('Reading Club 中文', before.version);
+  assert.equal(result.status, 200);
+  const after = (await result.json()).data;
+  assert.equal(after.id, before.id); assert.equal(after.name, 'Reading Club 中文');
+  assert.equal(after.slug, 'reading-club-中文'); assert.equal(after.version, before.version + 1);
+  assert.equal((await rename('Stale', before.version)).status, 409);
+  assert.equal((await rename(' ', after.version)).status, 400);
+  assert.equal((await (await fetch(path, { headers: headers(cookie) })).json()).data.name, after.name);
+});
+
+test('preview usage requires a session and supplies the allowance needed by the mock composer', async () => {
+  const { origin } = await startPreview();
+  assert.equal((await fetch(`${origin}/api/v1/account/usage`)).status, 401);
+  const cookie = await signIn(origin);
+  const response = await fetch(`${origin}/api/v1/account/usage`, { headers: headers(cookie) });
+  const { data } = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(data.availability.canSubmit, true);
+  assert.match(data.availability.reason, /Synthetic preview/);
+  assert.equal(data.storage.unit, 'bytes');
+  assert.ok(Number.isFinite(Date.parse(data.daily.resetAt)));
+});
+
 test('Home overview ranks dated tasks before undated importance and updates activity', async () => {
   const { origin } = await startPreview(); const cookie = await signIn(origin);
   const response = await fetch(`${origin}/api/v1/projects/overview`, { headers: headers(cookie) });
@@ -47,6 +75,228 @@ test('Home overview ranks dated tasks before undated importance and updates acti
   assert.equal(overview.tasks[0].deadline, '2026-10-10');
   assert.equal(overview.tasks[1].importance, 'urgent');
   assert.equal(overview.tasks[1].deadline, null);
+});
+
+test('global task capture is idempotent and increments the canonical Inbox count once', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const countUrl = `${origin}/api/v1/tasks/inbox/count`;
+  assert.equal((await (await fetch(countUrl, { headers: headers(cookie) })).json()).data.count, 0);
+  const request = { title: 'Send the proposal', details: null, workspaceId: null, importance: 'medium', deadline: null, subtasks: [] };
+  const create = () => fetch(`${origin}/api/v1/tasks`, { method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'home-capture-intent-1' }), body: JSON.stringify(request) });
+  const first = await create(); const firstBody = (await first.json()).data;
+  const replay = await create(); const replayBody = (await replay.json()).data;
+  assert.equal(first.status, 201); assert.equal(firstBody.item.task.projectId, null); assert.equal(firstBody.item.collection, 'inbox');
+  assert.equal(firstBody.item.task.status, 'todo'); assert.equal(firstBody.item.task.importance, 'medium');
+  assert.equal(replay.status, 200); assert.equal(replayBody.replayed, true); assert.equal(replayBody.item.task.id, firstBody.item.task.id);
+  assert.equal((await (await fetch(countUrl, { headers: headers(cookie) })).json()).data.count, 1);
+  const detail = await fetch(`${origin}/api/v1/tasks/${firstBody.item.task.id}`, { headers: headers(cookie) });
+  assert.equal((await detail.json()).data.task.id, firstBody.item.task.id);
+});
+
+test('global task capture assigns to an active planning workspace and keeps Inbox compatibility', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const projectResponse = await fetch(`${origin}/api/v1/projects`, {
+    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Home planning', workspaceMode: 'planning', objective: 'Plan work from Home' })
+  });
+  const workspace = (await projectResponse.json()).data;
+  assert.equal(projectResponse.status, 201);
+  assert.equal(workspace.workspaceMode, 'planning');
+
+  const countUrl = `${origin}/api/v1/tasks/inbox/count`;
+  const request = { title: '  Draft the agenda  ', details: null, workspaceId: workspace.id, importance: 'medium', deadline: null, subtasks: [] };
+  const create = () => fetch(`${origin}/api/v1/tasks`, { method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'home-planning-capture-1' }), body: JSON.stringify(request) });
+  const first = await create(); const firstBody = (await first.json()).data;
+  const replay = await create(); const replayBody = (await replay.json()).data;
+  assert.equal(first.status, 201);
+  assert.equal(firstBody.item.task.title, 'Draft the agenda');
+  assert.equal(firstBody.item.task.projectId, workspace.id);
+  assert.deepEqual(firstBody.item.workspace, { id: workspace.id, name: workspace.name, status: 'active' });
+  assert.equal(firstBody.item.collection, 'workspace');
+  assert.equal(replay.status, 200);
+  assert.equal(replayBody.replayed, true);
+  assert.equal(replayBody.item.task.id, firstBody.item.task.id);
+  const workspaceTasks = await (await fetch(`${origin}/api/v1/tasks?workspaceId=${workspace.id}`, { headers: headers(cookie) })).json();
+  assert.deepEqual(workspaceTasks.data.items.map(({ task }) => task.id), [firstBody.item.task.id]);
+  assert.equal((await (await fetch(countUrl, { headers: headers(cookie) })).json()).data.count, 0);
+
+  const archived = await fetch(`${origin}/api/v1/projects/${workspace.id}`, {
+    method: 'PATCH', headers: headers(cookie, { 'If-Match': '1' }), body: JSON.stringify({ status: 'archived' })
+  });
+  assert.equal(archived.status, 200);
+  const readOnlyCreate = await fetch(`${origin}/api/v1/tasks`, {
+    method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'home-planning-capture-archived' }), body: JSON.stringify({ ...request, title: 'A task that must fail' })
+  });
+  assert.equal(readOnlyCreate.status, 409);
+  assert.equal((await readOnlyCreate.json()).error.code, 'PROJECT_TASK_PROJECT_ARCHIVED');
+  assert.equal((await (await fetch(countUrl, { headers: headers(cookie) })).json()).data.count, 0);
+});
+
+test('global task reads filter collections, retain stable keyset pages, and reject cursor reuse', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const first = await (await fetch(`${origin}/api/v1/tasks?limit=1`, { headers: headers(cookie) })).json();
+  assert.equal(first.data.items.length, 1); assert.ok(first.data.nextCursor);
+  const secondResponse = await fetch(`${origin}/api/v1/tasks?limit=1&cursor=${encodeURIComponent(first.data.nextCursor)}`, { headers: headers(cookie) });
+  const second = (await secondResponse.json()).data;
+  assert.equal(second.items.length, 1); assert.notEqual(second.items[0].task.id, first.data.items[0].task.id);
+  const inbox = await (await fetch(`${origin}/api/v1/tasks?inboxOnly=true`, { headers: headers(cookie) })).json();
+  assert.deepEqual(inbox.data.items, []);
+  const wrongScope = await fetch(`${origin}/api/v1/tasks?q=another-filter&limit=1&cursor=${encodeURIComponent(first.data.nextCursor)}`, { headers: headers(cookie) });
+  assert.equal(wrongScope.status, 400); assert.equal((await wrongScope.json()).error.code, 'TASK_CURSOR_INVALID');
+});
+
+test('global task edit receipts are safe to reload, replay, and undo only once', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const listed = await fetch(`${origin}/api/v1/tasks?limit=10`, { headers: headers(cookie) });
+  const originalItem = (await listed.json()).data.items[0];
+  const taskId = originalItem.task.id;
+  const updated = await fetch(`${origin}/api/v1/tasks/${taskId}`, {
+    method: 'PATCH', headers: headers(cookie, { 'If-Match': `"${originalItem.task.version}"`, 'Idempotency-Key': 'task-edit-intent-1' }),
+    body: JSON.stringify({ title: 'Edited in preview' })
+  });
+  const updateBody = (await updated.json()).data;
+  assert.equal(updated.status, 200);
+  assert.equal(updated.headers.get('etag'), `"${originalItem.task.version + 1}"`);
+  assert.equal(updateBody.item.task.title, 'Edited in preview');
+  assert.deepEqual(updateBody.receipt, {
+    id: updateBody.receipt.id,
+    actionKind: 'task.update',
+    undoStatus: 'available',
+    outcome: { targetId: taskId, targetVersion: originalItem.task.version + 1, sourceOrderVersion: 1 }
+  });
+
+  const replay = await fetch(`${origin}/api/v1/tasks/${taskId}`, {
+    method: 'PATCH', headers: headers(cookie, { 'If-Match': `"${originalItem.task.version}"`, 'Idempotency-Key': 'task-edit-intent-1' }),
+    body: JSON.stringify({ title: 'Edited in preview' })
+  });
+  assert.equal(replay.status, 200);
+  assert.equal((await replay.json()).data.replayed, true);
+  const changedKeyReuse = await fetch(`${origin}/api/v1/tasks/${taskId}`, {
+    method: 'PATCH', headers: headers(cookie, { 'If-Match': `"${originalItem.task.version}"`, 'Idempotency-Key': 'task-edit-intent-1' }),
+    body: JSON.stringify({ title: 'Different request' })
+  });
+  assert.equal(changedKeyReuse.status, 409);
+  assert.equal((await changedKeyReuse.json()).error.code, 'IDEMPOTENCY_KEY_REUSED');
+
+  const actionId = updateBody.receipt.id;
+  const metadataResponse = await fetch(`${origin}/api/v1/actions/${actionId}`, { headers: headers(cookie) });
+  const metadata = (await metadataResponse.json()).data;
+  assert.equal(metadataResponse.status, 200);
+  assert.deepEqual(Object.keys(metadata).sort(), ['actionKind', 'actorKind', 'turnId', 'id', 'postVersion', 'targetId', 'targetKind', 'undoActionId', 'undoStatus'].sort());
+  assert.equal(metadata.actorKind, 'manual');
+  assert.equal(metadata.turnId, null);
+  assert.equal(metadata.targetKind, 'task');
+  assert.equal(metadata.targetId, taskId);
+  assert.equal(metadata.undoStatus, 'available');
+  assert.equal('reversibleFields' in metadata, false);
+
+  const undoUrl = `${origin}/api/v1/actions/${actionId}/undo`;
+  const undo = await fetch(undoUrl, { method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'task-edit-undo-1' }), body: '{}' });
+  const undoBody = (await undo.json()).data;
+  assert.equal(undo.status, 200);
+  assert.equal(undoBody.originalAction.undoStatus, 'undone');
+  assert.equal(undoBody.originalAction.actorKind, 'manual');
+  assert.equal(undoBody.undoReceipt.actorKind, 'manual');
+  assert.equal(undoBody.undoReceipt.turnId, null);
+  assert.equal(undoBody.undoReceipt.actionKind, 'undo');
+  assert.equal(undoBody.target.kind, 'task');
+  assert.equal(undoBody.target.item.task.title, originalItem.task.title);
+  assert.equal(undoBody.target.item.task.version, originalItem.task.version + 2);
+  assert.equal('reversibleFields' in undoBody.undoReceipt, false);
+
+  const afterUndo = (await (await fetch(`${origin}/api/v1/actions/${actionId}`, { headers: headers(cookie) })).json()).data;
+  assert.equal(afterUndo.undoStatus, 'undone');
+  assert.equal(afterUndo.undoActionId, undoBody.undoReceipt.id);
+  const undoReplay = await fetch(undoUrl, { method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'task-edit-undo-1' }), body: '{}' });
+  assert.equal(undoReplay.status, 200);
+  assert.equal((await undoReplay.json()).data.replayed, true);
+  const secondUndo = await fetch(undoUrl, { method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'task-edit-undo-2' }), body: '{}' });
+  assert.equal(secondUndo.status, 409);
+  assert.equal((await secondUndo.json()).data.reason, 'already_undone');
+});
+
+test('moves tasks, undoes the move, and supports replay-safe permanent deletion instead of archive', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const planningResponse = await fetch(`${origin}/api/v1/projects`, {
+    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Preview plan', workspaceMode: 'planning', objective: 'Move tasks here' })
+  });
+  const planning = (await planningResponse.json()).data;
+  assert.equal(planningResponse.status, 201);
+  assert.equal(Object.hasOwn(planning, 'relativeRoot'), false);
+  assert.equal(planning.capabilities.fileAccess, false);
+  const page = await fetch(`${origin}/api/v1/tasks?limit=10`, { headers: headers(cookie) });
+  const taskItem = (await page.json()).data.items.find((item) => item.workspace?.id === PROJECT_ID);
+  const taskId = taskItem.task.id;
+
+  const move = await fetch(`${origin}/api/v1/tasks/${taskId}/move`, {
+    method: 'POST', headers: headers(cookie, { 'If-Match': `"${taskItem.task.version}"`, 'Idempotency-Key': 'task-move-intent-1' }),
+    body: JSON.stringify({ workspaceId: planning.id, expectedSourceOrderVersion: 1, expectedDestinationOrderVersion: 1 })
+  });
+  const moved = (await move.json()).data;
+  assert.equal(move.status, 200);
+  assert.equal(moved.item.task.id, taskId);
+  assert.equal(moved.item.workspace.id, planning.id);
+  assert.equal(moved.receipt.actionKind, 'task.move');
+  assert.deepEqual(moved.receipt.outcome, { targetId: taskId, targetVersion: taskItem.task.version + 1, sourceOrderVersion: 2, destinationOrderVersion: 2 });
+
+  const moveUndo = await fetch(`${origin}/api/v1/actions/${moved.receipt.id}/undo`, {
+    method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'task-move-undo-1' }), body: '{}'
+  });
+  const restored = (await moveUndo.json()).data;
+  assert.equal(moveUndo.status, 200);
+  assert.equal(restored.target.item.task.id, taskId);
+  assert.equal(restored.target.item.task.projectId, PROJECT_ID);
+  assert.equal(restored.target.item.task.version, taskItem.task.version + 2);
+
+  const archive = await fetch(`${origin}/api/v1/tasks/${taskId}/archive`, {
+    method: 'POST', headers: headers(cookie, { 'If-Match': `"${taskItem.task.version + 2}"`, 'Idempotency-Key': 'task-archive-intent-1' }), body: '{}'
+  });
+  assert.equal(archive.status, 410);
+  const remove = () => fetch(`${origin}/api/v1/tasks/${taskId}`, {
+    method: 'DELETE', headers: headers(cookie, { 'If-Match': `"${taskItem.task.version + 2}"`, 'Idempotency-Key': 'task-delete-intent-1' })
+  });
+  const deleted = (await (await remove()).json()).data;
+  assert.equal(deleted.taskId, taskId);
+  assert.equal(deleted.receipt.actionKind, 'task.delete');
+  assert.equal(deleted.receipt.undoStatus, 'not_reversible');
+  assert.equal(deleted.receipt.outcome.targetVersion, null);
+  const replay = await remove();
+  assert.equal(replay.status, 200);
+  assert.equal((await replay.json()).data.replayed, true);
+  assert.equal((await fetch(`${origin}/api/v1/tasks/${taskId}`, { headers: headers(cookie) })).status, 404);
+  assert.equal((await fetch(`${origin}/api/v1/tasks/${taskId}?includeArchived=true`, { headers: headers(cookie) })).status, 404);
+
+  const archiveUndo = await fetch(`${origin}/api/v1/actions/${deleted.receipt.id}/undo`, {
+    method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'task-archive-undo-1' }), body: '{}'
+  });
+  assert.equal(archiveUndo.status, 409);
+});
+
+test('receipt and undo routes hide unknown action IDs and reject stale undo state', async () => {
+  const { origin } = await startPreview(); const cookie = await signIn(origin);
+  const unknown = '2a5a518e-d8ec-4cf4-9cbd-18d2d2c4fb5e';
+  const missing = await fetch(`${origin}/api/v1/actions/${unknown}`, { headers: headers(cookie) });
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).error.code, 'ACTION_NOT_FOUND');
+
+  const item = (await (await fetch(`${origin}/api/v1/tasks?limit=10`, { headers: headers(cookie) })).json()).data.items[0];
+  const first = await fetch(`${origin}/api/v1/tasks/${item.task.id}`, {
+    method: 'PATCH', headers: headers(cookie, { 'If-Match': `"${item.task.version}"`, 'Idempotency-Key': 'task-stale-undo-1' }),
+    body: JSON.stringify({ title: 'First edit' })
+  });
+  const firstReceipt = (await first.json()).data.receipt;
+  const second = await fetch(`${origin}/api/v1/tasks/${item.task.id}`, {
+    method: 'PATCH', headers: headers(cookie, { 'If-Match': `"${item.task.version + 1}"`, 'Idempotency-Key': 'task-stale-undo-2' }),
+    body: JSON.stringify({ title: 'Second edit' })
+  });
+  assert.equal(second.status, 200);
+  const undo = await fetch(`${origin}/api/v1/actions/${firstReceipt.id}/undo`, {
+    method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'task-stale-undo-attempt' }), body: '{}'
+  });
+  assert.equal(undo.status, 409);
+  const body = await undo.json();
+  assert.equal(body.error.code, 'ACTION_UNDO_CONFLICT');
+  assert.equal(body.data.reason, 'changed');
+  assert.equal(body.data.target.item.task.title, 'Second edit');
 });
 
 test('task metadata, checklists, completion/reopening and permanent removal use current versions', async () => {
@@ -98,17 +348,21 @@ test('files support upload, raw download, stale-safe edits and deletion without 
   assert.equal((await fetch(`${endpoint}/content?path=README.md`, { headers: headers(cookie) })).status, 200);
 });
 
-test('project removal clears app records and retains files for the same root after reattachment', async () => {
+test('project removal clears app records and newly allocated roots stay private to the public response', async () => {
   const { origin } = await startPreview(); const cookie = await signIn(origin);
   const before = (await (await fetch(`${origin}/api/v1/projects/${PROJECT_ID}/files/content?path=README.md`, { headers: headers(cookie) })).json()).data;
   const removed = await fetch(`${origin}/api/v1/projects/${PROJECT_ID}`, { method: 'DELETE', headers: headers(cookie, { 'If-Match': '1' }) });
   assert.equal(removed.status, 204);
   assert.equal((await fetch(`${origin}/api/v1/projects/${PROJECT_ID}/tasks`, { headers: headers(cookie) })).status, 404);
   assert.equal((await fetch(`${origin}/api/v1/conversations/${CONVERSATION_ID}?projectId=${PROJECT_ID}`, { headers: headers(cookie) })).status, 404);
-  const attached = await fetch(`${origin}/api/v1/projects`, { method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Reattached', relativeRoot: 'apps/website' }) });
-  const id = (await attached.json()).data.id;
-  const after = (await (await fetch(`${origin}/api/v1/projects/${id}/files/content?path=README.md`, { headers: headers(cookie) })).json()).data;
-  assert.equal(after.content, before.content);
+  const created = await fetch(`${origin}/api/v1/projects`, { method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Replacement project' }) });
+  const replacement = (await created.json()).data;
+  assert.equal(created.status, 201);
+  assert.equal(replacement.capabilities.fileAccess, true);
+  assert.equal(Object.hasOwn(replacement, 'relativeRoot'), false);
+  const after = (await (await fetch(`${origin}/api/v1/projects/${replacement.id}/files/content?path=README.md`, { headers: headers(cookie) })).json()).data;
+  assert.equal(after.content, '# New project\n');
+  assert.notEqual(after.content, before.content);
 });
 
 test('new destructive/file methods require CSRF and direct preview chat stays local with Markdown', async () => {
@@ -149,10 +403,13 @@ test('shows seeded projects and supports create, archive, and restore', async ()
   const projects = (await list.json()).data.projects;
   assert.equal(projects.length, 2);
   const created = await fetch(`${origin}/api/v1/projects`, {
-    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'My preview', relativeRoot: 'apps/my-preview' })
+    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'My preview' })
   });
   assert.equal(created.status, 201);
   const project = (await created.json()).data;
+  assert.equal(project.workspaceMode, 'file_backed');
+  assert.deepEqual(project.capabilities, { planning: true, fileAccess: true });
+  assert.equal(Object.hasOwn(project, 'relativeRoot'), false);
   const archive = await fetch(`${origin}/api/v1/projects/${project.id}`, {
     method: 'PATCH', headers: headers(cookie, { 'If-Match': '1' }), body: JSON.stringify({ status: 'archived' })
   });
@@ -161,6 +418,72 @@ test('shows seeded projects and supports create, archive, and restore', async ()
     method: 'PATCH', headers: headers(cookie, { 'If-Match': '2' }), body: JSON.stringify({ status: 'active' })
   });
   assert.equal((await restore.json()).data.status, 'active');
+});
+
+test('creates planning-only metadata and omits filesystem roots', async () => {
+  const { origin } = await startPreview();
+  const cookie = await signIn(origin);
+  const created = await fetch(`${origin}/api/v1/projects`, {
+    method: 'POST', headers: headers(cookie),
+    body: JSON.stringify({ name: 'Launch plan', workspaceMode: 'planning', objective: '  Track the launch  ' })
+  });
+  assert.equal(created.status, 201);
+  const project = (await created.json()).data;
+  assert.equal(Object.hasOwn(project, 'relativeRoot'), false);
+  assert.equal(project.objective, 'Track the launch');
+  assert.equal(project.workspaceMode, 'planning');
+  assert.deepEqual(project.capabilities, { planning: true, fileAccess: false });
+
+  const detail = await fetch(`${origin}/api/v1/projects/${project.id}`, { headers: { Cookie: cookie } });
+  assert.deepEqual((await detail.json()).data, project);
+  const overview = await fetch(`${origin}/api/v1/projects/overview`, { headers: { Cookie: cookie } });
+  const listed = (await overview.json()).data.projects.find((item) => item.id === project.id);
+  assert.equal(Object.hasOwn(listed, 'relativeRoot'), false);
+  assert.equal(listed.capabilities.fileAccess, false);
+
+  const filePaths = [
+    `${origin}/api/v1/projects/${project.id}/files/tree`,
+    `${origin}/api/v1/projects/${project.id}/chat-context`,
+    `${origin}/api/v1/projects/${project.id}/file-history?path=README.md`
+  ];
+  for (const url of filePaths) {
+    const response = await fetch(url, { headers: { Cookie: cookie } });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, 'PROJECT_ROOT_NOT_ATTACHED');
+  }
+  const run = await fetch(`${origin}/api/v1/projects/${project.id}/ai-runs`, {
+    method: 'POST', headers: headers(cookie, { 'Idempotency-Key': 'planning-project-run' }),
+    body: JSON.stringify({ conversationId: CONVERSATION_ID, request: 'Run a check', context: {} })
+  });
+  assert.equal(run.status, 409);
+  assert.equal((await run.json()).error.code, 'PROJECT_ROOT_NOT_ATTACHED');
+});
+
+test('allocates default file capability and rejects caller-selected roots', async () => {
+  const { origin } = await startPreview();
+  const cookie = await signIn(origin);
+  const defaultMode = await fetch(`${origin}/api/v1/projects`, {
+    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Missing root' })
+  });
+  assert.equal(defaultMode.status, 201);
+  const defaultProject = (await defaultMode.json()).data;
+  assert.equal(defaultProject.workspaceMode, 'file_backed');
+  assert.equal(defaultProject.capabilities.fileAccess, true);
+  assert.equal(Object.hasOwn(defaultProject, 'relativeRoot'), false);
+
+  const selectedRoot = await fetch(`${origin}/api/v1/projects`, {
+    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Caller selected root', relativeRoot: 'private/path' })
+  });
+  assert.equal(selectedRoot.status, 400);
+  const error = (await selectedRoot.json()).error;
+  assert.equal(error.code, 'VALIDATION_ERROR');
+  assert.doesNotMatch(error.message, /private\/path/u);
+
+  const planningRoot = await fetch(`${origin}/api/v1/projects`, {
+    method: 'POST', headers: headers(cookie), body: JSON.stringify({ name: 'Bad plan', workspaceMode: 'planning', relativeRoot: 'notes' })
+  });
+  assert.equal(planningRoot.status, 400);
+  assert.equal((await planningRoot.json()).error.code, 'VALIDATION_ERROR');
 });
 
 test('supports seeded history, new conversations, and idempotent message retries', async () => {

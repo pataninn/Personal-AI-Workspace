@@ -39,6 +39,7 @@ export interface AddMessageRecord {
 }
 
 export interface IConversationRepository {
+  readonly setGeneratedTitle?: (input: { readonly ownerId: string; readonly projectId: string; readonly conversationId: string; readonly title: string }) => Promise<boolean>;
   readonly findRecentMessagesByProjectForOwner?: (input: { readonly ownerId: string; readonly projectId: string; readonly conversationId: string; readonly limit: number }) => Promise<readonly Message[]>;
   listByProjectForOwner(input: ListConversationsInput): Promise<ConversationPage>;
   findWithMessagesForOwner(input: FindConversationInput): Promise<MessagePage | null>;

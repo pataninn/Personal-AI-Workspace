@@ -9,8 +9,8 @@ export function getCurrentSession(): Promise<SessionSnapshot> {
   return getJson<SessionSnapshot>(SESSION_PATH);
 }
 
-export function signIn(password: string): Promise<SessionSnapshot> {
-  return postJson<SessionSnapshot>(LOGIN_PATH, { password });
+export function signIn(identifier: string, password: string): Promise<SessionSnapshot> {
+  return postJson<SessionSnapshot>(LOGIN_PATH, { identifier, password });
 }
 
 export function signOut(csrfToken: string): Promise<void> {

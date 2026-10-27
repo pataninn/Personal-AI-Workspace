@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { IProjectFileGateway } from '@/modules/files/repositories/project-file-access';
+import type { ExportWorkspaceFile, IProjectFileGateway } from '@/modules/files/repositories/project-file-access';
 import type { WorkspaceProjectScope } from '@/modules/files/domain/workspace-types';
 import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspace-boundary';
 import { WorkspaceRelativePath } from '@/modules/files/domain/workspace-path';
@@ -11,19 +11,64 @@ import { defaultWorkspaceGatewayFileSystem } from '@/infrastructure/workspace/wo
 import { assertDirectory, isContained, resolveWorkspaceEntry, resolveWorkspaceScope } from '@/infrastructure/workspace/workspace-gateway-paths';
 import { WorkspaceOperationContext } from '@/infrastructure/workspace/workspace-operation';
 import { AppError } from '@/shared/errors/app-error';
+import { capturePinnedDirectory, captureWithTestFileSystem, type ExportCaptureTestFileSystem } from '@/infrastructure/workspace/project-file-export-capture';
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const fileSystem = { ...defaultWorkspaceGatewayFileSystem, realpath: async (value: string): Promise<string> => (await fs.realpath(value)).replaceAll('\\', '/') };
 
 /** Bounded binary/text operations with safe paths, exclusive creation and hash claims. */
 export class ProjectFileGateway implements IProjectFileGateway {
-  public constructor(private readonly options: { readonly containerRoot: string; readonly workspaceBoundary: IWorkspaceBoundary }) {}
+  public constructor(private readonly options: {
+    readonly containerRoot: string;
+    readonly workspaceBoundary: IWorkspaceBoundary;
+    readonly exportCaptureFileSystemForTests?: ExportCaptureTestFileSystem;
+  }) {}
+
+  /** Creates only validated parent directories beneath the already-resolved trusted project root. */
+  public async ensureParentDirectories(scope: WorkspaceProjectScope, relativePath: string): Promise<void> {
+    const parsed = WorkspaceRelativePath.parse(relativePath).value;
+    const context = new WorkspaceOperationContext(undefined, 5000);
+    const paths = await resolveWorkspaceScope(this.options.workspaceBoundary, fileSystem, this.options.containerRoot.replaceAll('\\', '/'), scope, context);
+    const segments = path.posix.dirname(parsed).split('/').filter((segment) => segment !== '.');
+    let current = paths.canonicalProjectRoot;
+    for (const segment of segments) {
+      current = path.posix.join(current, segment);
+      try {
+        await fs.mkdir(current, { mode: 0o700 });
+      } catch (error: unknown) {
+        if (!hasCode(error, 'EEXIST')) throw error;
+      }
+      const stats = await fs.lstat(current);
+      if (!stats.isDirectory() || stats.isSymbolicLink()) throw new WorkspacePathForbiddenError();
+      const real = (await fs.realpath(current)).replaceAll('\\', '/');
+      if (real !== current || !isContained(paths.canonicalProjectRoot, real, true)) throw new WorkspacePathForbiddenError();
+    }
+  }
 
   public async download(scope: WorkspaceProjectScope, relativePath: string): Promise<{ readonly bytes: Buffer; readonly hash: string }> {
     return this.withTarget(scope, relativePath, async (target) => {
       const bytes = await this.read(target).catch(mapReadError);
       return { bytes, hash: hash(bytes) };
     });
+  }
+
+  /** Captures a complete, stable, no-follow file projection for a bounded export. */
+  public async captureForExport(
+    scope: WorkspaceProjectScope,
+    options: { readonly maxFiles: number; readonly maxTotalBytes: number; readonly deadlineAt: number }
+  ): Promise<readonly ExportWorkspaceFile[]> {
+    if (Date.now() >= options.deadlineAt) throw exportTooLarge();
+    const context = new WorkspaceOperationContext(undefined, Math.max(1, options.deadlineAt - Date.now()));
+    const paths = await resolveWorkspaceScope(this.options.workspaceBoundary, fileSystem, this.options.containerRoot.replaceAll('\\', '/'), scope, context);
+    if (this.options.exportCaptureFileSystemForTests) {
+      return captureWithTestFileSystem(paths.canonicalProjectRoot, options, this.options.exportCaptureFileSystemForTests);
+    }
+    if (process.platform !== 'linux') throw exportIoError();
+    const root = await fs.open(paths.canonicalProjectRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      if ((await fs.realpath(`/proc/self/fd/${root.fd}`)).replaceAll('\\', '/') !== paths.canonicalProjectRoot) throw exportIoError();
+      return await capturePinnedDirectory(root, options);
+    } finally { await root.close(); }
   }
 
   public async write(scope: WorkspaceProjectScope, input: { readonly path: string; readonly bytes: Buffer; readonly expectedHash: string | null }): Promise<{ readonly hash: string }> {
@@ -133,6 +178,9 @@ export class ProjectFileGateway implements IProjectFileGateway {
     catch { throw new AppError('FILE_RECOVERY_REQUIRED', 409, 'File recovery is needed. Your original content was preserved in a private temporary file.'); }
   }
 }
+
+function exportIoError(): AppError { return new AppError('EXPORT_FAILED', 500, 'The workspace export could not be prepared.'); }
+function exportTooLarge(): AppError { return new AppError('EXPORT_TOO_LARGE', 413, 'The workspace export exceeds its safe limits.'); }
 
 function hash(bytes: Buffer): string { return createHash('sha256').update(bytes).digest('hex'); }
 function hasCode(value: unknown, code: string): boolean { return typeof value === 'object' && value !== null && 'code' in value && value.code === code; }

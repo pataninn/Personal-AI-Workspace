@@ -1,4 +1,8 @@
 import type { DataSource, QueryRunner } from 'typeorm';
+import { lockProjectWriteState } from '@/infrastructure/database/project-removal-write-barrier';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import { resultContentScope, type StorageContentIdentity, type StorageContentMutationScope } from '@/infrastructure/database/storage-content-projections';
+import type { StorageQuotaTransaction } from '@/modules/storage-quotas/repositories/storage-quota-repository';
 
 import {
   AiRunAlreadyDecidedError,
@@ -11,6 +15,8 @@ import type { AiRun, CreateAiRunRecord, DecisionResult, DecisionUpdate, EgressMa
 import type { AiRunActivityRecordPage, ListAiRunActivityInput } from '@/modules/ai-runs/domain/activity-types';
 import type { CancelRunUpdate, CompleteRunUpdate, IAiRunRepository, RunMutationResult, StartRunUpdate } from '@/modules/ai-runs/repositories/ai-run-repository';
 import { ProjectArchivedError } from '@/modules/conversations/domain/conversation-errors';
+import { UnauthenticatedError } from '@/modules/auth/domain/auth-errors';
+import { AssistantExecutionPolicyChangedError } from '@/modules/assistant-policy/domain/assistant-execution-errors';
 import type { TaskSuggestionCompletionWriter } from '@/infrastructure/database/repositories/task-suggestion-completion-writer';
 
 interface AiRunRow {
@@ -20,6 +26,7 @@ interface AiRunRow {
   readonly conversation_id: string;
   readonly request: string;
   readonly relative_root: string;
+  readonly storage_kind: AiRun['storageKind'];
   readonly requested_paths: unknown;
   readonly manifest: unknown;
   readonly manifest_hash: string;
@@ -27,6 +34,7 @@ interface AiRunRow {
   readonly status: AiRun['status'];
   readonly phase: AiRun['phase'];
   readonly decision: AiRun['decision'];
+  readonly policy_revision?: string | null;
   readonly cleanup: AiRun['cleanup'];
   readonly provider_transmission: AiRun['providerTransmission'];
   readonly staging_item_count: number;
@@ -55,27 +63,51 @@ interface AiRunRow {
 }
 
 export class TypeOrmAiRunRepository implements IAiRunRepository {
-  public constructor(private readonly dataSource: DataSource, private readonly taskSuggestionWriter?: TaskSuggestionCompletionWriter) {}
+  public constructor(
+    private readonly dataSource: DataSource,
+    private readonly taskSuggestionWriter?: TaskSuggestionCompletionWriter,
+    private readonly storageAccounting = new TypeOrmStorageContentAccounting(dataSource)
+  ) {}
 
   public async recoverInterruptedRunsForReview(): Promise<number> {
-    const rows: unknown = await this.dataSource.query(
-      `UPDATE "ai_runs"
-       SET "status" = 'review_required', "phase" = 'review', "cleanup" = 'unknown',
-           "provider_transmission" = CASE
-             WHEN "provider_transmission" IN ('transmitted_confirmed', 'not_started_confirmed') THEN "provider_transmission"
-             ELSE 'unknown'
-           END,
-           "safe_message" = $1, "updated_at" = now()
-       WHERE "status" IN ('staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested')
-       RETURNING "id"`,
-      ['The app restarted while this run was active. Review its saved status; no work was resumed automatically.']
-    );
-    return returnedCount(rows);
+    const runner = this.dataSource.createQueryRunner();
+    await runner.connect();
+    await runner.startTransaction();
+    try {
+      await runner.query(
+        `UPDATE "sandbox_commands"
+         SET "status" = 'review_required', "safe_message" = $1, "updated_at" = now()
+         WHERE "run_id" IN (
+           SELECT "id" FROM "ai_runs" WHERE "decision"::text = 'policy_authorized'
+             AND "status" IN ('staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested')
+         ) AND "status" IN ('awaiting_approval', 'running', 'cancel_requested')`,
+        ['The app restarted while this command was active. Review its saved status; the command was not resumed.']
+      );
+      const rows: unknown = await runner.query(
+        `UPDATE "ai_runs"
+         SET "status" = 'review_required', "phase" = 'review', "cleanup" = 'unknown',
+             "provider_transmission" = CASE
+               WHEN "provider_transmission" IN ('transmitted_confirmed', 'not_started_confirmed') THEN "provider_transmission"
+               ELSE 'unknown'
+             END,
+             "safe_message" = $1, "updated_at" = now()
+         WHERE "status" IN ('staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested')
+         RETURNING "id"`,
+        ['The app restarted while this run was active. Review its saved status; no work was resumed automatically.']
+      );
+      await runner.commitTransaction();
+      return returnedCount(rows);
+    } catch (error: unknown) {
+      if (runner.isTransactionActive) await runner.rollbackTransaction();
+      throw error;
+    } finally {
+      await runner.release();
+    }
   }
 
   public async create(input: CreateAiRunRecord): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> {
-    const queryRunner = await this.startTransaction();
-    try {
+    return this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
+      await assertPrincipalActive(queryRunner, input.ownerId);
       await lockIntent(queryRunner, `create:${input.ownerId}:${input.projectId}:${input.idempotencyKey}`);
       const existing = await this.findByIdempotency(queryRunner, input);
       if (existing) {
@@ -86,27 +118,43 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
         if (!replay) {
           throw new AiRunNotFoundError();
         }
-        await queryRunner.commitTransaction();
         return { resource: replay, replayed: true };
       }
+      await assertProjectActive(queryRunner, input.ownerId, input.projectId);
+      if (input.policyRevision !== undefined) {
+        if (!/^\d+$/u.test(input.policyRevision) || BigInt(input.policyRevision) < 1n) {
+          throw new AssistantExecutionPolicyChangedError();
+        }
+        const policyRows: readonly { policy_profile: string; provider_profile: string | null; model: string | null; enabled: boolean; revoked_at: Date | string | null; revision: string }[] = await queryRunner.query(
+          `SELECT "policy_profile", "provider_profile", "model", "enabled", "revoked_at", "revision"
+           FROM "assistant_scope_policies" WHERE "owner_id" = $1 AND "scope_kind" = 'project' AND "project_id" = $2
+           LIMIT 1 FOR SHARE`,
+          [input.ownerId, input.projectId]
+        );
+        const policy = policyRows[0];
+        if (!policy || policy.policy_profile !== 'workspace_in_scope_v1' || !policy.enabled || policy.revoked_at !== null
+          || policy.revision !== input.policyRevision || policy.provider_profile !== input.manifest.providerProfile || policy.model !== input.manifest.model) {
+          throw new AssistantExecutionPolicyChangedError();
+        }
+      }
       const rows: readonly AiRunRow[] = await queryRunner.query(
-       `INSERT INTO "ai_runs" ("owner_id", "project_id", "conversation_id", "request", "relative_root", "requested_paths", "manifest", "manifest_hash", "create_idempotency_key", "request_fingerprint", "safe_message")
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11)
+       `INSERT INTO "ai_runs" ("owner_id", "project_id", "conversation_id", "request", "relative_root", "storage_kind", "requested_paths", "manifest", "manifest_hash", "create_idempotency_key", "request_fingerprint", "decision", "policy_revision", "status", "phase", "safe_message")
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11,
+           CASE WHEN $12::bigint IS NULL THEN 'pending'::"ai_run_decision" ELSE 'policy_authorized'::"ai_run_decision" END,
+           $12::bigint,
+           CASE WHEN $12::bigint IS NULL THEN 'pending_approval'::"ai_run_status" ELSE 'staging'::"ai_run_status" END,
+           CASE WHEN $12::bigint IS NULL THEN 'decision'::"ai_run_phase" ELSE 'staging'::"ai_run_phase" END,
+           $13)
          RETURNING *`,
-        [input.ownerId, input.projectId, input.conversationId, input.request, input.relativeRoot, JSON.stringify(input.requestedPaths), JSON.stringify(input.manifest), input.manifest.manifestHash, input.idempotencyKey, input.requestFingerprint, 'Review the provider disclosure before continuing.']
+        [input.ownerId, input.projectId, input.conversationId, input.request, input.relativeRoot, input.storageKind, JSON.stringify(input.requestedPaths), JSON.stringify(input.manifest), input.manifest.manifestHash, input.idempotencyKey, input.requestFingerprint, input.policyRevision ?? null,
+          input.policyRevision === undefined ? 'Review the provider disclosure before continuing.' : 'Preparing the assistant run under the saved workspace policy.']
       );
       const row = rows[0];
       if (!row) {
         throw new AiRunNotFoundError();
       }
-      await queryRunner.commitTransaction();
       return { resource: toAiRun(row), replayed: false };
-    } catch (error: unknown) {
-      await queryRunner.rollbackTransaction();
-      throw error;
-    } finally {
-      await queryRunner.release();
-    }
+    }, resultContentScope((result: { readonly resource: AiRun; readonly replayed: boolean }) => [{ entity: 'ai_runs', id: result.resource.id }]));
   }
 
   public async findByIdForOwner(ownerId: string, runId: string): Promise<AiRun | null> {
@@ -115,6 +163,19 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
       [ownerId, runId]
     );
     return rows[0] ? toAiRun(rows[0]) : null;
+  }
+
+  public async stopForInactivePrincipal(ownerId: string, runId: string): Promise<AiRun | null> {
+    const rows: readonly AiRunRow[] = await this.dataSource.query(
+      `UPDATE "ai_runs" SET "status" = 'cancel_requested', "phase" = 'terminal',
+         "safe_message" = 'This run stopped because account access is no longer active.', "updated_at" = now()
+       WHERE "owner_id" = $1 AND "id" = $2
+         AND "status" IN ('pending_approval', 'staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested')
+       RETURNING *`,
+      [ownerId, runId]
+    );
+    const row = returningRow(rows);
+    return row ? toAiRun(row) : null;
   }
 
   public async listActivityForProjectOwner(input: ListAiRunActivityInput): Promise<AiRunActivityRecordPage> {
@@ -187,12 +248,17 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
   public async recordDecision(input: DecisionUpdate): Promise<DecisionResult> {
     const queryRunner = await this.startTransaction();
     try {
+      await assertPrincipalActive(queryRunner, input.ownerId);
       await lockIntent(queryRunner, `decision:${input.runId}`);
+      const projectId = await findProjectIdForRun(queryRunner, input.ownerId, input.runId);
+      if (!projectId) throw new AiRunNotFoundError();
+      await assertProjectActive(queryRunner, input.ownerId, projectId);
       const rows: readonly AiRunRow[] = await queryRunner.query('SELECT * FROM "ai_runs" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1 FOR UPDATE', [input.ownerId, input.runId]);
       const row = rows[0];
       if (!row) {
         throw new AiRunNotFoundError();
       }
+      await assertPrincipalActive(queryRunner, input.ownerId);
       if (row.manifest_hash !== input.manifestHash) {
         throw new AiRunManifestConflictError();
       }
@@ -259,10 +325,16 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
   public async beginStart(input: StartRunUpdate): Promise<RunMutationResult> {
     const queryRunner = await this.startTransaction();
     try {
+      await assertPrincipalActive(queryRunner, input.ownerId);
+      const projectId = await findProjectIdForRun(queryRunner, input.ownerId, input.runId);
+      if (!projectId) throw new AiRunNotFoundError();
+      await assertProjectActive(queryRunner, input.ownerId, projectId);
       const row = await this.findForUpdate(queryRunner, input.ownerId, input.runId);
       if (!row) {
         throw new AiRunNotFoundError();
       }
+      await assertPrincipalActive(queryRunner, input.ownerId);
+      await assertPolicyBindingCurrent(queryRunner, toAiRun(row));
       if (row.start_idempotency_key) {
         if (row.start_idempotency_key !== input.idempotencyKey || row.start_fingerprint !== input.requestFingerprint) {
           throw new AiRunStateConflictError();
@@ -270,7 +342,6 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
         await queryRunner.commitTransaction();
         return { resource: toAiRun(row), replayed: true };
       }
-      await assertProjectActive(queryRunner, input.ownerId, row.project_id);
       if (row.status !== 'ready') {
         throw new AiRunStateConflictError();
       }
@@ -293,13 +364,40 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
     }
   }
 
+  public async abortStart(input: StartRunUpdate): Promise<boolean> {
+    const rows: readonly { readonly id: string }[] = await this.dataSource.query(`
+      UPDATE "ai_runs" SET "status" = 'ready', "phase" = 'runtime',
+        "start_idempotency_key" = NULL, "start_fingerprint" = NULL,
+        "safe_message" = 'Private run environment ready.', "updated_at" = now()
+      WHERE "owner_id" = $1 AND "id" = $2 AND "status" = 'queued'
+        AND "start_idempotency_key" = $3 AND "start_fingerprint" = $4
+        AND "provider_transmission" = 'not_started_confirmed'
+      RETURNING "id"
+    `, [input.ownerId, input.runId, input.idempotencyKey, input.requestFingerprint]);
+    return rows.length > 0;
+  }
+
   public async markRunning(ownerId: string, runId: string): Promise<AiRun | null> {
     const queryRunner = await this.startTransaction();
     try {
+      const principalActiveBeforeRunLock = await isPrincipalActive(queryRunner, ownerId);
+      if (principalActiveBeforeRunLock) {
+        const projectId = await findProjectIdForRun(queryRunner, ownerId, runId);
+        if (!projectId) {
+          await queryRunner.commitTransaction();
+          return null;
+        }
+        await assertProjectActive(queryRunner, ownerId, projectId);
+      }
       const row = await this.findForUpdate(queryRunner, ownerId, runId);
       if (!row) {
         await queryRunner.commitTransaction();
         return null;
+      }
+      if (!principalActiveBeforeRunLock || !await isPrincipalActive(queryRunner, ownerId)) {
+        const stopped = await stopInactiveRun(queryRunner, row);
+        await queryRunner.commitTransaction();
+        return stopped ? toAiRun(stopped) : toAiRun(row);
       }
       if (row.status !== 'queued' && row.status !== 'waiting_approval') {
         await queryRunner.commitTransaction();
@@ -322,24 +420,49 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
   }
 
   public async recordProviderTransmission(ownerId: string, runId: string, transmission: AiRun['providerTransmission']): Promise<AiRun | null> {
-    const rows: readonly AiRunRow[] = await this.dataSource.query(
-      `UPDATE "ai_runs" SET "provider_transmission" = $1::"ai_run_provider_transmission", "updated_at" = now()
-       WHERE "owner_id" = $2 AND "id" = $3 AND "status" IN ('queued', 'running', 'waiting_approval')
-         AND ("provider_transmission" <> 'transmitted_confirmed' OR $1 = 'transmitted_confirmed')
-       RETURNING *`,
-      [transmission, ownerId, runId]
-    );
-    const row = returningRow(rows);
-    return row ? toAiRun(row) : null;
+    const queryRunner = await this.startTransaction();
+    try {
+      const principalActiveBeforeRunLock = await isPrincipalActive(queryRunner, ownerId);
+      const current = await this.findForUpdate(queryRunner, ownerId, runId);
+      if (!current) {
+        await queryRunner.commitTransaction();
+        return null;
+      }
+      if (!principalActiveBeforeRunLock || !await isPrincipalActive(queryRunner, ownerId)) {
+        const stopped = await stopInactiveRun(queryRunner, current);
+        await queryRunner.commitTransaction();
+        return stopped ? toAiRun(stopped) : toAiRun(current);
+      }
+      const rows: readonly AiRunRow[] = await queryRunner.query(
+        `UPDATE "ai_runs" SET "provider_transmission" = $1::"ai_run_provider_transmission", "updated_at" = now()
+         WHERE "owner_id" = $2 AND "id" = $3 AND "status" IN ('queued', 'running', 'waiting_approval')
+           AND ("provider_transmission" <> 'transmitted_confirmed' OR $1 = 'transmitted_confirmed')
+         RETURNING *`,
+        [transmission, ownerId, runId]
+      );
+      await queryRunner.commitTransaction();
+      const row = returningRow(rows);
+      return row ? toAiRun(row) : null;
+    } catch (error: unknown) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   public async requestCancellation(input: CancelRunUpdate): Promise<RunMutationResult> {
     const queryRunner = await this.startTransaction();
     try {
+      await assertPrincipalActive(queryRunner, input.ownerId);
+      const projectId = await findProjectIdForRun(queryRunner, input.ownerId, input.runId);
+      if (!projectId) throw new AiRunNotFoundError();
+      await assertProjectActive(queryRunner, input.ownerId, projectId);
       const row = await this.findForUpdate(queryRunner, input.ownerId, input.runId);
       if (!row) {
         throw new AiRunNotFoundError();
       }
+      await assertPrincipalActive(queryRunner, input.ownerId);
       if (row.cancel_idempotency_key) {
         if (row.cancel_idempotency_key !== input.idempotencyKey || row.cancel_fingerprint !== input.requestFingerprint) {
           throw new AiRunStateConflictError();
@@ -347,7 +470,6 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
         await queryRunner.commitTransaction();
         return { resource: toAiRun(row), replayed: true };
       }
-      await assertProjectActive(queryRunner, input.ownerId, row.project_id);
       if (isTerminalStatus(row.status)) {
         await queryRunner.commitTransaction();
         return { resource: toAiRun(row), replayed: true };
@@ -376,57 +498,52 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
   }
 
   public async completeRun(input: CompleteRunUpdate): Promise<AiRun | null> {
-    const queryRunner = await this.startTransaction();
     try {
-      const row = await this.findForUpdate(queryRunner, input.ownerId, input.runId);
-      if (!row) {
-        await queryRunner.commitTransaction();
-        return null;
-      }
-      if (isTerminalStatus(row.status) || row.status === 'cancel_requested' || !['queued', 'running', 'waiting_approval'].includes(row.status)) {
-        await queryRunner.commitTransaction();
-        return toAiRun(row);
-      }
-      const assistantText = input.assistantText ?? '';
-      let assistantId = row.assistant_message_id;
-      if (input.assistantText !== undefined && assistantText.length > 0 && !assistantId) {
-        const sequenceRows: readonly { sequence: number }[] = await queryRunner.query(
-          'SELECT COALESCE(MAX("sequence"), 0) + 1 AS "sequence" FROM "messages" WHERE "conversation_id" = $1',
-          [row.conversation_id]
-        );
-        const sequence = Number(sequenceRows[0]?.sequence ?? 1);
-        const messageRows: readonly { id: string }[] = await queryRunner.query(
-          `INSERT INTO "messages" ("conversation_id", "role", "sequence", "content", "content_hash", "content_length")
-           VALUES ($1, 'assistant', $2, $3, encode(digest($3, 'sha256'), 'hex'), $4) RETURNING "id"`,
-          [row.conversation_id, sequence, assistantText, assistantText.length]
-        );
-        assistantId = messageRows[0]?.id ?? null;
-        await queryRunner.query('UPDATE "conversations" SET "last_activity_at" = now(), "updated_at" = now() WHERE "id" = $1', [row.conversation_id]);
-      }
-      if (input.status === 'succeeded' && input.taskSuggestions && input.taskSuggestions.length > 0) {
-        if (!this.taskSuggestionWriter) {
-          throw new Error('The task suggestion completion writer is unavailable.');
+      return await this.withAccountedTransaction(input.ownerId, async (queryRunner) => {
+        const projectId = await findProjectIdForRun(queryRunner, input.ownerId, input.runId);
+        if (!projectId) return null;
+        await assertProjectActive(queryRunner, input.ownerId, projectId);
+        const row = await this.findForUpdate(queryRunner, input.ownerId, input.runId);
+        if (!row) return null;
+        if (isTerminalStatus(row.status) || row.status === 'cancel_requested' || !['queued', 'running', 'waiting_approval'].includes(row.status)) {
+          return toAiRun(row);
         }
-        await this.taskSuggestionWriter.persistForRunCompletion(queryRunner, {
-          runId: row.id,
-          ownerId: row.owner_id,
-          projectId: row.project_id,
-          conversationId: row.conversation_id
-        }, input.taskSuggestions);
-      }
-      const rows: readonly AiRunRow[] = await queryRunner.query(
-        `UPDATE "ai_runs" SET "status" = $1, "phase" = $2, "cleanup" = $3, "provider_transmission" = $4, "assistant_message_id" = $5, "assistant_complete" = $6, "assistant_content_length" = $7, "safe_message" = $8, "updated_at" = now()
-         WHERE "owner_id" = $9 AND "id" = $10 AND "status" IN ('queued', 'running', 'waiting_approval') RETURNING *`,
-        [input.status, input.status === 'review_required' ? 'review' : 'terminal', input.cleanup ?? (input.status === 'succeeded' ? 'complete' : row.cleanup), input.providerTransmission ?? row.provider_transmission, assistantId, input.assistantComplete ?? input.status === 'succeeded', input.assistantText === undefined ? row.assistant_content_length : assistantText.length, input.safeMessage, input.ownerId, input.runId]
-      );
-      await queryRunner.commitTransaction();
-      const updated = returningRow(rows);
-      return updated ? toAiRun(updated) : toAiRun(row);
+        const principalActive = await isPrincipalActive(queryRunner, input.ownerId);
+        if (!principalActive) return toAiRun(row);
+        await assertPolicyBindingCurrent(queryRunner, toAiRun(row));
+        const assistantText = input.assistantText ?? '';
+        let assistantId = row.assistant_message_id;
+        if (input.assistantText !== undefined && assistantText.length > 0 && !assistantId) {
+          const sequenceRows: readonly { sequence: number }[] = await queryRunner.query(
+            'SELECT COALESCE(MAX("sequence"), 0) + 1 AS "sequence" FROM "messages" WHERE "conversation_id" = $1',
+            [row.conversation_id]
+          );
+          const sequence = Number(sequenceRows[0]?.sequence ?? 1);
+          const messageRows: readonly { id: string }[] = await queryRunner.query(
+            `INSERT INTO "messages" ("conversation_id", "role", "sequence", "content", "content_hash", "content_length")
+             VALUES ($1, 'assistant', $2, $3, encode(digest($3, 'sha256'), 'hex'), $4) RETURNING "id"`,
+            [row.conversation_id, sequence, assistantText, assistantText.length]
+          );
+          assistantId = messageRows[0]?.id ?? null;
+          await queryRunner.query('UPDATE "conversations" SET "last_activity_at" = now(), "updated_at" = now() WHERE "id" = $1', [row.conversation_id]);
+        }
+        if (input.status === 'succeeded' && input.taskSuggestions && input.taskSuggestions.length > 0) {
+          if (!this.taskSuggestionWriter) throw new Error('The task suggestion completion writer is unavailable.');
+          await this.taskSuggestionWriter.persistForRunCompletion(queryRunner, {
+            runId: row.id, ownerId: row.owner_id, projectId: row.project_id, conversationId: row.conversation_id
+          }, input.taskSuggestions);
+        }
+        const rows: readonly AiRunRow[] = await queryRunner.query(
+          `UPDATE "ai_runs" SET "status" = $1, "phase" = $2, "cleanup" = $3, "provider_transmission" = $4, "assistant_message_id" = $5, "assistant_complete" = $6, "assistant_content_length" = $7, "safe_message" = $8, "updated_at" = now()
+           WHERE "owner_id" = $9 AND "id" = $10 AND "status" IN ('queued', 'running', 'waiting_approval') RETURNING *`,
+          [input.status, input.status === 'review_required' ? 'review' : 'terminal', input.cleanup ?? (input.status === 'succeeded' ? 'complete' : row.cleanup), input.providerTransmission ?? row.provider_transmission, assistantId, input.assistantComplete ?? input.status === 'succeeded', input.assistantText === undefined ? row.assistant_content_length : assistantText.length, input.safeMessage, input.ownerId, input.runId]
+        );
+        const updated = returningRow(rows);
+        return updated ? toAiRun(updated) : toAiRun(row);
+      }, aiRunCompletionContentScope(input.ownerId, input.runId));
     } catch (error: unknown) {
-      await queryRunner.rollbackTransaction();
+      if (error instanceof UnauthenticatedError) return await this.stopForInactivePrincipal(input.ownerId, input.runId);
       throw error;
-    } finally {
-      await queryRunner.release();
     }
   }
 
@@ -457,6 +574,25 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
   public async markWaitingApproval(ownerId: string, runId: string, safeMessage: string): Promise<AiRun | null> {
     const queryRunner = await this.startTransaction();
     try {
+      const principalActiveBeforeRunLock = await isPrincipalActive(queryRunner, ownerId);
+      if (principalActiveBeforeRunLock) {
+        const projectId = await findProjectIdForRun(queryRunner, ownerId, runId);
+        if (!projectId) {
+          await queryRunner.commitTransaction();
+          return null;
+        }
+        await assertProjectActive(queryRunner, ownerId, projectId);
+      }
+      const current = await this.findForUpdate(queryRunner, ownerId, runId);
+      if (!current) {
+        await queryRunner.commitTransaction();
+        return null;
+      }
+      if (!principalActiveBeforeRunLock || !await isPrincipalActive(queryRunner, ownerId)) {
+        const stopped = await stopInactiveRun(queryRunner, current);
+        await queryRunner.commitTransaction();
+        return stopped ? toAiRun(stopped) : toAiRun(current);
+      }
       const rows: readonly AiRunRow[] = await queryRunner.query(
         `UPDATE "ai_runs" SET "status" = 'waiting_approval', "phase" = 'inference', "safe_message" = $1, "updated_at" = now()
          WHERE "owner_id" = $2 AND "id" = $3 AND "status" IN ('queued', 'running') RETURNING *`,
@@ -467,9 +603,9 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
         await queryRunner.commitTransaction();
         return toAiRun(updated);
       }
-      const current = await this.findForUpdate(queryRunner, ownerId, runId);
+      const currentAfterUpdate = await this.findForUpdate(queryRunner, ownerId, runId);
       await queryRunner.commitTransaction();
-      return current ? toAiRun(current) : null;
+      return currentAfterUpdate ? toAiRun(currentAfterUpdate) : null;
     } catch (error: unknown) {
       await queryRunner.rollbackTransaction();
       throw error;
@@ -505,8 +641,26 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
   public async withRunProjection(ownerId: string, runId: string, projection: (run: AiRun) => void): Promise<boolean> {
     const queryRunner = await this.startTransaction();
     try {
+      const principalActiveBeforeRunLock = await isPrincipalActive(queryRunner, ownerId);
+      if (principalActiveBeforeRunLock) {
+        const projectId = await findProjectIdForRun(queryRunner, ownerId, runId);
+        if (!projectId) {
+          await queryRunner.commitTransaction();
+          return false;
+        }
+        const project = await lockProjectWriteState(queryRunner, ownerId, projectId);
+        if (!project || project.status !== 'active' || project.removalPending) {
+          await queryRunner.commitTransaction();
+          return false;
+        }
+      }
       const row = await this.findForUpdate(queryRunner, ownerId, runId);
       if (!row || isProjectionBlocked(row.status)) {
+        await queryRunner.commitTransaction();
+        return false;
+      }
+      if (!principalActiveBeforeRunLock || !await isPrincipalActive(queryRunner, ownerId)) {
+        await stopInactiveRun(queryRunner, row);
         await queryRunner.commitTransaction();
         return false;
       }
@@ -528,6 +682,20 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
     return queryRunner;
   }
 
+  private async withAccountedTransaction<T>(ownerId: string, action: (queryRunner: QueryRunner) => Promise<T>, scope: StorageContentMutationScope<T>): Promise<T> {
+    const queryRunner = await this.startTransaction();
+    try {
+      const result = await this.storageAccounting.runMutation(queryRunner, ownerId, () => action(queryRunner), scope);
+      await queryRunner.commitTransaction();
+      return result;
+    } catch (error: unknown) {
+      if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
   private async findById(queryRunner: QueryRunner, id: string): Promise<AiRun | null> {
     const rows: readonly AiRunRow[] = await queryRunner.query('SELECT * FROM "ai_runs" WHERE "id" = $1 LIMIT 1', [id]);
     return rows[0] ? toAiRun(rows[0]) : null;
@@ -547,19 +715,91 @@ export class TypeOrmAiRunRepository implements IAiRunRepository {
   }
 }
 
+function aiRunCompletionContentScope(ownerId: string, runId: string): StorageContentMutationScope<AiRun | null> {
+  const identities = async (transaction: StorageQuotaTransaction): Promise<readonly StorageContentIdentity[]> => {
+    const rows = await transaction.query(
+      'SELECT "assistant_message_id" FROM "ai_runs" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1',
+      [ownerId, runId]
+    ) as readonly { assistant_message_id: string | null }[];
+    const suggestions = await transaction.query(
+      'SELECT "id" FROM "project_task_suggestions" WHERE "owner_id" = $1 AND "run_id" = $2',
+      [ownerId, runId]
+    ) as readonly { id: string }[];
+    return [
+      { entity: 'ai_runs', id: runId },
+      ...(rows[0]?.assistant_message_id ? [{ entity: 'messages' as const, id: rows[0].assistant_message_id }] : []),
+      ...suggestions.map((row) => ({ entity: 'project_task_suggestions' as const, id: row.id }))
+    ];
+  };
+  return { before: identities, after: identities };
+}
+
 async function lockIntent(queryRunner: QueryRunner, key: string): Promise<void> {
   await queryRunner.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [key]);
 }
 
-async function assertProjectActive(queryRunner: QueryRunner, ownerId: string, projectId: string): Promise<void> {
-  const rows: readonly { status: 'active' | 'archived' }[] = await queryRunner.query(
-    'SELECT "status" FROM "projects" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1 FOR UPDATE',
-    [ownerId, projectId]
+async function isPrincipalActive(queryRunner: QueryRunner, ownerId: string): Promise<boolean> {
+  const rows: readonly { id: string }[] = await queryRunner.query(
+    'SELECT "id" FROM "users" WHERE "id" = $1 AND "is_active" = true AND ("expires_at" IS NULL OR "expires_at" > now()) FOR SHARE',
+    [ownerId]
   );
-  const project = rows[0];
-  if (!project || project.status === 'archived') {
+  return rows.length > 0;
+}
+
+async function assertPrincipalActive(queryRunner: QueryRunner, ownerId: string): Promise<void> {
+  if (!await isPrincipalActive(queryRunner, ownerId)) throw new UnauthenticatedError();
+}
+
+async function stopInactiveRun(queryRunner: QueryRunner, row: AiRunRow): Promise<AiRunRow | null> {
+  const rows: readonly AiRunRow[] = await queryRunner.query(
+    `UPDATE "ai_runs" SET "status" = 'cancel_requested', "phase" = 'terminal',
+       "safe_message" = 'This run stopped because account access is no longer active.', "updated_at" = now()
+     WHERE "owner_id" = $1 AND "id" = $2
+       AND "status" IN ('pending_approval', 'staging', 'ready', 'queued', 'running', 'waiting_approval', 'cancel_requested')
+     RETURNING *`,
+    [row.owner_id, row.id]
+  );
+  return returningRow(rows) ?? row;
+}
+
+async function assertProjectActive(queryRunner: QueryRunner, ownerId: string, projectId: string): Promise<void> {
+  const project = await lockProjectWriteState(queryRunner, ownerId, projectId);
+  if (!project || project.status === 'archived' || project.removalPending) {
     throw new ProjectArchivedError();
   }
+}
+
+async function assertPolicyBindingCurrent(queryRunner: QueryRunner, run: AiRun): Promise<void> {
+  if (run.decision !== 'policy_authorized') return;
+  if (!run.policyRevision) throw new AssistantExecutionPolicyChangedError();
+  const rows: readonly {
+    policy_profile: string;
+    provider_profile: string | null;
+    model: string | null;
+    enabled: boolean;
+    revoked_at: Date | string | null;
+    revision: string;
+  }[] = await queryRunner.query(
+    `SELECT "policy_profile", "provider_profile", "model", "enabled", "revoked_at", "revision"
+     FROM "assistant_scope_policies"
+     WHERE "owner_id" = $1 AND "scope_kind" = 'project' AND "project_id" = $2
+     LIMIT 1 FOR SHARE`,
+    [run.ownerId, run.projectId]
+  );
+  const policy = rows[0];
+  if (!policy || policy.policy_profile !== 'workspace_in_scope_v1' || !policy.enabled || policy.revoked_at !== null
+    || String(policy.revision) !== run.policyRevision
+    || policy.provider_profile !== run.manifest.providerProfile || policy.model !== run.manifest.model) {
+    throw new AssistantExecutionPolicyChangedError();
+  }
+}
+
+async function findProjectIdForRun(queryRunner: QueryRunner, ownerId: string, runId: string): Promise<string | null> {
+  const rows: readonly { readonly project_id: string }[] = await queryRunner.query(
+    'SELECT "project_id" FROM "ai_runs" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1',
+    [ownerId, runId]
+  );
+  return rows[0]?.project_id ?? null;
 }
 
 function toAiRun(row: AiRunRow): AiRun {
@@ -572,12 +812,14 @@ function toAiRun(row: AiRunRow): AiRun {
     conversationId: row.conversation_id,
     request: row.request,
     relativeRoot: row.relative_root,
+    storageKind: row.storage_kind,
     requestedPaths: parsePaths(row.requested_paths),
     manifest,
     manifestInvalidated: row.manifest_invalidated,
     status: row.status,
     phase: row.phase,
     decision: row.decision,
+    ...(row.policy_revision !== null && row.policy_revision !== undefined ? { policyRevision: String(row.policy_revision) } : {}),
     ...(row.provider_permission_id ? { providerPermissionId: row.provider_permission_id } : {}),
     cleanup: row.cleanup,
     providerTransmission: row.provider_transmission,

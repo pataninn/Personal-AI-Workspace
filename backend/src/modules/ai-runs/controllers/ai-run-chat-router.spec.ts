@@ -21,6 +21,7 @@ function run(): AiRun {
     conversationId: CONVERSATION_ID,
     request: 'Inspect',
     relativeRoot: '',
+    storageKind: 'legacy',
     requestedPaths: [],
     manifest: {
       manifestHash: 'a'.repeat(64),
@@ -65,6 +66,7 @@ describe('AI run chat SSE setup', () => {
     app.use('/api/v1', createAiRunChatRouter({
       getSession: { execute: jest.fn().mockResolvedValue({ sessionId: 'session', principal: { id: OWNER_ID, displayName: 'Local user' }, csrfToken: 'csrf-token', expiresAt: new Date(Date.now() + 60_000) }) } as never,
       getAiRun: { execute: jest.fn().mockReturnValue(pendingRun) } as never,
+      principalAuthorization: { isActive: jest.fn().mockResolvedValue(true) } as never,
       startAiRun: {} as never,
       cancelAiRun: {} as never,
       events,
@@ -95,5 +97,66 @@ describe('AI run chat SSE setup', () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
 
     expect(subscribe).not.toHaveBeenCalled();
+  });
+
+  it.each(['account disabled', 'connected session revoked'])('stops a live stream before delivering another event after %s', async (revocation) => {
+    let accountActive = true;
+    let sessionActive = true;
+    const events = new InMemoryRunEventPublisher();
+    const app = express();
+    app.use(cookieParser());
+    app.use('/api/v1', createAiRunChatRouter({
+      getSession: { execute: jest.fn().mockImplementation(async () => {
+        if (!sessionActive) throw new Error('revoked');
+        return { sessionId: 'session', principal: { id: OWNER_ID, displayName: 'Local user', accountKind: 'regular', role: 'admin' }, csrfToken: 'csrf-token', expiresAt: new Date(Date.now() + 60_000) };
+      }) } as never,
+      principalAuthorization: { isActive: jest.fn().mockImplementation(async () => accountActive) } as never,
+      getAiRun: { execute: jest.fn().mockResolvedValue(run()) } as never,
+      startAiRun: {} as never,
+      cancelAiRun: {} as never,
+      events,
+      appOrigin: 'https://127.0.0.1:8443',
+      clearSessionCookie: () => undefined
+    }));
+    const server = await new Promise<http.Server>((resolve) => {
+      const listening = app.listen(0, () => resolve(listening));
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      server.close();
+      throw new Error('Test server did not expose a port.');
+    }
+    let body = '';
+    let resolveSnapshot: () => void = () => undefined;
+    const snapshotReceived = new Promise<void>((resolve) => { resolveSnapshot = resolve; });
+    const client = http.get({
+      hostname: '127.0.0.1',
+      port: address.port,
+      path: `/api/v1/ai-runs/${RUN_ID}/events`,
+      headers: { Cookie: '__Host-pa_session=test' }
+    });
+    client.on('error', () => undefined);
+    client.on('response', (response) => {
+      response.setEncoding('utf8');
+      response.on('data', (chunk: string) => {
+        body += chunk;
+        if (body.includes('event: run.snapshot')) resolveSnapshot();
+      });
+    });
+    await Promise.race([snapshotReceived, new Promise<void>((resolve) => setTimeout(resolve, 1000))]);
+    expect(body).toContain('event: run.snapshot');
+
+    if (revocation === 'account disabled') accountActive = false;
+    else sessionActive = false;
+    events.publish({ runId: RUN_ID, type: 'assistant.delta', payload: { text: 'private late text' } });
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    events.publish({ runId: RUN_ID, type: 'run.completed', payload: { secret: 'late event' } });
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    client.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+
+    expect(body).not.toContain('assistant.delta');
+    expect(body).not.toContain('private late text');
+    expect(body).not.toContain('late event');
   });
 });

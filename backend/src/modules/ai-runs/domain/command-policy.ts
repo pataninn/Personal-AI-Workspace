@@ -80,6 +80,30 @@ export function normalizeHermesPermission(input: CommandProposalInput): Normaliz
   return { command, args, cwd, classification, summary, proposalHash, limits, createFingerprint: hash(JSON.stringify({ proposalHash, summary })) };
 }
 
+/** Accepts only a shell-free read-only command over the exact manifest file set. */
+export function normalizePolicyHermesPermission(input: CommandProposalInput, selectedPaths: readonly string[], manifestHash: string): NormalizedCommandProposal {
+  const args = readArguments(input.args);
+  if (input.command !== 'hermes-terminal' || args.length !== 1) throw new SandboxCommandValidationError([{ field: 'command', message: 'Invalid Hermes permission request.' }]);
+  const command = 'hermes-terminal';
+  const blockedReason = policyHermesBlockReason(args[0] ?? '', selectedPaths);
+  const cwd = '.';
+  const summary = 'Run an allowlisted read-only command in the private project copy.';
+  const classification: CommandClassification = blockedReason ? 'blocked' : 'safe';
+  const canonical = JSON.stringify({ version: 'bounded-read-v1', command, args, cwd, classification, limits: COMMAND_LIMITS, manifestHash });
+  const proposalHash = hash(canonical);
+  return {
+    command,
+    args,
+    cwd,
+    summary,
+    classification,
+    ...(blockedReason ? { blockedReason } : {}),
+    proposalHash,
+    limits: COMMAND_LIMITS,
+    createFingerprint: hash(JSON.stringify({ proposalHash, summary }))
+  };
+}
+
 export function summarizeArgument(value: string): string {
   if (isUnsafePath(value) || ENV_ASSIGNMENT_PATTERN.test(value) || SECRET_ASSIGNMENT_PATTERN.test(value) || SECRET_IDENTIFIER_PATTERN.test(value)) {
     return '[redacted path]';
@@ -157,6 +181,24 @@ function policyBlockReason(command: string, args: readonly string[], cwd: string
   if (args.some(isUnsafePath)) {
     return 'path_or_secret_denied';
   }
+  return undefined;
+}
+
+function policyHermesBlockReason(raw: string, selectedPaths: readonly string[]): string | undefined {
+  if (!raw || raw.length > 512 || raw !== raw.trim() || /\s{2,}|[\u0000-\u001f\u007f]/u.test(raw) || /[;&|><`$(){}'"\\]/u.test(raw)) return 'shell_composition_denied';
+  const tokens = raw.split(' ');
+  if (tokens.some((token) => !/^[a-zA-Z0-9_./-]+$/u.test(token) || token.startsWith('-'))) return 'shell_composition_denied';
+  const command = tokens[0];
+  const args = tokens.slice(1);
+  if (!command || !SAFE_COMMANDS.has(command)) return 'command_not_allowlisted';
+  if (args.some(isUnsafePath)) return 'path_or_secret_denied';
+  const selected = new Set(selectedPaths);
+  const requestedPaths = command === 'rg' ? args.slice(1) : args;
+  if ((command === 'cat' || command === 'head' || command === 'tail') && requestedPaths.length === 0) return 'selected_file_required';
+  if (command === 'rg' && (!args[0] || !/^[\p{L}\p{N}_-]+$/u.test(args[0]))) return 'search_pattern_not_allowlisted';
+  if (command === 'pwd' && args.length > 0) return 'unexpected_arguments';
+  if (command === 'ls' && args.length > 0 && !args.every((path) => selected.has(path))) return 'path_not_selected';
+  if (requestedPaths.some((path) => !selected.has(path))) return 'path_not_selected';
   return undefined;
 }
 

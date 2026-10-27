@@ -1,6 +1,10 @@
+import { DEFAULT_CONVERSATION_TITLE, validGeneratedTitle } from '@/modules/conversations/domain/generated-conversation-title';
 import { createHash } from 'node:crypto';
 
 import type { DataSource, QueryRunner } from 'typeorm';
+import { lockProjectWriteState } from '@/infrastructure/database/project-removal-write-barrier';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import { fixedContentScope, requestFingerprintContentScope } from '@/infrastructure/database/storage-content-projections';
 
 import {
   ConversationNotFoundError,
@@ -45,8 +49,13 @@ interface MessageRow {
 }
 
 interface IdempotencyRow {
+  readonly id: string;
   readonly request_fingerprint: string;
   readonly resource_id: string;
+}
+
+interface StoredConversationResource<T> extends PersistedResource<T> {
+  readonly idempotencyId: string;
 }
 
 function toDate(value: Date | string): Date {
@@ -102,20 +111,36 @@ async function lockIntent(queryRunner: QueryRunner, value: string): Promise<void
 }
 
 async function assertProjectWritable(queryRunner: QueryRunner, ownerId: string, projectId: string): Promise<void> {
-  const rows: readonly { status: 'active' | 'archived' }[] = await queryRunner.query(
-    'SELECT "status" FROM "projects" WHERE "owner_id" = $1 AND "id" = $2 LIMIT 1 FOR UPDATE',
-    [ownerId, projectId]
-  );
-  if (!rows[0]) {
+  const project = await lockProjectWriteState(queryRunner, ownerId, projectId);
+  if (!project) {
     throw new ConversationNotFoundError();
   }
-  if (rows[0].status === 'archived') {
+  if (project.status === 'archived' || project.removalPending) {
     throw new ProjectArchivedError();
   }
 }
 
 export class TypeOrmConversationRepository implements IConversationRepository {
-  public constructor(private readonly dataSource: DataSource) {}
+  public constructor(
+    private readonly dataSource: DataSource,
+    private readonly storageAccounting = new TypeOrmStorageContentAccounting(dataSource)
+  ) {}
+
+  public async setGeneratedTitle(input: { readonly ownerId: string; readonly projectId: string; readonly conversationId: string; readonly title: string }): Promise<boolean> {
+    const title = validGeneratedTitle(input.title);
+    if (!title) return false;
+    const runner = await this.startTransaction();
+    try {
+      const changed = await this.storageAccounting.runMutation(runner, input.ownerId, async () => {
+        await assertProjectWritable(runner, input.ownerId, input.projectId);
+        const rows: readonly { id: string }[] = await runner.query(`WITH changed AS (UPDATE "conversations" SET "title"=$4,"updated_at"=clock_timestamp() WHERE "owner_id"=$1 AND "project_id"=$2 AND "id"=$3 AND "title"=$5 AND "status"='active' RETURNING "id") SELECT "id" FROM changed`, [input.ownerId, input.projectId, input.conversationId, title, DEFAULT_CONVERSATION_TITLE]);
+        return rows.length === 1;
+      }, fixedContentScope([{ entity: 'conversations', id: input.conversationId }]));
+      await runner.commitTransaction();
+      return changed;
+    } catch (error) { await runner.rollbackTransaction(); throw error; }
+    finally { await runner.release(); }
+  }
 
   public async listByProjectForOwner(input: ListConversationsInput): Promise<ConversationPage> {
     const parameters: unknown[] = [input.ownerId, input.projectId];
@@ -195,30 +220,35 @@ export class TypeOrmConversationRepository implements IConversationRepository {
   public async create(input: CreateConversationRecord): Promise<PersistedResource<Conversation>> {
     const queryRunner = await this.startTransaction();
     try {
-      await assertProjectWritable(queryRunner, input.ownerId, input.projectId);
-      await lockIntent(queryRunner, `conversation:create:${input.ownerId}:${input.projectId}:${input.idempotencyKey}`);
-      const replay = await this.findIdempotency(queryRunner, input, 'conversation');
-      if (replay) {
-        const resource = await this.findConversation(queryRunner, input.ownerId, input.projectId, replay.resource_id);
-        if (!resource) {
-          throw new ConversationNotFoundError();
+      const result = await this.storageAccounting.runMutation(queryRunner, input.ownerId, async (): Promise<StoredConversationResource<Conversation>> => {
+        await assertProjectWritable(queryRunner, input.ownerId, input.projectId);
+        await lockIntent(queryRunner, `conversation:create:${input.ownerId}:${input.projectId}:${input.idempotencyKey}`);
+        const replay = await this.findIdempotency(queryRunner, input, 'conversation');
+        if (replay) {
+          const resource = await this.findConversation(queryRunner, input.ownerId, input.projectId, replay.resource_id);
+          if (!resource) throw new ConversationNotFoundError();
+          return { resource, replayed: true, idempotencyId: replay.id };
         }
-        await queryRunner.commitTransaction();
-        return { resource, replayed: true };
-      }
-      const rows: readonly ConversationRow[] = await queryRunner.query(
-        `INSERT INTO "conversations" ("owner_id", "project_id", "title")
-         VALUES ($1, $2, $3)
-         RETURNING "id", "owner_id", "project_id", "title", "status", "last_activity_at", "created_at", "updated_at"`,
-        [input.ownerId, input.projectId, input.title]
-      );
-      const row = rows[0];
-      if (!row) {
-        throw new Error('The conversation could not be created.');
-      }
-      await this.insertIdempotency(queryRunner, input, 'conversation', row.id);
+        const rows: readonly ConversationRow[] = await queryRunner.query(
+          `INSERT INTO "conversations" ("owner_id", "project_id", "title")
+           VALUES ($1, $2, $3)
+           RETURNING "id", "owner_id", "project_id", "title", "status", "last_activity_at", "created_at", "updated_at"`,
+          [input.ownerId, input.projectId, input.title]
+        );
+        const row = rows[0];
+        if (!row) throw new Error('The conversation could not be created.');
+        const idempotencyId = await this.insertIdempotency(queryRunner, input, 'conversation', row.id);
+        return { resource: toConversation(row), replayed: false, idempotencyId };
+      }, requestFingerprintContentScope({
+        ownerId: input.ownerId,
+        projectId: input.projectId,
+        operation: 'conversation',
+        idempotencyKey: input.idempotencyKey,
+        resourceIdentity: (value: StoredConversationResource<Conversation>) => ({ entity: 'conversations', id: value.resource.id }),
+        idempotencyId: (value: StoredConversationResource<Conversation>) => value.idempotencyId
+      }));
       await queryRunner.commitTransaction();
-      return { resource: toConversation(row), replayed: false };
+      return { resource: result.resource, replayed: result.replayed };
     } catch (error: unknown) {
       await queryRunner.rollbackTransaction();
       throw error;
@@ -245,40 +275,43 @@ export class TypeOrmConversationRepository implements IConversationRepository {
   private async addMessage(input: AddMessageRecord, role: 'user' | 'assistant'): Promise<PersistedResource<Message>> {
     const queryRunner = await this.startTransaction();
     try {
-      await assertProjectWritable(queryRunner, input.ownerId, input.projectId);
-      await lockIntent(queryRunner, `message:${input.ownerId}:${input.projectId}:${input.conversationId}:${input.idempotencyKey}`);
-      const replay = await this.findIdempotency(queryRunner, input, 'message');
-      if (replay) {
-        const resource = await this.findMessage(queryRunner, input, replay.resource_id);
-        if (!resource) {
-          throw new ConversationNotFoundError();
+      const result = await this.storageAccounting.runMutation(queryRunner, input.ownerId, async (): Promise<StoredConversationResource<Message>> => {
+        await assertProjectWritable(queryRunner, input.ownerId, input.projectId);
+        await lockIntent(queryRunner, `message:${input.ownerId}:${input.projectId}:${input.conversationId}:${input.idempotencyKey}`);
+        const replay = await this.findIdempotency(queryRunner, input, 'message');
+        if (replay) {
+          const resource = await this.findMessage(queryRunner, input, replay.resource_id);
+          if (!resource) throw new ConversationNotFoundError();
+          return { resource, replayed: true, idempotencyId: replay.id };
         }
-        await queryRunner.commitTransaction();
-        return { resource, replayed: true };
-      }
-      const conversation = await this.findConversation(queryRunner, input.ownerId, input.projectId, input.conversationId, true);
-      if (!conversation) {
-        throw new ConversationNotFoundError();
-      }
-      const sequenceRows: readonly { sequence: number }[] = await queryRunner.query(
-        'SELECT COALESCE(MAX("sequence"), 0) + 1 AS "sequence" FROM "messages" WHERE "conversation_id" = $1',
-        [input.conversationId]
-      );
-      const sequence = Number(sequenceRows[0]?.sequence ?? 1);
-      const rows: readonly MessageRow[] = await queryRunner.query(
-        `INSERT INTO "messages" ("conversation_id", "role", "sequence", "content", "content_hash", "content_length")
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING "id", "conversation_id", "role", "sequence", "content", "created_at"`,
-        [input.conversationId, role, sequence, input.content, hashContent(input.content), input.content.length]
-      );
-      const row = rows[0];
-      if (!row) {
-        throw new Error('The message could not be created.');
-      }
-      await queryRunner.query('UPDATE "conversations" SET "last_activity_at" = now(), "updated_at" = now() WHERE "id" = $1', [input.conversationId]);
-      await this.insertIdempotency(queryRunner, input, 'message', row.id, input.conversationId);
+        const conversation = await this.findConversation(queryRunner, input.ownerId, input.projectId, input.conversationId, true);
+        if (!conversation) throw new ConversationNotFoundError();
+        const sequenceRows: readonly { sequence: number }[] = await queryRunner.query(
+          'SELECT COALESCE(MAX("sequence"), 0) + 1 AS "sequence" FROM "messages" WHERE "conversation_id" = $1',
+          [input.conversationId]
+        );
+        const sequence = Number(sequenceRows[0]?.sequence ?? 1);
+        const rows: readonly MessageRow[] = await queryRunner.query(
+          `INSERT INTO "messages" ("conversation_id", "role", "sequence", "content", "content_hash", "content_length")
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING "id", "conversation_id", "role", "sequence", "content", "created_at"`,
+          [input.conversationId, role, sequence, input.content, hashContent(input.content), input.content.length]
+        );
+        const row = rows[0];
+        if (!row) throw new Error('The message could not be created.');
+        await queryRunner.query(`UPDATE "conversations" SET "last_activity_at" = now(), "updated_at" = now() WHERE "id" = $1`, [input.conversationId]);
+        const idempotencyId = await this.insertIdempotency(queryRunner, input, 'message', row.id, input.conversationId);
+        return { resource: toMessage(row), replayed: false, idempotencyId };
+      }, requestFingerprintContentScope({
+        ownerId: input.ownerId,
+        projectId: input.projectId,
+        operation: 'message',
+        idempotencyKey: input.idempotencyKey,
+        resourceIdentity: (value: StoredConversationResource<Message>) => ({ entity: 'messages', id: value.resource.id }),
+        idempotencyId: (value: StoredConversationResource<Message>) => value.idempotencyId
+      }));
       await queryRunner.commitTransaction();
-      return { resource: toMessage(row), replayed: false };
+      return { resource: result.resource, replayed: result.replayed };
     } catch (error: unknown) {
       await queryRunner.rollbackTransaction();
       throw error;
@@ -296,7 +329,7 @@ export class TypeOrmConversationRepository implements IConversationRepository {
 
   private async findIdempotency(queryRunner: QueryRunner, input: CreateConversationRecord | AddMessageRecord, operation: 'conversation' | 'message'): Promise<IdempotencyRow | null> {
     const rows: readonly IdempotencyRow[] = await queryRunner.query(
-      `SELECT "request_fingerprint", "resource_id" FROM "conversation_idempotency_keys"
+      `SELECT "id", "request_fingerprint", "resource_id" FROM "conversation_idempotency_keys"
        WHERE "owner_id" = $1 AND "project_id" = $2 AND "operation" = $3 AND "idempotency_key" = $4 LIMIT 1`,
       [input.ownerId, input.projectId, operation, input.idempotencyKey]
     );
@@ -310,12 +343,14 @@ export class TypeOrmConversationRepository implements IConversationRepository {
     return row;
   }
 
-  private async insertIdempotency(queryRunner: QueryRunner, input: CreateConversationRecord | AddMessageRecord, operation: 'conversation' | 'message', resourceId: string, conversationId?: string): Promise<void> {
-    await queryRunner.query(
+  private async insertIdempotency(queryRunner: QueryRunner, input: CreateConversationRecord | AddMessageRecord, operation: 'conversation' | 'message', resourceId: string, conversationId?: string): Promise<string> {
+    const rows: readonly { id: string }[] = await queryRunner.query(
       `INSERT INTO "conversation_idempotency_keys" ("owner_id", "project_id", "conversation_id", "operation", "idempotency_key", "request_fingerprint", "resource_id")
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING "id"`,
       [input.ownerId, input.projectId, conversationId ?? null, operation, input.idempotencyKey, input.requestFingerprint, resourceId]
     );
+    if (!rows[0]?.id) throw new TypeError('The conversation idempotency row was not returned after insert.');
+    return rows[0].id;
   }
 
   private async findConversation(queryRunner: QueryRunner, ownerId: string, projectId: string, conversationId: string, forUpdate = false): Promise<Conversation | null> {

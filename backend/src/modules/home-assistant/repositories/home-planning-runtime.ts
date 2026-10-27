@@ -1,0 +1,94 @@
+/** Provider configuration selected by the application; never accepted from a browser request. */
+export interface HomePlanningProvider {
+  readonly profile: string;
+  readonly model: string;
+  readonly endpoint: string;
+}
+
+export interface StartHomePlanningRunInput {
+  /** The persisted Home turn UUID is also the runtime's stable run identity. */
+  readonly turnId: string;
+  readonly prompt: string;
+  readonly provider: HomePlanningProvider;
+}
+
+export type StartHomePlanningRunResult =
+  | { readonly outcome: 'accepted' }
+  | { readonly outcome: 'unavailable'; readonly code: 'PLANNING_RUNTIME_UNAVAILABLE' }
+  | { readonly outcome: 'unknown'; readonly code: 'PLANNING_RUNTIME_OUTCOME_UNKNOWN' };
+
+export type HomePlanningRuntimeEvent =
+  | { readonly sequence: number; readonly type: 'assistant.delta'; readonly text: string }
+  | {
+      readonly sequence: number;
+      readonly type: 'home.tool.requested';
+      readonly requestId: string;
+      readonly sessionId: string;
+      readonly name: string;
+      readonly args: Readonly<Record<string, unknown>>;
+    }
+  | { readonly sequence: number; readonly type: 'home.provider.credit.requested'; readonly requestId: string; readonly request: HomeProviderCreditRequest };
+
+export type HomeProviderCreditRequest =
+  | { readonly operation: 'reserve'; readonly callId: string; readonly attemptId: string; readonly providerProfile: string; readonly model: string; readonly inputTokenUpperBound: number; readonly inputBounderVersion: 'hermes-json-utf8-v1' }
+  | { readonly operation: 'settle'; readonly callId: string; readonly attemptId: string; readonly reservationId: string; readonly usage: { readonly promptTokens: number; readonly completionTokens: number; readonly totalTokens: number } }
+  | { readonly operation: 'unknown' | 'release'; readonly callId: string; readonly attemptId: string; readonly reservationId: string; readonly reason?: string };
+
+export type HomeProviderCreditResult =
+  | { readonly outcome: 'reserved'; readonly reservationId: string }
+  | { readonly outcome: 'denied'; readonly code: 'BUDGET_EXHAUSTED' | 'ADMISSION_UNAVAILABLE' }
+  | { readonly outcome: 'settled'; readonly status: 'settled' | 'over_bound' }
+  | { readonly outcome: 'released' | 'unknown' };
+
+export type HomePlanningRuntimeStatus = 'preparing' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
+
+export interface PollHomePlanningRunInput {
+  readonly turnId: string;
+  readonly cursor: number;
+}
+
+export interface PollHomePlanningRunResult {
+  readonly status: HomePlanningRuntimeStatus;
+  readonly events: readonly HomePlanningRuntimeEvent[];
+  readonly nextCursor: number;
+  readonly hasMore: boolean;
+  readonly code?: string;
+}
+
+export type HomePlanningToolResult =
+  | { readonly outcome: 'shared'; readonly data: Readonly<Record<string, unknown>> }
+  | { readonly outcome: 'denied'; readonly code: 'CONSENT_DENIED' }
+  | { readonly outcome: 'conflict'; readonly code: 'VERSION_CONFLICT' };
+
+export interface SendHomePlanningToolResultInput {
+  readonly turnId: string;
+  readonly requestId: string;
+  readonly result: HomePlanningToolResult;
+}
+
+export interface CancelHomePlanningRunResult {
+  readonly outcome: 'confirmed' | 'unknown';
+}
+
+/** Narrow Home-owned boundary to the dedicated planning runtime, separate from project IAgentRuntime. */
+export interface IHomePlanningRuntime {
+  /** Trusted runtime evidence for automatic dispatch under a stored Home policy. */
+  supportsPolicyExecution?(input: { readonly providerProfile: string; readonly model: string }): Promise<boolean>;
+  /** Resolves only when planning-create is accepted; failures before acceptance are unavailable or unknown. */
+  start(input: StartHomePlanningRunInput): Promise<StartHomePlanningRunResult>;
+
+  /** Reads a bounded, ascending runtime page after the supplied process-local runtime cursor. */
+  poll(input: PollHomePlanningRunInput): Promise<PollHomePlanningRunResult>;
+
+  /** Delivers one already-authorized typed Home tool result or a content-free denial. */
+  sendToolResult(input: SendHomePlanningToolResultInput): Promise<{ readonly accepted: boolean }>;
+
+  /** Resolves exactly one provider admission or settlement receipt for the active Home turn. */
+  sendProviderCreditResult?(input: { readonly turnId: string; readonly requestId: string; readonly result: HomeProviderCreditResult }): Promise<{ readonly accepted: boolean }>;
+
+  /** Confirms stop only when the bridge confirms it; transport uncertainty remains unknown. */
+  cancel(turnId: string): Promise<CancelHomePlanningRunResult>;
+
+  /** Idempotently cleans up a terminal planning sandbox. */
+  delete(turnId: string): Promise<void>;
+}

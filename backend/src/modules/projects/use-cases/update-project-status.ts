@@ -33,7 +33,6 @@ export class UpdateProjectStatusUseCase {
 
   public async execute(input: UpdateProjectStatusInput): Promise<Project> {
     const status = parseStatus(input.status);
-    await this.workspaceBoundary.assertReady();
     const existing = await this.projectRepository.findByIdForOwner(input.ownerId, input.projectId);
     if (!existing) {
       throw new ProjectNotFoundError();
@@ -41,10 +40,11 @@ export class UpdateProjectStatusUseCase {
     if (existing.version !== input.expectedVersion) {
       throw new ProjectVersionConflictError();
     }
-    if (status === 'active' && existing.status !== 'active') {
+    if (existing.relativeRoot !== null) await this.workspaceBoundary.assertReady();
+    if (status === 'active' && existing.status !== 'active' && existing.relativeRoot !== null) {
       const normalizedRoot = normalizeProjectRoot(existing.relativeRoot);
       const validatedRoot = await this.workspaceBoundary.validateProjectRoot(normalizedRoot);
-      const activeRoots = await this.projectRepository.listActiveRoots(input.ownerId);
+      const activeRoots = await this.projectRepository.listActiveRoots(input.ownerId, existing.storageKind);
       assertProjectRootDoesNotOverlap(validatedRoot, activeRoots);
     }
     const updated = await this.projectRepository.updateStatus({

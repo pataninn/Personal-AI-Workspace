@@ -8,8 +8,11 @@ import type { IWorkspaceMutationGateway, WorkspaceApplyResult, WorkspaceFileSnap
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
 import type { Project } from '@/modules/projects/domain/project-types';
 import { InMemoryProposedChangeSetRepository } from '@/infrastructure/ai-runs/in-memory-change-set-repository';
-import { CollectProposedChangeSetUseCase, DecideProposedChangeSetUseCase } from '@/modules/ai-runs/use-cases/change-set-use-cases';
+import { CollectProposedChangeSetUseCase, DecideProposedChangeSetUseCase, GetProposedChangeSetUseCase } from '@/modules/ai-runs/use-cases/change-set-use-cases';
 import { ChangeSetConflictError } from '@/modules/ai-runs/domain/change-errors';
+import { StorageQuotaError } from '@/modules/storage-quotas/domain/storage-quota-errors';
+import { AssistantExecutionPolicyChangedError } from '@/modules/assistant-policy/domain/assistant-execution-errors';
+import type { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const PROJECT_ID = '22222222-2222-4222-8222-222222222222';
@@ -21,24 +24,47 @@ const ORIGINAL_HASH = hash(ORIGINAL);
 describe('proposed change-set use cases', () => {
   it('automatically applies changes to an authorized running run exactly once', async () => {
     const runs = new RunRepository();
-    runs.run = { ...runs.run, status: 'running' };
+    runs.run = policyAuthorizedRunningRun(runs.run);
     const workspace = new WorkspaceFixture();
     const repository = new InMemoryProposedChangeSetRepository();
     const collect = new CollectProposedChangeSetUseCase(runs, new ProjectRepository(), workspace, repository);
     await collect.execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation: 'edit', path: FILE_PATH, content: 'updated\n' }], fakeRuntime: false });
-    const decision = new DecideProposedChangeSetUseCase(runs, new ProjectRepository(), repository, workspace);
+    const decision = new DecideProposedChangeSetUseCase(runs, new ProjectRepository(), repository, workspace, undefined, undefined, executionPolicy());
     expect((await decision.executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID }))?.status).toBe('applied');
     expect((await decision.executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID }))?.status).toBe('applied');
     expect(workspace.applyCalls).toBe(1);
+    expect((await repository.findByRunForOwner(OWNER_ID, RUN_ID))?.decision).toBe('policy_authorized');
+  });
+
+  it('rechecks current workspace policy before filesystem promotion and never records an approval', async () => {
+    const runs = new RunRepository();
+    runs.run = policyAuthorizedRunningRun(runs.run);
+    const workspace = new WorkspaceFixture();
+    const repository = new InMemoryProposedChangeSetRepository();
+    const collect = new CollectProposedChangeSetUseCase(runs, new ProjectRepository(), workspace, repository);
+    await collect.execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation: 'edit', path: FILE_PATH, content: 'updated\n' }], fakeRuntime: false });
+    const recordDecision = jest.spyOn(repository, 'recordDecision');
+    const policy = executionPolicy();
+    policy.assertWorkspace.mockResolvedValueOnce({ policies: [], effectiveCapabilities: ['workspace_file_write'], revisions: { workspace: '1' } });
+    policy.assertWorkspace.mockRejectedValueOnce(new AssistantExecutionPolicyChangedError());
+    const decision = new DecideProposedChangeSetUseCase(runs, new ProjectRepository(), repository, workspace, undefined, undefined, policy);
+
+    await expect(decision.executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID })).rejects.toMatchObject({ code: 'CHANGE_SET_REVIEW_REQUIRED' });
+
+    expect(workspace.applyCalls).toBe(1);
+    expect(workspace.applied).toBe(false);
+    expect(recordDecision).not.toHaveBeenCalled();
+    await expect(repository.findByRunForOwner(OWNER_ID, RUN_ID)).resolves.toMatchObject({ decision: 'policy_authorized', status: 'needs_manual_review' });
   });
 
   it('does not automatically apply files for a cancelled run', async () => {
     const runs = new RunRepository();
+    runs.run = policyAuthorizedRunningRun(runs.run);
     const workspace = new WorkspaceFixture();
     const repository = new InMemoryProposedChangeSetRepository();
     await new CollectProposedChangeSetUseCase(runs, new ProjectRepository(), workspace, repository).execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation: 'delete', path: FILE_PATH }], fakeRuntime: false });
     runs.run = { ...runs.run, status: 'cancelled' };
-    await expect(new DecideProposedChangeSetUseCase(runs, new ProjectRepository(), repository, workspace).executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID })).rejects.toMatchObject({ code: 'CHANGE_SET_BLOCKED' });
+    await expect(new DecideProposedChangeSetUseCase(runs, new ProjectRepository(), repository, workspace, undefined, undefined, executionPolicy()).executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID })).rejects.toMatchObject({ code: 'CHANGE_SET_BLOCKED' });
     expect(workspace.applyCalls).toBe(0);
   });
 
@@ -50,13 +76,13 @@ describe('proposed change-set use cases', () => {
 
   it.each(['rename', 'delete'] as const)('updates project context after an automatically applied $0 without overwriting facts', async (operation) => {
     const runs = new RunRepository();
-    runs.run = { ...runs.run, status: 'running' };
+    runs.run = policyAuthorizedRunningRun(runs.run);
     const workspace = new WorkspaceFixture();
     workspace.applyOutcome = { outcome: 'applied', operations: [{ operationId: 'test-operation', operation, path: FILE_PATH, ...(operation === 'rename' ? { destinationPath: 'src/new.svelte' } : {}), status: 'applied', backup: 'created', safeMessage: 'Applied.' }] };
     const repository = new InMemoryProposedChangeSetRepository();
     await new CollectProposedChangeSetUseCase(runs, new ProjectRepository(), workspace, repository).execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation, path: FILE_PATH, ...(operation === 'rename' ? { destinationPath: 'src/new.svelte' } : {}) }], fakeRuntime: false });
     const contexts = { get: jest.fn().mockResolvedValue({ relativePaths: [FILE_PATH, 'notes.md'], factIds: ['selected-fact'], includeProjectConversations: true }), update: jest.fn() };
-    await new DecideProposedChangeSetUseCase(runs, new ProjectRepository(), repository, workspace, contexts).executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID });
+    await new DecideProposedChangeSetUseCase(runs, new ProjectRepository(), repository, workspace, contexts, undefined, executionPolicy()).executeAutomatically({ ownerId: OWNER_ID, runId: RUN_ID });
     expect(contexts.update).toHaveBeenCalledWith(OWNER_ID, PROJECT_ID, { relativePaths: operation === 'rename' ? ['src/new.svelte', 'notes.md'] : ['notes.md'] });
   });
 
@@ -70,10 +96,22 @@ describe('proposed change-set use cases', () => {
 
     expect(result.status).toBe('awaiting_approval');
     expect(result.fakeRuntime).toBe(true);
-    expect(result.operations[0]).toMatchObject({ path: FILE_PATH, expectedSourceHash: ORIGINAL_HASH, backupRequired: false });
+    expect(result.operations[0]).toMatchObject({ path: FILE_PATH, expectedSourceHash: ORIGINAL_HASH, backupRequired: true });
     expect(result.operations[0]?.preview?.text).not.toContain('secret-value');
     expect(result.proposalHash).toMatch(/^[0-9a-f]{64}$/u);
     expect(await repository.findByRunForOwner(OWNER_ID, RUN_ID)).toEqual(result);
+  });
+
+  it('does not read proposed change-set history for a planning project', async () => {
+    const runs = new RunRepository();
+    const projects = new ProjectRepository();
+    projects.project = { ...projects.project, relativeRoot: null, storageKind: null };
+    const changeSets = new InMemoryProposedChangeSetRepository();
+    const findChangeSet = jest.spyOn(changeSets, 'findByRunForOwner');
+    const get = new GetProposedChangeSetUseCase(runs, projects, changeSets);
+
+    await expect(get.execute({ ownerId: OWNER_ID, runId: RUN_ID })).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED', statusCode: 409 });
+    expect(findChangeSet).not.toHaveBeenCalled();
   });
 
   it('builds a line diff with unchanged context, additions, and removals', async () => {
@@ -177,6 +215,24 @@ describe('proposed change-set use cases', () => {
     expect((await repository.findByRunForOwner(OWNER_ID, RUN_ID))?.status).toBe('needs_manual_review');
   });
 
+  it('records a clean quota denial as failed without marking the operation ambiguous', async () => {
+    const workspace = new WorkspaceFixture();
+    workspace.applyError = new StorageQuotaError('STORAGE_QUOTA_EXCEEDED', 'quota exceeded', 413, {
+      usedBytes: '100', reservedBytes: '0', limitBytes: '100', requestedGrowthBytes: '1'
+    });
+    const repository = new InMemoryProposedChangeSetRepository();
+    const collect = new CollectProposedChangeSetUseCase(new RunRepository(), new ProjectRepository(), workspace, repository);
+    const decision = new DecideProposedChangeSetUseCase(new RunRepository(), new ProjectRepository(), repository, workspace);
+    const changeSet = await collect.execute({ ownerId: OWNER_ID, runId: RUN_ID, changes: [{ operation: 'edit', path: FILE_PATH, content: 'updated\n' }], fakeRuntime: true });
+
+    await expect(decision.execute({ ownerId: OWNER_ID, runId: RUN_ID, proposalHash: changeSet.proposalHash, decision: 'approve', idempotencyKey: 'decision-quota' }))
+      .rejects.toMatchObject({ code: 'STORAGE_QUOTA_EXCEEDED', statusCode: 413 });
+    await expect(repository.findByRunForOwner(OWNER_ID, RUN_ID)).resolves.toMatchObject({
+      status: 'failed',
+      result: { persisted: true, appliedCount: 0, failedCount: 1, operations: [{ status: 'failed', backup: 'not_created' }] }
+    });
+  });
+
   it('drops raw proposed bytes after a terminal decision while retaining the safe preview/result', async () => {
     const workspace = new WorkspaceFixture();
     const repository = new InMemoryProposedChangeSetRepository();
@@ -215,6 +271,7 @@ class RunRepository implements IAiRunRepository {
     conversationId: '44444444-4444-4444-8444-444444444444',
     request: 'edit the file',
     relativeRoot: 'project',
+    storageKind: 'legacy',
     requestedPaths: [FILE_PATH],
     manifest: { manifestHash: 'b'.repeat(64), provider: 'NVIDIA hosted NIM', providerProfile: 'nvidia-hosted-nim', model: 'nvidia/nemotron-3-super-120b-a12b', categories: ['Request'], files: [{ relativePath: FILE_PATH, sourceHash: ORIGINAL_HASH, sizeBytes: ORIGINAL.length }], requestBytes: 14, messageBytes: 0, messageCount: 0, messageHash: 'c'.repeat(64), byteEstimate: 14, tokenEstimate: 4, excludedItemCount: 0, omittedItemCount: 0, omissionSummary: 'No selected items were excluded or omitted.', bestEffortSecretDetection: true },
     manifestInvalidated: false,
@@ -234,13 +291,15 @@ class RunRepository implements IAiRunRepository {
   public async findByIdForOwner(ownerId: string, runId: string): Promise<AiRun | null> { return ownerId === OWNER_ID && runId === RUN_ID ? this.run : null; }
   public async recordDecision(): Promise<never> { throw new Error('unused'); }
   public async save(run: AiRun): Promise<void> { this.run = run; }
+  public async beginStart(): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> { throw new Error('unused'); }
+  public async abortStart(): Promise<boolean> { return false; }
 }
 
 class ProjectRepository implements IProjectRepository {
-  public project: Project = { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', status: 'active', version: 1, createdAt: new Date(), updatedAt: new Date() };
+  public project: Project = { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', storageKind: 'legacy', objective: null, status: 'active', version: 1, createdAt: new Date(), updatedAt: new Date() };
   public async listByOwner(): Promise<readonly Project[]> { return [this.project]; }
   public async findByIdForOwner(ownerId: string, projectId: string): Promise<Project | null> { return ownerId === OWNER_ID && projectId === PROJECT_ID ? this.project : null; }
-  public async listActiveRoots(): Promise<readonly string[]> { return [this.project.relativeRoot]; }
+  public async listActiveRoots(): Promise<readonly string[]> { return this.project.relativeRoot === null ? [] : [this.project.relativeRoot]; }
   public async create(): Promise<Project> { return this.project; }
   public async updateStatus(): Promise<Project | null> { return this.project; }
 }
@@ -249,6 +308,7 @@ class WorkspaceFixture implements IWorkspaceMutationGateway {
   public applied = false;
   public applyCalls = 0;
   public checkpointedBeforeMutation = false;
+  public applyError?: unknown;
   public snapshotContent = ORIGINAL;
   public applyOutcome: WorkspaceApplyResult = { outcome: 'applied', operations: [{ operationId: 'edit-src', operation: 'edit', path: FILE_PATH, status: 'applied', backup: 'created', safeMessage: 'Edited.' }] };
   public async inspect(_scope: WorkspaceMutationScope, relativePath: string): Promise<WorkspaceFileSnapshot> {
@@ -256,11 +316,29 @@ class WorkspaceFixture implements IWorkspaceMutationGateway {
   }
   public async applyChangeSet(_scope: WorkspaceMutationScope, operations: readonly ProposedChangeOperation[], _runId: string, _proposalHash: string, options?: WorkspaceMutationApplyOptions): Promise<WorkspaceApplyResult> {
     this.applyCalls += 1;
+    if (this.applyError !== undefined) throw this.applyError;
+    await options?.assertPrincipalActive?.();
     await options?.recordBackupCheckpoint?.({ reference: 'private/checkpoint', operationId: operations[0]?.operationId ?? 'operation', path: FILE_PATH, sizeBytes: ORIGINAL.length, contentSha256: ORIGINAL_HASH, createdAt: new Date() });
     this.checkpointedBeforeMutation = true;
     this.applied = true;
     return this.applyOutcome;
   }
+}
+
+function policyAuthorizedRunningRun(run: AiRun): AiRun {
+  return { ...run, status: 'running', phase: 'runtime', decision: 'policy_authorized', policyRevision: '1' };
+}
+
+type WorkspacePolicyGuard = Pick<AssertAssistantExecutionPolicyUseCase, 'assertWorkspace'>;
+
+function executionPolicy(): WorkspacePolicyGuard & { readonly assertWorkspace: jest.MockedFunction<WorkspacePolicyGuard['assertWorkspace']> } {
+  return {
+    assertWorkspace: jest.fn(async (_input: Parameters<WorkspacePolicyGuard['assertWorkspace']>[0]) => ({
+      policies: [],
+      effectiveCapabilities: ['workspace_file_read', 'workspace_file_write', 'bounded_sandbox_command'] as const,
+      revisions: { workspace: '1' }
+    }))
+  };
 }
 
 function hash(value: string): string {

@@ -52,7 +52,7 @@ export function ConversationPane(props: ConversationPaneProps): React.JSX.Elemen
   const isOlderLoading = props.olderStatus === 'loading';
   return (
     <Card className="conversation-pane">
-      <header className="conversation-pane-header"><h2 ref={titleRef} className="conversation-title" tabIndex={-1}>{conversation.title}</h2><span className="reference-count">{messages.length} {messages.length === 1 ? 'message' : 'messages'}</span></header>
+      <header className="conversation-pane-header"><h2 ref={titleRef} className="conversation-title" tabIndex={-1}>{conversation.title}</h2></header>
       <div ref={scroll.viewportRef} className="chat-history-viewport" onScroll={scroll.onScroll} data-testid="conversation-history" aria-busy={isOlderLoading}>
         {props.history.nextBeforeSequence !== null ? <div className="history-pagination"><Button type="button" variant="secondary" data-testid="conversation-history-load-older" aria-busy={isOlderLoading} disabled={isOlderLoading} onClick={() => { scroll.beforeLoadOlder(); props.onLoadOlder(); }}>Load older messages</Button>{isOlderLoading ? <p data-testid="conversation-history-load-older-status" role="status">Loading older messages...</p> : null}{props.olderError ? <div data-testid="conversation-history-load-older-error" role="alert"><p>{props.olderError.detail}</p><Button type="button" variant="secondary" data-testid="conversation-history-load-older-retry" onClick={() => { scroll.beforeLoadOlder(); props.onLoadOlder(); }}>Try again</Button></div> : null}</div> : null}
         {messages.length === 0 ? <div className="conversation-start-prompt" data-testid="conversation-history-empty"><span className="conversation-welcome-icon"><Icon name="chat" size={24} /></span><h3>Let’s get started</h3><p>Ask a question or tell me what you’d like help with.</p></div> : <ol className="message-history">{messages.map((message) => <li key={message.id} data-testid="message-item" className={`message-item message-${message.role}`}><div className="message-heading"><span data-testid="message-role" className="message-role">{message.role === 'user' ? 'You' : 'Assistant'}</span><time data-testid="message-created-at" dateTime={message.createdAt}>{formatTimestamp(message.createdAt)}</time></div><div data-testid="message-content" className="message-content">{message.role === 'assistant' ? <MarkdownContent content={message.content} /> : message.content}</div></li>)}</ol>}
@@ -62,6 +62,7 @@ export function ConversationPane(props: ConversationPaneProps): React.JSX.Elemen
       <ChatComposer
         projectId={props.projectId}
         conversationId={conversation.id}
+        history={props.history}
         disabled={props.disabled}
         archivedDescriptionId={props.archivedDescriptionId}
         timelineTarget={timelineTarget}

@@ -33,7 +33,8 @@ const activeProject: ProjectSnapshot = {
   id: PROJECT_ID,
   name: 'Workspace',
   slug: 'workspace',
-  relativeRoot: 'apps',
+  workspaceMode: 'file_backed',
+  capabilities: { planning: true, fileAccess: true },
   status: 'active',
   version: 1,
   createdAt: '2026-09-12T12:00:00.000Z',
@@ -64,7 +65,7 @@ const emptyHistory: ConversationHistoryResponse = { conversation: firstConversat
 
 const session = {
   status: 'authenticated' as const,
-  principal: { id: 'user-1', displayName: 'Local user' },
+  principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const },
   csrfToken: 'csrf-token',
   expiresAt: '2026-09-13T00:00:00.000Z',
   errorCode: null
@@ -130,7 +131,7 @@ describe('ChatWorkspace', () => {
     getConversationMock.mockResolvedValue(emptyHistory);
     renderWorkspace();
 
-    expect(await screen.findByTestId('conversation-history-empty')).toHaveTextContent('No messages yet');
+    expect(await screen.findByTestId('conversation-history-empty')).toHaveTextContent('Let’s get started');
     expect(screen.getByTestId('message-input')).toBeEnabled();
   });
 
@@ -191,24 +192,25 @@ describe('ChatWorkspace', () => {
     createConversationMock.mockResolvedValue(firstConversation);
     renderWorkspace(activeProject, '');
     const user = userEvent.setup();
-    expect(await screen.findByRole('heading', { name: 'Start your first conversation' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Get started' })).toBeInTheDocument();
     expect(screen.queryByText('Choose a conversation')).not.toBeInTheDocument();
     expect(screen.getAllByTestId('conversation-create-trigger')).toHaveLength(1);
     await user.click(await screen.findByTestId('conversation-create-trigger'));
-    await user.type(screen.getByLabelText('Conversation name'), 'New saved thread');
-    await user.click(screen.getByTestId('conversation-create-submit'));
-    expect(await screen.findByTestId('conversation-create-success-announcement')).toHaveTextContent('Conversation created.');
+    await waitFor(() => expect(createConversationMock).toHaveBeenCalledWith(activeProject.id, { title: 'New chat' }, expect.any(String), expect.any(String)));
+    expect(await screen.findByTestId('message-input')).toBeInTheDocument();
     expect(screen.queryByTestId('conversation-create-dialog')).not.toBeInTheDocument();
   });
 
   it('opens creation from the rail and keeps archived workspaces read-only', async () => {
+    createConversationMock.mockResolvedValue(firstConversation);
     listConversationsMock.mockResolvedValue(listResponse());
     getConversationMock.mockResolvedValue(emptyHistory);
     renderWorkspace();
     const user = userEvent.setup();
     await screen.findByTestId('conversation-create-trigger');
     await user.click(screen.getByTestId('conversation-create-trigger'));
-    expect(await screen.findByTestId('conversation-create-dialog')).toBeInTheDocument();
+    await waitFor(() => expect(createConversationMock).toHaveBeenCalled());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 
     cleanup();
     listConversationsMock.mockResolvedValue(listResponse([firstConversation]));
@@ -219,7 +221,7 @@ describe('ChatWorkspace', () => {
     expect(screen.getByTestId('conversation-create-trigger')).toHaveAttribute('aria-describedby', 'project-archived-message');
     expect(await screen.findByTestId('message-input')).toBeDisabled();
     expect(screen.getByTestId('message-input')).toHaveAttribute('aria-describedby', expect.stringContaining('project-archived-message'));
-    expect(screen.getByTestId('chat-send')).toHaveAttribute('aria-describedby', 'project-archived-message');
+    expect(screen.getByTestId('ai-run-submit')).toHaveAttribute('aria-describedby', 'project-archived-message');
     expect(screen.getAllByTestId('project-archived-message').length).toBeGreaterThan(0);
   });
 

@@ -20,12 +20,13 @@ test('opens file history from activity, shows all outcomes, and filters applied 
   });
 
   await page.goto('/login');
+  await page.getByTestId('login-identifier-input').fill('owner');
   await page.getByTestId('login-password-input').fill('preview-e2e-only');
   await page.getByTestId('login-submit-button').click();
   await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);
 
   const item = {
-    runId: RUN_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, status: 'succeeded', decision: 'approved', providerTransmission: 'transmitted_confirmed',
+    runId: RUN_ID, projectId: PROJECT_ID, conversationId: CONVERSATION_ID, status: 'succeeded', decision: 'policy_authorized', providerTransmission: 'transmitted_confirmed',
     createdAt: '2026-09-30T00:00:00.000Z', updatedAt: '2026-09-30T00:00:02.000Z', provider: 'NVIDIA hosted NIM', model: 'preview-model',
     requestPreview: 'Review a file history fixture.', context: { categories: ['Request'], fileCount: 1, factCount: 0, messageCount: 0, estimatedTokens: 18 },
     usage: { status: 'reported', promptTokens: 12, completionTokens: 6, totalTokens: 18 },
@@ -61,7 +62,7 @@ test('opens file history from activity, shows all outcomes, and filters applied 
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { projectId: PROJECT_ID, path, outcome, items: rows, nextCursor: null }, error: null }) });
   });
 
-  await page.getByTestId('project-item').filter({ hasText: 'Website redesign' }).getByRole('link').click();
+  await page.getByRole('navigation', { name: 'Active projects' }).getByRole('link', { name: 'Website redesign' }).click();
   await page.getByTestId('project-activity-link').click();
   await page.getByTestId(`activity-details-${RUN_ID}`).click();
   await page.getByRole('link', { name: 'View file history for src/new.ts' }).click();

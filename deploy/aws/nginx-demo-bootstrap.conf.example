@@ -1,0 +1,14 @@
+# Include at http{} scope after replacing REPLACE_WITH_PUBLIC_IP.
+# Use only until Certbot has issued the first certificate. No application routes.
+server {
+    listen 80 default_server;
+    server_name REPLACE_WITH_PUBLIC_IP;
+    access_log off;
+    error_log /dev/null crit;
+    if ($host != REPLACE_WITH_PUBLIC_IP) { return 444; }
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/lib/personal-ai/acme;
+        try_files $uri =404;
+    }
+    location / { return 404; }
+}

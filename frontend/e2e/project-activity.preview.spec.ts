@@ -13,6 +13,7 @@ test('opens the project activity page, filters a run, and expands safe detail', 
   });
 
   await page.goto('/login');
+  await page.getByTestId('login-identifier-input').fill('owner');
   await page.getByTestId('login-password-input').fill('preview-e2e-only');
   await page.getByTestId('login-submit-button').click();
   await expect(page).toHaveURL(/\/dashboard(?:\?|$)/u);
@@ -22,7 +23,7 @@ test('opens the project activity page, filters a run, and expands safe detail', 
     projectId: PROJECT_ID,
     conversationId: CONVERSATION_ID,
     status: 'succeeded',
-    decision: 'approved',
+    decision: 'policy_authorized',
     providerTransmission: 'transmitted_confirmed',
     createdAt: '2026-09-30T00:00:00.000Z',
     updatedAt: '2026-09-30T00:00:02.000Z',
@@ -48,10 +49,11 @@ test('opens the project activity page, filters a run, and expands safe detail', 
     }, error: null }) });
   });
 
-  await page.getByTestId(`project-item`).filter({ hasText: 'Website redesign' }).getByRole('link').click();
+  await page.getByRole('navigation', { name: 'Active projects' }).getByRole('link', { name: 'Website redesign' }).click();
   await page.getByTestId('project-activity-link').click();
   await expect(page.getByTestId('project-activity-page')).toBeVisible();
   await expect(page.getByRole('heading', { name: item.requestPreview })).toBeVisible();
+  await page.getByText('Usage details', { exact: true }).click();
   await expect(page.getByText('27 tokens (estimate)')).toBeVisible();
   await expect(page.getByText('Prompt: 24 · Completion: Not available · Total: Not available')).toBeVisible();
   await expect(page.getByText('Cost: Unavailable — no rate configured')).toBeVisible();

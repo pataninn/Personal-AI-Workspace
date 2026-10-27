@@ -4,6 +4,8 @@ export interface CreateSessionInput {
   readonly userId: string;
   readonly tokenHash: string;
   readonly expiresAt: Date;
+  /** Credential hash that was verified before a regular-account login. */
+  readonly expectedPasswordHash?: string;
 }
 
 export interface ISessionRepository {

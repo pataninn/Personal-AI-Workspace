@@ -6,7 +6,7 @@ import {
   SandboxCommandRunNotReadyError,
   SandboxCommandValidationError
 } from '@/modules/ai-runs/domain/command-errors';
-import { normalizeCommandProposal, normalizeHermesPermission, summarizeArgument, summarizeHermesCommand } from '@/modules/ai-runs/domain/command-policy';
+import { normalizeCommandProposal, normalizeHermesPermission, normalizePolicyHermesPermission, summarizeArgument, summarizeHermesCommand } from '@/modules/ai-runs/domain/command-policy';
 import type {
   CommandResult,
   CommandResultUpdate,
@@ -19,9 +19,14 @@ import type { IAiRunRepository } from '@/modules/ai-runs/repositories/ai-run-rep
 import type { IAgentRuntime } from '@/modules/ai-runs/repositories/agent-runtime';
 import type { ISandboxCommandRepository } from '@/modules/ai-runs/repositories/sandbox-command-repository';
 import type { IProjectRepository } from '@/modules/projects/repositories/project-repository';
+import { requireProjectFileRoot } from '@/modules/projects/domain/project-file-root';
 import { hashText } from '@/modules/ai-runs/use-cases/manifest-builder';
 import { validateIdempotencyKey } from '@/modules/ai-runs/domain/ai-run-validation';
 import { sanitizeCommandResult } from '@/modules/ai-runs/domain/command-result';
+import { assertAiRunProjectHasFileRoot } from '@/modules/ai-runs/use-cases/assert-ai-run-project';
+import type { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
+import { AssistantExecutionPolicyChangedError, AssistantExecutionUnavailableError } from '@/modules/assistant-policy/domain/assistant-execution-errors';
+import type { AiRun } from '@/modules/ai-runs/domain/ai-run-types';
 
 export interface SandboxCommandLogger {
   readonly error: (context: { readonly commandId: string }, message: string) => void;
@@ -48,7 +53,8 @@ export class ProposeSandboxCommandUseCase {
     private readonly commandRepository: ISandboxCommandRepository,
     private readonly agentRuntime: IAgentRuntime,
     private readonly projectRepository: IProjectRepository,
-    private readonly logger?: SandboxCommandLogger
+    private readonly logger?: SandboxCommandLogger,
+    private readonly executionPolicy?: Pick<AssertAssistantExecutionPolicyUseCase, 'assertWorkspace'>
   ) {}
 
   public async execute(input: ProposeSandboxCommandInput): Promise<ProposeSandboxCommandOutput> {
@@ -57,13 +63,22 @@ export class ProposeSandboxCommandUseCase {
       throw new SandboxCommandNotFoundError();
     }
     await assertActiveProject(this.projectRepository, input.ownerId, run.projectId);
-    assertReadyRun(run);
+    const policyAuthorized = run.decision === 'policy_authorized';
+    if (policyAuthorized) {
+      if (!run.policyRevision || !this.executionPolicy) throw new AssistantExecutionUnavailableError();
+      const authorization = await this.executionPolicy.assertWorkspace({ ownerId: run.ownerId, projectId: run.projectId, providerProfile: run.manifest.providerProfile, model: run.manifest.model, policyRevision: run.policyRevision });
+      if (!authorization.effectiveCapabilities.includes('bounded_sandbox_command')) throw new AssistantExecutionUnavailableError();
+    } else {
+      assertReadyRun(run);
+    }
     if (!this.agentRuntime.proposeCommand) {
       throw new AiRunRuntimeUnavailableError();
     }
-    const proposal = run.runtimeKind === 'hermes'
-      ? normalizeHermesPermission({ command: input.command, args: input.args, cwd: input.cwd, summary: input.summary })
-      : normalizeCommandProposal({ command: input.command, args: input.args, cwd: input.cwd, summary: input.summary });
+    const proposal = policyAuthorized
+      ? normalizePolicyHermesPermission({ command: input.command, args: input.args, cwd: input.cwd, summary: input.summary }, run.manifest.files.map((file) => file.relativePath), run.manifest.manifestHash)
+      : run.runtimeKind === 'hermes'
+        ? normalizeHermesPermission({ command: input.command, args: input.args, cwd: input.cwd, summary: input.summary })
+        : normalizeCommandProposal({ command: input.command, args: input.args, cwd: input.cwd, summary: input.summary });
     const idempotencyKey = validateIdempotencyKey(input.idempotencyKey);
     const record: CreateSandboxCommandRecord = {
       ownerId: input.ownerId,
@@ -81,7 +96,7 @@ export class ProposeSandboxCommandUseCase {
       createFingerprint: proposal.createFingerprint
     };
     const created = await this.commandRepository.createProposal(record);
-    if (!created.replayed && proposal.classification !== 'blocked') {
+    if (!created.replayed && (proposal.classification !== 'blocked' || policyAuthorized)) {
       try {
         await this.agentRuntime.proposeCommand({ runId: run.id, commandId: created.resource.id, command: proposal.command, args: proposal.args, cwd: proposal.cwd });
       } catch (error: unknown) {
@@ -104,7 +119,8 @@ export class ProposeSandboxCommandUseCase {
 export class ListSandboxCommandsUseCase {
   public constructor(
     private readonly aiRunRepository: IAiRunRepository,
-    private readonly commandRepository: ISandboxCommandRepository
+    private readonly commandRepository: ISandboxCommandRepository,
+    private readonly projectRepository: IProjectRepository
   ) {}
 
   public async execute(input: { readonly ownerId: string; readonly runId: string }): Promise<readonly SandboxCommand[]> {
@@ -112,6 +128,7 @@ export class ListSandboxCommandsUseCase {
     if (!run) {
       throw new SandboxCommandNotFoundError();
     }
+    await assertAiRunProjectHasFileRoot(this.projectRepository, input.ownerId, run.projectId);
     return this.commandRepository.listForRun(input.ownerId, input.runId, MAX_SANDBOX_COMMANDS_PER_LIST);
   }
 }
@@ -119,7 +136,8 @@ export class ListSandboxCommandsUseCase {
 export class GetSandboxCommandUseCase {
   public constructor(
     private readonly aiRunRepository: IAiRunRepository,
-    private readonly commandRepository: ISandboxCommandRepository
+    private readonly commandRepository: ISandboxCommandRepository,
+    private readonly projectRepository: IProjectRepository
   ) {}
 
   public async execute(input: { readonly ownerId: string; readonly runId: string; readonly commandId: string }): Promise<SandboxCommand> {
@@ -127,6 +145,7 @@ export class GetSandboxCommandUseCase {
     if (!run) {
       throw new SandboxCommandNotFoundError();
     }
+    await assertAiRunProjectHasFileRoot(this.projectRepository, input.ownerId, run.projectId);
     const command = await this.commandRepository.findByIdForOwner(input.ownerId, input.runId, input.commandId);
     if (!command) {
       throw new SandboxCommandNotFoundError();
@@ -150,7 +169,8 @@ export class DecideSandboxCommandUseCase {
     private readonly commandRepository: ISandboxCommandRepository,
     private readonly agentRuntime: IAgentRuntime,
     private readonly projectRepository: IProjectRepository,
-    private readonly logger?: SandboxCommandLogger
+    private readonly logger?: SandboxCommandLogger,
+    private readonly executionPolicy?: Pick<AssertAssistantExecutionPolicyUseCase, 'assertWorkspace'>
   ) {}
 
   public async execute(input: DecideSandboxCommandInput): Promise<SandboxCommand> {
@@ -188,6 +208,97 @@ export class DecideSandboxCommandUseCase {
       return current ?? running;
     }
     return this.executeInRuntime(run.id, current);
+  }
+
+  /** Claims and executes one policy-authorized command; this method is only wired to the run event loop. */
+  public async executeAutomatically(input: { readonly ownerId: string; readonly runId: string; readonly commandId: string }): Promise<SandboxCommand> {
+    const run = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
+    const command = await this.commandRepository.findByIdForOwner(input.ownerId, input.runId, input.commandId);
+    if (!run || !command || run.projectId !== command.projectId) throw new SandboxCommandNotFoundError();
+    if (run.decision !== 'policy_authorized' || !run.policyRevision || run.status !== 'running') return command;
+    if (command.status === 'blocked' || command.status === 'cancelled' || command.status === 'cancel_requested') return command;
+    if (command.classification !== 'safe' || command.decision !== 'pending' || command.status !== 'awaiting_approval') return command;
+    if (!await this.policyCommandReady(run)) return this.blockAwaiting(command, 'The current runtime cannot enforce the bounded command policy. The command was not run.');
+
+    const fingerprint = hashText(JSON.stringify({ version: 'bounded-read-v1', ownerId: run.ownerId, projectId: run.projectId, runId: run.id, commandId: command.id, proposalHash: command.proposalHash, policyRevision: run.policyRevision }));
+    const claim = await this.commandRepository.claimPolicyAuthorizedExecution({
+      ownerId: run.ownerId, runId: run.id, commandId: command.id, proposalHash: command.proposalHash,
+      idempotencyKey: `policy-command-${command.id}`,
+      requestFingerprint: fingerprint
+    });
+    if (claim.replayed || claim.resource.decision !== 'policy_authorized' || claim.resource.status !== 'running') return claim.resource;
+    let resultPersisted = false;
+    try {
+      const beforeCapabilityCheck = await this.assertPolicyRun(run);
+      if (!await this.policyCommandRuntimeReady(beforeCapabilityCheck)) {
+        return await this.reviewExecution(claim.resource, 'The command authorization changed before dispatch. No command result was shared.');
+      }
+      const beforeDispatch = await this.assertPolicyRun(beforeCapabilityCheck);
+      if (!await this.commandRepository.isPolicyAuthorizedExecution(beforeDispatch.ownerId, beforeDispatch.id, command.id)) {
+        return (await this.commandRepository.findByIdForOwner(run.ownerId, run.id, command.id)) ?? claim.resource;
+      }
+      if (!this.agentRuntime.executePolicyCommand) return this.reviewExecution(claim.resource, 'The private command runtime is unavailable. No command was run.');
+      const result = await this.agentRuntime.executePolicyCommand({ runId: beforeDispatch.id, commandId: command.id, command: command.command, args: command.args, cwd: command.cwd, limits: command.limits });
+      await this.assertPolicyRun(beforeDispatch);
+      if (!await this.commandRepository.isPolicyAuthorizedExecution(run.ownerId, run.id, command.id)) return (await this.commandRepository.findByIdForOwner(run.ownerId, run.id, command.id)) ?? claim.resource;
+      const saved = await this.commandRepository.saveExecutionResult(resultUpdate(run.ownerId, run.id, command.id, sanitizeCommandResult(result, command.limits)));
+      if (!saved) return (await this.commandRepository.findByIdForOwner(run.ownerId, run.id, command.id)) ?? claim.resource;
+      resultPersisted = true;
+      await this.assertPolicyRun(beforeDispatch);
+      if (!await this.commandRepository.isPolicyAuthorizedExecution(run.ownerId, run.id, command.id)) throw new AssistantExecutionUnavailableError();
+      await this.agentRuntime.completePolicyCommand?.({ runId: run.id, commandId: command.id });
+      return saved;
+    } catch (error: unknown) {
+      // A saved process result does not prove that model continuation was acknowledged.
+      if (resultPersisted) throw new AssistantExecutionUnavailableError();
+      const message = error instanceof AssistantExecutionPolicyChangedError || error instanceof AssistantExecutionUnavailableError
+        ? 'Workspace policy or runtime readiness changed. The command result was not shared.'
+        : 'The private command result could not be confirmed. Refresh command status before retrying.';
+      return this.reviewExecution(claim.resource, message);
+    }
+  }
+
+  public isPolicyAuthorizedExecution(ownerId: string, runId: string, commandId: string): Promise<boolean> {
+    return this.commandRepository.isPolicyAuthorizedExecution(ownerId, runId, commandId);
+  }
+
+  private async policyCommandReady(run: AiRun): Promise<boolean> {
+    try {
+      const current = await this.assertPolicyRun(run);
+      return await this.policyCommandRuntimeReady(current);
+    } catch {
+      return false;
+    }
+  }
+
+  private async policyCommandRuntimeReady(run: AiRun): Promise<boolean> {
+    return Boolean((run.runtimeKind !== 'hermes' || this.agentRuntime.completePolicyCommand) && this.agentRuntime.executePolicyCommand && this.agentRuntime.supportsPolicyCommandExecution
+      && await this.agentRuntime.supportsPolicyCommandExecution({ providerProfile: run.manifest.providerProfile, model: run.manifest.model }));
+  }
+
+  private async assertPolicyRun(expectedRun: AiRun): Promise<AiRun> {
+    if (!this.executionPolicy) throw new AssistantExecutionUnavailableError();
+    const run = await this.aiRunRepository.findByIdForOwner(expectedRun.ownerId, expectedRun.id);
+    if (!run || run.projectId !== expectedRun.projectId || run.decision !== 'policy_authorized' || !run.policyRevision || run.status !== 'running') {
+      throw new AssistantExecutionUnavailableError();
+    }
+    if (run.policyRevision !== expectedRun.policyRevision || run.manifest.providerProfile !== expectedRun.manifest.providerProfile || run.manifest.model !== expectedRun.manifest.model) {
+      throw new AssistantExecutionPolicyChangedError();
+    }
+    await assertActiveProject(this.projectRepository, run.ownerId, run.projectId);
+    const authorization = await this.executionPolicy.assertWorkspace({ ownerId: run.ownerId, projectId: run.projectId, providerProfile: run.manifest.providerProfile, model: run.manifest.model, policyRevision: run.policyRevision });
+    if (!authorization.effectiveCapabilities.includes('bounded_sandbox_command')) throw new AssistantExecutionUnavailableError();
+    return run;
+  }
+
+  private async blockAwaiting(command: SandboxCommand, message: string): Promise<SandboxCommand> {
+    return (await this.commandRepository.saveIfAwaiting({ ownerId: command.ownerId, runId: command.runId, commandId: command.id, status: 'blocked', safeMessage: message }))
+      ?? (await this.commandRepository.findByIdForOwner(command.ownerId, command.runId, command.id)) ?? command;
+  }
+
+  private async reviewExecution(command: SandboxCommand, message: string): Promise<SandboxCommand> {
+    return (await this.commandRepository.saveExecutionResult({ ownerId: command.ownerId, runId: command.runId, commandId: command.id, status: 'review_required', safeMessage: message }))
+      ?? (await this.commandRepository.findByIdForOwner(command.ownerId, command.runId, command.id)) ?? command;
   }
 
   private async executeInRuntime(runId: string, command: SandboxCommand): Promise<SandboxCommand> {
@@ -356,6 +467,7 @@ async function assertActiveProject(projectRepository: IProjectRepository, ownerI
   if (project.status === 'archived') {
     throw new SandboxCommandProjectArchivedError();
   }
+  requireProjectFileRoot(project);
 }
 
 function validateProposalHash(value: unknown): string {

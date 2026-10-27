@@ -4,7 +4,7 @@ import type { AiRunActivityDetail, AiRunActivityFilter, AiRunActivityItem, AiRun
 const PROJECTS_PATH = '/api/v1/projects';
 const RUNS_PATH = '/api/v1/ai-runs';
 const STATUSES = new Set(['pending_approval', 'rejected', 'staging', 'ready', 'queued', 'running', 'waiting_approval', 'succeeded', 'failed', 'cancel_requested', 'cancelled', 'blocked', 'review_required']);
-const DECISIONS = new Set(['pending', 'approved', 'rejected']);
+const DECISIONS = new Set(['pending', 'approved', 'rejected', 'policy_authorized']);
 const TRANSMISSIONS = new Set(['not_started', 'not_started_confirmed', 'transmitted_confirmed', 'unknown']);
 const USAGE_STATUSES = new Set<AiRunActivityUsageStatus>(['reported', 'partial', 'not_reported', 'not_transmitted', 'unknown', 'unavailable']);
 const CHANGE_STATUSES = new Set(['awaiting_approval', 'applying', 'applied', 'rejected', 'stale', 'blocked', 'failed', 'needs_manual_review']);

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-import { useAppDispatch, useAppSelector } from '@/app/store/hooks';
+import { useAppDispatch, useAppSelector, useAppStore } from '@/app/store/hooks';
 import { projectStatusUpdated, updateProjectStatus, type ProjectSnapshot } from '@/entities/project';
 import { selectCsrfToken } from '@/entities/user-session';
 import { ApiClientError, notifySessionExpiry } from '@/shared/api';
@@ -24,6 +24,7 @@ interface ArchiveProjectDialogProps {
 
 export function ArchiveProjectDialog({ project, mode = 'archive', onOpenChange, onCompleted, onRetryBoundary }: ArchiveProjectDialogProps): React.JSX.Element {
   const dispatch = useAppDispatch();
+  const appStore = useAppStore();
   const csrfToken = useAppSelector(selectCsrfToken);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
@@ -51,13 +52,17 @@ export function ArchiveProjectDialog({ project, mode = 'archive', onOpenChange, 
       return;
     }
     setIsPending(true);
+    const generation = appStore.getState().project.generation ?? 0;
+    const isCurrent = (): boolean => generation === (appStore.getState().project.generation ?? 0);
     setError(null);
     try {
       const updated = await updateProjectStatus(project.id, isRestore ? 'active' : 'archived', project.version, csrfToken);
-      dispatch(projectStatusUpdated(updated));
+      if (!isCurrent()) return;
+      dispatch(projectStatusUpdated(updated, generation));
       onOpenChange(false);
       onCompleted(updated);
     } catch (caught: unknown) {
+      if (!isCurrent()) return;
       if (caught instanceof ApiClientError) {
         notifySessionExpiry(caught.statusCode, caught.code, caught);
       }
@@ -72,7 +77,7 @@ export function ArchiveProjectDialog({ project, mode = 'archive', onOpenChange, 
         confirmRef.current?.focus();
       }
     } finally {
-      setIsPending(false);
+      if (isCurrent()) setIsPending(false);
     }
   }
 

@@ -25,7 +25,7 @@ vi.mock('@/entities/ai-run/api/sandbox-command-api', () => ({
 const RUN_ID = '77777777-7777-4777-8777-000000000001';
 const COMMAND_ID = '88888888-8888-4888-8888-000000000001';
 const HASH = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-const session = { status: 'authenticated' as const, principal: { id: 'user-1', displayName: 'Local user' }, csrfToken: 'csrf-token', expiresAt: '2099-01-01T00:00:00.000Z', errorCode: null };
+const session = { status: 'authenticated' as const, principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const }, csrfToken: 'csrf-token', expiresAt: '2099-01-01T00:00:00.000Z', errorCode: null };
 const limits = { wallTimeMs: 10_000, idleTimeMs: 5_000, maxOutputBytes: 32_768, maxProcesses: 4, memoryBytes: 134_217_728, cpuTimeMs: 5_000, network: 'denied' as const };
 
 const run: AiRunSnapshot = {
@@ -75,33 +75,16 @@ describe('CommandExecutionSurface', () => {
     getSandboxCommandsMock.mockResolvedValue({ commands: [proposal] });
   });
 
-  it('shows a safe proposal and fake boundary before any decision', async () => {
+  it('shows a legacy command for reference without a decision control', async () => {
     renderSurface();
 
-    expect(await screen.findByRole('heading', { name: 'Command requires approval' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Legacy command is not resumed' })).toBeInTheDocument();
     expect(screen.getByTestId('command-boundary')).toHaveTextContent('never run on Windows');
-    expect(screen.getByTestId('command-fake-mode-notice')).toHaveTextContent('no process ran on Windows');
     expect(screen.getByTestId('command-summary')).toHaveTextContent('rg TODO src');
-    expect(screen.getByTestId('command-reject')).toHaveTextContent('Reject command');
-    expect(screen.getByTestId('command-approve')).toHaveTextContent('Approve preview in fake sandbox');
-  });
-
-  it('submits only the exact proposal hash and decision, then renders bounded fake output', async () => {
-    const completed: SandboxCommandSnapshot = {
-      ...proposal,
-      decision: 'approved',
-      status: 'completed',
-      result: { exitCode: 0, termination: 'completed', durationMs: 1, outputBytes: 21, outputLineCount: 1, outputTruncated: false, outputSha256: HASH, outputPreview: '<safe> simulated output' }
-    };
-    decideSandboxCommandMock.mockResolvedValue(completed);
-    renderSurface();
-    const user = userEvent.setup();
-    await user.click(await screen.findByTestId('command-approve'));
-
-    await waitFor(() => expect(decideSandboxCommandMock).toHaveBeenCalledWith(RUN_ID, COMMAND_ID, { proposalHash: HASH, decision: 'approve' }, 'csrf-token', expect.any(String)));
-    expect(await screen.findByTestId('command-completed')).toHaveTextContent('Fake sandbox preview complete');
-    expect(screen.getByTestId('command-output')).toHaveTextContent('<safe> simulated output');
-    expect(screen.getByTestId('command-output').innerHTML).not.toContain('<safe>');
+    expect(screen.getByTestId('command-legacy-blocked')).toHaveTextContent('waiting for a decision that is no longer available');
+    expect(screen.queryByTestId('command-approve')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('command-reject')).not.toBeInTheDocument();
+    expect(decideSandboxCommandMock).not.toHaveBeenCalled();
   });
 
   it('keeps a running command cancellable and reports confirmed cancellation', async () => {
@@ -138,14 +121,15 @@ describe('CommandExecutionSurface', () => {
     renderSurface(true);
 
     expect(await screen.findByTestId('command-project-read-only')).toHaveTextContent('Existing sandbox commands are read-only');
-    expect(screen.getByTestId('command-approve')).toBeDisabled();
+    expect(screen.getByTestId('command-legacy-blocked')).toBeInTheDocument();
+    expect(screen.queryByTestId('command-approve')).not.toBeInTheDocument();
   });
 
   it('renders a confirmed empty state instead of treating load failure as empty', async () => {
     getSandboxCommandsMock.mockResolvedValue({ commands: [] });
     renderSurface();
 
-    expect(await screen.findByTestId('command-empty')).toHaveTextContent('No sandbox command is waiting for review.');
+    expect(await screen.findByTestId('command-empty')).toHaveTextContent('No sandbox commands are recorded for this run.');
     expect(screen.queryByTestId('command-surface-error')).not.toBeInTheDocument();
   });
 });

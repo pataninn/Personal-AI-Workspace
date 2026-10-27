@@ -7,7 +7,6 @@ import {
   COMMAND_BOUNDARY_NOTICE,
   COMMAND_PROMOTION_NOTICE,
   FAKE_SANDBOX_NOTICE,
-  decisionPendingLabel,
   statusLabel
 } from '@/features/ai-run/model/command-copy';
 import type { SandboxCommandAction, SandboxCommandActionState } from '@/features/ai-run/model/use-sandbox-commands';
@@ -17,17 +16,15 @@ interface CommandProposalCardProps {
   readonly command: SandboxCommandSnapshot;
   readonly runtimeKind?: 'fake';
   readonly actionState?: SandboxCommandActionState;
-  readonly onDecision: (decision: 'approve' | 'reject') => void;
   readonly onCancel: () => void;
   readonly onRefresh: () => void;
   readonly conversationHref?: string;
   readonly canMutate: boolean;
 }
 
-export function CommandProposalCard({ command, runtimeKind, actionState, onDecision, onCancel, onRefresh, conversationHref, canMutate }: CommandProposalCardProps): React.JSX.Element {
+export function CommandProposalCard({ command, runtimeKind, actionState, onCancel, onRefresh, conversationHref, canMutate }: CommandProposalCardProps): React.JSX.Element {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const pendingAction = actionState?.action;
-  const isDecisionPending = pendingAction === 'approve' || pendingAction === 'reject';
   const isCancelPending = pendingAction === 'cancel';
   const needsDecision = command.status === 'awaiting_approval' && command.decision === 'pending';
   const starting = command.status === 'awaiting_approval' && command.decision === 'approved';
@@ -41,19 +38,19 @@ export function CommandProposalCard({ command, runtimeKind, actionState, onDecis
   }, [pendingAction, terminal]);
 
   return (
-    <article className="command-proposal-card" data-testid="command-proposal" aria-busy={isDecisionPending || isCancelPending || undefined}>
+    <article className="command-proposal-card" data-testid="command-proposal" aria-busy={isCancelPending || undefined}>
       <Card className="command-proposal-card-content">
         <h3 ref={headingRef} tabIndex={-1}>{headingFor(command, starting, runtimeKind)}</h3>
-        <div className="command-card-status" data-testid={isDecisionPending ? 'command-decision-status' : 'command-output-status'} role="status" aria-live="polite">
-          {isDecisionPending ? <><Spinner label={decisionPendingLabel(pendingAction === 'approve' ? 'approve' : 'reject')} /><span>{decisionPendingLabel(pendingAction === 'approve' ? 'approve' : 'reject')}</span></> : <span>{starting ? 'Starting private sandbox command...' : statusLabel(command.status, runtimeKind)}</span>}
+        <div className="command-card-status" data-testid="command-output-status" role="status" aria-live="polite">
+          {isCancelPending ? <><Spinner label="Cancelling command..." /><span>Cancelling command...</span></> : <span>{starting ? 'Starting private sandbox command...' : statusLabel(command.status, runtimeKind)}</span>}
         </div>
 
         <dl className="command-metadata">
           <div><dt>Requested action</dt><dd data-testid="command-summary"><code>{formatRequestedAction(command)}</code></dd></div>
           <div><dt>Safe summary</dt><dd>{command.summary}</dd></div>
-          <div><dt>Policy status</dt><dd data-testid="command-policy-status">{blocked ? 'Blocked by sandbox policy' : command.decision === 'approved' ? 'Approved for this command only' : command.decision === 'rejected' ? 'Permission withheld' : 'Approval required'}</dd></div>
+          <div><dt>Policy status</dt><dd data-testid="command-policy-status">{blocked ? 'Blocked by sandbox policy' : needsDecision ? 'Legacy command is not resumed' : command.decision === 'policy_authorized' ? 'Authorized by the current workspace policy' : command.decision === 'approved' ? 'Prior command approval is historical' : command.decision === 'rejected' ? 'Prior denial is historical' : 'No command decision'}</dd></div>
           <div><dt>Working directory</dt><dd>{command.cwd}</dd></div>
-          <div><dt>Network</dt><dd>{command.limits.network === 'approved_registries' ? 'Approval allows HTTPS reads from registry.npmjs.org, or pypi.org and files.pythonhosted.org for pip, for this command only.' : 'Network access is denied by default.'}</dd></div>
+          <div><dt>Network</dt><dd>{command.limits.network === 'approved_registries' ? 'Workspace policy allows HTTPS reads from registry.npmjs.org, or pypi.org and files.pythonhosted.org for pip, for this command only.' : 'Network access is denied by default.'}</dd></div>
           <div><dt>Output limit</dt><dd>{formatBytes(command.limits.maxOutputBytes)}</dd></div>
         </dl>
 
@@ -61,16 +58,13 @@ export function CommandProposalCard({ command, runtimeKind, actionState, onDecis
           <p>{COMMAND_BOUNDARY_NOTICE}</p>
           <p>{COMMAND_PROMOTION_NOTICE}</p>
         </Alert>
-        {!canMutate && !terminal ? <Alert tone="info" data-testid="command-read-only">Command actions are disabled because this run has stopped or the project or session is read-only.</Alert> : null}
+        {needsDecision ? <Alert tone="warning" data-testid="command-legacy-blocked">This older command is waiting for a decision that is no longer available. It will not run. Cancel the parent run or submit a fresh request under the current workspace policy.</Alert> : null}
+        {!canMutate && !terminal && !needsDecision ? <Alert tone="info" data-testid="command-read-only">Command actions are disabled because this run has stopped or the project or session is read-only.</Alert> : null}
         {runtimeKind === 'fake' ? <Alert tone="warning" data-testid="command-fake-mode-notice">{FAKE_SANDBOX_NOTICE}</Alert> : null}
         <p className="command-mode-label" data-testid="command-mode-label">Execution mode: {runtimeKind === 'fake' ? 'Development preview - fake sandbox' : 'Private sandbox'}</p>
 
         {actionState?.error ? <Alert tone={actionState.error.ambiguous ? 'warning' : 'error'} data-testid={isCancelPending ? 'command-cancel-error' : 'command-decision-error'} role="alert">{actionState.error.message}</Alert> : null}
         <div className="command-action-row">
-          {needsDecision ? <>
-            <Button type="button" variant="secondary" data-testid="command-reject" disabled={isDecisionPending || !canMutate} aria-busy={pendingAction === 'reject'} onClick={() => onDecision('reject')}>{pendingAction === 'reject' ? 'Rejecting command...' : 'Reject command'}</Button>
-            <Button type="button" data-testid="command-approve" disabled={isDecisionPending || !canMutate} aria-busy={pendingAction === 'approve'} onClick={() => onDecision('approve')}>{pendingAction === 'approve' ? 'Approving command...' : runtimeKind === 'fake' ? 'Approve preview in fake sandbox' : 'Approve and run in sandbox'}</Button>
-          </> : null}
           {actionState?.error?.ambiguous ? <Button type="button" variant="secondary" data-testid="command-status-refresh" onClick={onRefresh}>Refresh command status</Button> : null}
           {command.status === 'review_required' ? <Button type="button" variant="secondary" data-testid="command-status-refresh" onClick={onRefresh}>Refresh command status</Button> : null}
           {command.status === 'review_required' && conversationHref ? <a className="button button-secondary" data-testid="command-back-to-run" href={conversationHref}>Back to run</a> : null}
@@ -99,7 +93,7 @@ function headingFor(command: SandboxCommandSnapshot, starting: boolean, runtimeK
   if (starting) {
     return 'Starting private sandbox command...';
   }
-  return command.status === 'awaiting_approval' ? 'Command requires approval' : statusLabel(command.status, runtimeKind);
+  return command.status === 'awaiting_approval' ? 'Legacy command is not resumed' : statusLabel(command.status, runtimeKind);
 }
 
 function formatRequestedAction(command: SandboxCommandSnapshot): string {

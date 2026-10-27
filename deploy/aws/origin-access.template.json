@@ -1,0 +1,49 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Private host origin ingress — allows TCP 8080 only from the CloudFront VPC-origin service-managed security group.",
+  "Metadata": {
+    "AWSToolsMetrics": { "AWSAgentToolkit": "aws-cloudformation@3" },
+    "com.aws.cloudformation.Context": {
+      "arch": "CloudFront VPC origin service SG -> host SG TCP :8080 -> private host proxy",
+      "must": [
+        "Create this rule only after CloudFront has created the VPC origin and its AWS-managed service security group.",
+        "Deploy this regional EC2 security-group rule in the same Region/VPC as the host.",
+        "Do not allow public CIDRs or open any other host port."
+      ]
+    }
+  },
+  "Parameters": {
+    "HostSecurityGroupId": {
+      "Type": "AWS::EC2::SecurityGroup::Id",
+      "Description": "SecurityGroupId output from the private host stack in ap-southeast-2."
+    },
+    "CloudFrontServiceSecurityGroupId": {
+      "Type": "AWS::EC2::SecurityGroup::Id",
+      "Description": "AWS-managed CloudFront-VPCOrigins-Service-SG ID created for the VPC origin. Retrieve it after VPC-origin creation; do not create or edit this group."
+    }
+  },
+  "Resources": {
+    "AllowCloudFrontVpcOriginHttp": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Opens only the private proxy listener after CloudFront's service-managed origin group exists; a security-group reference limits the path to the VPC-origin service.",
+          "must": [
+            "Use the AWS-managed CloudFront VPC-origin security group as the sole source.",
+            "Allow TCP 8080 only; do not add CIDR-based or public ingress."
+          ],
+          "mutable": "change-with-constraints",
+          "trust": { "src": "authored", "conf": "high" }
+        }
+      },
+      "Properties": {
+        "GroupId": { "Ref": "HostSecurityGroupId" },
+        "IpProtocol": "tcp",
+        "FromPort": 8080,
+        "ToPort": 8080,
+        "SourceSecurityGroupId": { "Ref": "CloudFrontServiceSecurityGroupId" },
+        "Description": "CloudFront VPC-origin service to private host proxy only."
+      }
+    }
+  }
+}

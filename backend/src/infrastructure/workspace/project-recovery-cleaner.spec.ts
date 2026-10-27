@@ -35,10 +35,18 @@ describe('ProjectRecoveryCleaner', () => {
 
   it('purges only quarantined run directories and supports startup retry', async () => {
     await cleaner.quarantine([RUN_ID]);
+    const otherRun = '22222222-2222-4222-8222-222222222222';
+    await fs.mkdir(path.join(recovery, `run-${otherRun}`));
+    await fs.writeFile(path.join(recovery, `run-${otherRun}`, 'keep.bak'), 'another run');
     await cleaner.purge([RUN_ID]);
     await cleaner.purge([RUN_ID]);
-    await expect(fs.readdir(recovery)).resolves.toEqual([]);
+    await expect(fs.readdir(recovery)).resolves.toEqual([`run-${otherRun}`]);
     await expect(fs.readFile(path.join(root, 'project', 'source.txt'), 'utf8')).resolves.toBe('project source');
+  });
+
+  it('purges a named original recovery directory after a crash before quarantine', async () => {
+    await cleaner.purge([RUN_ID]);
+    await expect(fs.stat(original)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('rejects malformed run IDs before moving any backups', async () => {

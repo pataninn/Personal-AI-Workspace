@@ -10,7 +10,6 @@ import { AppError } from '@/shared/errors/app-error';
 import { sendData } from '@/shared/http/response';
 import {
   CreateProjectTaskUseCase,
-  DeleteProjectTaskUseCase,
   ListProjectTaskSuggestionsUseCase,
   ListProjectTasksUseCase,
   ReorderProjectTaskUseCase,
@@ -21,7 +20,7 @@ import {
 const planningFields = {
   importance: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
   deadline: z.string().nullable().optional(),
-  subtasks: z.array(z.object({ id: z.string().uuid().optional(), title: z.string(), completed: z.boolean().optional() }).strict()).max(50).optional()
+  subtasks: z.array(z.object({ id: z.guid().optional(), title: z.string(), completed: z.boolean().optional() }).strict()).max(50).optional()
 };
 const createTaskSchema = z.object({ title: z.string(), details: z.string().nullable().optional(), ...planningFields }).strict();
 const updateTextSchema = z.object({ title: z.string().optional(), details: z.string().nullable().optional(), ...planningFields }).strict().refine((value) => Object.keys(value).length > 0);
@@ -31,7 +30,7 @@ const reorderTaskSchema = z.object({ taskId: z.string(), direction: z.enum(['up'
 const acceptSuggestionSchema = z.object({ status: z.literal('accepted'), title: z.string().optional(), details: z.string().nullable().optional(), ...planningFields }).strict();
 const dismissSuggestionSchema = z.object({ status: z.literal('dismissed') }).strict();
 const resolveSuggestionSchema = z.union([acceptSuggestionSchema, dismissSuggestionSchema]);
-const taskFilterSchema = z.enum(['all', 'open', 'completed', 'archived']);
+const taskFilterSchema = z.enum(['all', 'open', 'completed']);
 const suggestionFilterSchema = z.enum(['all', 'pending']);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
@@ -40,7 +39,6 @@ export interface ProjectTaskRouterDependencies {
   readonly listTasks: ListProjectTasksUseCase;
   readonly createTask: CreateProjectTaskUseCase;
   readonly updateTask: UpdateProjectTaskUseCase;
-  readonly deleteTask: DeleteProjectTaskUseCase;
   readonly reorderTask: ReorderProjectTaskUseCase;
   readonly listSuggestions: ListProjectTaskSuggestionsUseCase;
   readonly resolveSuggestion: ResolveProjectTaskSuggestionUseCase;
@@ -79,10 +77,10 @@ function parseIfMatch(value: string | undefined): number {
   return version;
 }
 
-function parseFilter(value: unknown): 'all' | 'open' | 'completed' | 'archived' {
+function parseFilter(value: unknown): 'all' | 'open' | 'completed' {
   const parsed = taskFilterSchema.safeParse(value ?? 'all');
   if (!parsed.success) {
-    throw new AppError('VALIDATION_ERROR', 400, 'The project task filter is invalid.', [{ field: 'status', message: 'Use all, open, completed, or archived.' }]);
+    throw new AppError('VALIDATION_ERROR', 400, 'The project task filter is invalid.', [{ field: 'status', message: 'Use all, open, or completed.' }]);
   }
   return parsed.data;
 }
@@ -111,7 +109,6 @@ function serializeTask(task: ProjectTask): Record<string, unknown> {
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
     completedAt: task.completedAt?.toISOString() ?? null,
-    archivedAt: task.archivedAt?.toISOString() ?? null,
     source: { ...task.source, acceptedAt: task.source.acceptedAt?.toISOString() ?? null }
   };
 }
@@ -171,7 +168,13 @@ function updateTaskHandler(dependencies: ProjectTaskRouterDependencies): Request
       const projectId = parseId(routeParam(request.params.projectId));
       const taskId = parseId(routeParam(request.params.taskId));
       const body = parseBody(updateTaskSchema, request.body);
-      const result = await dependencies.updateTask.execute({ ownerId: ownerId(request), projectId, taskId, expectedVersion: parseIfMatch(request.header('if-match')), ...body });
+      const operationKey = request.header('idempotency-key');
+      const result = await dependencies.updateTask.execute({
+        ownerId: ownerId(request), projectId, taskId,
+        expectedVersion: parseIfMatch(request.header('if-match')),
+        ...(operationKey === undefined ? {} : { operationKey }),
+        ...body
+      });
       response.setHeader('ETag', `"${result.task.version}"`);
       sendData(response, { task: serializeTask(result.task), orderVersion: result.orderVersion });
     } catch (error: unknown) {
@@ -188,21 +191,6 @@ function reorderTaskHandler(dependencies: ProjectTaskRouterDependencies): Reques
       const result = await dependencies.reorderTask.execute({ ownerId: ownerId(request), projectId, taskId: parseId(body.taskId), direction: body.direction, expectedOrderVersion: parseIfMatch(request.header('if-match')) });
       response.setHeader('ETag', `"${result.orderVersion}"`);
       sendData(response, { tasks: result.tasks.map(serializeTask), orderVersion: result.orderVersion });
-    } catch (error: unknown) {
-      next(error);
-    }
-  };
-}
-
-function deleteTaskHandler(dependencies: ProjectTaskRouterDependencies): RequestHandler {
-  return async (request, response, next): Promise<void> => {
-    try {
-      const result = await dependencies.deleteTask.execute({
-        ownerId: ownerId(request), projectId: parseId(routeParam(request.params.projectId)),
-        taskId: parseId(routeParam(request.params.taskId)), expectedVersion: parseIfMatch(request.header('if-match'))
-      });
-      response.setHeader('ETag', `"${result.orderVersion}"`);
-      sendData(response, result);
     } catch (error: unknown) {
       next(error);
     }
@@ -252,7 +240,6 @@ export function createProjectTaskRouter(dependencies: ProjectTaskRouterDependenc
   router.get('/tasks', authenticate, listTasksHandler(dependencies));
   router.post('/tasks', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, createTaskHandler(dependencies));
   router.patch('/tasks/:taskId', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, updateTaskHandler(dependencies));
-  router.delete('/tasks/:taskId', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, deleteTaskHandler(dependencies));
   router.patch('/task-order', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, reorderTaskHandler(dependencies));
   router.get('/task-suggestions', authenticate, listSuggestionsHandler(dependencies));
   router.patch('/task-suggestions/:suggestionId', sameOrigin(dependencies.appOrigin), authenticate, requireCsrf, resolveSuggestionHandler(dependencies));

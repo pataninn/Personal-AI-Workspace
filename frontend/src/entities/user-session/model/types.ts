@@ -1,6 +1,8 @@
 export interface LocalPrincipal {
   readonly id: string;
   readonly displayName: string;
+  readonly accountKind: 'regular' | 'demo';
+  readonly role: 'user' | 'admin';
 }
 
 export interface SessionSnapshot {

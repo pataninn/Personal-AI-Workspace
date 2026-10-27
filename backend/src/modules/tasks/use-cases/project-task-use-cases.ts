@@ -8,6 +8,9 @@ import { canTransitionProjectTask, isProjectTaskStatus, normalizeTaskDetails, no
 import type { IProjectTaskRepository } from '@/modules/tasks/repositories/project-task-repository';
 import type { UpdateProjectTaskTextRecord } from '@/modules/tasks/repositories/project-task-repository';
 import { normalizeTaskDeadline, normalizeTaskImportance, normalizeTaskSubtasks } from '@/modules/tasks/domain/task-planning-validation';
+import type { ActionLedgerActorKind } from '@/modules/action-ledger/domain/action-ledger-types';
+import type { ITaskMutationCommands } from '@/modules/tasks/use-cases/task-mutation-use-cases';
+import { projectTaskOperationKey } from '@/modules/tasks/use-cases/task-mutation-use-cases';
 
 interface TaskPlanningInput {
   readonly importance?: unknown;
@@ -72,15 +75,31 @@ export class ListProjectTasksUseCase {
 export class CreateProjectTaskUseCase {
   public constructor(
     private readonly projectRepository: IProjectRepository,
-    private readonly taskRepository: IProjectTaskRepository
+    private readonly taskRepository: IProjectTaskRepository,
+    private readonly mutations?: ITaskMutationCommands
   ) {}
 
-  public async execute(input: TaskPlanningInput & { readonly ownerId: string; readonly projectId: string; readonly title: unknown; readonly details?: unknown; readonly idempotencyKey: string }) {
-    await findProject(this.projectRepository, input.ownerId, input.projectId, true);
+  public async execute(input: TaskPlanningInput & { readonly ownerId: string; readonly projectId: string; readonly title: unknown; readonly details?: unknown; readonly idempotencyKey: string; readonly actorKind?: ActionLedgerActorKind }) {
+    if (!this.mutations) await findProject(this.projectRepository, input.ownerId, input.projectId, true);
     const title = normalizeTaskTitle(input.title);
     const details = normalizeTaskDetails(input.details);
     const idempotencyKey = validateIdempotencyKey(input.idempotencyKey);
     const planning = normalizePlanning(input);
+    if (this.mutations) {
+      const result = await this.mutations.create({
+        ownerId: input.ownerId,
+        projectId: input.projectId,
+        operationKey: projectTaskOperationKey('create', input.projectId, idempotencyKey),
+        actorKind: input.actorKind ?? 'manual',
+        title: input.title,
+        ...(input.details === undefined ? {} : { details: input.details }),
+        ...(input.importance === undefined ? {} : { importance: input.importance }),
+        ...(input.deadline === undefined ? {} : { deadline: input.deadline }),
+        ...(input.subtasks === undefined ? {} : { subtasks: input.subtasks })
+      });
+      const snapshot = await this.taskRepository.listTasks(input.ownerId, input.projectId, 'all');
+      return { task: result.item.task, orderVersion: snapshot.orderVersion, replayed: result.replayed };
+    }
     const importance = planning.importance ?? 'medium';
     const deadline = planning.deadline ?? null;
     const subtasks = planning.subtasks ?? [];
@@ -101,7 +120,8 @@ export class CreateProjectTaskUseCase {
 export class UpdateProjectTaskUseCase {
   public constructor(
     private readonly projectRepository: IProjectRepository,
-    private readonly taskRepository: IProjectTaskRepository
+    private readonly taskRepository: IProjectTaskRepository,
+    private readonly mutations?: ITaskMutationCommands
   ) {}
 
   public async execute(input: TaskPlanningInput & {
@@ -109,18 +129,34 @@ export class UpdateProjectTaskUseCase {
     readonly projectId: string;
     readonly taskId: string;
     readonly expectedVersion: number;
+    readonly operationKey?: string;
+    readonly actorKind?: ActionLedgerActorKind;
     readonly title?: unknown;
     readonly details?: unknown;
     readonly status?: unknown;
   }) {
-    await findProject(this.projectRepository, input.ownerId, input.projectId, true);
+    if (!this.mutations) await findProject(this.projectRepository, input.ownerId, input.projectId, true);
     const hasText = input.title !== undefined || input.details !== undefined || input.importance !== undefined || input.deadline !== undefined || input.subtasks !== undefined;
     if (input.status !== undefined && hasText) {
       throw new ProjectTaskStatusConflictError();
     }
     if (input.status !== undefined) {
-      if (!isProjectTaskStatus(input.status) || input.status === 'archived') {
+      if (!isProjectTaskStatus(input.status)) {
         throw new ProjectTaskStatusConflictError();
+      }
+      if (this.mutations) {
+        const operationKey = input.operationKey === undefined ? undefined : projectTaskOperationKey('update', input.projectId, validateIdempotencyKey(input.operationKey));
+        const result = await this.mutations.update({
+          ownerId: input.ownerId,
+          expectedProjectId: input.projectId,
+          taskId: input.taskId,
+          expectedVersion: input.expectedVersion,
+          status: input.status,
+          ...(operationKey === undefined ? {} : { operationKey }),
+          actorKind: input.actorKind ?? 'manual'
+        });
+        const snapshot = await this.taskRepository.listTasks(input.ownerId, input.projectId, 'all');
+        return { task: result.item.task, orderVersion: snapshot.orderVersion };
       }
       return this.taskRepository.updateTask({
         ownerId: input.ownerId,
@@ -139,6 +175,24 @@ export class UpdateProjectTaskUseCase {
     }
     if (Object.keys(text).length === 0) {
       throw new ProjectTaskStatusConflictError();
+    }
+    if (this.mutations) {
+      const operationKey = input.operationKey === undefined ? undefined : projectTaskOperationKey('update', input.projectId, validateIdempotencyKey(input.operationKey));
+      const result = await this.mutations.update({
+        ownerId: input.ownerId,
+        expectedProjectId: input.projectId,
+        taskId: input.taskId,
+        expectedVersion: input.expectedVersion,
+        ...(input.title === undefined ? {} : { title: input.title }),
+        ...(input.details === undefined ? {} : { details: input.details }),
+        ...(input.importance === undefined ? {} : { importance: input.importance }),
+        ...(input.deadline === undefined ? {} : { deadline: input.deadline }),
+        ...(input.subtasks === undefined ? {} : { subtasks: input.subtasks }),
+        ...(operationKey === undefined ? {} : { operationKey }),
+        actorKind: input.actorKind ?? 'manual'
+      });
+      const snapshot = await this.taskRepository.listTasks(input.ownerId, input.projectId, 'all');
+      return { task: result.item.task, orderVersion: snapshot.orderVersion };
     }
     return this.taskRepository.updateTask({
       ownerId: input.ownerId,
@@ -159,16 +213,6 @@ export class ReorderProjectTaskUseCase {
   public async execute(input: { readonly ownerId: string; readonly projectId: string; readonly taskId: string; readonly direction: 'up' | 'down'; readonly expectedOrderVersion: number }) {
     await findProject(this.projectRepository, input.ownerId, input.projectId, true);
     return this.taskRepository.reorderTask(input);
-  }
-}
-
-/** Permanently removes an owned task with optimistic concurrency. */
-export class DeleteProjectTaskUseCase {
-  public constructor(private readonly projectRepository: IProjectRepository, private readonly taskRepository: IProjectTaskRepository) {}
-
-  public async execute(input: { readonly ownerId: string; readonly projectId: string; readonly taskId: string; readonly expectedVersion: number }): Promise<{ readonly orderVersion: number }> {
-    await findProject(this.projectRepository, input.ownerId, input.projectId, true);
-    return this.taskRepository.deleteTask(input);
   }
 }
 

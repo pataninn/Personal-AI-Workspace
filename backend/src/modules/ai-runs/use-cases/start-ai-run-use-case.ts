@@ -1,4 +1,5 @@
-import { AiRunProviderPermissionRevokedError, AiRunStateConflictError } from '@/modules/ai-runs/domain/ai-run-errors';
+import { DEFAULT_CONVERSATION_TITLE, GeneratedConversationTitle } from '@/modules/conversations/domain/generated-conversation-title';
+import { AiRunProviderPermissionRevokedError, AiRunStagingFailedError, AiRunStateConflictError } from '@/modules/ai-runs/domain/ai-run-errors';
 import { safeProviderFailureMessage } from '@/modules/ai-runs/domain/model-provider-errors';
 import { ChangeSetDomainError, ChangeSetReviewRequiredError } from '@/modules/ai-runs/domain/change-errors';
 import { safeChangeSetCollectionFailureMessage } from '@/modules/ai-runs/domain/change-set-failure-message';
@@ -15,6 +16,14 @@ import type { IProjectRepository } from '@/modules/projects/repositories/project
 import type { RuntimeChangeProposal, ProposedChangeSet } from '@/modules/ai-runs/domain/change-types';
 import type { TaskSuggestionDraft } from '@/modules/ai-runs/domain/task-suggestion-draft';
 import type { IProviderPermissionRepository } from '@/modules/ai-runs/repositories/provider-permission-repository';
+import type { IPrincipalAuthorization } from '@/modules/auth/use-cases/principal-authorization';
+import type { IStagingGateway } from '@/modules/ai-runs/repositories/staging-gateway';
+import type { IDemoRunStartAdmission } from '@/modules/demo/domain/demo-admission-types';
+import { DemoAdmissionUnavailableError } from '@/modules/demo/domain/demo-admission-errors';
+import type { AssertAssistantExecutionPolicyUseCase } from '@/modules/assistant-policy/use-cases/assert-assistant-execution-policy';
+import { AssistantExecutionPolicyChangedError, AssistantExecutionUnavailableError } from '@/modules/assistant-policy/domain/assistant-execution-errors';
+import { PolicyActionRetiredError } from '@/modules/assistant-policy/domain/policy-action-retired-error';
+import { AiRunNotFoundError } from '@/modules/ai-runs/domain/ai-run-errors';
 
 export interface RuntimeCommandProposalPort {
   execute(input: {
@@ -26,6 +35,16 @@ export interface RuntimeCommandProposalPort {
     readonly summary?: unknown;
     readonly idempotencyKey: string;
   }): Promise<{ readonly resource: { readonly id: string; readonly status: string; readonly safeMessage: string }; readonly replayed: boolean }>;
+}
+
+export interface RuntimePolicyCommandExecutionPort {
+  executeAutomatically(input: { readonly ownerId: string; readonly runId: string; readonly commandId: string }): Promise<{ readonly status: string; readonly safeMessage: string }>;
+  isPolicyAuthorizedExecution(ownerId: string, runId: string, commandId: string): Promise<boolean>;
+}
+
+interface PolicyCommandTaskResult {
+  readonly status: string;
+  readonly cancellationOutcome: 'confirmed' | 'unknown';
 }
 
 export interface RuntimeChangeSetProposalPort {
@@ -44,25 +63,66 @@ export interface StartAiRunInput {
 }
 
 export class StartAiRunUseCase {
+  private readonly active = new Map<string, { run: AiRun; task: Promise<void> }>();
+
   public constructor(
     private readonly aiRunRepository: IAiRunRepository,
     private readonly conversationRepository: IConversationRepository,
     private readonly agentRuntime: IAgentRuntime,
     private readonly events: IRunEventPublisher,
+    private readonly demoRunStartAdmission: IDemoRunStartAdmission,
     private readonly commandProposals?: RuntimeCommandProposalPort,
     private readonly projectRepository?: IProjectRepository,
     private readonly changeSetProposals?: RuntimeChangeSetProposalPort,
     private readonly providerPermissionRepository?: IProviderPermissionRepository,
-    private readonly automaticChanges?: { executeAutomatically(input: { readonly ownerId: string; readonly runId: string }): Promise<Pick<ProposedChangeSet, 'status' | 'safeMessage' | 'result'> | null> }
+    private readonly automaticChanges?: { executeAutomatically(input: { readonly ownerId: string; readonly runId: string }): Promise<Pick<ProposedChangeSet, 'status' | 'safeMessage' | 'result'> | null> },
+    private readonly principalAuthorization?: IPrincipalAuthorization,
+    private readonly stagingGateway?: Pick<IStagingGateway, 'cleanup' | 'assertFresh'>,
+    private readonly executionPolicy?: Pick<AssertAssistantExecutionPolicyUseCase, 'assertWorkspace'>,
+    private readonly policyCommandExecution?: RuntimePolicyCommandExecutionPort
   ) {}
 
   public async execute(input: StartAiRunInput): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> {
     const idempotencyKey = validateIdempotencyKey(input.idempotencyKey);
     const requestFingerprint = hashText(JSON.stringify({ action: 'start', runId: input.runId }));
+    await this.principalAuthorization?.assertActive(input.ownerId);
     if (this.projectRepository) {
       await assertActiveAiRunProject(this.aiRunRepository, this.projectRepository, input.ownerId, input.runId);
     }
     const current = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
+    if (!current) throw new AiRunNotFoundError();
+    if (current.startIdempotencyKey === idempotencyKey
+      && current.startFingerprint === requestFingerprint) {
+      return { resource: current, replayed: true };
+    }
+    if (this.executionPolicy) {
+      if (current.decision !== 'policy_authorized' || !current.policyRevision) throw new PolicyActionRetiredError();
+      try {
+        await this.assertRunPolicy(current);
+      } catch (error: unknown) {
+        if (!(error instanceof AssistantExecutionPolicyChangedError || error instanceof AssistantExecutionUnavailableError)) throw error;
+        const changed = error instanceof AssistantExecutionPolicyChangedError;
+        const stopped: AiRun = {
+          ...current,
+          status: changed ? 'blocked' : 'failed',
+          phase: changed ? 'terminal' : 'staging',
+          cleanup: 'complete',
+          providerTransmission: 'not_started_confirmed',
+          safeMessage: changed
+            ? 'Workspace policy changed before the provider request was sent. Nothing was sent.'
+            : 'Provider execution is unavailable. Nothing was sent.',
+          updatedAt: new Date()
+        };
+        await this.aiRunRepository.save(stopped);
+        return { resource: stopped, replayed: false };
+      }
+    } else if (current.decision === 'policy_authorized') {
+      throw new AssistantExecutionUnavailableError();
+    }
+    if (current?.status === 'ready' && current.runtimeReference?.startsWith('run-')) {
+      if (!this.stagingGateway) throw new AiRunStagingFailedError('unknown');
+      await this.stagingGateway.assertFresh(current.runtimeReference);
+    }
     if (current?.providerPermissionId && this.providerPermissionRepository) {
       const permission = await this.providerPermissionRepository.findActiveById({ ownerId: input.ownerId, projectId: current.projectId, permissionId: current.providerPermissionId });
       if (!permission || permission.providerProfile !== current.manifest.providerProfile || permission.model !== current.manifest.model) {
@@ -70,33 +130,35 @@ export class StartAiRunUseCase {
         throw new AiRunProviderPermissionRevokedError();
       }
     }
-    const result = this.aiRunRepository.beginStart
-      ? await this.aiRunRepository.beginStart({ ownerId: input.ownerId, runId: input.runId, idempotencyKey, requestFingerprint })
-      : await this.beginWithLegacyRepository(input, idempotencyKey, requestFingerprint);
+    const startInput = { ownerId: input.ownerId, runId: input.runId, idempotencyKey, requestFingerprint };
+    const result = await this.aiRunRepository.beginStart(startInput);
     if (!result.replayed) {
+      try {
+        await this.demoRunStartAdmission.admitDemoRunStart(input.ownerId, input.runId);
+      } catch (error: unknown) {
+        try {
+          await this.aiRunRepository.abortStart(startInput);
+        } catch {
+          throw new DemoAdmissionUnavailableError();
+        }
+        throw error;
+      }
       await this.publishStatus(result.resource, 'run.status_changed');
-      void this.runSafely(result.resource);
+      const task = this.runSafely(result.resource).finally(() => { this.active.delete(result.resource.id); });
+      this.active.set(result.resource.id, { run: result.resource, task });
+      // Keep a failed persistence attempt from becoming an unhandled rejection;
+      // startup recovery retains responsibility for unconfirmed outcomes.
+      void task.catch(() => undefined);
     }
     return result;
   }
 
-  private async beginWithLegacyRepository(input: StartAiRunInput, idempotencyKey: string, requestFingerprint: string): Promise<{ readonly resource: AiRun; readonly replayed: boolean }> {
-    const current = await this.aiRunRepository.findByIdForOwner(input.ownerId, input.runId);
-    if (!current) {
-      throw new AiRunStateConflictError();
-    }
-    if (current.startIdempotencyKey) {
-      if (current.startIdempotencyKey !== idempotencyKey || current.startFingerprint !== requestFingerprint) {
-        throw new AiRunStateConflictError();
-      }
-      return { resource: current, replayed: true };
-    }
-    if (current.status !== 'ready') {
-      throw new AiRunStateConflictError();
-    }
-    const updated: AiRun = { ...current, status: 'queued', phase: 'inference', startIdempotencyKey: idempotencyKey, startFingerprint: requestFingerprint, safeMessage: 'Starting assistant run.', updatedAt: new Date() };
-    await this.aiRunRepository.save(updated);
-    return { resource: updated, replayed: false };
+  public async stop(cancel: (run: AiRun) => Promise<unknown>): Promise<void> {
+    const active = [...this.active.values()];
+    await Promise.allSettled(active.map(async ({ run, task }) => {
+      try { await cancel(run); }
+      finally { await task; }
+    }));
   }
 
   private async runSafely(run: AiRun): Promise<void> {
@@ -104,6 +166,7 @@ export class StartAiRunUseCase {
       await this.run(run);
     } catch {
       await this.markReview(run.id, run.ownerId, 'The assistant run stopped before its outcome could be confirmed. Refresh run status before retrying.');
+      await this.destroySafely(run);
     }
   }
 
@@ -112,36 +175,59 @@ export class StartAiRunUseCase {
       ? await this.aiRunRepository.markRunning(run.ownerId, run.id)
       : await this.markRunningLegacy(run);
     if (!running || running.status !== 'running') {
+      if (running?.status === 'cancel_requested' && !this.agentRuntime.startRun) {
+        await this.finishCancellation(running);
+      } else if (running?.status === 'cancel_requested' && this.principalAuthorization && !await this.principalAuthorization.isActive(run.ownerId)) {
+        await this.finishCancellation(running);
+      }
       return;
     }
     if (!await this.publishStatus(running, 'run.started')) {
+      await this.destroySafely(running);
       return;
     }
     if (!this.agentRuntime.startRun) {
       await this.finish(running, 'failed', 'The assistant could not start this run. The configured runtime is unavailable.');
+      await this.destroySafely(running);
       return;
     }
+    const conversation = this.conversationRepository.setGeneratedTitle
+      ? await this.conversationRepository.findWithMessagesForOwner({ ownerId: running.ownerId, projectId: running.projectId, conversationId: running.conversationId, limit: 1 }) : null;
+    const generateConversationTitle = conversation?.conversation.title === DEFAULT_CONVERSATION_TITLE;
+    const titleStream = new GeneratedConversationTitle(generateConversationTitle);
     let assistantText = '';
     let terminal: RuntimeInferenceEvent | undefined;
+    const policyCommandTasks = new Map<string, Promise<PolicyCommandTaskResult>>();
     try {
-      for await (const event of this.agentRuntime.startRun({
+      for await (let event of this.agentRuntime.startRun({
         runId: running.id,
         ownerId: running.ownerId,
         projectId: running.projectId,
         conversationId: running.conversationId,
         relativeRoot: running.relativeRoot,
+        storageKind: running.storageKind,
         request: running.request,
         manifest: running.manifest,
+        generateConversationTitle,
+        ...(running.decision === 'policy_authorized' ? {
+          beforeProviderAttempt: async (): Promise<void> => { await this.assertRunPolicy(running); },
+          policyRevision: running.policyRevision
+        } : {}),
         ...(running.runtimeReference ? { stagedReference: running.runtimeReference } : {})
       })) {
         const current = await this.aiRunRepository.findByIdForOwner(running.ownerId, running.id);
         if (!current || isStopState(current.status)) {
-          if (current?.status === 'cancel_requested' && event.type === 'cancelled') {
-            await this.finishCancellation(current);
-          }
           return;
         }
-        const result = await this.projectEvent(current, event, assistantText);
+        if (event.type === 'assistant.delta' || event.type === 'completed') {
+          const parsed = (event.type === 'assistant.delta' ? titleStream : new GeneratedConversationTitle(generateConversationTitle)).push(event.text);
+          if (parsed.title && await this.isRunProjectable(current.ownerId, current.id)) {
+            // Naming is optional: a quota or persistence failure must not discard the answer.
+            await this.conversationRepository.setGeneratedTitle?.({ ownerId: current.ownerId, projectId: current.projectId, conversationId: current.conversationId, title: parsed.title }).catch(() => false);
+          }
+          event = { ...event, text: parsed.text };
+        }
+        const result = await this.projectEvent(current, event, assistantText, policyCommandTasks);
         assistantText = result.assistantText;
         if (result.suppressed) {
           return;
@@ -162,10 +248,30 @@ export class StartAiRunUseCase {
         }
         return;
       }
+      const commandResults = await Promise.all(policyCommandTasks.values());
+      if (commandResults.some((result) => result.status !== 'completed')) {
+        const current = await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
+        if (current && !isStopState(current.status)) {
+          const uncertain = commandResults.some((result) => result.status === 'review_required' || result.cancellationOutcome !== 'confirmed');
+          await this.finish(current, uncertain ? 'review_required' : 'blocked', uncertain
+            ? 'A bounded command outcome could not be confirmed. Refresh run status before retrying.'
+            : 'The current runtime could not safely execute a bounded command. No command was run.');
+        }
+        return;
+      }
       await this.finishFromEvent(run.ownerId, run.id, terminal, assistantText);
-    } catch {
+    } catch (error: unknown) {
       const current = await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
-      if (terminal?.type === 'completed' && (terminal.taskSuggestions?.length ?? 0) > 0) {
+      if (error instanceof AssistantExecutionPolicyChangedError || error instanceof AssistantExecutionUnavailableError) {
+        const cancellation = await this.agentRuntime.cancelRun?.({ runId: run.id }).catch(() => ({ outcome: 'unknown' as const }));
+        const latest = current ?? await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
+        if (latest) {
+          const outcomeUncertain = latest.providerTransmission === 'unknown'
+            || (latest.providerTransmission === 'transmitted_confirmed' && cancellation?.outcome !== 'confirmed');
+          await this.finish(latest, outcomeUncertain ? 'review_required' : 'blocked',
+            'Workspace policy or runtime readiness changed. Further output was stopped.');
+        }
+      } else if (terminal?.type === 'completed' && (terminal.taskSuggestions?.length ?? 0) > 0) {
         // A suggestion write may have failed or its commit outcome may be uncertain.
         // Keep the provider response out of a second completion transaction.
         await this.markReview(run.id, run.ownerId, 'The assistant response needs review because its task suggestions could not be confirmed. Refresh run status before retrying.');
@@ -173,13 +279,21 @@ export class StartAiRunUseCase {
         await this.finish(current ?? run, 'review_required', 'The assistant run stopped, but the app could not confirm its final outcome. Refresh run status before retrying.');
       }
     } finally {
+      await Promise.allSettled(policyCommandTasks.values());
       await this.destroySafely(run);
     }
   }
 
-  private async projectEvent(run: AiRun, event: RuntimeInferenceEvent, assistantText: string): Promise<{ readonly assistantText: string; readonly terminal: boolean; readonly outputLimitExceeded?: boolean; readonly suppressed?: boolean }> {
+  private async projectEvent(run: AiRun, event: RuntimeInferenceEvent, assistantText: string, policyCommandTasks: Map<string, Promise<PolicyCommandTaskResult>>): Promise<{ readonly assistantText: string; readonly terminal: boolean; readonly outputLimitExceeded?: boolean; readonly suppressed?: boolean }> {
     if (!await this.isRunProjectable(run.ownerId, run.id)) {
       return { assistantText, terminal: false, suppressed: true };
+    }
+    if (run.decision === 'policy_authorized' && !['started', 'provider.request_started', 'provider.response_received', 'provider.usage'].includes(event.type)) {
+      const authorization = await this.assertRunPolicy(run);
+      if (event.type === 'changes.proposed' && !authorization.effectiveCapabilities.includes('workspace_file_write')) {
+        await this.stopUnsupportedPolicyAction(run);
+        return { assistantText, terminal: false, suppressed: true };
+      }
     }
     if (event.type === 'started') {
       if (!await this.publishStatus(run, 'run.started')) {
@@ -245,14 +359,30 @@ export class StartAiRunUseCase {
       return { assistantText, terminal: false };
     }
     if (event.type === 'tool.proposed') {
+      if (run.decision === 'policy_authorized') {
+        const projected = await this.projectCommand(run, event);
+        return projected ? { assistantText, terminal: false } : { assistantText, terminal: false, suppressed: true };
+      }
       const projected = await this.projectCommand(run, event);
       return projected ? { assistantText, terminal: false } : { assistantText, terminal: false, suppressed: true };
     }
     if (event.type === 'tool.progress') {
+      if (run.decision === 'policy_authorized') {
+        if (!event.commandId || !this.policyCommandExecution || !await this.policyCommandExecution.isPolicyAuthorizedExecution(run.ownerId, run.id, event.commandId)) {
+          await this.stopUnsupportedPolicyAction(run);
+          return { assistantText, terminal: false, suppressed: true };
+        }
+        await this.publishProjected(run.ownerId, run.id, 'tool.progress', { toolId: event.toolId, commandId: event.commandId, title: sanitizeAssistantText(event.title, 240), status: event.status });
+        return { assistantText, terminal: false };
+      }
       await this.publishProjected(run.ownerId, run.id, 'tool.progress', { toolId: event.toolId, title: sanitizeAssistantText(event.title, 240), status: event.status });
       return { assistantText, terminal: false };
     }
     if (event.type === 'approval.required') {
+      if (run.decision === 'policy_authorized') {
+        this.schedulePolicyCommand(run, event.commandId, policyCommandTasks);
+        return { assistantText, terminal: false };
+      }
       if (this.aiRunRepository.markWaitingApproval) {
         const waiting = await this.aiRunRepository.markWaitingApproval(run.ownerId, run.id, 'The assistant is waiting for a sandbox command decision.');
         if (!waiting || isStopState(waiting.status) || !await this.publishStatus(waiting, 'run.status_changed')) {
@@ -265,6 +395,16 @@ export class StartAiRunUseCase {
       return { assistantText, terminal: false };
     }
     if (event.type === 'tool.started' || event.type === 'tool.completed' || event.type === 'tool.failed') {
+      if (run.decision === 'policy_authorized') {
+        if (!this.policyCommandExecution || !await this.policyCommandExecution.isPolicyAuthorizedExecution(run.ownerId, run.id, event.commandId)) {
+          await this.stopUnsupportedPolicyAction(run);
+          return { assistantText, terminal: false, suppressed: true };
+        }
+        if (!await this.publishProjected(run.ownerId, run.id, event.type, { commandId: event.commandId, status: event.type === 'tool.started' ? 'running' : event.status })) {
+          return { assistantText, terminal: false, suppressed: true };
+        }
+        return { assistantText, terminal: false };
+      }
       if (event.type === 'tool.started' && this.aiRunRepository.markRunning) {
         const resumed = await this.aiRunRepository.markRunning(run.ownerId, run.id);
         if (resumed) {
@@ -310,6 +450,10 @@ export class StartAiRunUseCase {
 
   private async projectCommand(run: AiRun, event: Extract<RuntimeInferenceEvent, { readonly type: 'tool.proposed' }>): Promise<boolean> {
     if (!this.commandProposals) {
+      if (run.decision === 'policy_authorized') {
+        await this.stopUnsupportedPolicyAction(run);
+        return false;
+      }
       return this.publishProjected(run.ownerId, run.id, 'tool.proposed', { status: 'review_required', safeMessage: 'The command proposal could not be registered.' });
     }
     if (!await this.isRunProjectable(run.ownerId, run.id)) {
@@ -317,10 +461,39 @@ export class StartAiRunUseCase {
     }
     try {
       const proposal = await this.commandProposals.execute({ ownerId: run.ownerId, runId: run.id, command: event.proposal.command, args: event.proposal.args, cwd: event.proposal.cwd, idempotencyKey: `run-command-${hashText(JSON.stringify(event.proposal)).slice(0, 32)}` });
+      if (run.decision === 'policy_authorized') {
+        return this.publishProjected(run.ownerId, run.id, 'tool.progress', { commandId: proposal.resource.id, toolId: proposal.resource.id, title: 'Checking bounded command', status: proposal.resource.status === 'blocked' ? 'failed' : 'running' });
+      }
       return this.publishProjected(run.ownerId, run.id, 'tool.proposed', { commandId: proposal.resource.id, status: proposal.resource.status, safeMessage: proposal.resource.safeMessage });
     } catch {
-      await this.markReview(run.id, run.ownerId, 'The command proposal could not be confirmed. Refresh command and run status before retrying.');
+      if (run.decision === 'policy_authorized') await this.stopUnsupportedPolicyAction(run);
+      else await this.markReview(run.id, run.ownerId, 'The command proposal could not be confirmed. Refresh command and run status before retrying.');
       return false;
+    }
+  }
+
+  private schedulePolicyCommand(run: AiRun, commandId: string, tasks: Map<string, Promise<PolicyCommandTaskResult>>): void {
+    if (tasks.has(commandId)) return;
+    const execution = this.policyCommandExecution;
+    const task = (async (): Promise<PolicyCommandTaskResult> => {
+      if (!execution) {
+        const cancellation = await this.agentRuntime.cancelRun?.({ runId: run.id }).catch(() => ({ outcome: 'unknown' as const }));
+        return { status: 'blocked', cancellationOutcome: cancellation?.outcome ?? 'unknown' };
+      }
+      const command = await execution.executeAutomatically({ ownerId: run.ownerId, runId: run.id, commandId });
+      const cancellation = command.status === 'completed' ? undefined : await this.agentRuntime.cancelRun?.({ runId: run.id }).catch(() => ({ outcome: 'unknown' as const }));
+      return { status: command.status, cancellationOutcome: cancellation?.outcome ?? 'confirmed' };
+    })();
+    tasks.set(commandId, task.catch(async () => ({ status: 'review_required', cancellationOutcome: (await this.agentRuntime.cancelRun?.({ runId: run.id }).catch(() => ({ outcome: 'unknown' as const })))?.outcome ?? 'unknown' })));
+  }
+
+  private async stopUnsupportedPolicyAction(run: AiRun): Promise<void> {
+    const cancellation = await this.agentRuntime.cancelRun?.({ runId: run.id }).catch(() => ({ outcome: 'unknown' as const }));
+    const current = await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
+    if (current && !isStopState(current.status)) {
+      await this.finish(current, cancellation?.outcome === 'confirmed' ? 'blocked' : 'review_required', cancellation?.outcome === 'confirmed'
+        ? 'This action is not available under the current automatic policy. Nothing was applied.'
+        : 'The unsupported action stopped, but runtime shutdown could not be confirmed. Refresh run status before retrying.');
     }
   }
 
@@ -343,13 +516,10 @@ export class StartAiRunUseCase {
 
   private async finishFromEvent(ownerId: string, runId: string, event: RuntimeInferenceEvent, assistantText: string): Promise<void> {
     if (event.type === 'cancelled') {
-      const current = await this.aiRunRepository.findByIdForOwner(ownerId, runId);
-      if (current?.status === 'cancel_requested') {
-        await this.finishCancellation(current);
-      }
       return;
     }
     const current = await this.aiRunRepository.findByIdForOwner(ownerId, runId);
+    if (current?.decision === 'policy_authorized') await this.assertRunPolicy(current);
     if (event.type === 'completed' && current?.status === 'running' && this.automaticChanges) {
       try {
         const changes = await this.automaticChanges.executeAutomatically({ ownerId, runId });
@@ -384,6 +554,9 @@ export class StartAiRunUseCase {
 
   private async finish(run: AiRun, status: 'succeeded' | 'failed' | 'blocked' | 'review_required', safeMessage: string, assistantText = '', taskSuggestions: readonly TaskSuggestionDraft[] = []): Promise<void> {
     const bounded = sanitizeAssistantText(assistantText, MAX_ASSISTANT_OUTPUT_BYTES);
+    if (run.decision === 'policy_authorized' && (status === 'succeeded' || bounded.length > 0 || taskSuggestions.length > 0)) {
+      await this.assertRunPolicy(run);
+    }
     const providerTransmission = status === 'review_required' && run.providerTransmission !== 'transmitted_confirmed'
       ? 'unknown'
       : run.providerTransmission;
@@ -395,11 +568,8 @@ export class StartAiRunUseCase {
       updated = { ...updated, assistantMessageId: message.resource.id };
       await this.aiRunRepository.save(updated);
     }
-    if (updated?.status === status) {
-      this.publishTerminal(updated);
-    } else if (updated?.status === 'cancel_requested') {
-      await this.finishCancellation(updated);
-    }
+    // The terminal event is published by destroySafely only after runtime and
+    // staging cleanup are confirmed, so clients never see a false clean end.
   }
 
   private async completeLegacy(run: AiRun, status: 'succeeded' | 'failed' | 'blocked' | 'review_required', safeMessage: string, assistantText: string): Promise<AiRun> {
@@ -444,10 +614,33 @@ export class StartAiRunUseCase {
   private async destroySafely(run: AiRun): Promise<void> {
     try {
       await this.agentRuntime.destroy(run.id);
+      if (run.runtimeReference) {
+        if (!this.stagingGateway) {
+          if (run.runtimeReference.startsWith('run-')) throw new AiRunStagingFailedError('unknown');
+        } else {
+          await this.stagingGateway.cleanup(run.runtimeReference);
+        }
+      }
+      const current = await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
+      if (current?.status === 'cancel_requested') {
+        await this.finishCancellation(current);
+      } else if (current && ['succeeded', 'failed', 'blocked', 'review_required'].includes(current.status)) {
+        this.publishTerminal(current);
+      }
     } catch {
       const current = await this.aiRunRepository.findByIdForOwner(run.ownerId, run.id);
-      if (current && current.status !== 'rejected' && current.status !== 'review_required') {
-        await this.markReview(run.id, run.ownerId, 'Run cleanup could not be confirmed. Refresh run status before retrying.');
+      if (current?.status === 'review_required') {
+        this.publishTerminal(current);
+      } else if (current && current.status !== 'rejected') {
+        const safeMessage = 'Run cleanup could not be confirmed. Refresh run status before retrying.';
+        const reviewed = await this.aiRunRepository.markReviewRequired?.(run.ownerId, run.id, safeMessage);
+        if (reviewed?.status === 'review_required' && reviewed.cleanup === 'unknown') {
+          this.publishTerminal(reviewed);
+        } else {
+          const fallback: AiRun = { ...current, status: 'review_required', phase: 'review', cleanup: 'unknown', safeMessage, updatedAt: new Date() };
+          await this.aiRunRepository.save(fallback);
+          this.publishTerminal(fallback);
+        }
       }
     }
   }
@@ -456,7 +649,28 @@ export class StartAiRunUseCase {
     return this.publishProjected(run.ownerId, run.id, type, { status: run.status, phase: run.phase, safeMessage: run.safeMessage, providerTransmission: run.providerTransmission });
   }
 
+  private async assertRunPolicy(run: AiRun) {
+    if (!this.executionPolicy || run.decision !== 'policy_authorized' || !run.policyRevision) {
+      throw new AssistantExecutionUnavailableError();
+    }
+    return this.executionPolicy.assertWorkspace({
+      ownerId: run.ownerId,
+      projectId: run.projectId,
+      providerProfile: run.manifest.providerProfile,
+      model: run.manifest.model,
+      policyRevision: run.policyRevision
+    });
+  }
+
+  private async blockUnsupportedAction(run: AiRun): Promise<void> {
+    await this.finish(run, 'blocked', 'This action is not available under the current automatic policy. Nothing was applied.');
+  }
+
   private async isRunProjectable(ownerId: string, runId: string): Promise<boolean> {
+    if (this.principalAuthorization && !await this.principalAuthorization.isActive(ownerId)) {
+      await this.aiRunRepository.stopForInactivePrincipal?.(ownerId, runId);
+      return false;
+    }
     const current = await this.aiRunRepository.findByIdForOwner(ownerId, runId);
     return Boolean(current && !isStopState(current.status));
   }

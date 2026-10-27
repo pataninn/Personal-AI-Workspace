@@ -10,7 +10,7 @@ export type ChangeSetStatus =
   | 'failed'
   | 'needs_manual_review';
 
-export type ChangeSetDecision = 'pending' | 'approved' | 'rejected';
+export type ChangeSetDecision = 'pending' | 'approved' | 'rejected' | 'policy_authorized';
 
 export type ChangeOperationResultStatus = 'applied' | 'skipped' | 'failed' | 'needs_manual_review';
 export type ChangeBackupStatus = 'not_required' | 'not_created' | 'created' | 'failed' | 'unknown';
@@ -142,4 +142,16 @@ export interface ChangeSetDecisionUpdate {
 export interface ChangeSetDecisionResult {
   readonly resource: ProposedChangeSet;
   readonly replayed: boolean;
+}
+
+export interface PolicyAuthorizedChangeSetApplyClaim {
+  readonly ownerId: string;
+  readonly projectId: string;
+  readonly runId: string;
+  readonly proposalHash: string;
+  readonly policyRevision: string;
+  readonly providerProfile: string;
+  readonly model: string;
+  readonly idempotencyKey: string;
+  readonly requestFingerprint: string;
 }

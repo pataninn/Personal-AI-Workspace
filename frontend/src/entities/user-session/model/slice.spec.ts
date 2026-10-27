@@ -11,7 +11,7 @@ describe('userSessionReducer', () => {
     const state = userSessionReducer(
       undefined,
       sessionAuthenticated({
-        principal: { id: 'user-1', displayName: 'Local user' },
+        principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const },
         csrfToken: 'csrf-value',
         expiresAt: '2026-09-13T00:00:00.000Z'
       })
@@ -19,7 +19,7 @@ describe('userSessionReducer', () => {
 
     expect(state).toEqual({
       status: 'authenticated',
-      principal: { id: 'user-1', displayName: 'Local user' },
+      principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const },
       csrfToken: 'csrf-value',
       expiresAt: '2026-09-13T00:00:00.000Z',
       errorCode: null
@@ -32,7 +32,7 @@ describe('userSessionReducer', () => {
     const authenticated = userSessionReducer(
       undefined,
       sessionAuthenticated({
-        principal: { id: 'user-1', displayName: 'Local user' },
+        principal: { id: 'user-1', displayName: 'Local user', accountKind: 'regular' as const, role: 'user' as const },
         csrfToken: 'csrf-value',
         expiresAt: '2026-09-13T00:00:00.000Z'
       })

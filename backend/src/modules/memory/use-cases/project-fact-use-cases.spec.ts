@@ -15,7 +15,7 @@ const FACT_ID = '33333333-3333-4333-8333-333333333333';
 const NOW = new Date('2026-09-26T00:00:00.000Z');
 
 function makeProject(status: Project['status'] = 'active'): Project {
-  return { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', status, version: 1, createdAt: NOW, updatedAt: NOW };
+  return { id: PROJECT_ID, ownerId: OWNER_ID, name: 'Project', slug: 'project', relativeRoot: 'project', storageKind: 'legacy', objective: null, status, version: 1, createdAt: NOW, updatedAt: NOW };
 }
 
 function makeFact(overrides: Partial<ProjectFact> = {}): ProjectFact {

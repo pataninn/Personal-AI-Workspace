@@ -1,17 +1,19 @@
 import type { ApiEnvelope, ApiErrorDetail } from '@/shared/api/api-response';
-import { notifySessionExpiry } from '@/shared/api/session-expiry';
+import { getRequestSessionGeneration, notifySessionExpiry } from '@/shared/api/session-expiry';
 
 export class ApiClientError extends Error {
   public readonly statusCode: number;
   public readonly code: string;
   public readonly details: readonly ApiErrorDetail[];
+  public readonly responseData: unknown;
 
-  public constructor(statusCode: number, code: string, message: string, details: readonly ApiErrorDetail[] = []) {
+  public constructor(statusCode: number, code: string, message: string, details: readonly ApiErrorDetail[] = [], responseData: unknown = undefined) {
     super(message);
     this.name = 'ApiClientError';
     this.statusCode = statusCode;
     this.code = code;
     this.details = details;
+    this.responseData = responseData;
   }
 }
 
@@ -50,6 +52,7 @@ export async function requestJson<T>(
   options: ApiRequestOptions,
   fetchImplementation: typeof fetch = fetch
 ): Promise<T> {
+  const generation = getRequestSessionGeneration();
   const headers = new Headers(options.headers);
   headers.set('Accept', 'application/json');
   if (options.body !== undefined) {
@@ -65,7 +68,7 @@ export async function requestJson<T>(
   try {
     body = await parseEnvelope<T>(response);
   } catch (error: unknown) {
-    notifySessionExpiry(response.status, 'INVALID_RESPONSE');
+    notifySessionExpiry(response.status, 'INVALID_RESPONSE', error instanceof Error ? error : undefined, generation);
     throw error;
   }
   if (!response.ok || body?.error) {
@@ -73,9 +76,10 @@ export async function requestJson<T>(
       response.status,
       body?.error?.code ?? 'HTTP_ERROR',
       body?.error?.message ?? 'The request failed.',
-      body?.error?.details ?? []
+      body?.error?.details ?? [],
+      body?.data ?? undefined
     );
-    notifySessionExpiry(clientError.statusCode, clientError.code, clientError);
+    notifySessionExpiry(clientError.statusCode, clientError.code, clientError, generation);
     throw clientError;
   }
   if (!body || body.data === null) {
@@ -119,6 +123,7 @@ async function requestNoContent(
   headers?: HeadersInit,
   fetchImplementation: typeof fetch = fetch
 ): Promise<void> {
+  const generation = getRequestSessionGeneration();
   const response = await fetchImplementation(url, {
     method,
     credentials: 'include',
@@ -128,7 +133,7 @@ async function requestNoContent(
   try {
     body = await parseEnvelope<never>(response);
   } catch (error: unknown) {
-    notifySessionExpiry(response.status, 'INVALID_RESPONSE');
+    notifySessionExpiry(response.status, 'INVALID_RESPONSE', error instanceof Error ? error : undefined, generation);
     throw error;
   }
   if (!response.ok || body?.error) {
@@ -136,9 +141,10 @@ async function requestNoContent(
       response.status,
       body?.error?.code ?? 'HTTP_ERROR',
       body?.error?.message ?? 'The request failed.',
-      body?.error?.details ?? []
+      body?.error?.details ?? [],
+      body?.data ?? undefined
     );
-    notifySessionExpiry(clientError.statusCode, clientError.code, clientError);
+    notifySessionExpiry(clientError.statusCode, clientError.code, clientError, generation);
     throw clientError;
   }
 }

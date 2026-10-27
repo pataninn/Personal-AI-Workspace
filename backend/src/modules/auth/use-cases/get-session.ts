@@ -15,12 +15,23 @@ export class GetSessionUseCase {
       throw new UnauthenticatedError();
     }
     const session = await this.sessionRepository.findByTokenHash(this.tokenProvider.digestToken(rawToken));
-    if (!session || session.revokedAt || session.expiresAt.getTime() <= this.clock.now().getTime()) {
+    const now = this.clock.now().getTime();
+    if (
+      !session
+      || session.revokedAt
+      || session.expiresAt.getTime() <= now
+      || (session.accountExpiresAt !== null && session.accountExpiresAt.getTime() <= now)
+    ) {
       throw new UnauthenticatedError();
     }
     return {
       sessionId: session.id,
-      principal: { id: session.userId, displayName: session.displayName },
+      principal: {
+        id: session.userId,
+        displayName: session.displayName,
+        accountKind: session.accountKind,
+        role: session.role
+      },
       csrfToken: this.tokenProvider.createCsrfToken(rawToken),
       expiresAt: session.expiresAt
     };

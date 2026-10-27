@@ -15,6 +15,8 @@ const PROJECT: Project = {
   name: 'Workspace',
   slug: 'workspace',
   relativeRoot: 'apps/workspace',
+  storageKind: 'legacy',
+  objective: null,
   status: 'active',
   version: 1,
   createdAt: new Date('2026-09-12T00:00:00.000Z'),
@@ -49,8 +51,9 @@ describe('workspace inspection use cases', () => {
     await new SearchWorkspaceTextUseCase(projectRepository, workspaceGateway).execute({ ownerId: 'owner-1', projectId: PROJECT.id, directory: '', query: 'x' });
 
     expect(projectRepository.findByIdForOwner).toHaveBeenCalledTimes(4);
-    expect(workspaceGateway.list).toHaveBeenCalledWith({ projectId: PROJECT.id, relativeRoot: PROJECT.relativeRoot }, expect.objectContaining({ directory: '' }));
-    expect(workspaceGateway.readText).toHaveBeenCalledWith({ projectId: PROJECT.id, relativeRoot: PROJECT.relativeRoot }, expect.objectContaining({ path: 'main.ts' }));
+    const scope = { ownerId: PROJECT.ownerId, projectId: PROJECT.id, storageKind: PROJECT.storageKind, relativeRoot: PROJECT.relativeRoot };
+    expect(workspaceGateway.list).toHaveBeenCalledWith(scope, expect.objectContaining({ directory: '' }));
+    expect(workspaceGateway.readText).toHaveBeenCalledWith(scope, expect.objectContaining({ path: 'main.ts' }));
   });
 
   it('hides guessed or cross-owner project identifiers', async () => {
@@ -59,5 +62,17 @@ describe('workspace inspection use cases', () => {
 
     await expect(useCase.execute({ ownerId: 'owner-2', projectId: PROJECT.id, path: 'main.ts' })).rejects.toBeInstanceOf(ProjectNotFoundError);
     expect(workspaceGateway.readText).not.toHaveBeenCalled();
+  });
+
+  it('blocks every file operation for a planning project before calling the workspace gateway', async () => {
+    projectRepository.findByIdForOwner.mockResolvedValue({ ...PROJECT, relativeRoot: null });
+    await expect(new ListWorkspaceFilesUseCase(projectRepository, workspaceGateway).execute({ ownerId: 'owner-1', projectId: PROJECT.id, directory: '' })).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED', statusCode: 409 });
+    await expect(new TreeWorkspaceFilesUseCase(projectRepository, workspaceGateway).execute({ ownerId: 'owner-1', projectId: PROJECT.id, directory: '', depth: 1 })).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED' });
+    await expect(new ReadWorkspaceTextUseCase(projectRepository, workspaceGateway).execute({ ownerId: 'owner-1', projectId: PROJECT.id, path: 'main.ts' })).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED' });
+    await expect(new SearchWorkspaceTextUseCase(projectRepository, workspaceGateway).execute({ ownerId: 'owner-1', projectId: PROJECT.id, directory: '', query: 'x' })).rejects.toMatchObject({ code: 'PROJECT_ROOT_NOT_ATTACHED' });
+    expect(workspaceGateway.list).not.toHaveBeenCalled();
+    expect(workspaceGateway.tree).not.toHaveBeenCalled();
+    expect(workspaceGateway.readText).not.toHaveBeenCalled();
+    expect(workspaceGateway.searchText).not.toHaveBeenCalled();
   });
 });

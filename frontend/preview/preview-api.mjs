@@ -3,12 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { createPreviewAiRuns } from './preview-ai-runs.mjs';
 import { createPreviewSeed } from './preview-seed.mjs';
 import { handlePreviewTasks } from './preview-tasks.mjs';
+import { handlePreviewGlobalTasks } from './preview-global-tasks.mjs';
 import { handlePreviewFiles } from './preview-files.mjs';
 import { previewOverview, removePreviewProject } from './preview-overview.mjs';
 
 const COOKIE_NAME = 'pai_preview_session';
 const CSRF_TOKEN = 'preview-only-csrf-token';
-const PRINCIPAL = { id: '5eb82c22-8424-4b9f-87f4-ea20dfbfc16d', displayName: 'Preview user' };
+const PRINCIPAL = { id: '5eb82c22-8424-4b9f-87f4-ea20dfbfc16d', displayName: 'Preview user', accountKind: 'regular', role: 'user' };
 
 function sendData(response, data, status = 200, headers = {}) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
@@ -59,17 +60,29 @@ function findConversation(seed, conversationId, projectId) {
 
 function isOverlappingRoot(seed, root, excludingId) {
   const key = root.toLowerCase();
-  return seed.projects.some((project) => project.status === 'active' && project.id !== excludingId && (
-    project.relativeRoot.toLowerCase() === key ||
-    project.relativeRoot.toLowerCase().startsWith(`${key}/`) ||
-    key.startsWith(`${project.relativeRoot.toLowerCase()}/`)
-  ));
+  return seed.projects.some((project) => {
+    if (project.status !== 'active' || project.id === excludingId || project.relativeRoot === null) return false;
+    const existing = project.relativeRoot.toLowerCase();
+    return key === '.' || existing === '.' || existing === key || existing.startsWith(`${key}/`) || key.startsWith(`${existing}/`);
+  });
 }
 
 function isValidRoot(root) {
+  if (root === '.') return true;
   return root.length > 0 && !root.startsWith('/') && !root.startsWith('\\') &&
     !/^[a-z]:/iu.test(root) && !root.includes(':') &&
     root.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
+}
+
+function serializeProject(project) {
+  const { relativeRoot, ...publicProject } = project;
+  const fileAccess = relativeRoot !== null;
+  return {
+    ...publicProject,
+    objective: project.objective ?? null,
+    workspaceMode: fileAccess ? 'file_backed' : 'planning',
+    capabilities: { planning: true, fileAccess }
+  };
 }
 
 function previewSession() {
@@ -79,11 +92,13 @@ function previewSession() {
 export function createPreviewApi() {
   let seed = createPreviewSeed();
   let idempotency = new Map();
+  let actionRecords = new Map();
   const aiRuns = createPreviewAiRuns();
 
   function reset() {
     seed = createPreviewSeed();
     idempotency = new Map();
+    actionRecords = new Map();
     aiRuns.reset();
   }
 
@@ -93,8 +108,11 @@ export function createPreviewApi() {
     const method = request.method ?? 'GET';
     if (url.pathname === '/api/v1/auth/login' && method === 'POST') {
       const body = await readBody(request);
-      if (typeof body?.password !== 'string' || body.password.trim().length === 0) {
-        sendError(response, 400, 'VALIDATION_ERROR', 'Enter any non-empty password for the mock preview.');
+      const identifier = typeof body?.identifier === 'string' ? body.identifier.trim().toLowerCase() : '';
+      if (!/^[a-z0-9][a-z0-9._-]{2,63}$/u.test(identifier)
+        || typeof body?.password !== 'string'
+        || body.password.trim().length === 0) {
+        sendError(response, 400, 'VALIDATION_ERROR', 'Enter a valid account identifier and non-empty mock password.');
         return;
       }
       sendData(response, previewSession(), 200, { 'Set-Cookie': `${COOKIE_NAME}=1; HttpOnly; SameSite=Lax; Path=/` });
@@ -106,6 +124,19 @@ export function createPreviewApi() {
     }
     if (url.pathname === '/api/v1/auth/session' && method === 'GET') {
       sendData(response, previewSession());
+      return;
+    }
+    if (url.pathname === '/api/v1/account/usage' && method === 'GET') {
+      const asOf = now();
+      const credit = { limitUnits: null, settledUnits: '0', reservedUnits: '0', remainingUnits: null };
+      sendData(response, {
+        asOf, expiresAt: null,
+        daily: { ...credit, resetAt: new Date(Date.now() + 86400000).toISOString(), timeZone: 'UTC' },
+        lifetime: credit,
+        storage: { state: 'ready', unit: 'bytes', unitSystem: 'decimal-si', usedBytes: '0', reservedBytes: '0',
+          limitBytes: null, availableBytes: null, overLimit: false, asOf },
+        availability: { status: 'available', reason: 'Synthetic preview only; no provider calls are made.', canSubmit: true }
+      });
       return;
     }
     if (url.pathname === '/api/v1/auth/logout' && method === 'POST') {
@@ -120,6 +151,7 @@ export function createPreviewApi() {
     if (await aiRuns.handle(request, response, seed, parts, method)) {
       return;
     }
+    if (await handlePreviewGlobalTasks(request, response, seed, idempotency, actionRecords, parts, method, url)) return;
     if (parts[2] === 'projects') {
       if (parts[3] === 'overview' && method === 'GET') { previewOverview(response, seed, url); return; }
       if (await handlePreviewTasks(request, response, seed, idempotency, parts, method, url)) return;
@@ -142,25 +174,33 @@ export function createPreviewApi() {
 async function handleProjects(request, response, seed, idempotency, parts, method) {
   const projectId = parts[3];
   if (!projectId && method === 'GET') {
-    sendData(response, { projects: seed.projects });
+    sendData(response, { projects: seed.projects.map(serializeProject) });
     return;
   }
   if (!projectId && method === 'POST') {
     const body = await readBody(request);
+    const allowedFields = new Set(['name', 'objective', 'workspaceMode']);
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((field) => !allowedFields.has(field))) {
+      sendError(response, 400, 'VALIDATION_ERROR', 'Enter a valid project name, workspace mode, and objective.');
+      return;
+    }
     const name = typeof body?.name === 'string' ? body.name.trim() : '';
-    const relativeRoot = typeof body?.relativeRoot === 'string' ? body.relativeRoot.trim().replaceAll('\\', '/') : '';
-    if (!name || !isValidRoot(relativeRoot)) {
-      sendError(response, 400, 'VALIDATION_ERROR', 'Enter a project name and relative root.');
+    const requestedMode = body.workspaceMode ?? 'file_backed';
+    const planning = requestedMode === 'planning';
+    const fileBacked = requestedMode === 'file_backed';
+    const objectiveInput = body?.objective;
+    if (!name || name.length > 120 || !(planning || fileBacked) || (objectiveInput !== undefined && (typeof objectiveInput !== 'string' || objectiveInput.length > 2000))) {
+      sendError(response, 400, 'VALIDATION_ERROR', 'Enter a valid project name, workspace mode, and objective.');
       return;
     }
-    if (isOverlappingRoot(seed, relativeRoot)) {
-      sendError(response, 409, 'PROJECT_ROOT_OVERLAP', 'Choose a non-overlapping preview root.');
-      return;
-    }
+    const objective = typeof objectiveInput === 'string' ? objectiveInput.trim() || null : null;
+    const projectId = randomUUID();
+    // The preview fixture simulates a server-managed private root for file APIs.
+    const relativeRoot = fileBacked ? `managed/${projectId}` : null;
     const createdAt = now();
-    const project = { id: randomUUID(), name, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), relativeRoot, status: 'active', version: 1, createdAt, updatedAt: createdAt };
+    const project = { id: projectId, name, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), relativeRoot, objective, status: 'active', version: 1, createdAt, updatedAt: createdAt };
     seed.projects.push(project);
-    sendData(response, project, 201);
+    sendData(response, serializeProject(project), 201);
     return;
   }
   const project = findProject(seed, projectId);
@@ -169,7 +209,19 @@ async function handleProjects(request, response, seed, idempotency, parts, metho
     return;
   }
   if (!parts[4] && method === 'GET') {
-    sendData(response, project);
+    sendData(response, serializeProject(project));
+    return;
+  }
+  if (parts[4] === 'name' && method === 'PATCH') {
+    const body = await readBody(request);
+    const name = typeof body?.name === 'string' ? body.name.trim() : '';
+    if (!name || name.length > 120 || /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(name)) { sendError(response, 400, 'PROJECT_NAME_INVALID', 'Enter a name between 1 and 120 characters.'); return; }
+    if (Number(request.headers['if-match']) !== project.version) { sendError(response, 409, 'PROJECT_VERSION_CONFLICT', 'Refresh the project and try again.'); return; }
+    const slug = name.normalize('NFKC').toLocaleLowerCase('en-US').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/gu, '');
+    if (!slug) { sendError(response, 400, 'PROJECT_NAME_INVALID', 'Enter a name containing letters or numbers.'); return; }
+    if (seed.projects.some((other) => other.id !== project.id && other.slug === slug)) { sendError(response, 409, 'PROJECT_NAME_CONFLICT', 'Choose a different workspace name.'); return; }
+    Object.assign(project, { name, slug, version: project.version + 1, updatedAt: now() });
+    sendData(response, serializeProject(project));
     return;
   }
   if (!parts[4] && method === 'PATCH') {
@@ -182,14 +234,14 @@ async function handleProjects(request, response, seed, idempotency, parts, metho
       sendError(response, 409, 'PROJECT_VERSION_CONFLICT', 'Refresh the mock project and try again.');
       return;
     }
-    if (body.status === 'active' && isOverlappingRoot(seed, project.relativeRoot, project.id)) {
+    if (body.status === 'active' && project.relativeRoot !== null && isOverlappingRoot(seed, project.relativeRoot, project.id)) {
       sendError(response, 409, 'PROJECT_ROOT_OVERLAP', 'Choose a non-overlapping preview root.');
       return;
     }
     project.status = body.status;
     project.version += 1;
     project.updatedAt = now();
-    sendData(response, project);
+    sendData(response, serializeProject(project));
     return;
   }
   if (parts[4] === 'conversations') {

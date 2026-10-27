@@ -1,6 +1,9 @@
-import type { DataSource } from 'typeorm';
+import type { DataSource, QueryRunner } from 'typeorm';
 
-import { ProjectFactAlreadyExistsError } from '@/modules/memory/domain/project-fact-errors';
+import { lockProjectWriteState } from '@/infrastructure/database/project-removal-write-barrier';
+import { TypeOrmStorageContentAccounting } from '@/infrastructure/database/storage-content-accounting';
+import { fixedContentScope, resultContentScope } from '@/infrastructure/database/storage-content-projections';
+import { ProjectFactAlreadyExistsError, ProjectFactArchivedProjectError } from '@/modules/memory/domain/project-fact-errors';
 import { projectFactVerificationStatus, type ProjectFact } from '@/modules/memory/domain/project-fact';
 import type { CreateProjectFactRecord, IProjectFactRepository, ProjectFactVersionRecord, UpdateProjectFactRecord } from '@/modules/memory/repositories/project-fact-repository';
 
@@ -60,7 +63,14 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 export class TypeOrmProjectFactRepository implements IProjectFactRepository {
-  public constructor(private readonly dataSource: DataSource) {}
+  private readonly storageAccounting: Pick<TypeOrmStorageContentAccounting, 'runMutation'>;
+
+  public constructor(
+    private readonly dataSource: DataSource,
+    storageAccounting?: Pick<TypeOrmStorageContentAccounting, 'runMutation'>
+  ) {
+    this.storageAccounting = storageAccounting ?? new TypeOrmStorageContentAccounting(dataSource);
+  }
 
   public async listActiveByProject(ownerId: string, projectId: string): Promise<readonly ProjectFact[]> {
     const rows: readonly ProjectFactRow[] = await this.dataSource.query(
@@ -91,17 +101,19 @@ export class TypeOrmProjectFactRepository implements IProjectFactRepository {
 
   public async create(input: CreateProjectFactRecord): Promise<ProjectFact> {
     try {
-      const rows: readonly ProjectFactRow[] = await this.dataSource.query(
-        `INSERT INTO "project_facts" ("owner_id", "project_id", "fact_key", "title", "content")
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING "id", "owner_id", "project_id", "fact_key", "title", "content", "version", "verified_at", "created_at", "updated_at"`,
-        [input.ownerId, input.projectId, input.key, input.title, input.content]
-      );
-      const row = rows[0];
-      if (!row) {
-        throw new Error('The project fact could not be created.');
-      }
-      return toProjectFact(row);
+      return await this.withAccountedMutation(input.ownerId, input.projectId, async (queryRunner) => {
+        const result: unknown = await queryRunner.query(
+          `INSERT INTO "project_facts" ("owner_id", "project_id", "fact_key", "title", "content")
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING "id", "owner_id", "project_id", "fact_key", "title", "content", "version", "verified_at", "created_at", "updated_at"`,
+          [input.ownerId, input.projectId, input.key, input.title, input.content]
+        );
+        const row = returnedRows<ProjectFactRow>(result)[0];
+        if (!row) {
+          throw new Error('The project fact could not be created.');
+        }
+        return toProjectFact(row);
+      }, resultContentScope((fact: ProjectFact) => [{ entity: 'project_facts', id: fact.id }]));
     } catch (error: unknown) {
       if (isUniqueViolation(error)) {
         throw new ProjectFactAlreadyExistsError();
@@ -111,39 +123,109 @@ export class TypeOrmProjectFactRepository implements IProjectFactRepository {
   }
 
   public async update(input: UpdateProjectFactRecord): Promise<ProjectFact | null> {
-    const result: unknown = await this.dataSource.query(
-      `UPDATE "project_facts" SET "fact_key" = $1, "title" = $2, "content" = $3, "version" = "version" + 1, "verified_at" = NULL, "updated_at" = now()
-       WHERE "owner_id" = $4 AND "project_id" = $5 AND "id" = $6 AND "version" = $7 AND "deleted_at" IS NULL
-       RETURNING "id", "owner_id", "project_id", "fact_key", "title", "content", "version", "verified_at", "created_at", "updated_at"`,
-      [input.key, input.title, input.content, input.ownerId, input.projectId, input.factId, input.expectedVersion]
-    );
-    const rows = returnedRows<ProjectFactRow>(result);
-    return rows[0] ? toProjectFact(rows[0]) : null;
+    return await this.withAccountedMutation(input.ownerId, input.projectId, async (queryRunner) => {
+      const result: unknown = await queryRunner.query(
+        `UPDATE "project_facts" SET "fact_key" = $1, "title" = $2, "content" = $3, "version" = "version" + 1, "verified_at" = NULL, "updated_at" = now()
+         WHERE "owner_id" = $4 AND "project_id" = $5 AND "id" = $6 AND "version" = $7 AND "deleted_at" IS NULL
+         RETURNING "id", "owner_id", "project_id", "fact_key", "title", "content", "version", "verified_at", "created_at", "updated_at"`,
+        [input.key, input.title, input.content, input.ownerId, input.projectId, input.factId, input.expectedVersion]
+      );
+      const rows = returnedRows<ProjectFactRow>(result);
+      return rows[0] ? toProjectFact(rows[0]) : null;
+    }, fixedContentScope([{ entity: 'project_facts', id: input.factId }]));
   }
 
   public async verify(input: ProjectFactVersionRecord): Promise<ProjectFact | null> {
-    const result: unknown = await this.dataSource.query(
-      `UPDATE "project_facts" SET "verified_at" = now(), "version" = "version" + 1, "updated_at" = now()
-       WHERE "owner_id" = $1 AND "project_id" = $2 AND "id" = $3 AND "version" = $4 AND "deleted_at" IS NULL
-       RETURNING "id", "owner_id", "project_id", "fact_key", "title", "content", "version", "verified_at", "created_at", "updated_at"`,
-      [input.ownerId, input.projectId, input.factId, input.expectedVersion]
-    );
-    const rows = returnedRows<ProjectFactRow>(result);
-    return rows[0] ? toProjectFact(rows[0]) : null;
+    return await this.withProjectMutation(input.ownerId, input.projectId, async (queryRunner) => {
+      const result: unknown = await queryRunner.query(
+        `UPDATE "project_facts" SET "verified_at" = now(), "version" = "version" + 1, "updated_at" = now()
+         WHERE "owner_id" = $1 AND "project_id" = $2 AND "id" = $3 AND "version" = $4 AND "deleted_at" IS NULL
+         RETURNING "id", "owner_id", "project_id", "fact_key", "title", "content", "version", "verified_at", "created_at", "updated_at"`,
+        [input.ownerId, input.projectId, input.factId, input.expectedVersion]
+      );
+      const rows = returnedRows<ProjectFactRow>(result);
+      return rows[0] ? toProjectFact(rows[0]) : null;
+    });
   }
 
   public async softDelete(input: ProjectFactVersionRecord): Promise<boolean> {
-    const result: unknown = await this.dataSource.query(
-      `UPDATE "project_facts" SET "deleted_at" = now(), "version" = "version" + 1, "updated_at" = now()
-       WHERE "owner_id" = $1 AND "project_id" = $2 AND "id" = $3 AND "version" = $4 AND "deleted_at" IS NULL
-       RETURNING "id"`,
-      [input.ownerId, input.projectId, input.factId, input.expectedVersion]
-    );
-    const rows = returnedRows<{ readonly id: string }>(result);
-    return Boolean(rows[0]);
+    return await this.withProjectMutation(input.ownerId, input.projectId, async (queryRunner) => {
+      const result: unknown = await queryRunner.query(
+        `UPDATE "project_facts" SET "deleted_at" = now(), "version" = "version" + 1, "updated_at" = now()
+         WHERE "owner_id" = $1 AND "project_id" = $2 AND "id" = $3 AND "version" = $4 AND "deleted_at" IS NULL
+         RETURNING "id"`,
+        [input.ownerId, input.projectId, input.factId, input.expectedVersion]
+      );
+      return Boolean(returnedRows<{ readonly id: string }>(result)[0]);
+    });
+  }
+
+  private async withAccountedMutation<T>(
+    ownerId: string,
+    projectId: string,
+    mutation: (queryRunner: QueryRunner) => Promise<T>,
+    scope: import('@/infrastructure/database/storage-content-projections').StorageContentMutationScope<T>
+  ): Promise<T> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    let connected = false;
+    try {
+      await queryRunner.connect();
+      connected = true;
+      return await this.runAccountedTransaction(queryRunner, ownerId, async (transaction) => {
+        await this.assertWritableProject(transaction, ownerId, projectId);
+        return mutation(transaction);
+      }, scope);
+    } finally {
+      if (connected) {
+        await queryRunner.release();
+      }
+    }
+  }
+
+  private async runAccountedTransaction<T>(
+    queryRunner: QueryRunner,
+    ownerId: string,
+    mutation: (queryRunner: QueryRunner) => Promise<T>,
+    scope: import('@/infrastructure/database/storage-content-projections').StorageContentMutationScope<T>
+  ): Promise<T> {
+    try {
+      await queryRunner.startTransaction();
+      const result = await this.storageAccounting.runMutation(queryRunner, ownerId, () => mutation(queryRunner), scope);
+      await queryRunner.commitTransaction();
+      return result;
+    } catch (error: unknown) {
+      if (queryRunner.isTransactionActive) {
+        await queryRunner.rollbackTransaction();
+      }
+      throw error;
+    }
   }
 
   private selectColumns(): string {
     return 'SELECT "id", "owner_id", "project_id", "fact_key", "title", "content", "version", "verified_at", "created_at", "updated_at" FROM "project_facts"';
+  }
+
+  private async withProjectMutation<T>(ownerId: string, projectId: string, mutation: (queryRunner: QueryRunner) => Promise<T>): Promise<T> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    let connected = false;
+    try {
+      await queryRunner.connect();
+      connected = true;
+      await queryRunner.startTransaction();
+      await this.assertWritableProject(queryRunner, ownerId, projectId);
+      const result = await mutation(queryRunner);
+      await queryRunner.commitTransaction();
+      return result;
+    } catch (error: unknown) {
+      if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      if (connected) await queryRunner.release();
+    }
+  }
+
+  private async assertWritableProject(queryRunner: QueryRunner, ownerId: string, projectId: string): Promise<void> {
+    const project = await lockProjectWriteState(queryRunner, ownerId, projectId);
+    if (!project || project.status !== 'active' || project.removalPending) throw new ProjectFactArchivedProjectError();
   }
 }

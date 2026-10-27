@@ -1,0 +1,75 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Private staging host foundation for Personal AI Workspace. No application installation, public ingress, DNS, or provider configuration.",
+  "Metadata": { "AWSToolsMetrics": { "AWSAgentToolkit": "aws-cloudformation@3" } },
+  "Parameters": {
+    "VpcId": { "Type": "AWS::EC2::VPC::Id" },
+    "SubnetId": { "Type": "AWS::EC2::Subnet::Id", "Description": "Existing private subnet in the selected VPC with outbound HTTPS access to SSM and required registries/providers." },
+    "ImageId": { "Type": "AWS::EC2::Image::Id", "Description": "Explicit verified Ubuntu x86_64 EBS-backed AMI with a working SSM agent. Record owner, release, architecture and root device before use." },
+    "RootDeviceName": { "Type": "String", "AllowedPattern": "^/dev/[a-zA-Z0-9]+$", "Description": "RootDeviceName from the verified AMI; do not infer it from the OS name." },
+    "InstanceType": { "Type": "String", "AllowedValues": ["t3.large", "t3.xlarge", "m7i.large", "m7i.xlarge", "m7i-flex.large"], "Description": "Operator-selected x86_64 instance size after checking regional availability and cost. Capacity is not yet benchmarked." },
+    "RootVolumeGiB": { "Type": "Number", "MinValue": 20, "MaxValue": 500 },
+    "DataVolumeGiB": { "Type": "Number", "MinValue": 20, "MaxValue": 2000 }
+  },
+  "Resources": {
+    "HostSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Private staging host; administer through SSM. Public ingress is a separate reviewed change.",
+        "VpcId": { "Ref": "VpcId" },
+        "SecurityGroupIngress": [],
+        "SecurityGroupEgress": [{ "IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "CidrIp": "0.0.0.0/0", "Description": "HTTPS to SSM, registries and configured inference providers via the existing VPC egress path." }]
+      }
+    },
+    "HostRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ec2.amazonaws.com" }, "Action": "sts:AssumeRole" }]
+        },
+        "ManagedPolicyArns": [{ "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore" }]
+      }
+    },
+    "HostProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": { "Roles": [{ "Ref": "HostRole" }] }
+    },
+    "Host": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": { "Ref": "ImageId" },
+        "InstanceType": { "Ref": "InstanceType" },
+        "IamInstanceProfile": { "Ref": "HostProfile" },
+        "MetadataOptions": { "HttpEndpoint": "enabled", "HttpTokens": "required", "HttpPutResponseHopLimit": 1, "InstanceMetadataTags": "disabled" },
+        "NetworkInterfaces": [{ "DeviceIndex": "0", "AssociatePublicIpAddress": false, "SubnetId": { "Ref": "SubnetId" }, "GroupSet": [{ "Ref": "HostSecurityGroup" }] }],
+        "BlockDeviceMappings": [{ "DeviceName": { "Ref": "RootDeviceName" }, "Ebs": { "VolumeType": "gp3", "VolumeSize": { "Ref": "RootVolumeGiB" }, "Encrypted": true, "DeleteOnTermination": true } }],
+        "Tags": [{ "Key": "Name", "Value": { "Fn::Sub": "${AWS::StackName}-host" } }]
+      }
+    },
+    "DataVolume": {
+      "Type": "AWS::EC2::Volume",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "AvailabilityZone": { "Fn::GetAtt": ["Host", "AvailabilityZone"] },
+        "VolumeType": "gp3",
+        "Size": { "Ref": "DataVolumeGiB" },
+        "Encrypted": true,
+        "Tags": [{ "Key": "Name", "Value": { "Fn::Sub": "${AWS::StackName}-data" } }]
+      }
+    },
+    "DataAttachment": {
+      "Type": "AWS::EC2::VolumeAttachment",
+      "Properties": { "InstanceId": { "Ref": "Host" }, "VolumeId": { "Ref": "DataVolume" }, "Device": "/dev/sdf" }
+    }
+  },
+  "Outputs": {
+    "InstanceId": { "Value": { "Ref": "Host" } },
+    "PrivateIp": { "Description": "Private address for the separately configured VPC origin; this host has no public IP.", "Value": { "Fn::GetAtt": ["Host", "PrivateIp"] } },
+    "PrivateDnsName": { "Description": "AWS private hostname for the separately configured CloudFront VPC origin.", "Value": { "Fn::GetAtt": ["Host", "PrivateDnsName"] } },
+    "DataVolumeId": { "Value": { "Ref": "DataVolume" } },
+    "SecurityGroupId": { "Value": { "Ref": "HostSecurityGroup" } },
+    "NextStep": { "Value": "Verify SSM connectivity, identify and mount the data volume, then complete the external task-8-1 runbook. This is not a running app deployment." }
+  }
+}

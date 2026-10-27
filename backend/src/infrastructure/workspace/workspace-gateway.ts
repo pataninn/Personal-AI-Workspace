@@ -34,6 +34,7 @@ import type { IWorkspaceBoundary } from '@/modules/projects/repositories/workspa
 import {
   assertDirectory,
   assertInspectableComponent,
+  joinWorkspaceFileSystemPath,
   mapWorkspaceFileSystemError,
   resolveWorkspaceEntry,
   resolveWorkspaceScope,
@@ -539,7 +540,7 @@ function isInspectablePath(relativePath: string, maxPathLength: number): boolean
 }
 
 function pathForEntry(paths: WorkspaceScopePaths, relativePath: string): string {
-  return relativePath.length === 0 ? paths.canonicalProjectRoot : `${paths.canonicalProjectRoot}/${relativePath}`;
+  return joinWorkspaceFileSystemPath(paths.canonicalProjectRoot, relativePath);
 }
 
 function joinRelative(directory: string, name: string): string {

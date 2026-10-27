@@ -1,0 +1,65 @@
+# Include at http{} scope. Replace public IP, internal SAN and CA before use.
+# Public certificate: Certbot>=5.4, IP SAN, shortlived profile, automatic renewal.
+log_format personal_ai_demo '$request_method $status $upstream_status $request_time';
+server {
+    listen 80 default_server;
+    server_name REPLACE_WITH_PUBLIC_IP;
+    access_log off;
+    error_log /dev/null crit;
+    if ($host != REPLACE_WITH_PUBLIC_IP) { return 444; }
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/lib/personal-ai/acme;
+        try_files $uri =404;
+    }
+    location / { return 308 https://REPLACE_WITH_PUBLIC_IP$request_uri; }
+}
+server {
+    listen 443 ssl default_server;
+    server_name REPLACE_WITH_PUBLIC_IP;
+    if ($host != REPLACE_WITH_PUBLIC_IP) { return 444; }
+    ssl_certificate /mnt/pai-data/letsencrypt/live/REPLACE_WITH_PUBLIC_IP/fullchain.pem;
+    ssl_certificate_key /mnt/pai-data/letsencrypt/live/REPLACE_WITH_PUBLIC_IP/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_tickets off;
+    client_max_body_size 8m;
+    access_log /var/log/nginx/personal-ai-demo.log personal_ai_demo;
+    error_log /dev/null crit;
+
+    location / {
+        proxy_pass https://127.0.0.1:8443;
+        proxy_http_version 1.1;
+        proxy_pass_request_headers on;
+        proxy_set_header Host $host;
+        proxy_set_header Origin $http_origin;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-CSRF-Token $http_x_csrf_token;
+        proxy_set_header Idempotency-Key $http_idempotency_key;
+        proxy_set_header If-Match $http_if_match;
+        # This is a direct public edge. Never trust client forwarding headers.
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header Forwarded "";
+        proxy_set_header CF-Connecting-IP "";
+        proxy_set_header CloudFront-Viewer-Address "";
+        proxy_set_header True-Client-IP "";
+        proxy_set_header X-Client-IP "";
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_connect_timeout 5s;
+        proxy_ssl_server_name on;
+        proxy_ssl_name localhost;
+        proxy_ssl_trusted_certificate /etc/personal-ai-workspace/tls/app-ca.pem;
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 2;
+        proxy_ssl_protocols TLSv1.2 TLSv1.3;
+        proxy_set_header Connection "";
+        proxy_set_header Upgrade "";
+    }
+}

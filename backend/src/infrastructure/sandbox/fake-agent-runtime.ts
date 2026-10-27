@@ -34,6 +34,7 @@ export class FakeAgentRuntime implements IAgentRuntime {
   public readonly createdRuns: RuntimeCreateInput[] = [];
   public readonly proposedCommands: RuntimeCommandProposalInput[] = [];
   public readonly executedCommands: RuntimeCommandInput[] = [];
+  public readonly policyExecutedCommands: RuntimeCommandInput[] = [];
   public readonly cancelledCommands: RuntimeCommandCancellationInput[] = [];
   public readonly startedRuns: RuntimeRunInput[] = [];
   public readonly cancelledRuns: RuntimeRunCancellationInput[] = [];
@@ -46,6 +47,8 @@ export class FakeAgentRuntime implements IAgentRuntime {
   public async checkAvailability(): Promise<void> {
     this.availabilityChecks.push('checked');
   }
+
+  public async supportsPolicyCommandExecution(): Promise<boolean> { return true; }
 
   public async create(input: RuntimeCreateInput): Promise<RuntimeReadyResult> {
     this.createdRuns.push(input);
@@ -100,6 +103,15 @@ export class FakeAgentRuntime implements IAgentRuntime {
 
   public async executeCommand(input: RuntimeCommandInput): Promise<CommandResult> {
     this.executedCommands.push(input);
+    return this.runCommand(input);
+  }
+
+  public async executePolicyCommand(input: RuntimeCommandInput): Promise<CommandResult> {
+    this.policyExecutedCommands.push(input);
+    return this.runCommand(input);
+  }
+
+  private async runCommand(input: RuntimeCommandInput): Promise<CommandResult> {
     await wait(this.commandOptions.delayMs ?? 0);
     if (this.cancelled.has(commandKey(input))) {
       return cancelledResult();

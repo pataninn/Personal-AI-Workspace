@@ -73,12 +73,63 @@ export class ProjectRootOverlapError extends ProjectDomainError {
   }
 }
 
+export class ProjectRootNotAttachedError extends ProjectDomainError {
+  public constructor() {
+    super('PROJECT_ROOT_NOT_ATTACHED', 409, 'Attach a project folder before using file access or assistant runs.');
+  }
+}
+
+export class ProjectWorkspaceModeInvalidError extends ProjectDomainError {
+  public constructor(message = 'Choose planning mode without a folder, or provide a folder for file-backed mode.') {
+    super('PROJECT_WORKSPACE_MODE_INVALID', 400, message, [{ field: 'workspaceMode', message }]);
+  }
+}
+
+export class ProjectObjectiveInvalidError extends ProjectDomainError {
+  public constructor() {
+    super('PROJECT_OBJECTIVE_INVALID', 400, 'The project objective is invalid.', [{
+      field: 'objective',
+      message: 'Use a project objective with at most 2,000 characters.'
+    }]);
+  }
+}
+
 export class ProjectNameConflictError extends ProjectDomainError {
   public constructor() {
     super('PROJECT_NAME_CONFLICT', 409, 'An active project with this name already exists.', [{
       field: 'name',
       message: 'Choose a different project name.'
     }]);
+  }
+}
+
+export class ProjectArchivedError extends ProjectDomainError {
+  public constructor() {
+    super('PROJECT_ARCHIVED', 409, 'Archived projects cannot be selected or changed.');
+  }
+}
+
+export class ProjectRootAlreadyAttachedError extends ProjectDomainError {
+  public constructor() {
+    super('PROJECT_ROOT_ALREADY_ATTACHED', 409, 'This project already has an attached folder.');
+  }
+}
+
+export class ProjectActionKeyReusedError extends ProjectDomainError {
+  public constructor() {
+    super('IDEMPOTENCY_KEY_REUSED', 409, 'The Idempotency-Key was already used for a different request.');
+  }
+}
+
+export class ProjectIdempotencyKeyInvalidError extends ProjectDomainError {
+  public constructor() {
+    super('IDEMPOTENCY_KEY_REQUIRED', 400, 'A valid Idempotency-Key header is required.');
+  }
+}
+
+export class ProjectMetadataQueryInvalidError extends ProjectDomainError {
+  public constructor() {
+    super('PROJECT_SEARCH_INVALID', 400, 'The project search request is invalid.');
   }
 }
 
@@ -130,5 +181,11 @@ export class ProjectRemovalCleanupPendingError extends ProjectDomainError {
 export class WorkspaceBoundaryUnavailableError extends ProjectDomainError {
   public constructor() {
     super('WORKSPACE_BOUNDARY_UNAVAILABLE', 503, 'The authoritative workspace is unavailable, so this project operation cannot proceed safely.');
+  }
+}
+
+export class WorkspaceStorageUnavailableError extends ProjectDomainError {
+  public constructor() {
+    super('WORKSPACE_STORAGE_UNAVAILABLE', 503, 'Private file storage is unavailable. Choose Planning only or try again later.');
   }
 }

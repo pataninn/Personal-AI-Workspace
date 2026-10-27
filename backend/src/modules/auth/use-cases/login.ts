@@ -1,10 +1,12 @@
 import type { LocalPrincipal } from '@/modules/auth/domain/auth-types';
 import { InvalidCredentialsError, SetupRequiredError } from '@/modules/auth/domain/auth-errors';
+import { normalizeAccountIdentifier } from '@/modules/auth/domain/account-identifier';
 import type { IUserRepository } from '@/modules/auth/repositories/user-repository';
 import type { ISessionRepository } from '@/modules/auth/repositories/session-repository';
 import type { IClock, IOpaqueTokenProvider, IPasswordHasher } from '@/modules/auth/repositories/security-providers';
 
 export interface LoginInput {
+  readonly identifier: string;
   readonly password: string;
 }
 
@@ -31,9 +33,15 @@ export class LoginUseCase {
   ) {}
 
   public async execute(input: LoginInput): Promise<LoginResult> {
-    const user = await this.userRepository.findActiveLocalUser();
+    const user = await this.userRepository.findByIdentifier(normalizeAccountIdentifier(input.identifier));
     if (!user) {
-      throw new SetupRequiredError();
+      if (!(await this.userRepository.hasAnyRegularAccounts())) {
+        throw new SetupRequiredError();
+      }
+      throw new InvalidCredentialsError();
+    }
+    if (!user.isActive || user.accountKind !== 'regular' || !user.passwordHash) {
+      throw new InvalidCredentialsError();
     }
     const passwordAccepted = await this.passwordHasher.verify(input.password, user.passwordHash);
     if (!passwordAccepted) {
@@ -44,12 +52,18 @@ export class LoginUseCase {
     const expiresAt = new Date(this.clock.now().getTime() + this.options.sessionLifetimeMs);
     const session = await this.sessionRepository.create({
       userId: user.id,
+      expectedPasswordHash: user.passwordHash,
       tokenHash: this.tokenProvider.digestToken(rawToken),
       expiresAt
     });
     return {
       sessionId: session.id,
-      principal: { id: user.id, displayName: user.displayName },
+      principal: {
+        id: user.id,
+        displayName: user.displayName,
+        accountKind: user.accountKind,
+        role: user.role
+      },
       rawToken,
       csrfToken: this.tokenProvider.createCsrfToken(rawToken),
       expiresAt: session.expiresAt

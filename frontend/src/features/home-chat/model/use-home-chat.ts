@@ -1,0 +1,933 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+
+import { useAppSelector } from '@/app/store/hooks';
+import { getAssistantExecutionPolicy } from '@/entities/assistant-policy';
+import type { AssistantExecutionPolicyStatus } from '@/entities/assistant-policy';
+import { selectCsrfToken } from '@/entities/user-session';
+import {
+  cancelHomeTurn,
+  createHomeConversation,
+  getHomeConversation,
+  getHomeTurn,
+  listHomeConversations,
+  listHomeEvents,
+  listHomeMessages,
+  listHomeTurns,
+  submitHomeTurn
+} from '@/entities/home-conversation';
+import type {
+  HomeConversationEvent,
+  HomeConversationScope,
+  HomeConversationSnapshot,
+  HomeMessageSnapshot,
+  HomeTurnSnapshot,
+  HomeTurnSubmission
+} from '@/entities/home-conversation';
+import { ApiClientError } from '@/shared/api';
+import { createIdempotencyKey } from '@/shared/lib/idempotency-key';
+
+type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
+type SendStatus = 'idle' | 'creating' | 'submitting' | 'reconciling' | 'uncertain' | 'retrying';
+
+interface SendIntent {
+  readonly scopeKey: string;
+  readonly conversationId: string;
+  readonly content: string;
+  readonly key: string;
+  readonly afterTurnSequence: number;
+}
+
+interface CreateIntent {
+  readonly scopeKey: string;
+  readonly title: string;
+  readonly key: string;
+}
+
+const ACTIVE_STATUSES = new Set(['pending', 'running', 'cancel_requested']);
+
+function scopeKey(scope: HomeConversationScope): string {
+  return scope.kind === 'home' ? 'home' : `workspace:${scope.workspaceId}`;
+}
+
+function viewKey(scopeId: string, conversationId: string | null, isNew: boolean): string {
+  return `${scopeId}::${conversationId ?? (isNew ? 'new' : 'auto')}`;
+}
+
+function sameScope(left: HomeConversationScope, right: HomeConversationScope): boolean {
+  return left.kind === right.kind && (left.kind === 'home' || (right.kind === 'workspace' && left.workspaceId === right.workspaceId));
+}
+
+
+function mergeMessages(current: readonly HomeMessageSnapshot[], incoming: readonly HomeMessageSnapshot[]): readonly HomeMessageSnapshot[] {
+  const byId = new Map<string, HomeMessageSnapshot>();
+  for (const message of [...current, ...incoming]) byId.set(message.id, message);
+  return [...byId.values()].sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
+}
+
+function mergeTurns(current: readonly HomeTurnSnapshot[], incoming: readonly HomeTurnSnapshot[]): readonly HomeTurnSnapshot[] {
+  const byId = new Map<string, HomeTurnSnapshot>();
+  for (const turn of [...current, ...incoming]) byId.set(turn.id, turn);
+  return [...byId.values()].sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
+}
+
+function mergeEvents(current: readonly HomeConversationEvent[], incoming: readonly HomeConversationEvent[]): readonly HomeConversationEvent[] {
+  const bySequence = new Map<number, HomeConversationEvent>();
+  for (const event of [...current, ...incoming]) bySequence.set(event.sequence, event);
+  return [...bySequence.values()].sort((left, right) => left.sequence - right.sequence);
+}
+
+async function readAllTurns(conversationId: string, afterSequence = 0): Promise<readonly HomeTurnSnapshot[]> {
+  const turns: HomeTurnSnapshot[] = [];
+  let cursor = afterSequence;
+  while (true) {
+    const page = await listHomeTurns(conversationId, cursor);
+    turns.push(...page.turns);
+    if (page.nextAfterSequence === null || page.nextAfterSequence === cursor || page.turns.length === 0) break;
+    cursor = page.nextAfterSequence;
+  }
+  return turns;
+}
+
+async function readAllEvents(conversationId: string, afterSequence = 0): Promise<readonly HomeConversationEvent[]> {
+  const events: HomeConversationEvent[] = [];
+  let cursor = afterSequence;
+  while (true) {
+    const page = await listHomeEvents(conversationId, cursor);
+    const ordered = [...page.events].sort((left, right) => left.sequence - right.sequence);
+    events.push(...ordered.filter((event) => event.sequence > cursor));
+    const lastProcessed = ordered.at(-1)?.sequence ?? cursor;
+    if (page.nextAfterSequence === null || page.nextAfterSequence === cursor || ordered.length === 0) break;
+    cursor = Math.max(lastProcessed, page.nextAfterSequence);
+  }
+  return events;
+}
+
+function executionPolicyReady(policy: AssistantExecutionPolicyStatus | null, scope: HomeConversationScope): boolean {
+  const expectedKind = scope.kind === 'home' ? 'home' : 'workspace';
+  return policy?.scope.kind === expectedKind && policy.readiness.state === 'ready' &&
+    policy.policy?.enabled === true && policy.policy.provider !== null;
+}
+
+function legacyTurnIds(events: readonly HomeConversationEvent[]): ReadonlySet<string> {
+  return new Set(events.filter((event) => event.type === 'consent.requested' && event.turnId).map((event) => event.turnId as string));
+}
+
+function conversationError(error: unknown): string {
+  if (error instanceof ApiClientError && error.statusCode === 404) return 'This conversation is unavailable in the selected scope.';
+  return 'Conversation history could not be loaded. Refresh to reconnect.';
+}
+
+function requestError(error: unknown): string {
+  if (error instanceof ApiClientError) {
+    if (error.code === 'PLANNING_RUNTIME_UNAVAILABLE') return 'The configured planning runtime is unavailable. Check its configuration or wait for it to reconnect, then reload Home chat to retry.';
+    if (error.details[0]?.message) return error.details[0].message;
+    if (error.statusCode === 401) return 'Your session expired. Sign in again to continue.';
+  }
+  return 'The request may not have been saved. Refresh history before retrying.';
+}
+
+function definitiveClientRejection(error: unknown): boolean {
+  return error instanceof ApiClientError && error.statusCode >= 400 && error.statusCode < 500 && error.code !== 'HOME_REQUEST_KEY_REUSED';
+}
+
+export interface UseHomeChatOptions {
+  readonly scope: HomeConversationScope;
+  readonly disabled?: boolean;
+  readonly syncConversationInUrl?: boolean;
+}
+
+export interface HomeChatController {
+  readonly policyStatus: AssistantExecutionPolicyStatus | null;
+  readonly policyLoadStatus: 'loading' | 'error' | 'loaded';
+  readonly policyReady: boolean;
+  readonly retryPolicy: () => void;
+  readonly conversations: readonly HomeConversationSnapshot[];
+  readonly listStatus: LoadStatus;
+  readonly listError: string | null;
+  readonly hasMoreConversations: boolean;
+  readonly loadMoreConversations: () => Promise<void>;
+  readonly retryConversationList: () => void;
+  readonly selectedConversation: HomeConversationSnapshot | null;
+  readonly selectedConversationId: string | null;
+  readonly isNewConversation: boolean;
+  readonly selectConversation: (conversationId: string) => void;
+  readonly startNewConversation: () => void;
+  readonly navigationLocked: boolean;
+  readonly messages: readonly HomeMessageSnapshot[];
+  readonly turns: readonly HomeTurnSnapshot[];
+  readonly events: readonly HomeConversationEvent[];
+  readonly eventsConversationId: string | null;
+  readonly lastProcessedEventSequence: number;
+  readonly historyStatus: LoadStatus;
+  readonly historyError: string | null;
+  readonly hasEarlierMessages: boolean;
+  readonly loadEarlierMessages: () => Promise<void>;
+  readonly draft: string;
+  readonly setDraft: (value: string) => void;
+  readonly send: () => Promise<void>;
+  readonly retryCreate: () => Promise<void>;
+  readonly createNeedsRetry: boolean;
+  readonly checkSubmission: () => Promise<void>;
+  readonly retrySameSubmission: () => Promise<void>;
+  readonly submitCanRetry: boolean;
+  readonly sendStatus: SendStatus;
+  readonly sendError: string | null;
+  readonly clearSendError: () => void;
+  readonly busy: boolean;
+  readonly canSend: boolean;
+  readonly runtimeUnavailable: boolean;
+  readonly activeTurn: HomeTurnSnapshot | null;
+  readonly isLegacyTurn: (turnId: string) => boolean;
+  readonly cancelPending: boolean;
+  readonly cancelNeedsCheck: boolean;
+  readonly statusCheckPending: boolean;
+  readonly cancel: () => Promise<void>;
+  readonly checkTurnStatus: () => Promise<void>;
+  readonly reconnecting: boolean;
+  readonly refreshConversation: () => void;
+  readonly refreshEvents: () => Promise<void>;
+  readonly loadStatus: (turnId: string) => string | null;
+}
+
+export function useHomeChat({ scope, disabled = false, syncConversationInUrl = true }: UseHomeChatOptions): HomeChatController {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const csrfToken = useAppSelector(selectCsrfToken);
+  const scopeId = scopeKey(scope);
+  const [localConversationId, setLocalConversationId] = useState<string | null>(null);
+  const urlConversationId = syncConversationInUrl ? searchParams.get('conversation') : localConversationId;
+  const [selectionOverride, setSelectionOverride] = useState<{ readonly from: string | null; readonly value: string | null } | null>(null);
+  const selectedConversationId = selectionOverride?.from === urlConversationId ? selectionOverride.value : urlConversationId;
+  const [isNewConversation, setIsNewConversation] = useState(false);
+  const selectedViewKey = viewKey(scopeId, selectedConversationId, isNewConversation);
+  const scopeRef = useRef(scope);
+  const urlConversationRef = useRef(urlConversationId);
+  const scopeIdRef = useRef(scopeId);
+  const viewKeyRef = useRef(selectedViewKey);
+  const isNewRef = useRef(isNewConversation);
+  scopeRef.current = scope;
+  urlConversationRef.current = urlConversationId;
+  scopeIdRef.current = scopeId;
+  viewKeyRef.current = selectedViewKey;
+  isNewRef.current = isNewConversation;
+
+  const [conversations, setConversations] = useState<readonly HomeConversationSnapshot[]>([]);
+  const [listStatus, setListStatus] = useState<LoadStatus>('idle');
+  const [listError, setListError] = useState<string | null>(null);
+  const [listCursor, setListCursor] = useState<string | null>(null);
+  const [listAttempt, setListAttempt] = useState(0);
+  const [listLoadingMore, setListLoadingMore] = useState(false);
+  const [loadedListScope, setLoadedListScope] = useState('');
+  const [loadedConversation, setLoadedConversation] = useState<HomeConversationSnapshot | null>(null);
+  const [loadedForKey, setLoadedForKey] = useState<string | null>(null);
+  const [messages, setMessages] = useState<readonly HomeMessageSnapshot[]>([]);
+  const [messageCursor, setMessageCursor] = useState<number | null>(null);
+  const [turns, setTurns] = useState<readonly HomeTurnSnapshot[]>([]);
+  const [events, setEvents] = useState<readonly HomeConversationEvent[]>([]);
+  const [loadedEventsConversationId, setLoadedEventsConversationId] = useState<string | null>(null);
+  const [lastProcessedEventSequence, setLastProcessedEventSequence] = useState(0);
+  const eventsRef = useRef<readonly HomeConversationEvent[]>([]);
+  const eventCursorRef = useRef(0);
+  const [historyStatus, setHistoryStatus] = useState<LoadStatus>('idle');
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [refreshAttempt, setRefreshAttempt] = useState(0);
+  const [draftsByViewKey, setDraftsByViewKey] = useState<Readonly<Record<string, string>>>({});
+  const draft = draftsByViewKey[selectedViewKey] ?? '';
+  const [sendStatus, setSendStatus] = useState<SendStatus>('idle');
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [createNeedsRetry, setCreateNeedsRetry] = useState(false);
+  const [submitCanRetry, setSubmitCanRetry] = useState(false);
+  const [runtimeUnavailable, setRuntimeUnavailable] = useState(false);
+  const [policyStatus, setPolicyStatus] = useState<AssistantExecutionPolicyStatus | null>(null);
+  const [policyLoadStatus, setPolicyLoadStatus] = useState<'loading' | 'error' | 'loaded'>('loading');
+  const [policyScopeId, setPolicyScopeId] = useState('');
+  const [policyAttempt, setPolicyAttempt] = useState(0);
+  const [locallyBlockedLegacyTurns, setLocallyBlockedLegacyTurns] = useState<ReadonlySet<string>>(() => new Set());
+  const [cancelPending, setCancelPending] = useState(false);
+  const [cancelNeedsCheck, setCancelNeedsCheck] = useState(false);
+  const [statusCheckPending, setStatusCheckPending] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [reviewedUnknownTurnIds, setReviewedUnknownTurnIds] = useState<ReadonlySet<string>>(() => new Set());
+  const sendIntentRef = useRef<SendIntent | null>(null);
+  const createIntentRef = useRef<CreateIntent | null>(null);
+  const busyRef = useRef(false);
+  const busyTokenRef = useRef(0);
+  const previousViewKeyRef = useRef(selectedViewKey);
+  const cancelAttemptRef = useRef(false);
+  const cancelRevisionRef = useRef(0);
+  const prevScopeIdRef = useRef(scopeId);
+  const policyReady = policyLoadStatus === 'loaded' && policyScopeId === scopeId && executionPolicyReady(policyStatus, scope);
+  const policyReadyRef = useRef(policyReady);
+  policyReadyRef.current = policyReady;
+  const knownLegacyTurnIds = useMemo(() => new Set([...legacyTurnIds(events), ...locallyBlockedLegacyTurns]), [events, locallyBlockedLegacyTurns]);
+
+  const setDraft = useCallback((value: string): void => {
+    setDraftsByViewKey((previous) => ({ ...previous, [selectedViewKey]: value }));
+  }, [selectedViewKey]);
+
+  const setConversationSelection = useCallback((conversationId: string | null, newConversation: boolean, replace = false): void => {
+    const targetKey = viewKey(scopeIdRef.current, conversationId, newConversation);
+    setSelectionOverride({ from: urlConversationRef.current, value: conversationId });
+    setIsNewConversation(newConversation);
+    viewKeyRef.current = targetKey;
+    previousViewKeyRef.current = targetKey;
+    if (syncConversationInUrl) {
+      setSearchParams((previous) => {
+        const next = new URLSearchParams(previous);
+        if (conversationId) next.set('conversation', conversationId);
+        else next.delete('conversation');
+        return next;
+      }, { replace });
+      return;
+    }
+    urlConversationRef.current = conversationId;
+    setLocalConversationId(conversationId);
+  }, [setSearchParams, syncConversationInUrl]);
+
+  if (previousViewKeyRef.current !== selectedViewKey) {
+    previousViewKeyRef.current = selectedViewKey;
+    busyTokenRef.current += 1;
+    busyRef.current = false;
+  }
+
+  function beginBusyOperation(): number {
+    const token = ++busyTokenRef.current;
+    busyRef.current = true;
+    return token;
+  }
+
+  function endBusyOperation(token: number): void {
+    if (busyTokenRef.current === token) busyRef.current = false;
+  }
+
+  const current = useCallback((key: string): boolean => viewKeyRef.current === key, []);
+  const currentScope = useCallback((key: string): boolean => scopeIdRef.current === key, []);
+
+  useEffect(() => {
+    if (prevScopeIdRef.current !== scopeId) {
+      prevScopeIdRef.current = scopeId;
+      setIsNewConversation(false);
+      setSendError(null);
+      sendIntentRef.current = null;
+      createIntentRef.current = null;
+    }
+  }, [scopeId]);
+
+  useEffect(() => {
+    if (selectionOverride && selectionOverride.from !== urlConversationId) setSelectionOverride(null);
+  }, [selectionOverride, urlConversationId]);
+
+  useEffect(() => {
+    cancelAttemptRef.current = false;
+    setCancelPending(false);
+    setCancelNeedsCheck(false);
+    setStatusCheckPending(false);
+    setSendError(null);
+    setReconnecting(false);
+  }, [selectedViewKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPolicyLoadStatus('loading');
+    setPolicyStatus(null);
+    setPolicyScopeId('');
+    void getAssistantExecutionPolicy(scope.kind === 'home' ? { scope: 'home' } : { scope: 'workspace', projectId: scope.workspaceId })
+      .then((status) => {
+        if (cancelled || scopeIdRef.current !== scopeId) return;
+        setPolicyStatus(status);
+        setPolicyScopeId(scopeId);
+        setPolicyLoadStatus('loaded');
+        setRuntimeUnavailable(false);
+      }).catch(() => {
+        if (cancelled || scopeIdRef.current !== scopeId) return;
+        setPolicyScopeId(scopeId);
+        setPolicyLoadStatus('error');
+        setRuntimeUnavailable(false);
+      });
+    return () => { cancelled = true; };
+  }, [policyAttempt, scopeId]);
+
+  const retryPolicy = useCallback((): void => setPolicyAttempt((attempt) => attempt + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setListStatus('loading');
+    setListError(null);
+    void listHomeConversations(scope).then((page) => {
+      if (cancelled || scopeIdRef.current !== scopeId) return;
+      setConversations(page.conversations);
+      setListCursor(page.nextCursor);
+      setLoadedListScope(scopeId);
+      setListStatus('success');
+    }).catch(() => {
+      if (cancelled || scopeIdRef.current !== scopeId) return;
+      setListError('Saved conversations could not be loaded. Try again.');
+      setListStatus('error');
+    });
+    return () => { cancelled = true; };
+  }, [scopeId, listAttempt]);
+
+  useEffect(() => {
+    if (loadedListScope !== scopeId || listStatus !== 'success' || selectedConversationId || isNewConversation) return;
+    const first = conversations[0];
+    if (!first) return;
+    setConversationSelection(first.id, false, true);
+  }, [conversations, isNewConversation, listStatus, loadedListScope, scopeId, selectedConversationId, setConversationSelection]);
+
+  useEffect(() => {
+    if (!selectedConversationId) {
+      setLoadedForKey(null);
+      setLoadedConversation(null);
+      setMessages([]);
+      setMessageCursor(null);
+      setTurns([]);
+      eventsRef.current = [];
+      eventCursorRef.current = 0;
+      setEvents([]);
+      setLoadedEventsConversationId(null);
+      setLastProcessedEventSequence(0);
+      setLocallyBlockedLegacyTurns(new Set());
+      setHistoryStatus('idle');
+      setHistoryError(null);
+      return;
+    }
+    const requestKey = viewKey(scopeId, selectedConversationId, false);
+    let cancelled = false;
+    eventCursorRef.current = 0;
+    eventsRef.current = [];
+    setEvents([]);
+    setLoadedEventsConversationId(null);
+    setLastProcessedEventSequence(0);
+    setLoadedForKey(null);
+    setLoadedConversation(null);
+    setMessages([]);
+    setMessageCursor(null);
+    setTurns([]);
+    setLocallyBlockedLegacyTurns(new Set());
+    setHistoryStatus('loading');
+    setHistoryError(null);
+    void Promise.all([
+      getHomeConversation(selectedConversationId),
+      listHomeMessages(selectedConversationId),
+      readAllTurns(selectedConversationId),
+      readAllEvents(selectedConversationId, 0)
+    ]).then(([conversation, messagePage, loadedTurns, loadedEvents]) => {
+      if (cancelled || !current(requestKey)) return;
+      if (!sameScope(conversation.scope, scopeRef.current)) throw new Error('Conversation is outside the selected scope.');
+      setLoadedConversation(conversation);
+      setConversations((previous) => previous.some((item) => item.id === conversation.id) ? previous.map((item) => item.id === conversation.id ? conversation : item) : [conversation, ...previous]);
+      setMessages((previous) => mergeMessages(previous, messagePage.messages));
+      setMessageCursor(messagePage.nextBeforeSequence);
+      setTurns((previous) => mergeTurns(previous, loadedTurns));
+      const sortedEvents = mergeEvents(eventsRef.current, loadedEvents);
+      eventsRef.current = sortedEvents;
+      setEvents(sortedEvents);
+      setLocallyBlockedLegacyTurns(legacyTurnIds(sortedEvents));
+      setLoadedEventsConversationId(selectedConversationId);
+      const cursor = Math.max(eventCursorRef.current, sortedEvents.at(-1)?.sequence ?? 0);
+      eventCursorRef.current = cursor;
+      setLastProcessedEventSequence(cursor);
+      setLoadedForKey(requestKey);
+      setHistoryStatus('success');
+    }).catch((error: unknown) => {
+      if (cancelled || !current(requestKey)) return;
+      setHistoryError(conversationError(error));
+      setHistoryStatus('error');
+    });
+    return () => { cancelled = true; };
+  }, [current, refreshAttempt, scopeId, selectedConversationId]);
+
+  const selectedConversation = loadedForKey === selectedViewKey && loadedConversation?.id === selectedConversationId
+    ? loadedConversation
+    : conversations.find((item) => item.id === selectedConversationId) ?? null;
+  const visibleMessages = loadedForKey === selectedViewKey ? messages : [];
+  const activeTurn = useMemo(() => {
+    const reverse = [...turns].reverse();
+    return reverse.find((turn) => ACTIVE_STATUSES.has(turn.status)) ?? reverse[0] ?? null;
+  }, [turns]);
+  const isLegacyTurn = useCallback((turnId: string): boolean => knownLegacyTurnIds.has(turnId), [knownLegacyTurnIds]);
+  const currentTurnNeedsReview = Boolean(activeTurn?.status === 'unknown' && !reviewedUnknownTurnIds.has(activeTurn.id));
+  const activeTurnBlocksSend = Boolean(activeTurn && (ACTIVE_STATUSES.has(activeTurn.status) || currentTurnNeedsReview));
+  const pendingForActiveTurn = Boolean(activeTurn && isLegacyTurn(activeTurn.id) && ACTIVE_STATUSES.has(activeTurn.status));
+  const sendBusy = sendStatus === 'creating' || sendStatus === 'submitting' || sendStatus === 'reconciling' || sendStatus === 'retrying';
+
+  const refreshEventFeed = useCallback(async (conversationId: string, requestKey: string): Promise<void> => {
+    let cursor = eventCursorRef.current;
+    let reachedEnd = false;
+    while (!reachedEnd) {
+      const page = await listHomeEvents(conversationId, cursor);
+      if (!current(requestKey)) return;
+      const ordered = [...page.events].sort((left, right) => left.sequence - right.sequence);
+      const newEvents = ordered.filter((event) => event.sequence > cursor);
+      if (!newEvents.length && page.nextAfterSequence !== null) break;
+      for (const event of newEvents) {
+        cursor = event.sequence;
+        eventCursorRef.current = cursor;
+        setLastProcessedEventSequence(cursor);
+      }
+      if (newEvents.length) {
+        const merged = mergeEvents(eventsRef.current, newEvents);
+        eventsRef.current = merged;
+        setEvents(merged);
+        setLocallyBlockedLegacyTurns(legacyTurnIds(merged));
+        setTurns((previous) => previous.map((turn) => {
+          const statusEvent = [...newEvents].reverse().find((event) => event.type === 'turn.status_changed' && event.turnId === turn.id);
+          const status = statusEvent?.payload.status;
+          return statusEvent && typeof status === 'string' && isTurnStatus(status) ? { ...turn, status, updatedAt: statusEvent.createdAt } : turn;
+        }));
+      }
+      reachedEnd = page.nextAfterSequence === null;
+      if (!reachedEnd) {
+        const next = page.nextAfterSequence;
+        if (next === cursor && newEvents.length === 0) break;
+        cursor = next ?? cursor;
+      }
+    }
+  }, [current]);
+
+  const refreshConversation = useCallback((): void => {
+    setReconnecting(false);
+    setRefreshAttempt((value) => value + 1);
+  }, []);
+
+  const refreshEvents = useCallback(async (): Promise<void> => {
+    if (!selectedConversationId) return;
+    const requestKey = selectedViewKey;
+    await refreshEventFeed(selectedConversationId, requestKey);
+  }, [refreshEventFeed, selectedConversationId, selectedViewKey]);
+
+  const retryConversationList = useCallback((): void => setListAttempt((value) => value + 1), []);
+
+  const loadMoreConversations = useCallback(async (): Promise<void> => {
+    if (!listCursor || listLoadingMore || loadedListScope !== scopeId) return;
+    const requestScope = scopeId;
+    setListLoadingMore(true);
+    try {
+      const page = await listHomeConversations(scopeRef.current, listCursor);
+      if (!currentScope(requestScope)) return;
+      setConversations((previous) => {
+        const seen = new Set(previous.map((item) => item.id));
+        return [...previous, ...page.conversations.filter((item) => !seen.has(item.id))];
+      });
+      setListCursor(page.nextCursor);
+    } catch {
+      if (currentScope(requestScope)) setListError('More conversations could not be loaded. Try again.');
+    } finally {
+      if (currentScope(requestScope)) setListLoadingMore(false);
+    }
+  }, [currentScope, listCursor, listLoadingMore, loadedListScope, scopeId]);
+
+  const startNewConversation = useCallback((): void => {
+    if (sendIntentRef.current || createIntentRef.current) return;
+    setConversationSelection(null, true);
+    sendIntentRef.current = null;
+    createIntentRef.current = null;
+    setSendStatus('idle');
+    setSendError(null);
+    setCreateNeedsRetry(false);
+    setSubmitCanRetry(false);
+  }, [setConversationSelection]);
+
+  const selectConversation = useCallback((conversationId: string): void => {
+    if (sendIntentRef.current || createIntentRef.current) return;
+    setConversationSelection(conversationId, false);
+  }, [setConversationSelection]);
+
+  const loadEarlierMessages = useCallback(async (): Promise<void> => {
+    if (!selectedConversationId || messageCursor === null || historyStatus !== 'success') return;
+    const requestKey = selectedViewKey;
+    try {
+      const page = await listHomeMessages(selectedConversationId, messageCursor);
+      if (!current(requestKey)) return;
+      setMessages((previous) => mergeMessages(previous, page.messages));
+      setMessageCursor(page.nextBeforeSequence);
+    } catch {
+      if (current(requestKey)) setHistoryError('Earlier messages could not be loaded. Try again.');
+    }
+  }, [current, historyStatus, messageCursor, selectedConversationId, selectedViewKey]);
+
+  const markUnsupported = useCallback((): void => {
+    setRuntimeUnavailable(true);
+  }, []);
+
+  const refreshLatestFor = useCallback(async (conversationId: string, requestKey: string): Promise<HomeMessageSnapshot[]> => {
+    const page = await listHomeMessages(conversationId);
+    if (!current(requestKey)) return [];
+    setMessages((previous) => mergeMessages(previous, page.messages));
+    setMessageCursor((previous) => previous ?? page.nextBeforeSequence);
+    if (page.messages.some((message) => message.role === 'assistant')) {
+      const conversation = await getHomeConversation(conversationId);
+      if (current(requestKey)) {
+        setLoadedConversation(conversation);
+        setConversations((previous) => previous.map((item) => item.id === conversation.id ? conversation : item));
+      }
+    }
+    return [...page.messages];
+  }, [current]);
+
+  const applySubmission = useCallback((submission: HomeTurnSubmission, requestKey: string, content: string): void => {
+    if (!current(requestKey)) return;
+    setTurns((previous) => mergeTurns(previous, [submission.turn]));
+    setMessages((previous) => mergeMessages(previous, [submission.message]));
+    setSubmitCanRetry(false);
+    setSendError(null);
+    if (submission.execution.state === 'consent_required') {
+      setLocallyBlockedLegacyTurns((previous) => new Set(previous).add(submission.turn.id));
+      setSendStatus('idle');
+      return;
+    }
+    if (submission.execution.state === 'unsupported' || submission.turn.status === 'unsupported') markUnsupported();
+    if ((submission.execution.state === 'running' || submission.execution.state === 'resumed') && submission.turn.status === 'running') {
+      setDraftsByViewKey((previous) => previous[requestKey] === content ? { ...previous, [requestKey]: '' } : previous);
+    }
+    setSendStatus('idle');
+  }, [current, markUnsupported]);
+
+  const findCommittedSubmission = useCallback((intent: SendIntent, loadedTurns: readonly HomeTurnSnapshot[], loadedMessages: readonly HomeMessageSnapshot[]): { turn: HomeTurnSnapshot; message: HomeMessageSnapshot } | null => {
+    const candidateTurns = loadedTurns.filter((turn) => turn.sequence > intent.afterTurnSequence).sort((left, right) => right.sequence - left.sequence);
+    for (const turn of candidateTurns) {
+      const message = loadedMessages.find((item) => item.turnId === turn.id && item.role === 'user' && item.content === intent.content);
+      if (message) return { turn, message };
+    }
+    return null;
+  }, []);
+
+  const reconcileSubmission = useCallback(async (intent: SendIntent, requestKey: string): Promise<'found' | 'missing' | 'unavailable'> => {
+    try {
+      await refreshEventFeed(intent.conversationId, requestKey);
+      const [messagePage, foundTurns] = await Promise.all([
+        listHomeMessages(intent.conversationId),
+        readAllTurns(intent.conversationId, intent.afterTurnSequence)
+      ]);
+      if (!current(requestKey)) return 'unavailable';
+      setMessages((previous) => mergeMessages(previous, messagePage.messages));
+      setMessageCursor((previous) => previous ?? messagePage.nextBeforeSequence);
+      setTurns((previous) => mergeTurns(previous, foundTurns));
+      const found = findCommittedSubmission(intent, foundTurns, messagePage.messages);
+      if (!found) return 'missing';
+      setTurns((previous) => mergeTurns(previous, [found.turn]));
+      setMessages((previous) => mergeMessages(previous, [found.message]));
+      setSendStatus('idle');
+      setSendError(null);
+      setSubmitCanRetry(false);
+      sendIntentRef.current = null;
+      if (found.turn.status === 'unsupported') markUnsupported();
+      if (found.turn.status === 'running') setDraftsByViewKey((previous) => previous[requestKey] === intent.content ? { ...previous, [requestKey]: '' } : previous);
+      return 'found';
+    } catch {
+      if (current(requestKey)) {
+        setSendStatus('uncertain');
+        setSendError('We could not confirm whether this message was saved. Refresh history before retrying.');
+        setSubmitCanRetry(false);
+      }
+      return 'unavailable';
+    }
+  }, [current, findCommittedSubmission, markUnsupported, refreshEventFeed]);
+
+  const createForCurrentDraft = useCallback(async (requestKey: string, content: string): Promise<HomeConversationSnapshot | null> => {
+    const title = 'New chat';
+    let intent = createIntentRef.current;
+    if (!intent || intent.scopeKey !== scopeIdRef.current || intent.title !== title) {
+      intent = { scopeKey: scopeIdRef.current, title, key: createIdempotencyKey() };
+      createIntentRef.current = intent;
+    }
+    setSendStatus('creating');
+    setSendError(null);
+    setCreateNeedsRetry(false);
+    try {
+      const conversation = await createHomeConversation(scopeRef.current, intent.title, csrfToken ?? '', intent.key);
+      if (!current(requestKey)) return null;
+      createIntentRef.current = null;
+      setCreateNeedsRetry(false);
+      setConversations((previous) => [conversation, ...previous.filter((item) => item.id !== conversation.id)]);
+      setLoadedConversation(conversation);
+      const targetKey = viewKey(scopeIdRef.current, conversation.id, false);
+      setDraftsByViewKey((previous) => {
+        const next = { ...previous, [targetKey]: previous[requestKey] ?? content };
+        delete next[requestKey];
+        return next;
+      });
+      setConversationSelection(conversation.id, false);
+      return conversation;
+    } catch (error: unknown) {
+      if (!current(requestKey)) return null;
+      setSendStatus('idle');
+      setSendError(requestError(error));
+      if (definitiveClientRejection(error)) createIntentRef.current = null;
+      else setCreateNeedsRetry(true);
+      return null;
+    }
+  }, [csrfToken, current, setConversationSelection]);
+
+  const retryCreate = useCallback(async (): Promise<void> => {
+    const intent = createIntentRef.current;
+    if (!intent || !csrfToken || disabled || busyRef.current) return;
+    const requestKey = viewKeyRef.current;
+    const operation = beginBusyOperation();
+    setSendStatus('creating');
+    setSendError(null);
+    try {
+      const conversation = await createHomeConversation(scopeRef.current, intent.title, csrfToken, intent.key);
+      if (!current(requestKey)) return;
+      createIntentRef.current = null;
+      setCreateNeedsRetry(false);
+      setConversations((previous) => [conversation, ...previous.filter((item) => item.id !== conversation.id)]);
+      setLoadedConversation(conversation);
+      const targetKey = viewKey(scopeIdRef.current, conversation.id, false);
+      setDraftsByViewKey((previous) => {
+        const next = { ...previous, [targetKey]: previous[requestKey] ?? '' };
+        delete next[requestKey];
+        return next;
+      });
+      setConversationSelection(conversation.id, false);
+      setSendStatus('idle');
+    } catch (error: unknown) {
+      if (current(requestKey)) {
+        setSendStatus('idle');
+        setSendError(requestError(error));
+        if (definitiveClientRejection(error)) { createIntentRef.current = null; setCreateNeedsRetry(false); }
+      }
+    } finally { endBusyOperation(operation); }
+  }, [csrfToken, current, disabled, setConversationSelection]);
+
+  const performSubmit = useCallback(async (intent: SendIntent, requestKey: string): Promise<void> => {
+    if (!csrfToken || busyRef.current) return;
+    if (!policyReadyRef.current) {
+      setSendStatus('uncertain');
+      setSendError('Assistant availability changed before this request was sent. Refresh availability, then retry the same request.');
+      setSubmitCanRetry(true);
+      return;
+    }
+    const operation = beginBusyOperation();
+    setSendStatus('submitting');
+    setSendError(null);
+    setSubmitCanRetry(false);
+    try {
+      const submission = await submitHomeTurn(intent.conversationId, intent.content, csrfToken, intent.key);
+      if (!current(requestKey)) return;
+      sendIntentRef.current = null;
+      applySubmission(submission, requestKey, intent.content);
+      void refreshEventFeed(intent.conversationId, requestKey).then(() => refreshLatestFor(intent.conversationId, requestKey)).catch(() => {
+        if (current(requestKey)) setReconnecting(true);
+      });
+    } catch (error: unknown) {
+      if (!current(requestKey)) return;
+      setSendError(requestError(error));
+      if (error instanceof ApiClientError && error.statusCode === 503) setPolicyAttempt((attempt) => attempt + 1);
+      if (definitiveClientRejection(error)) {
+        sendIntentRef.current = null;
+        setSendStatus('idle');
+        setSubmitCanRetry(false);
+      } else {
+        setSendStatus('reconciling');
+        const result = await reconcileSubmission(intent, requestKey);
+        if (!current(requestKey)) return;
+        if (result === 'missing') {
+          setSendStatus('uncertain');
+          setSendError('The message may have been saved. Check status, then retry the same request if no turn appears.');
+          setSubmitCanRetry(true);
+        }
+      }
+    } finally { endBusyOperation(operation); }
+  }, [applySubmission, csrfToken, current, reconcileSubmission, refreshEventFeed, refreshLatestFor]);
+
+  const send = useCallback(async (): Promise<void> => {
+    const content = draft;
+    const requestKey = viewKeyRef.current;
+    if (!content.trim() || content.length > 20000 || !csrfToken || disabled || !policyReady || runtimeUnavailable || busyRef.current || activeTurnBlocksSend || createNeedsRetry || sendIntentRef.current ||
+      (selectedConversationId && (historyStatus !== 'success' || loadedForKey !== requestKey))) return;
+    const operation = beginBusyOperation();
+    setSendError(null);
+    let conversationId = selectedConversationId;
+    if (!conversationId) {
+      const created = await createForCurrentDraft(requestKey, content);
+      if (!created) { endBusyOperation(operation); return; }
+      conversationId = created.id;
+      const targetKey = viewKey(scopeIdRef.current, conversationId, false);
+      if (viewKeyRef.current !== targetKey) { endBusyOperation(operation); return; }
+    }
+    const currentTurns = loadedForKey === requestKey ? turns : [];
+    const intent: SendIntent = {
+      scopeKey: scopeIdRef.current,
+      conversationId,
+      content,
+      key: createIdempotencyKey(),
+      afterTurnSequence: currentTurns.reduce((maximum, turn) => Math.max(maximum, turn.sequence), 0)
+    };
+    sendIntentRef.current = intent;
+    const targetKey = viewKey(scopeIdRef.current, conversationId, false);
+    endBusyOperation(operation);
+    await performSubmit(intent, targetKey);
+  }, [activeTurnBlocksSend, createForCurrentDraft, createNeedsRetry, csrfToken, disabled, draft, historyStatus, loadedForKey, performSubmit, policyReady, runtimeUnavailable, selectedConversationId, turns]);
+
+  const checkSubmission = useCallback(async (): Promise<void> => {
+    const intent = sendIntentRef.current;
+    if (!intent || busyRef.current) return;
+    const requestKey = viewKey(scopeIdRef.current, intent.conversationId, false);
+    const operation = beginBusyOperation();
+    setSendStatus('reconciling');
+    setSendError(null);
+    const result = await reconcileSubmission(intent, requestKey);
+    if (current(requestKey)) {
+      if (result === 'missing') {
+        setSendStatus('uncertain');
+        setSendError('No saved turn is visible yet. You can retry this same request safely.');
+        setSubmitCanRetry(true);
+      }
+    }
+    endBusyOperation(operation);
+  }, [current, reconcileSubmission]);
+
+  const retrySameSubmission = useCallback(async (): Promise<void> => {
+    const intent = sendIntentRef.current;
+    if (!intent || !submitCanRetry || busyRef.current || disabled || !policyReady) return;
+    const requestKey = viewKey(scopeIdRef.current, intent.conversationId, false);
+    const operation = beginBusyOperation();
+    setSendStatus('reconciling');
+    setSendError(null);
+    const result = await reconcileSubmission(intent, requestKey);
+    if (result !== 'missing' || !current(requestKey)) { endBusyOperation(operation); return; }
+    setSendStatus('retrying');
+    endBusyOperation(operation);
+    await performSubmit(intent, requestKey);
+  }, [current, disabled, performSubmit, policyReady, reconcileSubmission, submitCanRetry]);
+
+  const cancel = useCallback(async (): Promise<void> => {
+    if (!selectedConversationId || !activeTurn || activeTurn.status !== 'running' || !csrfToken || disabled || cancelAttemptRef.current) return;
+    const requestKey = viewKeyRef.current;
+    cancelAttemptRef.current = true;
+    cancelRevisionRef.current += 1;
+    setCancelPending(true);
+    setCancelNeedsCheck(false);
+    setSendError(null);
+    try {
+      const result = await cancelHomeTurn(selectedConversationId, activeTurn.id, csrfToken);
+      if (!current(requestKey)) return;
+      setTurns((previous) => mergeTurns(previous, [result.turn]));
+      if (result.turn.status === 'cancelled') cancelAttemptRef.current = false;
+      await refreshEventFeed(selectedConversationId, requestKey);
+    } catch {
+      if (current(requestKey)) {
+        setSendError('The stop request could not be confirmed. Check status before trying again.');
+        setReconnecting(true);
+        setCancelNeedsCheck(true);
+      }
+    } finally {
+      if (current(requestKey)) {
+        cancelRevisionRef.current += 1;
+        setCancelPending(false);
+      }
+    }
+  }, [activeTurn, current, csrfToken, disabled, refreshEventFeed, selectedConversationId]);
+
+  const checkTurnStatus = useCallback(async (): Promise<void> => {
+    if (!selectedConversationId || !activeTurn) return;
+    const requestKey = viewKeyRef.current;
+    setStatusCheckPending(true);
+    setReconnecting(true);
+    try {
+      if (isLegacyTurn(activeTurn.id)) {
+        const [savedTurns] = await Promise.all([readAllTurns(selectedConversationId), refreshEventFeed(selectedConversationId, requestKey), refreshLatestFor(selectedConversationId, requestKey)]);
+        if (!current(requestKey)) return;
+        setTurns((previous) => mergeTurns(previous, savedTurns));
+        const refreshed = savedTurns.find((turn) => turn.id === activeTurn.id);
+        if (refreshed?.status === 'running' || refreshed?.status === 'cancelled' || refreshed?.status === 'unknown') cancelAttemptRef.current = false;
+        setCancelNeedsCheck(false);
+        setReconnecting(false);
+        setSendError(null);
+        return;
+      }
+      const result = await getHomeTurn(selectedConversationId, activeTurn.id);
+      if (!current(requestKey)) return;
+      setTurns((previous) => mergeTurns(previous, [result]));
+      setCancelNeedsCheck(false);
+      if (result.status === 'running' || result.status === 'cancelled' || result.status === 'unknown') cancelAttemptRef.current = false;
+      if (result.status === 'unknown') setReviewedUnknownTurnIds((previous) => new Set(previous).add(result.id));
+      await refreshEventFeed(selectedConversationId, requestKey);
+      await refreshLatestFor(selectedConversationId, requestKey);
+      setReconnecting(false);
+      setSendError(null);
+    } catch {
+      if (current(requestKey)) {
+        setSendError('Status is still unavailable. Try refreshing the conversation again.');
+        setReconnecting(true);
+      }
+    } finally {
+      if (current(requestKey)) setStatusCheckPending(false);
+    }
+  }, [activeTurn, current, isLegacyTurn, refreshEventFeed, refreshLatestFor, selectedConversationId]);
+
+  useEffect(() => {
+    if (!selectedConversationId || loadedEventsConversationId !== selectedConversationId || activeTurn?.status !== 'running' || pendingForActiveTurn || disabled || cancelPending || cancelNeedsCheck) return;
+    const requestKey = selectedViewKey;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let lastHistoryRefresh = 0;
+    let retryDelay = 100;
+    const poll = async (): Promise<void> => {
+      const cancelRevision = cancelRevisionRef.current;
+      try {
+        const refreshed = await getHomeTurn(selectedConversationId, activeTurn.id);
+        if (cancelled || !current(requestKey) || cancelRevision !== cancelRevisionRef.current) return;
+        setTurns((previous) => mergeTurns(previous, [refreshed]));
+        const terminal = refreshed.status !== 'running';
+        if (terminal || Date.now() - lastHistoryRefresh >= 2000) {
+          await refreshEventFeed(selectedConversationId, requestKey);
+          lastHistoryRefresh = Date.now();
+        }
+        if (terminal) await refreshLatestFor(selectedConversationId, requestKey);
+        if (cancelled || !current(requestKey) || cancelRevision !== cancelRevisionRef.current) return;
+        retryDelay = 100;
+        setReconnecting(false);
+        setSendError(null);
+      } catch {
+        if (cancelled || !current(requestKey) || cancelRevision !== cancelRevisionRef.current) return;
+        setReconnecting(true);
+        retryDelay = 2000;
+      }
+      if (!cancelled && current(requestKey)) timer = setTimeout(() => { void poll(); }, retryDelay);
+    };
+    timer = setTimeout(() => { void poll(); }, 0);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [activeTurn?.id, activeTurn?.status, cancelNeedsCheck, cancelPending, current, disabled, loadedEventsConversationId, pendingForActiveTurn, refreshEventFeed, refreshLatestFor, selectedConversationId, selectedViewKey]);
+
+  const loadStatus = useCallback((turnId: string): string | null => {
+    const turn = turns.find((item) => item.id === turnId);
+    if (!turn) return null;
+    if (isLegacyTurn(turn.id) && ['pending', 'running', 'cancel_requested', 'unknown'].includes(turn.status)) return 'Saved action cannot be resumed';
+    const labels: Record<HomeTurnSnapshot['status'], string> = {
+      pending: 'Waiting to start', running: 'Assistant is responding…', cancel_requested: 'Stopping…',
+      completed: 'Completed', partial: 'Partially completed', failed: 'Failed', cancelled: 'Cancelled', unknown: 'Needs review', unsupported: 'Planning runtime unavailable'
+    };
+    return labels[turn.status];
+  }, [isLegacyTurn, turns]);
+
+  const canSend = !disabled && policyReady && !runtimeUnavailable && !sendBusy && !activeTurnBlocksSend && !createNeedsRetry && !sendIntentRef.current &&
+    Boolean(draft.trim()) && draft.length <= 20000 && (!selectedConversationId || (historyStatus === 'success' && loadedForKey === selectedViewKey));
+  const navigationLocked = Boolean(sendIntentRef.current || createIntentRef.current);
+
+  return {
+    policyStatus: policyScopeId === scopeId ? policyStatus : null,
+    policyLoadStatus: policyScopeId === scopeId ? policyLoadStatus : 'loading',
+    policyReady,
+    retryPolicy,
+    conversations: loadedListScope === scopeId ? conversations : [], listStatus, listError,
+    hasMoreConversations: Boolean(listCursor), loadMoreConversations, retryConversationList,
+    selectedConversation, selectedConversationId, isNewConversation,
+    selectConversation, startNewConversation, navigationLocked,
+    messages: visibleMessages, turns, events, eventsConversationId: loadedEventsConversationId === selectedConversationId ? selectedConversationId : null,
+    lastProcessedEventSequence, historyStatus, historyError,
+    hasEarlierMessages: messageCursor !== null, loadEarlierMessages,
+    draft, setDraft, send, retryCreate, checkSubmission, retrySameSubmission,
+    sendStatus, createNeedsRetry, submitCanRetry, sendError,
+    clearSendError: () => setSendError(null),
+    busy: sendBusy || cancelPending,
+    canSend, runtimeUnavailable, activeTurn, isLegacyTurn,
+    cancelPending, cancelNeedsCheck, statusCheckPending, cancel, checkTurnStatus, reconnecting, refreshConversation, refreshEvents,
+    loadStatus
+  };
+}
+
+function isTurnStatus(value: string): value is HomeTurnSnapshot['status'] {
+  return ['pending', 'running', 'cancel_requested', 'completed', 'partial', 'failed', 'cancelled', 'unknown', 'unsupported'].includes(value);
+}

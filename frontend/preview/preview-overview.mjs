@@ -4,9 +4,18 @@ export function previewOverview(response, seed, url) {
   const raw = url.searchParams.getAll('taskLimit');
   const limit = Number(raw[0] ?? 6);
   if (raw.length > 1 || !Number.isInteger(limit) || limit < 1 || limit > 100) { sendError(response, 400, 'VALIDATION_ERROR', 'Choose a limit of 1 to 100.'); return; }
-  const projects = seed.projects.filter((project) => project.status === 'active').map((project) => ({ ...project,
-    lastActivityAt: [project.updatedAt, ...seed.conversations.filter((item) => item.projectId === project.id).map((item) => item.lastActivityAt),
-      ...seed.tasks.filter((item) => item.projectId === project.id).map((item) => item.updatedAt)].sort().at(-1) })).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt) || a.id.localeCompare(b.id));
+  const projects = seed.projects.filter((project) => project.status === 'active').map((project) => {
+    const { relativeRoot, ...publicProject } = project;
+    const fileAccess = relativeRoot !== null;
+    return {
+      ...publicProject,
+      objective: project.objective ?? null,
+      workspaceMode: fileAccess ? 'file_backed' : 'planning',
+      capabilities: { planning: true, fileAccess },
+      lastActivityAt: [project.updatedAt, ...seed.conversations.filter((item) => item.projectId === project.id).map((item) => item.lastActivityAt),
+        ...seed.tasks.filter((item) => item.projectId === project.id).map((item) => item.updatedAt)].sort().at(-1)
+    };
+  }).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt) || a.id.localeCompare(b.id));
   const ranks = { low: 0, medium: 1, high: 2, urgent: 3 };
   const tasks = seed.tasks.filter((task) => projects.some((project) => project.id === task.projectId) && ['todo', 'in_progress', 'blocked'].includes(task.status))
     .sort((a, b) => (a.deadline ?? '9999').localeCompare(b.deadline ?? '9999') || ranks[b.importance] - ranks[a.importance] || b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id))

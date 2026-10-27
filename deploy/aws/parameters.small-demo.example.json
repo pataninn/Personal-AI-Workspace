@@ -1,0 +1,34 @@
+[
+  {
+    "ParameterKey": "VpcId",
+    "ParameterValue": "REPLACE_WITH_VPCID"
+  },
+  {
+    "ParameterKey": "SubnetId",
+    "ParameterValue": "REPLACE_WITH_SUBNETID"
+  },
+  {
+    "ParameterKey": "ImageId",
+    "ParameterValue": "REPLACE_WITH_IMAGEID"
+  },
+  {
+    "ParameterKey": "RootDeviceName",
+    "ParameterValue": "REPLACE_WITH_ROOTDEVICENAME"
+  },
+  {
+    "ParameterKey": "InstanceType",
+    "ParameterValue": "t3.small"
+  },
+  {
+    "ParameterKey": "RootVolumeGiB",
+    "ParameterValue": "20"
+  },
+  {
+    "ParameterKey": "DataVolumeGiB",
+    "ParameterValue": "20"
+  },
+  {
+    "ParameterKey": "EnableWebIngress",
+    "ParameterValue": "false"
+  }
+]
