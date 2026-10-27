@@ -39,7 +39,7 @@ export function ShowcasePage(): React.JSX.Element {
     <main className="mx-auto grid w-full max-w-6xl gap-8 px-4 py-8 sm:px-6 lg:px-8" data-testid="showcase-page">
       <header className="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--color-border)] pb-6">
         <div>
-          <p className="product-label">Personal AI Workspace</p>
+          <p className="product-label brand-wordmark">Threadnest<span className="brand-dot" aria-hidden="true">.</span></p>
           <h1 className="text-3xl font-semibold sm:text-4xl">Published showcase</h1>
         </div>
         <div className="flex flex-wrap items-center gap-3">

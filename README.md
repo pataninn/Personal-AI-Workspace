@@ -1,8 +1,11 @@
-# Personal AI Workspace
+# Threadnest
 
 **License: [MIT](LICENSE)** · **Public code: [pataninn/Personal-AI-Workspace](https://github.com/pataninn/Personal-AI-Workspace)**
 
-This repository contains the local Personal AI Workspace with projects,
+**Staging:** [threadnest.patanin.workers.dev](https://threadnest.patanin.workers.dev/)
+· [Deployment and branding notes](DEPLOYMENT.md)
+
+Threadnest is a personal AI workspace with projects,
 conversations, selected context, memory, tasks, live updates, and file history.
 The supported setup is one owner account and an anonymous demo. Visitors choose
 **Try demo** without creating an account; each visitor receives an isolated,
@@ -18,7 +21,7 @@ and the existing policy and credit checks.
 
 ## For judges and first-time users
 
-Personal AI Workspace brings tasks, project files, saved facts, reusable skills
+Threadnest brings tasks, project files, saved facts, reusable skills
 and AI conversations into an owner-scoped workspace. Visitors can explore a
 public showcase and start an isolated, expiring demo copy. The owner can publish
 selected sample content, configure usage budgets and schedule read-only briefings.

@@ -60,7 +60,7 @@ export function AuthProvider({ children }: AuthProviderProps): React.JSX.Element
 function BootstrapLoading(): React.JSX.Element {
   return (
     <main className="bootstrap-view" data-testid="session-bootstrap-loading" aria-busy="true">
-      <p className="product-label">Personal AI Workspace</p>
+      <p className="product-label brand-wordmark">Threadnest<span className="brand-dot" aria-hidden="true">.</span></p>
       <Skeleton className="bootstrap-skeleton" />
       <div className="bootstrap-status">
         <Spinner label="Checking your local session" />

@@ -97,7 +97,7 @@ export function SignInForm(): React.JSX.Element {
     <main className="login-view" data-testid="login-page">
       <SignInArtwork />
       <Card className="login-card">
-        <p className="product-label">Personal AI Workspace</p>
+        <p className="product-label brand-wordmark">Threadnest<span className="brand-dot" aria-hidden="true">.</span></p>
         <h1>Sign in</h1>
         <p className="supporting-copy">{import.meta.env.MODE === 'preview' ? 'Use any account identifier and non-empty made-up password. Do not enter real credentials.' : 'Welcome back. Sign in to your workspace.'}</p>
         {notice ? <Alert tone={reason === 'signed-out' ? 'success' : 'info'} live="polite">{notice}</Alert> : null}

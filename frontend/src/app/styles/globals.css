@@ -4085,7 +4085,7 @@ h4 {
   place-items: center;
   background: var(--color-primary);
   color: var(--color-primary-contrast);
-  content: "P";
+  content: "";
   font-family: var(--font-display);
 }
 
@@ -4433,6 +4433,7 @@ input[type="radio"] {
   --color-border: #232937;
   --color-border-strong: #6c7790;
   --color-primary: #c8f23d;
+  --color-brand-accent: #c8f53d;
   --color-primary-hover: #afd52f;
   --radius-control: 8px;
   --color-primary-contrast: #10130a;
@@ -4475,7 +4476,9 @@ a { color: inherit; }
 .app-shell-layout { grid-template-columns: 264px minmax(0, 1fr); min-height: calc(100dvh - var(--preview-height)); }
 .desktop-sidebar { padding: 20px 14px; gap: 20px; background: var(--color-background); border-right: 1px solid var(--color-border); }
 .brand-link { padding: 4px 10px 8px; gap: 12px; font-size: 17px; font-weight: 650; line-height: 1.1; }
-.brand-link::before { width: 38px; height: 38px; border-radius: 12px; font-size: 22px; font-weight: 500; }
+.brand-link::before { width: 38px; height: 38px; border: 0; border-radius: 0; background: url("/favicon.svg") center / contain no-repeat; }
+.brand-wordmark, .product-label.brand-wordmark { font-family: var(--font-display); font-weight: 700; letter-spacing: -.035em; text-transform: none; }
+.brand-dot { color: var(--color-brand-accent); }
 .brand-link:hover { color: var(--color-text); }
 .shell-nav, .desktop-sidebar .shell-nav { gap: 4px; }
 .shell-nav-link, .project-nav-item { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 14px; border-radius: 12px; font: 500 14px/1.4 var(--font-sans); color: var(--color-text-muted); }
@@ -4498,6 +4501,8 @@ a { color: inherit; }
 .account-area > div > .button { padding: 0 14px 0 10px; min-height: 40px; font-size: 14px; gap: 10px; color: var(--color-text); background: var(--color-surface-raised); border: 1px solid var(--color-border-strong); }
 .account-area > div > .button svg { width: 18px; height: 18px; flex: none; }
 .app-shell-main { width: 100%; max-width: 1440px; margin: 0; padding: 32px var(--gutter) 64px; }
+/* Route changes focus this landmark; only interactive controls need a focus ring. */
+.app-shell-main:focus { outline: none; }
 .button { min-height: 44px; max-width: 100%; padding: 10px 16px; border-radius: var(--radius-control); font: 600 14px/1.4 var(--font-sans); box-shadow: none; overflow-wrap: anywhere; }
 .button > svg { flex: none; }
 .button-destructive:hover:not(:disabled) { background: #ed7373; border-color: #ed7373; }
@@ -4614,7 +4619,7 @@ a { color: inherit; }
 .workspace-chat .message-user { align-self: flex-end; align-items: flex-end; max-width: 78%; }
 .workspace-chat .message-user .message-content { padding: 12px 16px; border-radius: 18px 18px 6px 18px; background: var(--color-surface-raised); box-shadow: inset 0 0 0 1px var(--color-border-strong); line-height: 1.5; }
 .workspace-chat .message-assistant { position: relative; max-width: 100%; padding-left: 44px; }
-.workspace-chat .message-assistant::before { content: 'P'; position: absolute; top: 0; left: 0; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 10px; background: var(--color-primary); color: var(--color-primary-contrast); }
+.workspace-chat .message-assistant::before { content: ''; position: absolute; top: 0; left: 0; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 0; background: url("/favicon.svg") center / contain no-repeat; }
 .markdown-content { line-height: 1.5; }
 .markdown-content code { border-radius: 6px; }
 .workspace-chat .chat-composer { margin: 0 20px 20px; border: 1px solid var(--color-border-strong); border-radius: 20px; padding: 6px 6px 6px 8px; background: var(--color-surface-raised); }
@@ -4690,16 +4695,16 @@ a { color: inherit; }
 .project-activity-status { border-radius: 999px; }
 .login-view { display: grid; grid-template-columns: 55% 45%; place-items: stretch; padding: 0; min-height: calc(100dvh - var(--preview-height)); }
 .login-artwork { position: relative; min-height: 800px; overflow: hidden; border-right: 1px solid var(--color-border); background: var(--color-surface); background-image: radial-gradient(var(--color-border-strong) 1px, transparent 1.6px); background-size: 28px 28px; }
-.login-brand-mark { position: absolute; top: 44px; left: 56px; display: grid; place-items: center; width: 42px; height: 42px; border-radius: 14px; background: var(--color-primary); color: var(--color-primary-contrast); font-size: 22px; }
+.login-brand-mark { position: absolute; top: 44px; left: 56px; display: grid; place-items: center; width: 42px; height: 42px; background: transparent; }
 .login-art-tile { position: absolute; display: grid; place-items: center; border-radius: 36px; color: #12150f; }
 .art-folder { top: 110px; right: 190px; width: 190px; height: 190px; background: var(--color-project-purple); }
 .art-file { top: 70px; right: 60px; width: 150px; height: 150px; background: var(--color-project-coral); }
 .art-chat { top: 240px; right: -20px; width: 190px; height: 190px; background: var(--color-project-cyan); }
 .art-check { top: 330px; right: 210px; width: 130px; height: 130px; background: var(--color-project-pink); }
-.login-wordmark { position: absolute; bottom: 44px; left: 56px; margin: 0; font: 700 clamp(56px, 6.8vw, 100px)/.98 var(--font-display); letter-spacing: -.05em; }
-.login-wordmark span { color: var(--color-primary); }
+.login-wordmark { position: absolute; bottom: 44px; left: 56px; margin: 0; font: 700 clamp(56px, 6.8vw, 100px)/.98 var(--font-display); letter-spacing: -.035em; }
+.login-wordmark span { color: var(--color-brand-accent); }
 .login-card { align-self: center; justify-self: center; width: min(400px, calc(100% - 64px)); max-width: 400px; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: transparent; }
-.login-card > .product-label { display: none; }
+.login-card > .product-label { display: block; }
 .login-card h1 { font: 700 44px/1.05 var(--font-display); letter-spacing: -.03em; }
 .login-card .supporting-copy { font-size: 15px; margin: 10px 0 28px; }
 .login-card form { gap: 24px; }
@@ -4754,8 +4759,8 @@ a { color: inherit; }
   .app-shell-header .account-area { justify-self: end; margin: 0; }
   .shell-breadcrumb { display: none; }
   .app-shell-main { padding-top: 28px; }
-  .mobile-header-start .brand-link::before { display: none; }
-  .mobile-header-start .brand-link { justify-self: center; text-align: center; font-size: 14px; padding: 0; }
+  .mobile-header-start .brand-link::before { width: 28px; height: 28px; }
+  .mobile-header-start .brand-link { justify-self: center; text-align: center; font-size: 14px; padding: 0; gap: 6px; }
   .login-view { grid-template-columns: 1fr; }
   .login-artwork { min-height: 104px; border-right: 0; border-bottom: 1px solid var(--color-border); }
   .login-brand-mark { top: 32px; left: 24px; }

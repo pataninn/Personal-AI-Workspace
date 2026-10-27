@@ -284,7 +284,7 @@ function isEventInside(container: HTMLElement | null, target: EventTarget | null
 }
 
 function BrandLink(): React.JSX.Element {
-  return <Link className="brand-link" to="/dashboard"><span>Personal AI<br />Workspace</span></Link>;
+  return <Link className="brand-link" to="/dashboard" aria-label="Threadnest"><span className="brand-wordmark">Threadnest<span className="brand-dot" aria-hidden="true">.</span></span></Link>;
 }
 
 function ShellBreadcrumb(): React.JSX.Element {

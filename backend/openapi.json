@@ -1,7 +1,7 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "Personal AI Workspace API",
+    "title": "Threadnest API",
     "version": "0.1.0",
     "description": "Authenticated REST endpoints for account identity, Home and project-scoped conversations, project tasks, owner-wide task queries, durable project facts, and AI runs."
   },
