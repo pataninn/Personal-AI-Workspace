@@ -425,6 +425,32 @@ describeDatabase('Task 3.5 demo expiry cleanup with PostgreSQL and managed stora
       .resolves.toEqual(counterBaseline);
   });
 
+  it('fences all bundle copies and purges every verified root even without project rows', async () => {
+    const source = requiredDataSource();
+    await seedDemo(source, { copy: true });
+    const projectIds = [COPY_PROJECT_ID, 'd3550000-0000-4000-8000-000000000311', 'd3550000-0000-4000-8000-000000000312'];
+    for (let index = 1; index < projectIds.length; index += 1) {
+      const copyId = index === 1 ? 'd3550000-0000-4000-8000-000000000211' : 'd3550000-0000-4000-8000-000000000212';
+      await source.query(`INSERT INTO "demo_showcase_copies" ("copy_id","admission_id","owner_id","pinned_version_id","target_project_id","phase")
+        VALUES ($1,$2,$3,$4,$5,'root_created')`, [copyId, DEMO_ADMISSION_ID, DEMO_OWNER_ID, SHOWCASE_VERSION_ID, projectIds[index]]);
+      await source.query(`INSERT INTO "demo_copy_effect_receipts" ("copy_id","admission_id","owner_id","project_id","effect_kind","outcome","completed_at")
+        VALUES ($1,$2,$3,$4,'managed_project_root_create','verified',clock_timestamp())`, [copyId, DEMO_ADMISSION_ID, DEMO_OWNER_ID, projectIds[index]]);
+    }
+    for (const id of projectIds) {
+      const root = path.join(workspaceRoot!, 'managed', DEMO_OWNER_ID, 'projects', id);
+      await fs.mkdir(root, { recursive: true });await fs.writeFile(path.join(root,'mock.txt'),'bounded sample');
+    }
+    await expect(createCleanupRepository().runBatch(cancellation, 1)).resolves.toBe(0);
+    const jobs = await source.query('SELECT "manifest" FROM "demo_expiry_cleanups" WHERE "admission_id"=$1',[DEMO_ADMISSION_ID]);
+    expect(jobs[0].manifest.copies).toHaveLength(3);
+    await source.query(`UPDATE "demo_copy_effect_receipts" SET "outcome"='verified',"completed_at"=clock_timestamp() WHERE "admission_id"=$1`,[DEMO_ADMISSION_ID]);
+    await source.query('UPDATE "demo_expiry_cleanups" SET "next_attempt_at"=clock_timestamp() WHERE "admission_id"=$1',[DEMO_ADMISSION_ID]);
+    await expect(createCleanupRepository().runBatch(cancellation, 1)).resolves.toBe(1);
+    for (const id of projectIds) await expect(fs.stat(path.join(workspaceRoot!, 'managed', DEMO_OWNER_ID, 'projects', id))).rejects.toMatchObject({code:'ENOENT'});
+    await expect(source.query('SELECT "copy_id" FROM "demo_copy_effect_receipts" WHERE "admission_id"=$1',[DEMO_ADMISSION_ID])).resolves.toEqual([]);
+    await expect(scalarCount(source,'users',REGULAR_OWNER_ID)).resolves.toBe(1);
+  });
+
   it('holds an in-flight managed-root receipt, then resumes after restart and removes only that project child', async () => {
     const source = requiredDataSource();
     await seedDemo(source, { copy: true });

@@ -141,34 +141,50 @@ export class TypeOrmShowcaseRepository implements IShowcaseRepository {
       await manager.query('SELECT "singleton_id" FROM "showcase_publication" WHERE "singleton_id" = true FOR UPDATE');
       const concurrentReplay = await this.findIdempotency(manager, input.adminId, input.idempotencyDigest);
       if (concurrentReplay) return replay(concurrentReplay, input.requestFingerprint);
+      const snapshots = [input.snapshot, ...(input.additionalSnapshots ?? [])];
+      if (snapshots.length > 3) throw new AppError('SHOWCASE_LIMIT_EXCEEDED', 413, 'Publish at most three demo workspaces.');
+      // The existing single-workspace API replaces the whole selection.
+      await manager.query('DELETE FROM "showcase_publication_workspaces"');
 
       await manager.query(`
         DELETE FROM "showcase_versions" v
         WHERE v."id" <> coalesce((SELECT "current_version_id" FROM "showcase_publication" WHERE "singleton_id" = true), '00000000-0000-0000-0000-000000000000'::uuid)
           AND NOT EXISTS (SELECT 1 FROM "demo_showcase_copies" c WHERE c."pinned_version_id" = v."id")
+          AND NOT EXISTS (SELECT 1 FROM "showcase_publication_workspaces" w WHERE w."version_id" = v."id")
       `);
       const pinnedRows = rows<{ readonly count: string | number }>(await manager.query(
         'SELECT count(DISTINCT "pinned_version_id") AS "count" FROM "demo_showcase_copies" WHERE "pinned_version_id" IS NOT NULL'
       ));
       // The previous current version can be pruned after the pointer moves unless a pending copy pins it.
-      if (Number(pinnedRows[0]?.count ?? 0) + 1 > input.maxRetainedVersions) {
+      if (Number(pinnedRows[0]?.count ?? 0) + snapshots.length > input.maxRetainedVersions) {
         throw new AppError('SHOWCASE_PUBLICATION_UNAVAILABLE', 503, 'Showcase retention is full while demo copies are still using older versions.');
       }
 
-      const versionId = this.createId();
-      const inserted = rows<{ readonly published_at: Date | string }>(await manager.query(`
-        INSERT INTO "showcase_versions" ("id", "project_display", "tasks", "facts", "skills", "content_digest", "snapshot_bytes", "item_count", "file_count")
-        VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7, $8, $9)
-        RETURNING "published_at"
-      `, [versionId, JSON.stringify(input.snapshot.project), JSON.stringify(input.snapshot.tasks), JSON.stringify(input.snapshot.facts), JSON.stringify(input.snapshot.skills),
-        input.contentDigest, input.snapshotBytes, input.itemCount, input.snapshot.files.length]));
-      const publishedAt = inserted[0]?.published_at;
-      if (!publishedAt) throw new Error('The showcase version was not created.');
-      for (const file of input.snapshot.files) {
-        await manager.query(`
-          INSERT INTO "showcase_files" ("version_id", "file_id", "name", "media_type", "content", "sha256", "byte_length")
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
-        `, [versionId, file.id, file.name, file.mediaType, file.bytes, file.sha256, file.byteLength]);
+      const versionIds: string[] = [];
+      let publishedAt: Date | string | undefined;
+      for (const snapshot of snapshots) {
+        const versionId = this.createId();
+        versionIds.push(versionId);
+        const inserted = rows<{ readonly published_at: Date | string }>(await manager.query(`
+          INSERT INTO "showcase_versions" ("id", "project_display", "tasks", "facts", "skills", "content_digest", "snapshot_bytes", "item_count", "file_count")
+          VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7, $8, $9)
+          RETURNING "published_at"
+        `, [versionId, JSON.stringify(snapshot.project), JSON.stringify(snapshot.tasks), JSON.stringify(snapshot.facts), JSON.stringify(snapshot.skills),
+          input.contentDigest, input.snapshotBytes, input.itemCount, snapshot.files.length]));
+        const insertedAt = inserted[0]?.published_at;
+        if (!insertedAt) throw new Error('The showcase version was not created.');
+        for (const file of snapshot.files) {
+          await manager.query(`
+            INSERT INTO "showcase_files" ("version_id", "file_id", "name", "media_type", "content", "sha256", "byte_length")
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+          `, [versionId, file.id, file.name, file.mediaType, file.bytes, file.sha256, file.byteLength]);
+        }
+        publishedAt ??= insertedAt;
+      }
+      const versionId = versionIds[0]!;
+      if (!publishedAt) throw new Error('The showcase publication was not created.');
+      for (let index = 1; index < versionIds.length; index += 1) {
+        await manager.query('INSERT INTO "showcase_publication_workspaces" ("position", "version_id") VALUES ($1,$2)', [index, versionIds[index]]);
       }
       await manager.query(`
         UPDATE "showcase_publication" SET "current_version_id" = $1, "updated_at" = clock_timestamp()
@@ -178,6 +194,7 @@ export class TypeOrmShowcaseRepository implements IShowcaseRepository {
         DELETE FROM "showcase_versions" v
         WHERE v."id" <> $1
           AND NOT EXISTS (SELECT 1 FROM "demo_showcase_copies" c WHERE c."pinned_version_id" = v."id")
+          AND NOT EXISTS (SELECT 1 FROM "showcase_publication_workspaces" w WHERE w."version_id" = v."id")
       `, [versionId]);
       await manager.query(`
         INSERT INTO "showcase_publish_idempotency" ("admin_id", "key_digest", "request_fingerprint", "version_id", "published_at")

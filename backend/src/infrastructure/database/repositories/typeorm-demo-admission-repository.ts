@@ -240,10 +240,17 @@ export class TypeOrmDemoAdmissionRepository implements IDemoAdmissionRepository,
         RETURNING "id", "owner_id", "status", "expires_at"
       `, [input.requestDigest, users.id]))[0];
       if (!admission) throw new DemoAdmissionUnavailableError();
-      await manager.query(`
-        INSERT INTO "demo_showcase_copies" ("admission_id", "owner_id", "pinned_version_id", "target_project_id")
-        VALUES ($1, $2, $3, $4)
-      `, [admission.id, users.id, current.version_id, randomUUID()]);
+      const additional = rows<{ readonly version_id: string }>(await manager.query(
+        'SELECT "version_id" FROM "showcase_publication_workspaces" ORDER BY "position"'
+      ));
+      const versions = [...new Set([current.version_id, ...additional.map((row) => row.version_id)])];
+      if (versions.length > 3) throw new DemoShowcaseUnavailableError();
+      for (const [index, versionId] of versions.entries()) {
+        await manager.query(`
+          INSERT INTO "demo_showcase_copies" ("copy_id", "admission_id", "owner_id", "pinned_version_id", "target_project_id")
+          VALUES ($1, $2, $3, $4, $5)
+        `, [index === 0 ? admission.id : randomUUID(), admission.id, users.id, versionId, randomUUID()]);
+      }
       return {
         kind: 'created',
         admission: {

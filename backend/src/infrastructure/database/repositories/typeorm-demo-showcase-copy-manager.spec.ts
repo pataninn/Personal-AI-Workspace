@@ -54,3 +54,42 @@ describe('TypeOrmDemoShowcaseCopyManager status projection', () => {
     expect(query).toHaveBeenNthCalledWith(2, expect.stringContaining('WHERE "owner_id" = $1'), [OWNER_ID]);
   });
 });
+
+function managerFor(query: jest.Mock, configured = true): TypeOrmDemoShowcaseCopyManager {
+  return new TypeOrmDemoShowcaseCopyManager(
+    { query } as unknown as DataSource, unusedDependency<IShowcaseRepository>(), unusedDependency<IProjectRepository>(),
+    unusedDependency<IWorkspaceBoundary>(), unusedDependency<TypeOrmProjectFileAccess>(), unusedDependency<ProjectFileGateway>(),
+    unusedDependency<StorageQuotaFileMutation>(), unusedDependency<TypeOrmStorageQuotaRepository>(),
+    unusedDependency<TypeOrmStorageContentAccounting>(), configured ? { maxSnapshotBytes: 1000000, maxFileBytes: 10000, maxItems: 100,
+      maxFiles: 10, maxRetainedVersions: 10, maxCopyAttempts: 3 } : undefined
+  );
+}
+
+describe('demo bundle readiness', () => {
+  const ready = { target_project_id: PROJECT_ID, state: 'ready', retry_allowed: false, workspace_mode: 'file_backed', file_access: true };
+
+  it('does not expose a partially copied bundle, including when the primary is already ready', async () => {
+    const query = jest.fn().mockResolvedValue([ready, { ...ready, state: 'pending', workspace_mode: null, file_access: null }]);
+    await expect(managerFor(query).getStatus(OWNER_ID)).resolves.toMatchObject({ state: 'pending', projectId: null, retryAllowed: true });
+  });
+
+  it('reports a non-retryable failed member without exposing a ready primary', async () => {
+    const query = jest.fn().mockResolvedValue([ready, { ...ready, state: 'failed', retry_allowed: false }]);
+    await expect(managerFor(query).getStatus(OWNER_ID)).resolves.toMatchObject({ state: 'failed', projectId: null, retryAllowed: false });
+  });
+
+  it('returns the primary only after every member is ready', async () => {
+    const query = jest.fn().mockResolvedValue([ready, { ...ready, target_project_id: 'other' }, ready]);
+    await expect(managerFor(query).getStatus(OWNER_ID)).resolves.toMatchObject({ state: 'ready', projectId: PROJECT_ID });
+  });
+
+  it('provisions each copy with its distinct identity and the same owner', async () => {
+    const query = jest.fn().mockResolvedValue([{ copy_id: 'primary' }, { copy_id: 'community' }, { copy_id: 'writing' }]);
+    const manager = managerFor(query);
+    // Exercise batch orchestration without touching any copy filesystem adapter.
+    const run = jest.spyOn(manager as unknown as { run(copyId: string, ownerId: string): Promise<void> }, 'run').mockResolvedValue();
+    await manager.provision('admission', OWNER_ID);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('"admission_id" = $1 AND "owner_id" = $2'), ['admission', OWNER_ID]);
+    expect(run.mock.calls).toEqual([['primary', OWNER_ID], ['community', OWNER_ID], ['writing', OWNER_ID]]);
+  });
+});
