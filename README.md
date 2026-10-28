@@ -1,9 +1,8 @@
 # Threadnest
 
-**License: [MIT](LICENSE)** · **Public code: [pataninn/Personal-AI-Workspace](https://github.com/pataninn/Personal-AI-Workspace)**
+**License: [MIT](LICENSE)** · **Public code: [pataninn/Personal-AI-Workspace](https://github.com/pataninn/Threadnest-Personal-AI-Workspace)**
 
-**Staging:** [threadnest.patanin.workers.dev](https://threadnest.patanin.workers.dev/)
-· [Deployment and branding notes](DEPLOYMENT.md)
+**Demo:** [threadnest.patanin.workers.dev](https://threadnest.patanin.workers.dev/)
 
 Threadnest is a personal AI workspace with projects,
 conversations, selected context, memory, tasks, live updates, and file history.
@@ -19,18 +18,54 @@ only read saved progress. Local pages, tasks, and files remain available when th
 AI bridge is offline. Inference still requires a configured, healthy Hermes bridge
 and the existing policy and credit checks.
 
-## For judges and first-time users
+## Features
 
 Threadnest brings tasks, project files, saved facts, reusable skills
 and AI conversations into an owner-scoped workspace. Visitors can explore a
 public showcase and start an isolated, expiring demo copy. The owner can publish
 selected sample content, configure usage budgets and schedule read-only briefings.
 
+- **Workspaces:** organize projects, conversations and files; rename, archive and
+  restore projects, with planning-only and file-backed workspace options.
+- **Tasks and planning:** manage priorities, deadlines and progress across projects,
+  with a Home assistant for task and workspace lookups.
+- **Context and memory:** choose files and chat references, save facts, and reuse
+  skills to guide the assistant.
+- **File workflows:** upload documents, convert supported formats to Markdown,
+  review proposed edits, and retain file history and recovery snapshots.
+- **Automations:** schedule read-only skills and briefings whose results are saved
+  in workspace conversations.
+- **Private demos:** publish selected showcase content and give visitors isolated,
+  expiring copies without exposing the owner's workspace.
+- **Administration:** manage demo policies, storage allowances, AI budgets, usage
+  records and the global inference pause.
+
+## Architecture
+
+| Layer | Technology |
+| --- | --- |
+| Frontend | React, TypeScript, Vite, React Router and Redux Toolkit |
+| Backend | Express and TypeScript |
+| Persistence | PostgreSQL and TypeORM migrations |
+| AI runtime | Hermes in disposable sandboxes through NVIDIA OpenShell |
+| Inference | NVIDIA Nemotron served by Nebius Token Factory |
+| Deployment | Docker Compose; AWS EC2/EBS staging behind a Cloudflare Worker |
+
+The frontend follows Feature-Sliced Design and the backend follows Clean
+Architecture.
+
+## Getting started
+
 - [NVIDIA Nemotron and Nebius Token Factory integration](#nvidia-nemotron-and-nebius-token-factory)
 - [Quick UI preview: no credentials or Docker](#quick-ui-preview-no-credentials-or-docker)
 - [Run the persistent application](#run-the-persistent-application)
 - [Enable the real AI runtime](#prepare-the-hermes-provider-route)
+- [Local prerequisites and configuration](#local-prerequisites)
+- [Private demo setup](#private-demo-admission)
+- [Managed file storage](#optional-managed-file-storage)
+- [Backups and recovery](#backups-and-recovery)
 - [Tests and checks](#checks)
+- [Execution and shutdown](#execution-and-shutdown)
 
 ### Quick UI preview: no credentials or Docker
 
@@ -107,7 +142,7 @@ integrates the model and does not train or fine-tune its weights.
   launch preparation or weekly reviews. Scheduled skills use read-only tools and
   persist their results in the workspace conversation.
 
-### Where Token Factory accelerated the workflow
+### Hosted inference with Token Factory
 
 Hosted inference let development focus on context selection, tool permissions,
 saved conversations and usage controls while accessing Nemotron through an
@@ -133,7 +168,7 @@ unknown spending stays reserved instead of being automatically replayed.
 | NVIDIA OpenShell + Hermes agent runtime | Isolated agent execution and supervised bridge; pinned settings in [common.py](deploy/hermes-bridge/common.py) and the [runtime image](docker/hermes.Dockerfile). |
 | Usage controls | Provider-call reservation/settlement in [provider_credit.py](deploy/hermes-bridge/runtime/provider_credit.py) and the [credit use cases](backend/src/modules/credits/use-cases). |
 
-**Other Nebius services:** this submission uses Token Factory for inference.
+**Other Nebius services:** Threadnest uses Token Factory for inference.
 Application staging uses AWS EC2/EBS, Docker and PostgreSQL; it does not use
 Nebius Compute, storage or fine-tuning services.
 
@@ -146,7 +181,7 @@ dependencies, container images and model weights retain their respective license
 
 ## Prepare the Hermes provider route
 
-This machine uses the installed WSL Ubuntu OpenShell 0.0.116 gateway
+The documented Windows setup uses a WSL Ubuntu OpenShell 0.0.116 gateway
 `nemoclaw-18080` and digest-pinned Hermes 0.20.6 base image. The gateway's
 named `pai-nebius-token-factory` provider is configured by the startup helper.
 This helper does not install Hermes or provision a fresh gateway on another machine.
@@ -228,8 +263,8 @@ The WSL OpenShell gateway used by Hermes remains part of this deployment.
 
 ### Credit admission and paid inference status
 
-The credit ledger migration starts with global inference paused, and this release
-does not choose provider prices, account budgets, or demo campaign limits. Regular
+The credit ledger migration starts with global inference paused. Operators must
+choose provider prices, account budgets, and demo campaign limits. Regular
 account daily and lifetime limits default to `null` (unlimited), while missing
 demo campaign configuration denies demo sends. Do not infer that a provider key
 or provider profile enables inference.
@@ -252,7 +287,7 @@ The supported Nebius/Nemotron path reserves the full 262,144-token input bound;
 `NIM_MAX_INPUT_TOKENS` must cover that bound. The bridge enforces admission and
 records usage at provider calls. Requests fail closed when the required policy,
 credit configuration, or bridge enforcement is unavailable. No provider prices,
-spending limits, or automatic unpause are supplied by this cleanup.
+spending limits, or automatic unpause are supplied by the application.
 
 ## Local prerequisites
 
@@ -498,8 +533,8 @@ threshold. When configured, the backend emits path-free structured warnings when
 an observed root crosses below it, and records when observation becomes unavailable
 or recovers. With no threshold, there is no low-space warning. This observation
 does not change account quotas, readiness, or write admission, and it does not
-prove the host bind source or persistent-volume capacity. Task 8.1 must verify the
-actual mounts and select an operational threshold before deployment.
+prove the host bind source or persistent-volume capacity. Before deployment,
+verify the actual mounts and select an operational threshold.
 
 When preparing an AI run, use <strong>Choose context</strong> to browse or search project
 files. Search ranks phrase and term matches deterministically, reports when its bounded
@@ -612,4 +647,3 @@ recovers saved interrupted outcomes; it does not automatically replay paid work.
 
 Frontend pages load on demand. `vite.config.mjs`, `vitest.config.mjs`, and
 `src/app/styles/globals.css` are the authoritative configuration/style files.
-See `dev-summary.md` for verification results and remaining environment limits.
