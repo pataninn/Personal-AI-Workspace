@@ -239,6 +239,15 @@ export class TypeOrmDemoShowcaseCopyManager implements IDemoShowcaseCopyManager 
       }
       if (locked.admission_status !== 'ready') return null;
       if (locked.copy_claim_live) return null;
+      // lockCopy holds the admission row: sibling claims cannot race this check.
+      // File settlement checks the owner's reservations, so siblings must not copy concurrently.
+      const sibling = rows<{ readonly live: boolean }>(await manager.query(`
+        SELECT EXISTS(SELECT 1 FROM "demo_showcase_copies" c
+          WHERE c."admission_id"=(SELECT "admission_id" FROM "demo_showcase_copies" WHERE "copy_id"=$1)
+            AND c."owner_id"=$2 AND c."copy_id" <> $1
+            AND c."claim_token" IS NOT NULL AND c."claim_expires_at">clock_timestamp()) AS "live"
+      `, [copyId, ownerId]))[0];
+      if (sibling?.live) return null;
       let rootReceipt: 'absent' | 'verified' | 'unknown' | 'pending' | null = null;
       if (row.phase === 'root_pending') {
         rootReceipt = rows<{ readonly outcome: 'absent' | 'verified' | 'unknown' | 'pending' }>(await manager.query(

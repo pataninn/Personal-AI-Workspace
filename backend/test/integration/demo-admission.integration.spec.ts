@@ -929,7 +929,10 @@ describeDatabase('Task 3.3 demo admission with PostgreSQL', () => {
     const admissionId = copies[0]!.admission_id;
     await expect(showcaseCopyManager.isReady(ownerId)).resolves.toBe(false);
     await Promise.all([showcaseCopyManager.provision(admissionId, ownerId), showcaseCopyManager.provision(admissionId, ownerId)]);
-    await expect(showcaseCopyManager.isReady(ownerId)).resolves.toBe(true);
+    if (!await showcaseCopyManager.isReady(ownerId)) {
+      const states = await source.query('SELECT "copy_id","state","phase","failure_code" FROM "demo_showcase_copies" WHERE "owner_id"=$1', [ownerId]);
+      throw new Error(JSON.stringify({ states, diagnostics: copyFailureDiagnostics }));
+    }
     await expect(showcaseCopyManager.getStatus(ownerId)).resolves.toMatchObject({ state: 'ready' });
     await expect(showcaseCopyManager.retry(ownerId)).resolves.toMatchObject({ state: 'ready' });
     const projects = await source.query('SELECT "id","name" FROM "projects" WHERE "owner_id"=$1 ORDER BY "name"', [ownerId]);
