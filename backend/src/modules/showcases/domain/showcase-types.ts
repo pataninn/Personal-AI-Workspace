@@ -116,6 +116,14 @@ export interface ShowcaseLimits {
   readonly maxCopyAttempts: number;
 }
 
+export interface ShowcasePublicationSnapshot {
+  readonly project: CurrentShowcaseDto['project'];
+  readonly tasks: CurrentShowcaseDto['tasks'];
+  readonly facts: CurrentShowcaseDto['facts'];
+  readonly skills: CurrentShowcaseDto['skills'];
+  readonly files: readonly (CurrentShowcaseFileDto & { readonly sha256: string; readonly bytes: Buffer })[];
+}
+
 export interface IShowcaseRepository {
   getCurrent(): Promise<CurrentShowcaseDto | null>;
   getCurrentFile(fileId: string): Promise<ShowcaseCurrentFile | null>;
@@ -126,13 +134,9 @@ export interface IShowcaseRepository {
     readonly adminId: string;
     readonly idempotencyDigest: string;
     readonly requestFingerprint: string;
-    readonly snapshot: {
-      readonly project: CurrentShowcaseDto['project'];
-      readonly tasks: CurrentShowcaseDto['tasks'];
-      readonly facts: CurrentShowcaseDto['facts'];
-      readonly skills: CurrentShowcaseDto['skills'];
-      readonly files: readonly (CurrentShowcaseFileDto & { readonly sha256: string; readonly bytes: Buffer })[];
-    };
+    readonly snapshot: ShowcasePublicationSnapshot;
+    /** Trusted publication tooling can select up to two more immutable workspaces. */
+    readonly additionalSnapshots?: readonly ShowcasePublicationSnapshot[];
     readonly contentDigest: string;
     readonly snapshotBytes: number;
     readonly itemCount: number;

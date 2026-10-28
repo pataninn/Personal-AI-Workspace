@@ -1,3 +1,4 @@
+import { SupportDemoWorkspaceBundles1710000044000 } from '@/infrastructure/database/migrations/1710000044000-support-demo-workspace-bundles';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -341,6 +342,7 @@ describeDatabase('Task 3.3 demo admission with PostgreSQL', () => {
   beforeEach(async () => {
     await requiredDataSource().query('TRUNCATE TABLE "users" CASCADE');
     await requiredDataSource().query('TRUNCATE TABLE "demo_admission_counters" CASCADE');
+    await requiredDataSource().query('DELETE FROM "showcase_publication_workspaces"');
     await seedShowcaseFixtures(requiredDataSource());
     await requiredDataSource().query(`
       INSERT INTO "users" ("id", "scope_key", "identifier", "account_kind", "role", "display_name", "password_hash")
@@ -890,6 +892,61 @@ describeDatabase('Task 3.3 demo admission with PostgreSQL', () => {
     );
     expect(runStartEvents).toEqual([{ count: 0 }]);
   }, 30_000);
+
+  it('migrates reversibly and provisions three immutable workspaces once with independent files, IDs and quota accounting', async () => {
+    const source = requiredDataSource();
+    const runner = source.createQueryRunner();
+    await runner.connect();
+    await runner.startTransaction();
+    try {
+      const migration = new SupportDemoWorkspaceBundles1710000044000();
+      await migration.down(runner);
+      await migration.up(runner);
+      await runner.commitTransaction();
+    } catch (error: unknown) { await runner.rollbackTransaction(); throw error; }
+    finally { await runner.release(); }
+    const fileVersion = await showcaseRepository.getVersion(FILE_SHOWCASE_VERSION_ID);
+    const skillVersion = await showcaseRepository.getVersion(SKILL_SHOWCASE_VERSION_ID);
+    if (!fileVersion || !skillVersion) throw new Error('Missing bundle test snapshots.');
+    const primary = { ...fileVersion.snapshot, files: fileVersion.files };
+    const additionalSnapshots = [
+      { ...primary, project: { name: 'Community fixture', objective: null } },
+      { ...skillVersion.snapshot, files: skillVersion.files }
+    ];
+    const publication = await showcaseRepository.publish({
+      adminId: REGULAR_OWNER_ID, idempotencyDigest: 'b'.repeat(64), requestFingerprint: 'c'.repeat(64),
+      snapshot: primary, additionalSnapshots, contentDigest: 'd'.repeat(64), snapshotBytes: 10000, itemCount: 10, maxRetainedVersions: 4
+    });
+    const admitted = await demoUseCase.execute({ idempotencyKey: randomBytes(32).toString('base64url'), clientIp: '198.51.100.92' });
+    if (admitted.kind !== 'created') throw new Error('Expected new bundle demo.');
+    const ownerId = admitted.session.principal.id;
+    const copies: readonly { readonly admission_id: string; readonly copy_id: string; readonly pinned_version_id: string }[] = await source.query(
+      'SELECT "admission_id","copy_id","pinned_version_id" FROM "demo_showcase_copies" WHERE "owner_id"=$1', [ownerId]);
+    expect(copies).toHaveLength(3);
+    expect(new Set(copies.map((copy) => copy.copy_id)).size).toBe(3);
+    expect(copies.filter((copy) => copy.copy_id === copy.admission_id)).toHaveLength(1);
+    expect(copies.some((copy) => copy.pinned_version_id === publication.version)).toBe(true);
+    const admissionId = copies[0]!.admission_id;
+    await expect(showcaseCopyManager.isReady(ownerId)).resolves.toBe(false);
+    await Promise.all([showcaseCopyManager.provision(admissionId, ownerId), showcaseCopyManager.provision(admissionId, ownerId)]);
+    if (!await showcaseCopyManager.isReady(ownerId)) {
+      const states = await source.query('SELECT "copy_id","state","phase","failure_code" FROM "demo_showcase_copies" WHERE "owner_id"=$1', [ownerId]);
+      throw new Error(JSON.stringify({ states, diagnostics: copyFailureDiagnostics }));
+    }
+    await expect(showcaseCopyManager.getStatus(ownerId)).resolves.toMatchObject({ state: 'ready' });
+    await expect(showcaseCopyManager.retry(ownerId)).resolves.toMatchObject({ state: 'ready' });
+    const projects = await source.query('SELECT "id","name" FROM "projects" WHERE "owner_id"=$1 ORDER BY "name"', [ownerId]);
+    expect(projects.map((project: { readonly name: string }) => project.name)).toEqual(['Community fixture','Private copy fixture','Skill copy fixture']);
+    const taskIds: readonly { readonly id: string; readonly project_id: string }[] = await source.query('SELECT "id","project_id" FROM "project_tasks" WHERE "owner_id"=$1', [ownerId]);
+    expect(taskIds).toHaveLength(2);expect(new Set(taskIds.map((task) => task.id)).size).toBe(2);
+    expect(new Set(taskIds.map((task) => task.project_id)).size).toBe(2);
+    const files = await source.query(`SELECT "sha256" FROM "storage_resource_references" WHERE "owner_id"=$1 AND "resource_kind"='project_file'`, [ownerId]);
+    expect(files).toEqual([{ sha256: SHOWCASE_FILE_SHA256 }, { sha256: SHOWCASE_FILE_SHA256 }]);
+    await expect(quotaRepository.readUsage(ownerId)).resolves.toMatchObject({ state: 'ready', reservedBytes: 0n, overLimit: false });
+    const check = source.createQueryRunner();await check.connect();await check.startTransaction();
+    try { await expect(new SupportDemoWorkspaceBundles1710000044000().down(check)).rejects.toThrow('Remove bundle publication'); }
+    finally { await check.rollbackTransaction();await check.release(); }
+  }, 60_000);
 
   function requiredDataSource(): DataSource {
     if (!dataSource?.isInitialized) throw new Error('The guarded demo database is not initialized.');

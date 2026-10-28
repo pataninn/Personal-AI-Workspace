@@ -8,6 +8,8 @@ import type { IStorageRootMappingRepository, StorageRootMapping } from '@/module
 import type { TypeOrmStorageQuotaRepository } from '@/infrastructure/database/repositories/typeorm-storage-quota-repository';
 import type { IWorkspaceExportCleanup } from '@/modules/workspace-exports/repositories/workspace-export-repository';
 
+interface CopyManifest { readonly admissionId: string; readonly projectId: string; readonly hasManagedRoot: boolean; }
+
 interface CleanupManifest {
   readonly ownerId: string;
   readonly projectIds: readonly string[];
@@ -18,7 +20,8 @@ interface CleanupManifest {
   readonly scheduleIds: readonly string[];
   readonly automationTurns: readonly { readonly scheduleId: string; readonly occurrenceId: string; readonly conversationId: string; readonly turnId: string | null }[];
   readonly exportIds: readonly string[];
-  readonly copy: { readonly admissionId: string; readonly projectId: string; readonly hasManagedRoot: boolean } | null;
+  readonly copy: CopyManifest | null;
+  readonly copies?: readonly CopyManifest[];
 }
 
 interface CleanupJob {
@@ -36,6 +39,7 @@ interface CopyRow {
   readonly target_project_id: string;
   readonly phase: string;
   readonly workspace_mode: 'planning' | 'file_backed' | null;
+  readonly root_effect_present?: boolean;
 }
 interface ProjectRow { readonly id: string; readonly relative_root: string | null; readonly storage_kind: 'managed' | 'legacy' | null; }
 interface RunRow { readonly id: string; readonly project_id: string; }
@@ -63,10 +67,11 @@ function parseManifest(value: CleanupManifest | string): CleanupManifest {
     || !Array.isArray(parsed.runs) || !Array.isArray(parsed.commands) || !Array.isArray(parsed.reservations)
     || !Array.isArray(parsed.roots) || parsed.scheduleIds !== undefined && !Array.isArray(parsed.scheduleIds)
     || parsed.automationTurns !== undefined && !Array.isArray(parsed.automationTurns)
-    || parsed.exportIds !== undefined && !Array.isArray(parsed.exportIds)) {
+    || parsed.exportIds !== undefined && !Array.isArray(parsed.exportIds)
+    || parsed.copies !== undefined && !Array.isArray(parsed.copies)) {
     throw new Error('The persisted demo cleanup manifest is invalid.');
   }
-  return { ...parsed, scheduleIds: parsed.scheduleIds ?? [], automationTurns: parsed.automationTurns ?? [], exportIds: parsed.exportIds ?? [] };
+  return { ...parsed, scheduleIds: parsed.scheduleIds ?? [], automationTurns: parsed.automationTurns ?? [], exportIds: parsed.exportIds ?? [], copies: parsed.copies ?? (parsed.copy ? [parsed.copy] : []) };
 }
 
 const ACTIVE_RUNS = "('pending_approval','staging','ready','queued','running','waiting_approval','cancel_requested')";
@@ -152,10 +157,12 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
           "status"=CASE WHEN "home_turn_id" IS NULL THEN 'cancelled' ELSE 'cancel_requested' END,
           "failure_code"='DEMO_EXPIRY',"lease_token"=NULL,"lease_expires_at"=NULL,"updated_at"=clock_timestamp()
           WHERE "owner_id"=$1 AND "status" IN ('queued','claimed','dispatching','running','cancel_requested','interrupted_unknown')`, [due.owner_id]);
-        const copy = rows<CopyRow>(await manager.query(`
-          SELECT "target_project_id","phase","workspace_mode" FROM "demo_showcase_copies"
+        const copies = rows<CopyRow>(await manager.query(`
+          SELECT "target_project_id","phase","workspace_mode",
+            EXISTS(SELECT 1 FROM "demo_copy_effect_receipts" r WHERE r."copy_id"=c."copy_id" AND r."outcome" <> 'absent') AS "root_effect_present"
+          FROM "demo_showcase_copies" c
           WHERE "admission_id"=$1 AND "owner_id"=$2 FOR UPDATE
-        `, [due.id, due.owner_id]))[0] ?? null;
+        `, [due.id, due.owner_id]));
         const projects = rows<ProjectRow>(await manager.query(
           `SELECT "id","relative_root","storage_kind" FROM "projects" WHERE "owner_id"=$1 ORDER BY "id"`, [due.owner_id]));
         const runs = rows<RunRow>(await manager.query(
@@ -170,8 +177,6 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
           SELECT "owner_id","project_id","locator_project_id","root_key","storage_kind","relative_root","state"
           FROM "storage_root_mappings" WHERE "owner_id"=$1 ORDER BY "root_key"
         `, [due.owner_id]));
-        const receipt = copy ? rows<{ readonly outcome: string }>(await manager.query(
-          `SELECT "outcome" FROM "demo_copy_effect_receipts" WHERE "admission_id"=$1`, [due.id]))[0] : null;
         const manifest: CleanupManifest = {
           ownerId: due.owner_id,
           projectIds: projects.map((project) => project.id),
@@ -187,14 +192,14 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
             ownerId: root.owner_id, projectId: root.project_id, locatorProjectId: root.locator_project_id,
             rootKey: root.root_key, storageKind: root.storage_kind, relativeRoot: root.relative_root, state: root.state
           })),
-          copy: copy ? {
+          copy: null,
+          copies: copies.map((copy) => ({
             admissionId: due.id,
             projectId: copy.target_project_id,
-            // A fenced root_pending copy may finish mkdir through its terminal receipt after this manifest commits.
-            // Keep the exact target UUID so a later verified receipt can be purged after the barrier clears.
+            // Keep every exact target, including mkdir effects not yet attached to a project.
             hasManagedRoot: copy.workspace_mode === 'file_backed' || ['root_pending','root_created','database_created','files_pending','complete'].includes(copy.phase)
-              || (receipt !== null && receipt !== undefined && receipt.outcome !== 'absent')
-          } : null
+              || copy.root_effect_present === true
+          }))
         };
         await manager.query(`UPDATE "users" SET "is_active"=false,"updated_at"=clock_timestamp() WHERE "id"=$1`, [due.owner_id]);
         await manager.query(`UPDATE "demo_showcase_copies" SET "retry_allowed"=false,"claim_token"=NULL,
@@ -329,8 +334,9 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
     const namespace = await this.workspace.inspectManagedNamespace?.();
     const ownerNamespace = namespace?.owners.find((entry) => entry.ownerId === manifest.ownerId);
     const expectedRootIds = new Set(manifest.roots.map((root) => root.locatorProjectId));
-    if (manifest.copy?.hasManagedRoot) expectedRootIds.add(manifest.copy.projectId);
-    if (manifest.roots.length > 0 || manifest.copy?.hasManagedRoot) {
+    const managedCopies = (manifest.copies ?? []).filter((copy) => copy.hasManagedRoot);
+    for (const copy of managedCopies) expectedRootIds.add(copy.projectId);
+    if (manifest.roots.length > 0 || managedCopies.length > 0) {
       if (!namespace?.configured || namespace.unattributableEntries || !ownerNamespace || ownerNamespace.unsafe
         || ownerNamespace.projectIds.some((projectId) => !expectedRootIds.has(projectId))) throw new UnsafeDemoRootError();
     }
@@ -376,12 +382,13 @@ export class TypeOrmDemoExpiryCleanupRepository implements IDemoExpiryCleanupRep
         job.admission_id, job.generation, job.lease_token);
     }
 
-    if (manifest.copy?.hasManagedRoot && !manifest.roots.some((root) => root.locatorProjectId === manifest.copy?.projectId)) {
-      if (liveMappings.some((mapping) => mapping.locatorProjectId === manifest.copy?.projectId)) throw new UnsafeDemoRootError();
+    for (const copy of managedCopies) {
+      if (manifest.roots.some((root) => root.locatorProjectId === copy.projectId)) continue;
+      if (liveMappings.some((mapping) => mapping.locatorProjectId === copy.projectId)) throw new UnsafeDemoRootError();
       if (!this.workspace.removeManagedProjectRoot) throw new Error('unsafe root');
       await this.assertLease(job);
-      await this.workspace.removeManagedProjectRoot(manifest.ownerId, manifest.copy.projectId);
-      const rootKey = `projects/${manifest.copy.projectId}`.toLowerCase();
+      await this.workspace.removeManagedProjectRoot(manifest.ownerId, copy.projectId);
+      const rootKey = `projects/${copy.projectId}`.toLowerCase();
       await this.quota.releaseDemoProjectReferencesAfterVerifiedPurge(manifest.ownerId, rootKey,
         job.admission_id, job.generation, job.lease_token);
     }
